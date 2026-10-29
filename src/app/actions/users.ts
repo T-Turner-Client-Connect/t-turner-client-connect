@@ -4,19 +4,38 @@ import { revalidatePath } from "next/cache";
 import type { Role } from "@prisma/client";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
-import { createInvite, createPasswordReset, revokeInvite, updateStaff } from "@/lib/services/users";
+import { createPasswordReset, updateStaff } from "@/lib/services/users";
+import { createPrivateInviteLink, inviteStaff, resendInvite, revokeInvite, type InviteOutcome } from "@/lib/services/staff-invitations";
 import { ValidationError } from "@/lib/services/clients";
 import { appUrl } from "@/lib/integrations";
 import { prisma } from "@/lib/prisma";
 
+// The private link (when email didn't go out) is returned only to the Admin
+// who asked; it's never stored in readable form or logged.
+async function inviteResult(fn: () => Promise<InviteOutcome>): Promise<ActionState> {
+  let outcome: InviteOutcome | undefined;
+  const state = await run(async () => {
+    outcome = await fn();
+    revalidatePath("/settings");
+    return outcome.message;
+  });
+  return outcome?.privateLink && state?.ok ? { ...state, link: outcome.privateLink } : state;
+}
+
 export async function inviteAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
-  return run(async () => {
-    const role = str(fd, "role") === "ADMIN" ? "ADMIN" : "STAFF";
-    const token = await createInvite(actor, { email: str(fd, "email"), name: str(fd, "name"), role });
-    revalidatePath("/settings");
-    return `Invitation created. Send this one-time link to them privately (valid 7 days): ${appUrl()}/staff/invite/${token}`;
-  });
+  const role = str(fd, "role") === "ADMIN" ? "ADMIN" : "STAFF";
+  return inviteResult(() => inviteStaff(actor, { email: str(fd, "email"), name: str(fd, "name"), role, idempotencyKey: str(fd, "idempotencyKey") || undefined }));
+}
+
+export async function resendInviteAction(inviteId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return inviteResult(() => resendInvite(actor, inviteId));
+}
+
+export async function privateInviteLinkAction(inviteId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return inviteResult(() => createPrivateInviteLink(actor, inviteId));
 }
 
 export async function revokeInviteAction(inviteId: string, _prev: ActionState): Promise<ActionState> {
@@ -24,7 +43,7 @@ export async function revokeInviteAction(inviteId: string, _prev: ActionState): 
   return run(async () => {
     await revokeInvite(actor, inviteId);
     revalidatePath("/settings");
-    return "Invitation revoked.";
+    return "Invitation revoked. Its link no longer works.";
   });
 }
 

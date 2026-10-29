@@ -2,8 +2,9 @@
 
 import { startTransition, useActionState, useEffect, useRef, type ReactNode } from "react";
 import clsx from "clsx";
+import { CopyLink } from "./copy-link";
 
-type State = { error?: string; ok?: string; at?: number } | null;
+type State = { error?: string; ok?: string; at?: number; link?: string } | null;
 
 export function ActionForm({
   action,
@@ -62,6 +63,7 @@ export function ActionForm({
           {state.ok}
         </p>
       )}
+      {state?.ok && state.link && <CopyLink link={state.link} />}
     </form>
   );
 }

@@ -6,6 +6,7 @@
 | Private file storage | Working (Netlify Blobs on Netlify, local folder in dev) | Automatic on Netlify |
 | Staff + client sign-in, 2-step verification | Working | `APP_ENCRYPTION_KEY` |
 | Portal messaging, documents, bookkeeping, requests | Working | — |
+| Staff invitation email | Built and tested: branded email, resend, revoke, private copy-link fallback, statuses. Sends nothing until Resend is configured | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` (verified domain), `RESEND_WEBHOOK_SECRET` — see below |
 | Password-reset email | Admin-generated links work now; email delivery needs Resend | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` |
 | Portal notifications (email/text) | Recorded; delivered only when enabled | `NOTIFICATIONS_ENABLED=true` + Resend/Twilio |
 | Campaign email/text sending | **Locked.** Drafts, audiences, previews and test sends (simulated without a provider) work | Resend + Twilio + `LIVE_SENDING_ENABLED=true` + the messaging stage |
@@ -16,6 +17,40 @@
 | TaxAct | **Staff-controlled CSV import** of e-file statuses (Clients → Imports → TaxAct) and of contact exports | See below |
 | Social publishing | **Manual publishing** with media download, copy caption, open platform, confirm with post link | See below |
 | Automations | Engine works; rules paused by default | `CRON_SECRET`, enable rules in Workflows → Automations |
+
+## Staff invitation email (Resend)
+
+Settings → *Invite a staff member* creates a single-use link (7 days, only its hash is stored) and emails it
+to the address typed, from `EMAIL_FROM_ADDRESS`, with a **Create Your Staff Account** button. Staff
+invitations are transactional: they never go through campaigns, client messaging, client portal
+invitations or the marketing do-not-contact list, and are tagged `category=staff_invitation` in Resend.
+
+| Status shown | Meaning |
+|---|---|
+| Invitation created | Saved, not emailed (email not configured). Use *Copy private link instead* or *Resend* later |
+| Email accepted by provider | Resend returned an email id. **Not** proof of delivery |
+| Delivered | A signed `email.delivered` webhook from Resend arrived — the only way to reach this status |
+| Delivery failed | Resend refused/was unreachable, or a signed bounce/failed/complaint event arrived. The Admin sees the private link to share instead |
+| Account activated | The invitee created the account; the link no longer works |
+| Revoked / Replaced / Expired | The link no longer works. *Resend* and *Copy private link* each replace the link |
+
+Duplicate protection: the form carries an idempotency key; one open invitation per address (enforced with a
+database lock); only one request can claim a send; Resend receives `Idempotency-Key: staff-invite/<id>`;
+resends within 60 seconds are refused.
+
+Setup (nothing here goes in GitHub or chat):
+
+1. **Resend → Domains → Add domain.** Use a subdomain of the firm's domain, e.g. `mail.<yourdomain>`.
+   Add the DNS records Resend shows (DKIM `resend._domainkey` TXT, SPF `send` MX + TXT; DMARC TXT recommended)
+   at your DNS host, then *Verify* until the domain reads **Verified**.
+2. **Resend → API Keys → Create**, permission *Sending access*, domain = the verified domain.
+3. **Resend → Webhooks → Add endpoint** `https://<site>/api/webhooks/resend` with events `email.delivered`,
+   `email.bounced`, `email.failed`, `email.complained`; copy its signing secret (`whsec_…`).
+4. **Netlify → Site configuration → Environment variables** (scopes: Functions + Builds; contexts: Production,
+   and Deploy Previews only if previews should send): `RESEND_API_KEY` (secret), `RESEND_WEBHOOK_SECRET`
+   (secret), `EMAIL_FROM_ADDRESS` e.g. `T. Turner & Associates, LLC <invitations@mail.<yourdomain>>`,
+   `APP_URL` = the live site address (links in the email use it). Redeploy.
+5. Settings → Integrations shows *Email (Resend)* and *Email delivery confirmations* as Configured.
 
 ## TaxAct
 

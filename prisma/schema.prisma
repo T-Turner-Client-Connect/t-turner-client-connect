@@ -101,7 +101,31 @@ model Invite {
   invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id])
   createdAt   DateTime  @default(now())
 
+  // Staff invitation email (transactional; never part of campaigns or client mail).
+  // DELIVERED is set only from a signed Resend delivery event.
+  emailStatus      InviteEmailStatus @default(NOT_SENT)
+  emailProviderId  String?           @unique
+  emailAttemptAt   DateTime?
+  emailAcceptedAt  DateTime?
+  emailDeliveredAt DateTime?
+  emailFailedAt    DateTime?
+  emailError       String?
+  // Set when the Admin took the private copy-link instead of (or after) email.
+  linkCopiedAt     DateTime?
+  // The newer invitation that replaced this one (resend / new private link).
+  replacedById     String?
+  // Form idempotency key, so a double-submit can't create or email twice.
+  createKey        String?           @unique
+
   @@index([email])
+}
+
+enum InviteEmailStatus {
+  NOT_SENT
+  SENDING
+  ACCEPTED
+  DELIVERED
+  FAILED
 }
 
 model PasswordResetToken {
