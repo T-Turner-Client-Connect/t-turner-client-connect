@@ -64,3 +64,18 @@ T. Turner & Associates, LLC". Business details live in `src/lib/business.ts`.
 - **Web-form verification**: the form doesn't send a confirmation text yet (double opt-in). Add one
   when live sending is enabled.
 - **Policy review**: see the flags in the pull request. The policy text was published as drafted.
+
+## Twilio A2P campaign registration
+
+**Message flow** (paste as-is; replace the domain if you use a custom domain):
+
+> End users opt in on our public web form at https://tturnerclientconnect.netlify.app/sms-consent ("Stay Connected with TTurner" - TTurner Client Connect, operated by T. Turner & Associates, LLC). The form collects the person's name and mobile number and shows two separate, optional checkboxes, both unchecked by default: (1) Service messages - recurring automated SMS/MMS about appointments, document requests, account updates, secure portal notifications and customer support; (2) Marketing messages - recurring automated promotional SMS/MMS including service announcements, offers and flyers. Each checkbox shows the full disclosure: message frequency varies, message and data rates may apply, Reply STOP to unsubscribe or HELP for help; the marketing checkbox also states consent is not a condition of purchase. Links to our Privacy Policy (https://tturnerclientconnect.netlify.app/privacy-policy) and Terms & Conditions (https://tturnerclientconnect.netlify.app/terms) appear beside the choices. Texting is optional and not required to receive services. The user clicks "Save My Preferences"; only the categories they checked are enabled, and we record the number, categories, timestamp, source page and the exact consent wording/version. Existing clients signed in to our secure client portal can also opt in to service messages on their Account page using the same wording. Contacts imported from other systems are never treated as opted in. Replying STOP opts the number out of all messages; HELP returns our help line, 205-659-5448.
+
+**Opt-in method proof**: the public form URL `https://tturnerclientconnect.netlify.app/sms-consent`, and
+this screenshot of the empty form (both boxes unchecked):
+`https://tturnerclientconnect.netlify.app/brand/sms-opt-in-form.png`.
+
+**Privacy Policy URL**: `https://tturnerclientconnect.netlify.app/privacy-policy` ·
+**Terms URL**: `https://tturnerclientconnect.netlify.app/terms`
+
+Sample messages should start with "T. Turner & Associates:" and include "Reply STOP to opt out".
