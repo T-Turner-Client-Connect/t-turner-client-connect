@@ -1,0 +1,27 @@
+# dependencies
+/node_modules
+
+# next.js / netlify build output
+/.next/
+/out/
+/build
+.netlify/
+*.tsbuildinfo
+next-env.d.ts
+
+# secrets — only .env.example is committed
+.env
+.env.*
+!.env.example
+
+# local uploads and any client data — never commit
+/.data/
+*.csv
+*.xlsx
+*.xls
+!tests/fixtures/*.csv
+
+# misc
+.DS_Store
+npm-debug.log*
+/coverage

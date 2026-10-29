@@ -1,0 +1,18 @@
+# Netlify configuration for TTurner Client Connect.
+#
+# Next.js App Router app with Server Actions, authenticated API routes and a
+# proxy (src/proxy.ts). It must be served by the Next.js Runtime for Netlify
+# (@netlify/plugin-nextjs) — do NOT add an SPA-style "/* /index.html 200"
+# redirect; it would break server-rendered and authenticated routes.
+
+[build]
+  # Applies pending database migrations (no-op when none), seeds baseline
+  # groups and templates (idempotent, no client data), then builds.
+  command = "npx prisma migrate deploy && npx tsx prisma/seed.ts && npx next build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
