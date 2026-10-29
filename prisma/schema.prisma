@@ -35,18 +35,22 @@ enum Role {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  name         String
-  role         Role      @default(STAFF)
-  passwordHash String?
-  active       Boolean   @default(true)
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String
+  role            Role      @default(STAFF)
+  passwordHash    String?
+  active          Boolean   @default(true)
   // TOTP secret (base32), stored encrypted with APP_ENCRYPTION_KEY.
-  mfaSecretEnc String?
-  mfaEnabledAt DateTime?
-  lastLoginAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  mfaSecretEnc    String?
+  mfaEnabledAt    DateTime?
+  // Last accepted authenticator time-step: a code can't be replayed.
+  mfaLastStep     Int?
+  // Proven by entering a code emailed to this address (enables email codes).
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   sessions        Session[]
   resetTokens     PasswordResetToken[]
@@ -635,6 +639,9 @@ model PortalUser {
   passwordHash    String?
   mfaSecretEnc    String?
   mfaEnabledAt    DateTime?
+  mfaLastStep     Int?
+  // Proven by entering a code emailed to this address (enables email codes).
+  emailVerifiedAt DateTime?
   active          Boolean   @default(true)
   // Account-service notifications (new message / document / request).
   // Separate from marketing consent.
@@ -647,15 +654,16 @@ model PortalUser {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  access        PortalAccess[]
-  sessions      PortalSession[]
-  resetTokens   PortalResetToken[]
-  recoveryCodes MfaRecoveryCode[]
-  messages      Message[]           @relation("PortalMessages")
-  files         StoredFile[]
-  documents     Document[]          @relation("PortalDocuments")
-  notifications Notification[]
-  accessLogs    DocumentAccessLog[]
+  access         PortalAccess[]
+  sessions       PortalSession[]
+  resetTokens    PortalResetToken[]
+  recoveryCodes  MfaRecoveryCode[]
+  messages       Message[]           @relation("PortalMessages")
+  trustedDevices TrustedDevice[]
+  files          StoredFile[]
+  documents      Document[]          @relation("PortalDocuments")
+  notifications  Notification[]
+  accessLogs     DocumentAccessLog[]
 }
 
 enum PortalRole {
@@ -1816,4 +1824,72 @@ model Expense {
   deletedAt   DateTime?
 
   @@index([spentOn])
+}
+
+// ===========================================================================
+// SIGN-IN VERIFICATION CODES & RECOVERY
+// ===========================================================================
+
+enum ChallengePurpose {
+  // Second factor at sign-in.
+  SIGN_IN
+  // Proving the account's email address (turns on email codes).
+  VERIFY_EMAIL
+}
+
+// One emailed (or, later, texted) code. Single use, short-lived, limited attempts.
+model MfaChallenge {
+  id          String           @id @default(cuid())
+  subjectKind String
+  subjectId   String
+  purpose     ChallengePurpose
+  channel     String
+  destination String
+  codeHash    String
+  expiresAt   DateTime
+  attempts    Int              @default(0)
+  consumedAt  DateTime?
+  // Set only when the provider accepted the message.
+  sentAt      DateTime?
+  providerId  String?
+  sendError   String?
+  createdAt   DateTime         @default(now())
+
+  @@index([subjectKind, subjectId, createdAt])
+}
+
+// Client sign-in by emailed code is switched on only after email delivery was
+// proven (an Admin received a test code and entered it) and an Admin enabled it.
+model AuthSettings {
+  id                      String    @id @default("default")
+  clientEmailCodes        Boolean   @default(false)
+  emailDeliveryVerifiedAt DateTime?
+  emailDeliveryVerifiedBy String?
+  enabledById             String?
+  enabledAt               DateTime?
+  trustedDeviceDays       Int       @default(30)
+  updatedAt               DateTime  @updatedAt
+}
+
+// "Remember this device" for clients: skips the emailed code on this browser
+// until it expires or is revoked. Only the hash of the cookie is stored.
+model TrustedDevice {
+  id           String     @id @default(cuid())
+  portalUserId String
+  portalUser   PortalUser @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  tokenHash    String     @unique
+  label        String
+  createdAt    DateTime   @default(now())
+  expiresAt    DateTime
+  lastUsedAt   DateTime?
+  revokedAt    DateTime?
+
+  @@index([portalUserId])
+}
+
+// Owner recovery codes (set in Netlify) are single use.
+model UsedRecoveryToken {
+  tokenHash String   @id
+  userId    String
+  usedAt    DateTime @default(now())
 }

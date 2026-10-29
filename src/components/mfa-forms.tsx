@@ -6,19 +6,6 @@ import { Button, Field, Notice } from "@/components/ui";
 
 type State = { error?: string; ok?: string; codes?: string[] } | null;
 
-export function MfaCodeForm({ action, label = "Verify" }: { action: (p: State, fd: FormData) => Promise<State>; label?: string }) {
-  const [state, formAction, pending] = useActionState(action, null);
-  return (
-    <form action={formAction} className="space-y-4">
-      <Field label="6-digit code" hint="From your authenticator app. Lost your phone? Enter a recovery code instead.">
-        <input className="input text-center text-xl tracking-[0.3em]" name="code" inputMode="numeric" autoComplete="one-time-code" required autoFocus maxLength={11} />
-      </Field>
-      {state?.error && <Notice tone="error">{state.error}</Notice>}
-      <Button type="submit" className="w-full" disabled={pending}>{pending ? "Checking…" : label}</Button>
-    </form>
-  );
-}
-
 export function MfaSetupForm({ action, continueHref }: { action: (p: State, fd: FormData) => Promise<State>; continueHref: string }) {
   const [state, formAction, pending] = useActionState(action, null);
   if (state?.codes?.length) {
