@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: { default: "TTurner Client Connect", template: "%s · TTurner Client Connect" },
-  description: "Private client relationship manager for T. Turner & Associates, LLC.",
+  description: "Private client relationship manager for TTurner & Associates Group, LLC.",
   robots: { index: false, follow: false },
 };
 

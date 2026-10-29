@@ -16,7 +16,7 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
   const docs = await loadPortalDocuments(current.clientId, current);
   return (
     <>
-      <PageHeader title="Documents" subtitle="Private to you and T. Turner & Associates. Links expire shortly after the page loads." />
+      <PageHeader title="Documents" subtitle="Private to you and TTurner & Associates Group. Links expire shortly after the page loads." />
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2"><PortalDocumentsView docs={docs} linkFor={(id) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`} /></div>
         {current.canUpload && (

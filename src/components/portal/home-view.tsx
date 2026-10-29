@@ -36,7 +36,7 @@ export function PortalHomeView({ data, linkFor, q, readOnly }: { data: Home; lin
         <Link href={`/client/bookkeeping${q}`} className="rounded-2xl border border-ivory-200 border-t-4 border-t-gold-500 bg-white p-4 shadow-sm"><p className="text-sm text-slate-600">Requested from you</p><p className="font-serif text-3xl font-bold text-navy-900">{data.requests.length}</p></Link>
         <Link href={`/client/contracts${q}`} className="rounded-2xl border border-ivory-200 border-t-4 border-t-gold-500 bg-white p-4 shadow-sm"><p className="text-sm text-slate-600">To sign or complete</p><p className="font-serif text-3xl font-bold text-navy-900">{data.contracts.length + data.signatures.length}</p></Link>
       </div>
-      {nothing && <EmptyState title="You're all caught up">New messages, documents and requests from T. Turner &amp; Associates will appear here.</EmptyState>}
+      {nothing && <EmptyState title="You're all caught up">New messages, documents and requests from TTurner &amp; Associates Group will appear here.</EmptyState>}
       <div className="grid gap-4 lg:grid-cols-2">
         {data.updates.length > 0 && (
           <Card title="Updates & announcements" className="lg:col-span-2">

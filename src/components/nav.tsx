@@ -11,6 +11,7 @@ import {
   FolderLock,
   GitBranch,
   LayoutDashboard,
+  LockKeyhole,
   Megaphone,
   Menu,
   MessagesSquare,
@@ -34,9 +35,35 @@ const LINKS = [
   { href: "/settings", label: "Settings", icon: Settings, also: [] },
 ];
 
-function NavLinks({ onNavigate, unread }: { onNavigate?: () => void; unread: number }) {
+export type OwnerNav = "none" | "claim" | "billing" | "full";
+
+// Rendered only when the server says this signed-in account holds owner access.
+function OwnerLink({ owner, onNavigate }: { owner: OwnerNav; onNavigate?: () => void }) {
+  const pathname = usePathname();
+  if (owner === "none") return null;
+  const href = owner === "claim" ? "/owner/claim" : owner === "billing" ? "/owner/invoices" : "/owner";
+  const active = pathname.startsWith("/owner");
+  return (
+    <Link
+      href={href}
+      onClick={onNavigate}
+      aria-current={active ? "page" : undefined}
+      className={clsx(
+        "mt-3 flex items-center gap-3 rounded-lg border px-3 py-2.5 text-[15px] font-semibold",
+        active ? "border-gold-500 bg-gold-500/15 text-white" : "border-gold-500/40 text-gold-500 hover:bg-gold-500/10",
+      )}
+    >
+      <LockKeyhole aria-hidden className="size-[18px]" />
+      <span className="flex-1">Owner&apos;s Office</span>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-gold-500/90">Private</span>
+    </Link>
+  );
+}
+
+function NavLinks({ onNavigate, unread, owner }: { onNavigate?: () => void; unread: number; owner: OwnerNav }) {
   const pathname = usePathname();
   return (
+    <>
     <ul className="space-y-0.5">
       {LINKS.map(({ href, label, icon: Icon, also }) => {
         const active = href === "/" ? pathname === "/" : [href, ...also].some((p) => pathname.startsWith(p));
@@ -61,6 +88,8 @@ function NavLinks({ onNavigate, unread }: { onNavigate?: () => void; unread: num
         );
       })}
     </ul>
+    <OwnerLink owner={owner} onNavigate={onNavigate} />
+    </>
   );
 }
 
@@ -103,7 +132,7 @@ function GlobalSearch({ onDone }: { onDone?: () => void }) {
   );
 }
 
-export function AppNav({ user, signOut, unread }: { user: { name: string; role: string }; signOut: () => Promise<void>; unread: number }) {
+export function AppNav({ user, signOut, unread, owner }: { user: { name: string; role: string }; signOut: () => Promise<void>; unread: number; owner: OwnerNav }) {
   const [open, setOpen] = useState(false);
   const footer = (
     <div className="border-t border-white/10 pt-4 text-sm">
@@ -120,7 +149,7 @@ export function AppNav({ user, signOut, unread }: { user: { name: string; role: 
         <div className="space-y-6">
           <Brand />
           <GlobalSearch />
-          <nav aria-label="Main"><NavLinks unread={unread} /></nav>
+          <nav aria-label="Main"><NavLinks unread={unread} owner={owner} /></nav>
         </div>
         {footer}
       </aside>
@@ -140,7 +169,7 @@ export function AppNav({ user, signOut, unread }: { user: { name: string; role: 
                 <button onClick={() => setOpen(false)} aria-label="Close menu" className="rounded-md p-2 text-white hover:bg-white/10"><X className="size-6" /></button>
               </div>
               <GlobalSearch onDone={() => setOpen(false)} />
-              <nav aria-label="Main"><NavLinks onNavigate={() => setOpen(false)} unread={unread} /></nav>
+              <nav aria-label="Main"><NavLinks onNavigate={() => setOpen(false)} unread={unread} owner={owner} /></nav>
             </div>
             {footer}
           </div>

@@ -1,7 +1,8 @@
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clients";
-import { inviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
+import { inviteAction, privateInviteLinkAction, resendInviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
+import { inviteState, recentInvites, type InviteState } from "@/lib/services/staff-invitations";
 import { resetStaffMfaAction, retentionAction } from "@/app/actions/workspace";
 import { CATEGORY_LABELS } from "@/lib/services/documents";
 import { jotformStatus } from "@/lib/services/contracts";
@@ -16,6 +17,18 @@ import { formatPhone } from "@/lib/normalize";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 
 export const metadata = { title: "Settings" };
+
+const INVITE_STATUS: Record<InviteState, { label: string; tone: "green" | "gold" | "navy" | "red" | "gray"; detail: string }> = {
+  CREATED: { label: "Invitation created", tone: "navy", detail: "Not emailed yet. Resend once email is set up, or copy a private link." },
+  SENDING: { label: "Sending…", tone: "navy", detail: "Handing the email to the provider." },
+  ACCEPTED: { label: "Email accepted by provider", tone: "gold", detail: "Resend accepted the email. Delivery isn't confirmed yet." },
+  DELIVERED: { label: "Delivered", tone: "green", detail: "Resend confirmed delivery to their mail server." },
+  FAILED: { label: "Delivery failed", tone: "red", detail: "The email didn't go out or bounced." },
+  ACTIVATED: { label: "Account activated", tone: "green", detail: "They created their account. The link no longer works." },
+  EXPIRED: { label: "Expired", tone: "gray", detail: "The 7-day link expired. Resend to send a new one." },
+  REVOKED: { label: "Revoked", tone: "gray", detail: "The link no longer works." },
+  REPLACED: { label: "Replaced", tone: "gray", detail: "A newer link replaced this one." },
+};
 
 function Status({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
   return (
@@ -34,7 +47,7 @@ export default async function SettingsPage() {
   const isAdmin = user.role === "ADMIN";
   const [staff, invites, suppressions, logs] = await Promise.all([
     prisma.user.findMany({ orderBy: [{ active: "desc" }, { name: "asc" }] }),
-    isAdmin ? prisma.invite.findMany({ where: { acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } }) : [],
+    isAdmin ? recentInvites() : [],
     prisma.suppression.findMany({ where: { liftedAt: null }, orderBy: { createdAt: "desc" }, take: 200 }),
     isAdmin ? prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 75, include: { actor: { select: { name: true } } } }) : [],
   ]);
@@ -97,23 +110,65 @@ export default async function SettingsPage() {
           {isAdmin && (
             <>
               <h3 className="mt-4 mb-2 font-semibold">Invite a staff member</h3>
-              <ActionForm action={inviteAction} className="grid gap-3 sm:grid-cols-2" resetOnSuccess>
+              <ActionForm action={inviteAction} className="grid gap-3 sm:grid-cols-2" resetOnSuccess idempotent>
                 <Field label="Name"><input className="input" name="name" required /></Field>
                 <Field label="Email"><input className="input" type="email" name="email" required /></Field>
                 <Field label="Role">
                   <select className="input" name="role" defaultValue="STAFF"><option value="STAFF">Staff</option><option value="ADMIN">Admin</option></select>
                 </Field>
-                <div className="flex items-end"><Button type="submit">Create invitation</Button></div>
+                <div className="flex items-end"><Button type="submit">Send invitation</Button></div>
               </ActionForm>
+              <p className="mt-2 text-xs text-slate-600">
+                Sends a branded invitation email with a one-time “Create Your Staff Account” link (valid 7 days). Staff invitations are separate from client invitations and campaigns.
+              </p>
               {invites.length > 0 && (
-                <ul className="mt-3 space-y-2 text-sm">
-                  {invites.map((inv) => (
-                    <li key={inv.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-navy-50 px-3 py-2">
-                      <span>Pending: {inv.name} ({inv.email}) · expires {fmtDate(inv.expiresAt)}</span>
-                      <ActionForm action={revokeInviteAction.bind(null, inv.id)}><Button variant="ghost">Revoke</Button></ActionForm>
-                    </li>
-                  ))}
-                </ul>
+                <>
+                  <h3 className="mt-4 mb-2 font-semibold">Staff invitations (last 30 days)</h3>
+                  <ul className="space-y-2 text-sm" data-testid="staff-invites">
+                    {invites.map((inv) => {
+                      const state = inviteState(inv);
+                      const meta = INVITE_STATUS[state];
+                      const canResend = state !== "ACTIVATED" && state !== "REVOKED" && state !== "REPLACED";
+                      const canRevoke = canResend && state !== "EXPIRED";
+                      return (
+                        // One "current" invitation per address keeps the same row (and its result, such as a new private link) across a resend.
+                        <li key={inv.revokedAt || inv.acceptedAt ? inv.id : `current:${inv.email}`} className="rounded-lg bg-navy-50 px-3 py-2" data-invite-email={inv.email}>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-medium">
+                              {inv.name} ({inv.email}) · {inv.role === "ADMIN" ? "Admin" : "Staff"}
+                            </span>
+                            <Badge tone={meta.tone}>{meta.label}</Badge>
+                          </div>
+                          <p className="mt-1 text-xs text-slate-600">
+                            {meta.detail} Created {fmtDateTime(inv.createdAt)} by {inv.invitedBy.name}
+                            {inv.emailAcceptedAt && ` · accepted by provider ${fmtDateTime(inv.emailAcceptedAt)}`}
+                            {inv.emailDeliveredAt && ` · delivered ${fmtDateTime(inv.emailDeliveredAt)}`}
+                            {inv.acceptedAt && ` · activated ${fmtDateTime(inv.acceptedAt)}`}
+                            {canRevoke && ` · expires ${fmtDate(inv.expiresAt)}`}
+                            {inv.linkCopiedAt && " · private link given"}
+                          </p>
+                          {state === "FAILED" && inv.emailError && <p className="mt-1 text-xs font-medium text-red-800">{inv.emailError}</p>}
+                          {state === "CREATED" && inv.emailError && <p className="mt-1 text-xs text-slate-700">{inv.emailError}</p>}
+                          {canResend && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              <ActionForm action={resendInviteAction.bind(null, inv.id)} confirm={`Send ${inv.email} a new invitation email? Any earlier link stops working.`}>
+                                <Button variant="ghost">Resend invitation</Button>
+                              </ActionForm>
+                              <ActionForm action={privateInviteLinkAction.bind(null, inv.id)} confirm="Create a new private link to share yourself? Any earlier link (including an emailed one) stops working.">
+                                <Button variant="ghost">Copy private link instead</Button>
+                              </ActionForm>
+                              {canRevoke && (
+                                <ActionForm action={revokeInviteAction.bind(null, inv.id)} confirm={`Revoke ${inv.name}'s invitation? The link stops working immediately.`}>
+                                  <Button variant="ghost">Revoke</Button>
+                                </ActionForm>
+                              )}
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
               )}
             </>
           )}
@@ -125,7 +180,8 @@ export default async function SettingsPage() {
             <Status ok={i.database} label="Database" detail="PostgreSQL via DATABASE_URL" />
             <Status ok label="File storage" detail={storageDriverName()} />
             <Status ok={i.appUrl} label="Site address" detail="APP_URL, used in invitation, reset and unsubscribe links" />
-            <Status ok={i.email} label="Email (Resend)" detail="RESEND_API_KEY and EMAIL_FROM_ADDRESS. Password-reset emails work once set; campaign email arrives in the next stage." />
+            <Status ok={i.email} label="Email (Resend)" detail="RESEND_API_KEY and EMAIL_FROM_ADDRESS (a verified sender). Staff invitations and password resets send once set; campaign email arrives in the next stage." />
+            <Status ok={i.emailWebhook} label="Email delivery confirmations" detail={`RESEND_WEBHOOK_SECRET, from a Resend webhook pointed at ${appUrl()}/api/webhooks/resend (events: email.delivered, email.bounced, email.failed, email.complained). Without it invitations stop at “accepted by provider”.`} />
             <Status ok={i.twilio} label="Text messages (Twilio)" detail="TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and a Messaging Service SID or from-number. Used from the next stage." />
             <Status ok={(process.env.APP_ENCRYPTION_KEY?.length ?? 0) >= 32} label="Encryption key" detail="APP_ENCRYPTION_KEY protects two-step secrets and signs download links" />
             <Status ok={process.env.NOTIFICATIONS_ENABLED === "true"} label="Client portal notifications" detail="NOTIFICATIONS_ENABLED=true plus email/Twilio. Notices carry a sign-in link only." />

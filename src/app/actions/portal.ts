@@ -63,7 +63,7 @@ export async function portalForgotAction(_prev: ActionState, fd: FormData): Prom
       await sendTransactionalEmail(
         reset.user.email,
         "Reset your client portal password",
-        `Use this link within one hour to choose a new password for your T. Turner & Associates client portal:\n${appUrl()}/client/reset-password/${reset.token}\n\nIf you didn't ask for this, you can ignore this email.`,
+        `Use this link within one hour to choose a new password for your TTurner & Associates Group client portal:\n${appUrl()}/client/reset-password/${reset.token}\n\nIf you didn't ask for this, you can ignore this email.`,
       );
     }
     return "If that email has a portal account, a reset link is on its way. Didn't get it? Call our office and we'll help.";

@@ -85,7 +85,7 @@ export async function staffSendMessage(
   const message = await prisma.$transaction(async (tx) => {
     if (!conversationId) {
       const convo = await tx.conversation.create({
-        data: { clientId: input.clientId, subject: input.subject?.trim().slice(0, 200) || "Message from T. Turner & Associates", assignedToId: actor.id, periodId: input.periodId ?? null },
+        data: { clientId: input.clientId, subject: input.subject?.trim().slice(0, 200) || "Message from TTurner & Associates Group", assignedToId: actor.id, periodId: input.periodId ?? null },
       });
       conversationId = convo.id;
     }
@@ -120,7 +120,7 @@ export async function staffSendMessage(
   } else if (input.channel === "PORTAL") {
     await notifyMessage(input.clientId, message.id);
   } else if (input.channel === "EMAIL") {
-    const ok = await sendTransactionalEmail(client.emailNormalized!, input.subject?.trim() || "A message from T. Turner & Associates", body);
+    const ok = await sendTransactionalEmail(client.emailNormalized!, input.subject?.trim() || "A message from TTurner & Associates Group", body);
     await prisma.message.update({ where: { id: message.id }, data: ok ? { status: "PROVIDER_ACCEPTED" } : { status: "FAILED", errorDetail: "Email provider rejected the message" } });
   } else {
     // Text replies go through the campaign/messaging queue in the next stage;

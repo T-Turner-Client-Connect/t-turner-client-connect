@@ -8,7 +8,6 @@ import { hashToken, newToken } from "@/lib/auth/tokens";
 import { normalizeEmail } from "@/lib/normalize";
 import { ValidationError } from "./clients";
 
-const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TTL_MS = 60 * 60 * 1000;
 
 /** First-run only: creates the first Admin when no staff accounts exist. */
@@ -31,23 +30,6 @@ export async function bootstrapFirstAdmin(input: { setupToken: string; name: str
   });
 }
 
-export async function createInvite(actor: Actor, input: { email: string; name: string; role: Role }) {
-  assertAdmin(actor);
-  const email = normalizeEmail(input.email);
-  if (!email) throw new ValidationError("Enter a valid email address.");
-  if (!input.name.trim()) throw new ValidationError("Enter their name.");
-  if (await prisma.user.findUnique({ where: { email } })) throw new ValidationError("That person already has an account.");
-  const token = newToken();
-  await prisma.$transaction(async (tx) => {
-    await tx.invite.updateMany({ where: { email, acceptedAt: null, revokedAt: null }, data: { revokedAt: new Date() } });
-    const invite = await tx.invite.create({
-      data: { email, name: input.name.trim(), role: input.role, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + INVITE_TTL_MS), invitedById: actor.id },
-    });
-    await audit(tx, { actorId: actor.id, action: "user.invited", entityType: "Invite", entityId: invite.id, details: { email, role: input.role } });
-  });
-  return token;
-}
-
 export async function findOpenInvite(token: string) {
   const invite = await prisma.invite.findUnique({ where: { tokenHash: hashToken(token) } });
   if (!invite || invite.acceptedAt || invite.revokedAt || invite.expiresAt < new Date()) return null;
@@ -61,21 +43,14 @@ export async function acceptInvite(token: string, password: string) {
   if (problem) throw new ValidationError(problem);
   const passwordHash = await hashPassword(password);
   return prisma.$transaction(async (tx) => {
-    const claimed = await tx.invite.updateMany({ where: { id: invite.id, acceptedAt: null }, data: { acceptedAt: new Date() } });
+    // Single use: only an open link (not revoked, replaced or expired) can be claimed, once.
+    const claimed = await tx.invite.updateMany({ where: { id: invite.id, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } }, data: { acceptedAt: new Date() } });
     if (claimed.count !== 1) throw new ValidationError("This invitation has already been used.");
     if (await tx.user.findUnique({ where: { email: invite.email } })) throw new ValidationError("That person already has an account.");
     const user = await tx.user.create({ data: { email: invite.email, name: invite.name, role: invite.role, passwordHash } });
     await audit(tx, { actorId: user.id, action: "user.invite_accepted", entityType: "User", entityId: user.id });
     return user;
   });
-}
-
-export async function revokeInvite(actor: Actor, inviteId: string) {
-  assertAdmin(actor);
-  await prisma.$transaction([
-    prisma.invite.update({ where: { id: inviteId }, data: { revokedAt: new Date() } }),
-    prisma.auditLog.create({ data: { actorId: actor.id, action: "user.invite_revoked", entityType: "Invite", entityId: inviteId } }),
-  ]);
 }
 
 /** Returns a reset token, or null if the email has no active account. */

@@ -4,7 +4,8 @@ import { commitImport, ImportError, setRowDecision, stageImport } from "@/lib/se
 import { addSuppression, createClient, recordConsent, saveContact, setArchived, ValidationError } from "@/lib/services/clients";
 import { campaignRecipients, createCampaign, setAudience, setExclusions } from "@/lib/services/campaigns";
 import { ForbiddenError } from "@/lib/auth/actor";
-import { acceptInvite, createInvite, createPasswordReset, resetPassword, updateStaff } from "@/lib/services/users";
+import { acceptInvite, createPasswordReset, resetPassword, updateStaff } from "@/lib/services/users";
+import { inviteStaff } from "@/lib/services/staff-invitations";
 import { deleteGroup, liftSuppression } from "@/lib/services/clients";
 import { saveUpload } from "@/lib/services/files";
 
@@ -215,7 +216,7 @@ describe("roles and accounts", () => {
     const group = await prisma.group.create({ data: { name: "G" } });
     const s = await addSuppression(daria, "EMAIL", "x@example.com", "MANUAL");
 
-    await expect(createInvite(daria, { email: "new@example.com", name: "N", role: "STAFF" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(inviteStaff(daria, { email: "new@example.com", name: "N", role: "STAFF" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(updateStaff(daria, tabitha.id, { active: false })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(deleteGroup(daria, group.id)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(liftSuppression(daria, s.id, "client asked")).rejects.toBeInstanceOf(ForbiddenError);
@@ -244,7 +245,8 @@ describe("roles and accounts", () => {
 
   it("invite and reset links work once", async () => {
     const tabitha = await makeUser("ADMIN");
-    const token = await createInvite(tabitha, { email: "daria@example.com", name: "Daria", role: "STAFF" });
+    const outcome = await inviteStaff(tabitha, { email: "daria@example.com", name: "Daria", role: "STAFF" });
+    const token = outcome.privateLink!.split("/staff/invite/")[1];
     const user = await acceptInvite(token, "a-strong-passphrase-1");
     expect(user.role).toBe("STAFF");
     await expect(acceptInvite(token, "a-strong-passphrase-1")).rejects.toThrow(/invalid or has expired/);

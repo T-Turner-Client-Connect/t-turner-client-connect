@@ -20,16 +20,18 @@ const TEXT: Record<string, string> = {
   CONTRACT_ASSIGNED: "A form is ready for you to complete",
   ACCOUNT_UPDATE: "There's a new update on your account",
   FILING_UPDATE: "A tax filing update is available",
+  QUOTE_READY: "A quote is ready for your review",
+  NEW_INVOICE: "A new invoice is available",
 };
 
 export function notificationText(kind: string) {
   const line = TEXT[kind] ?? "There's something new in your client portal";
   return {
     heading: line,
-    line: `${line} in your T. Turner & Associates client portal.`,
-    subject: `${line} — T. Turner & Associates`,
-    body: `${line} in your T. Turner & Associates client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include account details or tax documents in emails or texts.`,
-    sms: `T. Turner & Associates: ${line} in your client portal. Sign in: ${appUrl()}/client Reply STOP to opt out, HELP for help.`,
+    line: `${line} in your TTurner & Associates Group client portal.`,
+    subject: `${line} — TTurner & Associates Group`,
+    body: `${line} in your TTurner & Associates Group client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include account details or tax documents in emails or texts.`,
+    sms: `TTurner & Associates Group: ${line} in your client portal. Sign in: ${appUrl()}/client Reply STOP to opt out, HELP for help.`,
   };
 }
 

@@ -10,6 +10,7 @@ export function integrationStatus() {
     database: Boolean(env.DATABASE_URL || env.NETLIFY_DB_URL),
     appUrl: Boolean(env.APP_URL),
     email: Boolean(env.RESEND_API_KEY && env.EMAIL_FROM_ADDRESS),
+    emailWebhook: Boolean(env.RESEND_WEBHOOK_SECRET),
     twilio: Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && (env.TWILIO_MESSAGING_SERVICE_SID || env.TWILIO_FROM_NUMBER)),
     liveSendingFlag: env.LIVE_SENDING_ENABLED === "true",
   };

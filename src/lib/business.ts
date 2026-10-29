@@ -3,14 +3,18 @@
 // Values supplied by the business owner — see docs/SMS-PROGRAM.md for which
 // items still need confirmation.
 
+// The owner's staff sign-in. Used once, to bind the Owner's Office to that
+// account's ID; afterwards access follows the account ID, not the email.
+export const OWNER_EMAIL = "tabitha@tturnerassociates.com";
+
 export const BUSINESS = {
-  // Existing legal business name (confirmed by the owner).
-  legalName: "T. Turner & Associates, LLC",
-  // How messages identify the sender (e.g. "T. Turner & Associates: …").
-  shortName: "T. Turner & Associates",
+  // Legal business name as on the EIN and Secretary of State filing (confirmed by the owner).
+  legalName: "TTurner & Associates Group, LLC",
+  // How messages identify the sender (e.g. "TTurner & Associates Group: …").
+  shortName: "TTurner & Associates Group",
   platformName: "TTurner Client Connect",
   // How the platform is identified on the consent form, Privacy Policy and Terms.
-  platformIdentity: "TTurner Client Connect, operated by T. Turner & Associates, LLC",
+  platformIdentity: "TTurner Client Connect, operated by TTurner & Associates Group, LLC",
   officePhoneDisplay: "205-659-5448",
   officePhoneTel: "+12056595448",
 } as const;
@@ -20,7 +24,7 @@ export const LEGAL_EFFECTIVE_DATE = "October 29, 2026";
 
 // Exact consent wording. Any change must get a new version so stored
 // consents always point at the text the person actually saw.
-export const SMS_CONSENT_VERSION = "sms-consent-2026-10-29-v1";
+export const SMS_CONSENT_VERSION = "sms-consent-2026-10-29-v2";
 
 export const SMS_CONSENT_TEXT = {
   SERVICE: `I agree to receive recurring automated SMS and MMS messages from ${BUSINESS.legalName} through ${BUSINESS.platformName} about appointments, document requests, account updates, secure portal notifications, and customer support. Message frequency varies. Message and data rates may apply. Reply STOP to unsubscribe or HELP for help.`,

@@ -21,7 +21,7 @@ export default async function PortalLogin({ searchParams }: { searchParams: Prom
         <Button type="submit" className="w-full">Sign in</Button>
       </ActionForm>
       <p className="mt-4 text-center text-sm"><Link href="/client/forgot-password" className="underline">Forgot your password?</Link></p>
-      <p className="mt-2 text-center text-xs text-slate-500">Portal accounts are by invitation from T. Turner &amp; Associates.</p>
+      <p className="mt-2 text-center text-xs text-slate-500">Portal accounts are by invitation from TTurner &amp; Associates Group.</p>
     </>
   );
 }

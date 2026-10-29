@@ -8,12 +8,12 @@ export const metadata = { title: "Accept invitation" };
 export default async function InvitePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   const invite = await findOpenInvite(token);
-  if (!invite) return <Notice tone="error" title="Invitation not valid">This link has expired or was already used. Ask an Admin for a new invitation.</Notice>;
+  if (!invite) return <Notice tone="error" title="Invitation not valid">This link has expired, was replaced or revoked, or was already used. Ask an Admin for a new invitation.</Notice>;
   return (
     <>
-      <h1 className="mb-2 text-2xl font-bold">Welcome, {invite.name}</h1>
+      <h1 className="mb-2 text-2xl font-bold">Create Your Staff Account</h1>
       <p className="mb-4 text-sm text-slate-600">
-        Choose a password for <strong>{invite.email}</strong> ({invite.role === "ADMIN" ? "Admin" : "Staff"} account).
+        Welcome, {invite.name}. Choose a password for <strong>{invite.email}</strong> ({invite.role === "ADMIN" ? "Admin" : "Staff"} account).
       </p>
       <ActionForm action={acceptInviteAction.bind(null, token)} className="space-y-4" showSuccess={false}>
         <Field label="Password" hint="At least 12 characters, with letters and numbers or symbols.">

@@ -10,7 +10,7 @@
 
 Linked from every footer (staff workspace, client portal, public pages) and from the welcome, Staff
 Login and Client Login pages. The platform is identified as "TTurner Client Connect, operated by
-T. Turner & Associates, LLC". Business details live in `src/lib/business.ts`.
+TTurner & Associates Group, LLC". Business details live in `src/lib/business.ts`.
 
 ## How consent works in the app
 
@@ -45,8 +45,8 @@ T. Turner & Associates, LLC". Business details live in `src/lib/business.ts`.
    under Settings → SMS consent & incoming texts once `APP_URL` is set.) Delivery status callbacks are
    attached to each message automatically.
 2. **Messaging Service** → Opt-Out Management (**Advanced Opt-Out**). Keep it on and set:
-   - HELP reply: `T. Turner & Associates (TTurner Client Connect): for help call 205-659-5448. Msg frequency varies. Msg & data rates may apply. Reply STOP to unsubscribe.`
-   - STOP reply: `T. Turner & Associates: You are unsubscribed and will receive no further messages. To resume, opt in again at our SMS consent page.`
+   - HELP reply: `TTurner & Associates Group (TTurner Client Connect): for help call 205-659-5448. Msg frequency varies. Msg & data rates may apply. Reply STOP to unsubscribe.`
+   - STOP reply: `TTurner & Associates Group: You are unsubscribed and will receive no further messages. To resume, opt in again at our SMS consent page.`
    Leave `SMS_KEYWORD_REPLIES=twilio` so the app doesn't send a second reply.
 3. Netlify variables: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID`, `APP_URL`
    (must be the exact public address Twilio calls; the webhook signature depends on it).
@@ -69,7 +69,7 @@ T. Turner & Associates, LLC". Business details live in `src/lib/business.ts`.
 
 **Message flow** (paste as-is; replace the domain if you use a custom domain):
 
-> End users opt in on our public web form at https://tturnerclientconnect.netlify.app/sms-consent ("Stay Connected with TTurner" - TTurner Client Connect, operated by T. Turner & Associates, LLC). The form collects the person's name and mobile number and shows two separate, optional checkboxes, both unchecked by default: (1) Service messages - recurring automated SMS/MMS about appointments, document requests, account updates, secure portal notifications and customer support; (2) Marketing messages - recurring automated promotional SMS/MMS including service announcements, offers and flyers. Each checkbox shows the full disclosure: message frequency varies, message and data rates may apply, Reply STOP to unsubscribe or HELP for help; the marketing checkbox also states consent is not a condition of purchase. Links to our Privacy Policy (https://tturnerclientconnect.netlify.app/privacy-policy) and Terms & Conditions (https://tturnerclientconnect.netlify.app/terms) appear beside the choices. Texting is optional and not required to receive services. The user clicks "Save My Preferences"; only the categories they checked are enabled, and we record the number, categories, timestamp, source page and the exact consent wording/version. Existing clients signed in to our secure client portal can also opt in to service messages on their Account page using the same wording. Contacts imported from other systems are never treated as opted in. Replying STOP opts the number out of all messages; HELP returns our help line, 205-659-5448.
+> End users opt in on our public web form at https://tturnerclientconnect.netlify.app/sms-consent ("Stay Connected with TTurner" - TTurner Client Connect, operated by TTurner & Associates Group, LLC). The form collects the person's name and mobile number and shows two separate, optional checkboxes, both unchecked by default: (1) Service messages - recurring automated SMS/MMS about appointments, document requests, account updates, secure portal notifications and customer support; (2) Marketing messages - recurring automated promotional SMS/MMS including service announcements, offers and flyers. Each checkbox shows the full disclosure: message frequency varies, message and data rates may apply, Reply STOP to unsubscribe or HELP for help; the marketing checkbox also states consent is not a condition of purchase. Links to our Privacy Policy (https://tturnerclientconnect.netlify.app/privacy-policy) and Terms & Conditions (https://tturnerclientconnect.netlify.app/terms) appear beside the choices. Texting is optional and not required to receive services. The user clicks "Save My Preferences"; only the categories they checked are enabled, and we record the number, categories, timestamp, source page and the exact consent wording/version. Existing clients signed in to our secure client portal can also opt in to service messages on their Account page using the same wording. Contacts imported from other systems are never treated as opted in. Replying STOP opts the number out of all messages; HELP returns our help line, 205-659-5448.
 
 **Opt-in method proof**: the public form URL `https://tturnerclientconnect.netlify.app/sms-consent`, and
 this screenshot of the empty form (both boxes unchecked):
@@ -78,4 +78,4 @@ this screenshot of the empty form (both boxes unchecked):
 **Privacy Policy URL**: `https://tturnerclientconnect.netlify.app/privacy-policy` ·
 **Terms URL**: `https://tturnerclientconnect.netlify.app/terms`
 
-Sample messages should start with "T. Turner & Associates:" and include "Reply STOP to opt out".
+Sample messages should start with "TTurner & Associates Group:" and include "Reply STOP to opt out".

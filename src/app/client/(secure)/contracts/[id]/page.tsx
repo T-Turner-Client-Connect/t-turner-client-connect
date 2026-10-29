@@ -24,7 +24,7 @@ export default async function PortalContract({ params }: { params: Promise<{ id:
       ) : (
         <>
           <p className="mb-3 text-sm text-slate-700">
-            This form is provided securely by Jotform on behalf of T. Turner &amp; Associates. It will show as complete here once Jotform confirms your submission.
+            This form is provided securely by Jotform on behalf of TTurner &amp; Associates Group. It will show as complete here once Jotform confirms your submission.
             Trouble with the form below? <a className="font-semibold underline" href={url} target="_blank" rel="noopener">Open it in a new tab (Jotform)</a>.
           </p>
           <iframe title={contract.title} src={url} className="h-[75vh] w-full rounded-xl border border-navy-100 bg-white" allow="geolocation 'none'; camera 'none'; microphone 'none'" />

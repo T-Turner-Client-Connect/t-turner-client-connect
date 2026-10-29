@@ -71,6 +71,7 @@ model User {
   signatureReqs   SignatureRequest[]
   contracts       ContractAssignment[]
   portalInvites   PortalInvite[]
+  ownerAccess     OwnerAccess?         @relation("OwnerAccessUser")
 }
 
 model Session {
@@ -101,7 +102,31 @@ model Invite {
   invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id])
   createdAt   DateTime  @default(now())
 
+  // Staff invitation email (transactional; never part of campaigns or client mail).
+  // DELIVERED is set only from a signed Resend delivery event.
+  emailStatus      InviteEmailStatus @default(NOT_SENT)
+  emailProviderId  String?           @unique
+  emailAttemptAt   DateTime?
+  emailAcceptedAt  DateTime?
+  emailDeliveredAt DateTime?
+  emailFailedAt    DateTime?
+  emailError       String?
+  // Set when the Admin took the private copy-link instead of (or after) email.
+  linkCopiedAt     DateTime?
+  // The newer invitation that replaced this one (resend / new private link).
+  replacedById     String?
+  // Form idempotency key, so a double-submit can't create or email twice.
+  createKey        String?           @unique
+
   @@index([email])
+}
+
+enum InviteEmailStatus {
+  NOT_SENT
+  SENDING
+  ACCEPTED
+  DELIVERED
+  FAILED
 }
 
 model PasswordResetToken {
@@ -197,6 +222,8 @@ model Client {
   deadlines          ClientDeadline[]
   signatureReqs      SignatureRequest[]
   contracts          ContractAssignment[]
+  invoices           Invoice[]
+  payments           Payment[]
   appointments       Appointment[]
   pipelineCards      PipelineCard[]
   filings            FilingRecord[]
@@ -650,6 +677,8 @@ model PortalAccess {
   canViewBookkeeping Boolean    @default(true)
   canViewTax         Boolean    @default(true)
   canViewContracts   Boolean    @default(true)
+  // Invoices and payment requests the owner explicitly published to this account.
+  canViewBilling     Boolean    @default(true)
   grantedById        String?
   createdAt          DateTime   @default(now())
   revokedAt          DateTime?
@@ -1501,4 +1530,229 @@ model InboundSms {
   receivedAt      DateTime @default(now())
 
   @@index([fromNormalized, receivedAt])
+}
+
+// ===========================================================================
+// OWNER'S OFFICE — private to the owner's own staff account.
+// Nothing here is reachable from staff pages, search, reports, exports, the
+// shared audit log or the general file route. Access is bound to a User ID.
+// ===========================================================================
+
+model OwnerAccess {
+  id          String     @id @default(cuid())
+  userId      String     @unique
+  user        User       @relation("OwnerAccessUser", fields: [userId], references: [id], onDelete: Cascade)
+  // The owner's own binding. Only the primary may grant or revoke others.
+  isPrimary   Boolean    @default(false)
+  // FULL = the whole Owner's Office; BILLING = quotes, invoices and payments only
+  // (no expenses, no financial dashboard, no settings).
+  scope       OwnerScope @default(FULL)
+  grantedById String?
+  grantedAt   DateTime   @default(now())
+  revokedAt   DateTime?
+}
+
+enum OwnerScope {
+  FULL
+  BILLING
+}
+
+// Separate from the shared AuditLog so staff Admins can't see owner activity.
+model OwnerAuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+enum InvoiceState {
+  DRAFT
+  // Published to the client for acceptance (a quote).
+  OFFERED
+  // The client accepted the terms; the schedule is fixed.
+  ACCEPTED
+  // Published as an invoice with no acceptance step.
+  ISSUED
+  DECLINED
+  VOID
+}
+
+enum AmountType {
+  NONE
+  FLAT
+  PERCENT
+}
+
+enum PaymentOption {
+  FULL
+  PLAN
+}
+
+// One itemized quote / invoice. Prices, discounts and fees are owner-only.
+model Invoice {
+  id                    String         @id @default(cuid())
+  number                String         @unique
+  clientId              String
+  client                Client         @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  state                 InvoiceState   @default(DRAFT)
+  title                 String
+  issueDate             DateTime       @db.Date
+  // Full-payment due date (balance after any deposit).
+  dueDate               DateTime       @db.Date
+  // Shown to the client.
+  memo                  String?
+  paymentTerms          String?
+  // Owner-only.
+  privateNote           String?
+  allowFull             Boolean        @default(true)
+  allowPlan             Boolean        @default(false)
+  // Deposit: FLAT = cents, PERCENT = basis points of the chosen option's total.
+  depositType           AmountType     @default(NONE)
+  depositValue          Int            @default(0)
+  // Discount on services (and optionally the plan fee). FLAT = cents, PERCENT = basis points.
+  discountType          AmountType     @default(NONE)
+  discountValue         Int            @default(0)
+  discountCoversPlanFee Boolean        @default(false)
+  // Sales tax on services after discount, basis points (e.g. 400 = 4%).
+  taxRateBps            Int            @default(0)
+  // Payment-plan fee, copied from Billing settings when the quote is made.
+  planFeeType           AmountType     @default(NONE)
+  planFeeValue          Int            @default(0)
+  planInstallments      Int            @default(3)
+  planFirstDueDate      DateTime?      @db.Date
+  planIntervalMonths    Int            @default(1)
+  publishedAt           DateTime?
+  // Acceptance — the exact terms the client saw, frozen.
+  acceptedOption        PaymentOption?
+  acceptedAt            DateTime?
+  acceptedByPortalId    String?
+  acceptedTerms         Json?
+  acceptedTermsHash     String?
+  acceptedFromIp        String?
+  declinedAt            DateTime?
+  voidedAt              DateTime?
+  voidReason            String?
+  createdById           String
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  lines        InvoiceLine[]
+  payments     Payment[]
+  installments Installment[]
+
+  @@index([clientId, state])
+  @@index([issueDate])
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  service     String
+  description String?
+  quantity    Int     @default(1)
+  // Money is stored in cents.
+  unitCents   Int
+  sortOrder   Int     @default(0)
+}
+
+// Fixed when the client accepts (or the invoice is issued).
+model Installment {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  seq         Int
+  label       String
+  dueDate     DateTime @db.Date
+  amountCents Int
+
+  @@unique([invoiceId, seq])
+}
+
+enum PaymentMethod {
+  CASH
+  CHECK
+  CARD
+  ACH
+  ZELLE
+  CASH_APP
+  OTHER
+}
+
+enum PaymentKind {
+  PAYMENT
+  REFUND
+}
+
+enum PaymentStatus {
+  SUCCEEDED
+  FAILED
+  PENDING
+}
+
+// Money movements. Only SUCCEEDED payments (minus refunds) count as collected.
+model Payment {
+  id          String        @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  clientId    String
+  client      Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  kind        PaymentKind   @default(PAYMENT)
+  status      PaymentStatus @default(SUCCEEDED)
+  amountCents Int
+  receivedOn  DateTime      @db.Date
+  method      PaymentMethod
+  // "manual" until a payment provider is connected; then the provider's name.
+  source      String        @default("manual")
+  providerRef String?       @unique
+  reference   String?
+  note        String?
+  failureNote String?
+  createdById String
+  createdAt   DateTime      @default(now())
+
+  @@index([receivedOn])
+  @@index([invoiceId])
+}
+
+// Owner-configurable defaults. One row (id = "default").
+model BillingSettings {
+  id                      String     @id @default("default")
+  planFeeType             AmountType @default(NONE)
+  planFeeValue            Int        @default(0)
+  maxInstallments         Int        @default(4)
+  defaultInstallments     Int        @default(3)
+  defaultDiscountType     AmountType @default(NONE)
+  defaultDiscountValue    Int        @default(0)
+  defaultTaxRateBps       Int        @default(0)
+  defaultDepositType      AmountType @default(NONE)
+  defaultDepositValue     Int        @default(0)
+  defaultPaymentTerms     String?
+  // Owner confirmed the payment provider's / legal rules for the plan fee.
+  planFeeRulesConfirmedAt DateTime?
+  updatedById             String?
+  updatedAt               DateTime   @updatedAt
+}
+
+model Expense {
+  id          String         @id @default(cuid())
+  spentOn     DateTime       @db.Date
+  vendor      String
+  category    String
+  amountCents Int
+  method      PaymentMethod?
+  note        String?
+  receiptKey  String?        @unique
+  receiptName String?
+  receiptMime String?
+  createdById String
+  createdAt   DateTime       @default(now())
+  deletedAt   DateTime?
+
+  @@index([spentOn])
 }

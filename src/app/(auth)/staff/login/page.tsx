@@ -15,7 +15,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <>
       <h1 className="mb-1 text-2xl font-bold">Staff Login</h1>
-      <p className="mb-4 text-sm text-slate-600">T. Turner &amp; Associates team only. <Link href="/client/login" className="underline">Client? Sign in here</Link>.</p>
+      <p className="mb-4 text-sm text-slate-600">TTurner &amp; Associates Group team only. <Link href="/client/login" className="underline">Client? Sign in here</Link>.</p>
       {reset && <div className="mb-4"><Notice tone="success">Password updated. Sign in with your new password.</Notice></div>}
       {noUsers && (
         <div className="mb-4">
