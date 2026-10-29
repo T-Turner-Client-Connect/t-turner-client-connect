@@ -18,6 +18,7 @@ export function PortalNav({ accounts, name, signOut }: { accounts: { id: string;
     ["/client/bookkeeping", "Bookkeeping"],
     ["/client/taxes", "Taxes"],
     ["/client/contracts", "Contracts & Signatures"],
+    ["/client/billing", "Billing"],
     ["/client/account", "Account"],
   ] as const;
   return (

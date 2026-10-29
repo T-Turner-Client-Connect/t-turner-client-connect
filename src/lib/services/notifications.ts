@@ -20,6 +20,8 @@ const TEXT: Record<string, string> = {
   CONTRACT_ASSIGNED: "A form is ready for you to complete",
   ACCOUNT_UPDATE: "There's a new update on your account",
   FILING_UPDATE: "A tax filing update is available",
+  QUOTE_READY: "A quote is ready for your review",
+  NEW_INVOICE: "A new invoice is available",
 };
 
 export function notificationText(kind: string) {

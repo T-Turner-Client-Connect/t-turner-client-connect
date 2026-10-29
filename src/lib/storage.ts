@@ -13,8 +13,10 @@ type Driver = {
   remove(key: string): Promise<void>;
 };
 
-// Client documents use their own store, separate from marketing flyers.
-const storeFor = (key: string) => (key.startsWith("client_document/") ? "client-connect-documents" : "client-connect-files");
+// Client documents use their own store, separate from marketing flyers; the
+// Owner's Office (receipts) has a third store no other route reads from.
+const storeFor = (key: string) =>
+  key.startsWith("owner_private/") ? "client-connect-owner" : key.startsWith("client_document/") ? "client-connect-documents" : "client-connect-files";
 
 function onNetlify(): boolean {
   const forced = process.env.STORAGE_DRIVER;

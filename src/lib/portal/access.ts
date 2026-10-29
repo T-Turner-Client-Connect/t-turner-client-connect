@@ -3,7 +3,7 @@ import type { PortalAccess } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ForbiddenError } from "@/lib/auth/actor";
 
-export type Permission = "message" | "upload" | "bookkeeping" | "tax" | "contracts";
+export type Permission = "message" | "upload" | "bookkeeping" | "tax" | "contracts" | "billing";
 
 const FLAG: Record<Permission, keyof PortalAccess> = {
   message: "canMessage",
@@ -11,6 +11,7 @@ const FLAG: Record<Permission, keyof PortalAccess> = {
   bookkeeping: "canViewBookkeeping",
   tax: "canViewTax",
   contracts: "canViewContracts",
+  billing: "canViewBilling",
 };
 
 /** Client accounts this portal user may see (active grants, non-archived clients). */

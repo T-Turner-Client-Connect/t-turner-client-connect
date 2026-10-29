@@ -8,6 +8,9 @@ import { MONTHS, PERIOD_LABELS } from "@/lib/services/bookkeeping";
 import { filingTitle } from "@/lib/tax/normalize";
 import { fmtDate, fmtDateTime, fromNow } from "@/lib/format";
 import { integrationStatus } from "@/lib/integrations";
+import { ownerAccessFor } from "@/lib/auth/owner";
+import { receivables } from "@/lib/services/owner-billing";
+import { money } from "@/lib/billing/pricing";
 
 export const metadata = { title: "Dashboard" };
 
@@ -42,6 +45,9 @@ export default async function Dashboard() {
   const names = new Map(owingClients.map((c) => [c.id, c.displayName]));
   const [total, active, openTasks, unread] = totals;
   const integrations = integrationStatus();
+  // Private totals: only rendered for the account that holds full owner access.
+  const ownerAccess = await ownerAccessFor(user.id);
+  const owed = ownerAccess?.scope === "FULL" ? await receivables(user) : null;
 
   return (
     <>
@@ -64,6 +70,26 @@ export default async function Dashboard() {
         <Stat label="Open tasks" value={openTasks} href="/tasks" />
         <Stat label="Clients owing documents" value={owing.length} href="/workflows?tab=bookkeeping" />
       </div>
+
+      {owed && (
+        <div className="mt-4 rounded-2xl border border-gold-500/50 bg-navy-900 p-4 text-white" data-testid="owner-balances">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-serif text-lg font-bold">Unpaid balances <span className="ml-2 text-xs font-semibold uppercase tracking-wider text-gold-500">Private — only you see this</span></p>
+            <Link href="/owner" className="text-sm text-gold-500 underline">Owner&apos;s Office</Link>
+          </div>
+          <p className="mt-1 text-sm text-navy-100">
+            {money(owed.totalOutstandingCents)} outstanding from {owed.clients.length} client{owed.clients.length === 1 ? "" : "s"}
+            {owed.rows.some((r) => r.overdueCents > 0) && ` · ${money(owed.rows.reduce((s, r) => s + r.overdueCents, 0))} overdue`}
+          </p>
+          {owed.clients.length > 0 && (
+            <ul className="mt-2 grid gap-1 text-sm sm:grid-cols-2">
+              {owed.clients.slice(0, 6).map((c) => (
+                <li key={c.clientId} className="flex justify-between gap-2"><span className="truncate">{c.clientName}</span><span className={c.overdueCents ? "text-red-200" : ""}>{money(c.balanceCents)}</span></li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
         <Card title="Who needs a response?" actions={<Link href="/conversations?filter=awaiting" className="text-sm underline">All conversations</Link>}>

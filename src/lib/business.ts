@@ -3,6 +3,10 @@
 // Values supplied by the business owner — see docs/SMS-PROGRAM.md for which
 // items still need confirmation.
 
+// The owner's staff sign-in. Used once, to bind the Owner's Office to that
+// account's ID; afterwards access follows the account ID, not the email.
+export const OWNER_EMAIL = "tabitha@tturnerassociates.com";
+
 export const BUSINESS = {
   // Legal business name as on the EIN and Secretary of State filing (confirmed by the owner).
   legalName: "TTurner & Associates Group, LLC",
