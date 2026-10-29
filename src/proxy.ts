@@ -33,8 +33,11 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL("/client/login", request.url));
   }
   if (staffCookie) return NextResponse.next();
-  // The bare site address offers both sign-ins; a signed-in client goes home.
-  if (pathname === "/") return NextResponse.redirect(new URL(portalCookie ? "/client" : "/welcome", request.url));
+  // The main site address shows the branded welcome page (Staff Login / Client
+  // Login) without changing the URL; a signed-in client goes to their portal.
+  if (pathname === "/") {
+    return portalCookie ? NextResponse.redirect(new URL("/client", request.url)) : NextResponse.rewrite(new URL("/welcome", request.url));
+  }
   if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
   return NextResponse.redirect(new URL("/staff/login", request.url));
 }

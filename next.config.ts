@@ -14,6 +14,14 @@ const nextConfig: NextConfig = {
     // Mapped import rows and uploads go through Server Actions (Netlify caps bodies at ~6 MB).
     serverActions: { bodySizeLimit: "6mb" },
   },
+  // Old addresses from the first release keep working.
+  async redirects() {
+    return [
+      { source: "/login", destination: "/staff/login", permanent: false },
+      { source: "/portal", destination: "/client", permanent: false },
+      { source: "/portal/:path*", destination: "/client/:path*", permanent: false },
+    ];
+  },
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
