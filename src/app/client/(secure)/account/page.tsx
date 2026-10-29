@@ -3,7 +3,7 @@ import { ActionForm } from "@/components/action-form";
 import { SMS_CONSENT_TEXT } from "@/lib/business";
 import { Button, Card, Field, PageHeader } from "@/components/ui";
 import { portalPrefsAction, removeAuthenticatorAction, revokeDeviceAction } from "@/app/actions/portal";
-import { clientEmailCodesActive } from "@/lib/auth/client-auth";
+import { emailCodesFor } from "@/lib/auth/client-auth";
 import { maskEmail } from "@/lib/services/mfa";
 import { fmtDateTime } from "@/lib/format";
 import { requirePortalUser } from "@/lib/portal/session";
@@ -15,7 +15,7 @@ export default async function PortalSettings() {
   const actor = await requirePortalUser();
   const user = await prisma.portalUser.findUniqueOrThrow({ where: { id: actor.id } });
   const [emailCodes, devices] = await Promise.all([
-    clientEmailCodesActive(),
+    emailCodesFor(actor.id),
     prisma.trustedDevice.findMany({ where: { portalUserId: actor.id, revokedAt: null, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } }),
   ]);
   return (

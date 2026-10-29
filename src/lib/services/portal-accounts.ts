@@ -75,7 +75,8 @@ export async function acceptPortalInvite(token: string, password: string) {
     if (await tx.portalUser.findUnique({ where: { email: invite.email } })) throw new ValidationError("You already have a portal login. Sign in instead.");
     const contactTaken = invite.contactId ? await tx.portalUser.findUnique({ where: { contactId: invite.contactId } }) : null;
     const user = await tx.portalUser.create({
-      data: { email: invite.email, name: invite.name, passwordHash, contactId: contactTaken ? null : invite.contactId },
+      // Only an emailed link proves the address; a link staff copied off the screen doesn't.
+      data: { email: invite.email, name: invite.name, passwordHash, contactId: contactTaken ? null : invite.contactId, emailVerifiedAt: invite.sentByEmail ? new Date() : null, origin: "INVITED" },
     });
     await tx.portalAccess.create({
       data: { portalUserId: user.id, clientId: invite.clientId, role: invite.role, canViewTax: invite.role === "OWNER", grantedById: invite.invitedById },

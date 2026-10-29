@@ -29,7 +29,7 @@ export const REPORT_LABELS: Record<ReportType, string> = {
 
 type Uploader = { staff: Actor } | { portal: PortalActor };
 
-async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader) {
+export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader) {
   if (bytes.length === 0) throw new ValidationError("The file is empty.");
   if (bytes.length > MAX_UPLOAD_BYTES) throw new ValidationError(`Files can be up to ${MAX_UPLOAD_LABEL}.`);
   const type = sniffType(bytes);
@@ -58,7 +58,7 @@ async function storeDocumentFile(bytes: Uint8Array, originalName: string, upload
   };
 }
 
-async function retentionDate(category: DocumentCategory): Promise<Date | null> {
+export async function retentionDate(category: DocumentCategory): Promise<Date | null> {
   const policy = await prisma.retentionPolicy.findUnique({ where: { category } });
   if (!policy?.years) return null;
   const d = new Date();

@@ -36,7 +36,13 @@ export default async function Welcome() {
           <span aria-hidden className="text-2xl">→</span>
         </Link>
       </div>
-      <p className="mt-6 text-center text-xs text-slate-500">Accounts are by invitation only. Need access? Call our office.</p>
+      {!client && (
+        <div className="mt-5 rounded-xl bg-ivory-50 p-4 text-center">
+          <Link href="/client/signup" className="block w-full rounded-lg border-2 border-gold-500 bg-white px-4 py-3 font-serif text-lg font-semibold text-navy-900 hover:bg-gold-100">Create Client Account</Link>
+          <p className="mt-2 text-sm"><Link href="/client/activate" className="underline">Already a client? Activate your portal.</Link></p>
+        </div>
+      )}
+      <p className="mt-6 text-center text-xs text-slate-500">Staff accounts are by invitation only.</p>
     </>
   );
 }

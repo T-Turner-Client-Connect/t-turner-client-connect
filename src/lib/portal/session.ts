@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { hashToken, newToken } from "@/lib/auth/tokens";
-import { clientEmailCodesActive } from "@/lib/auth/client-auth";
+import { emailCodesFor } from "@/lib/auth/client-auth";
 
 const SECURE = process.env.NODE_ENV === "production";
 // Separate cookie from staff sessions: a client login can never act as staff.
@@ -46,7 +46,7 @@ export const getPortalSessionState = cache(async () => {
     await prisma.portalSession.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });
   }
   // With emailed codes on, clients never need to set up an authenticator app.
-  const emailCodes = await clientEmailCodesActive();
+  const emailCodes = await emailCodesFor(u.id);
   return { actor: { id: u.id, name: u.name, email: u.email } as PortalActor, sessionId: session.id, mfaPassed: session.mfaPassed, mfaEnrolled: emailCodes || !!u.mfaEnabledAt, emailCodes };
 });
 

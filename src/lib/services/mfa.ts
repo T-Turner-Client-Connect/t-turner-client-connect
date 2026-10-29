@@ -9,7 +9,7 @@ import { verifyPassword } from "@/lib/auth/password";
 import { brandedEmailHtml, sendEmail } from "@/lib/email";
 import { BUSINESS } from "@/lib/business";
 import { ValidationError } from "./clients";
-import { authSettings, clientEmailCodesActive, emailProviderConfigured } from "@/lib/auth/client-auth";
+import { authSettings, emailCodesFor, emailProviderConfigured } from "@/lib/auth/client-auth";
 
 /**
  * Two-step verification for staff and clients.
@@ -143,7 +143,7 @@ export async function emailCodeAvailability(subject: MfaSubject) {
   const row = await load(subject);
   if (!row) return { available: false, reason: "Account not found." };
   if (subject.kind === "staff") return { available: false, reason: "Staff sign in with an authenticator app and recovery codes." };
-  if (!(await clientEmailCodesActive())) return { available: false, reason: "Email codes aren't switched on yet — the office is finishing email setup." };
+  if (!(await emailCodesFor(subject.id))) return { available: false, reason: "Email codes aren't switched on yet — the office is finishing email setup." };
   return { available: true, reason: null as string | null, masked: maskEmail(row.email) };
 }
 
@@ -169,7 +169,7 @@ export async function sendEmailCode(subject: MfaSubject, purpose: "SIGN_IN" | "V
   const row = await load(subject);
   if (!row) throw new ValidationError("Account not found.");
   if (!emailConfigured()) throw new ValidationError("Email isn't set up yet, so no code can be sent.");
-  if (purpose === "SIGN_IN" && (subject.kind === "staff" || !(await clientEmailCodesActive()))) throw new ValidationError("Email sign-in codes aren't available for this account.");
+  if (purpose === "SIGN_IN" && (subject.kind === "staff" || !(await emailCodesFor(subject.id)))) throw new ValidationError("Email sign-in codes aren't available for this account.");
   const recent = await prisma.mfaChallenge.findMany({
     where: { subjectKind: subject.kind, subjectId: subject.id, channel: "EMAIL", createdAt: { gte: new Date(Date.now() - 3600_000) } },
     orderBy: { createdAt: "desc" },

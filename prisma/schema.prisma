@@ -650,6 +650,8 @@ model PortalUser {
   // Optional link to the CRM contact this login belongs to.
   contactId       String?   @unique
   contact         Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  // "INVITED" (staff or activation invitation) or "SELF_SIGNUP".
+  origin          String    @default("INVITED")
   lastLoginAt     DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -658,10 +660,11 @@ model PortalUser {
   sessions       PortalSession[]
   resetTokens    PortalResetToken[]
   recoveryCodes  MfaRecoveryCode[]
-  messages       Message[]           @relation("PortalMessages")
+  messages       Message[]              @relation("PortalMessages")
   trustedDevices TrustedDevice[]
+  onboarding     OnboardingApplication?
   files          StoredFile[]
-  documents      Document[]          @relation("PortalDocuments")
+  documents      Document[]             @relation("PortalDocuments")
   notifications  Notification[]
   accessLogs     DocumentAccessLog[]
 }
@@ -707,8 +710,11 @@ model PortalInvite {
   expiresAt   DateTime
   acceptedAt  DateTime?
   revokedAt   DateTime?
-  invitedById String
-  invitedBy   User       @relation(fields: [invitedById], references: [id])
+  // Null when sent by the system in answer to a client's activation request.
+  invitedById String?
+  // True only when the link went out by email (activation); accepting it proves the address.
+  sentByEmail Boolean    @default(false)
+  invitedBy   User?      @relation(fields: [invitedById], references: [id])
   createdAt   DateTime   @default(now())
 
   @@index([email])
@@ -1892,4 +1898,119 @@ model UsedRecoveryToken {
   tokenHash String   @id
   userId    String
   usedAt    DateTime @default(now())
+}
+
+// ===========================================================================
+// CLIENT SELF-SIGNUP, ONBOARDING & PORTAL ACTIVATION
+// ===========================================================================
+
+// A signup waiting for its emailed code. No portal login exists until the
+// code is entered in the same browser that started the signup, so someone
+// can't claim another person's email address.
+model PortalSignup {
+  id              String    @id @default(cuid())
+  emailNormalized String
+  name            String
+  passwordHash    String
+  // Hash of the cookie that ties the signup to the browser that started it.
+  browserHash     String    @unique
+  codeHash        String
+  codeExpiresAt   DateTime
+  attempts        Int       @default(0)
+  sendCount       Int       @default(1)
+  lastSentAt      DateTime
+  // False when the address already had a portal login (it got a sign-in reminder instead).
+  available       Boolean   @default(true)
+  ipHash          String?
+  consumedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([emailNormalized])
+}
+
+enum OnboardingStatus {
+  IN_PROGRESS
+  // No possible duplicate found: a new client record was created and linked.
+  APPROVED_NEW
+  // Possible match with an existing record: staff decide.
+  NEEDS_REVIEW
+  LINKED_EXISTING
+  DECLINED
+}
+
+model OnboardingApplication {
+  id                String           @id @default(cuid())
+  portalUserId      String           @unique
+  portalUser        PortalUser       @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  status            OnboardingStatus @default(IN_PROGRESS)
+  clientType        ClientType       @default(INDIVIDUAL)
+  firstName         String?
+  lastName          String?
+  businessName      String?
+  phone             String?
+  phoneNormalized   String?
+  addressLine1      String?
+  city              String?
+  state             String?
+  postalCode        String?
+  servicesRequested String[]
+  notes             String?
+  // Optional, separate communication choices (applied when the account is linked).
+  smsService        Boolean          @default(false)
+  smsMarketing      Boolean          @default(false)
+  emailMarketing    Boolean          @default(false)
+  possibleMatchIds  String[]
+  submittedAt       DateTime?
+  clientId          String?
+  decidedById       String?
+  decidedAt         DateTime?
+  decisionNote      String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  files OnboardingFile[]
+
+  @@index([status])
+}
+
+// Documents uploaded during onboarding, held privately until the account is
+// linked to a client record, then moved into that client's documents.
+model OnboardingFile {
+  id              String                @id @default(cuid())
+  applicationId   String
+  application     OnboardingApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  storageKey      String                @unique
+  originalName    String
+  mimeType        String
+  sizeBytes       Int
+  movedDocumentId String?
+  createdAt       DateTime              @default(now())
+}
+
+enum ActivationStatus {
+  // Exactly one record had this email on file: an invitation went to that address.
+  INVITE_SENT
+  // Already had a portal login: a sign-in reminder was sent instead.
+  ALREADY_ACTIVE
+  // No single on-file match: staff verify identity and decide.
+  NEEDS_STAFF
+  EMAIL_FAILED
+  RESOLVED
+  DISMISSED
+}
+
+model ActivationRequest {
+  id               String           @id @default(cuid())
+  emailNormalized  String
+  name             String?
+  phone            String?
+  ipHash           String?
+  status           ActivationStatus
+  matchedClientIds String[]
+  inviteId         String?
+  resolvedById     String?
+  resolvedAt       DateTime?
+  createdAt        DateTime         @default(now())
+
+  @@index([status])
 }

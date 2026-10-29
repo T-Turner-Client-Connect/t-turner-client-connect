@@ -10,7 +10,7 @@ import { normalizeEmail } from "@/lib/normalize";
 import { createPortalSession, destroyPortalSession, getPortalSessionState, markPortalMfaPassed, requirePortalUser } from "@/lib/portal/session";
 import { acceptPortalInvite, createPortalReset, resetPortalPassword, updateNotificationPrefs } from "@/lib/services/portal-accounts";
 import { confirmEnrollment } from "@/lib/services/mfa";
-import { clientEmailCodesActive, revokeTrustedDevice, trustedDeviceFor } from "@/lib/auth/client-auth";
+import { clientEmailCodesActive, emailCodesFor, revokeTrustedDevice, trustedDeviceFor } from "@/lib/auth/client-auth";
 import { portalUploadDocument } from "@/lib/services/documents";
 import { markClientRead, portalSendMessage } from "@/lib/services/messaging";
 import { ValidationError } from "@/lib/services/clients";
@@ -39,7 +39,7 @@ export async function portalLoginAction(_prev: ActionState, fd: FormData): Promi
   await prisma.loginAttempt.create({ data: { email: key, ip, success: true } });
   await prisma.portalUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   const sessionId = await createPortalSession(user.id);
-  if (await clientEmailCodesActive()) {
+  if (await emailCodesFor(user.id)) {
     // A remembered device skips the emailed code until it expires or is revoked.
     if (await trustedDeviceFor(user.id)) {
       await markPortalMfaPassed(sessionId);
