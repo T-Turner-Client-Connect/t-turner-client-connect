@@ -1,39 +1,34 @@
-// Runs before migrations on every Netlify build. Fails fast with a clear
-// message instead of a raw Prisma error, and refuses obviously unsafe
-// configurations. Never prints secret values.
-const context = process.env.CONTEXT || "local"; // Netlify: production | deploy-preview | branch-deploy | dev
+// Runs before every Netlify build. The database is Netlify Database: Netlify
+// provisions it, injects NETLIFY_DB_URL at runtime and applies the files in
+// netlify/database/migrations itself, so the build needs no connection
+// string. This check stops the build with a clear message when a required
+// runtime setting is missing. It never prints secret values.
+import { readFileSync } from "node:fs";
+
+const context = process.env.CONTEXT || "local"; // production | deploy-preview | branch-deploy | dev
 const problems = [];
+const warnings = [];
 
-const db = process.env.DATABASE_URL;
-if (!db) {
-  problems.push(
-    "DATABASE_URL is not set for this deploy context. In Netlify: Site configuration → Environment variables → Add a variable → DATABASE_URL, " +
-      "scopes: Builds + Functions, with a separate value for Production and for Deploy Previews/Branch deploys.",
-  );
-} else {
-  let url;
-  try {
-    url = new URL(db);
-  } catch {
-    problems.push("DATABASE_URL is not a valid connection string (expected postgresql://…).");
+const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+if (!pkg.dependencies?.["@netlify/database"]) {
+  problems.push("@netlify/database must be a dependency — it is what tells Netlify to provision the database.");
+}
+
+if (context !== "local") {
+  const key = process.env.APP_ENCRYPTION_KEY;
+  if (!key || key.length < 32) {
+    problems.push(
+      "APP_ENCRYPTION_KEY is missing or shorter than 32 characters. Add it in Netlify → Site configuration → Environment variables (scopes: Builds + Functions, mark as secret).",
+    );
   }
-  if (url) {
-    if (!/^postgres(ql)?:$/.test(url.protocol)) problems.push("DATABASE_URL must be a PostgreSQL connection string.");
-    if (/^(localhost|127\.0\.0\.1)$/.test(url.hostname) && context !== "local") problems.push("DATABASE_URL points at localhost, which doesn't exist on Netlify.");
-    if (context !== "local" && !/sslmode=(require|verify-full)/.test(url.search)) problems.push("Add ?sslmode=require to DATABASE_URL so the database connection is encrypted.");
-    if (/-pooler\./.test(url.hostname)) {
-      problems.push("DATABASE_URL uses a pooled (PgBouncer) host. Use the direct connection string — Prisma migrations need it.");
-    }
+  if (process.env.DATABASE_URL) {
+    warnings.push("DATABASE_URL is set in Netlify but is ignored — the app uses Netlify Database (NETLIFY_DB_URL). Remove it to avoid confusion.");
   }
 }
 
-const key = process.env.APP_ENCRYPTION_KEY;
-if (context !== "local" && (!key || key.length < 32)) {
-  problems.push("APP_ENCRYPTION_KEY is missing or shorter than 32 characters (it protects two-step verification secrets and download links).");
-}
-
+for (const w of warnings) console.warn(`! ${w}`);
 if (problems.length) {
   console.error(`\n✖ Deployment configuration problem (${context}):\n  - ${problems.join("\n  - ")}\n`);
   process.exit(1);
 }
-console.log(`✓ Deployment environment looks complete for context "${context}".`);
+console.log(`✓ Deployment settings look complete for context "${context}".`);

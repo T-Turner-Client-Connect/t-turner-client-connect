@@ -1,7 +1,7 @@
 // LOCAL DEVELOPMENT ONLY (npm run db:seed). Not part of any deployment.
 // Adds the suggested client groups — no clients, accounts or passwords — and
-// never changes existing rows. In production, an Admin adds the same groups
-// with "Add suggested groups" on the Groups page.
+// never changes existing rows. Hosted databases get the same groups from the
+// seed_default_groups migration (ON CONFLICT DO NOTHING).
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();

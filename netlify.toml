@@ -6,15 +6,17 @@
 # redirect; it would break server-rendered and authenticated routes.
 
 [build]
-  # 1. Check required environment variables (clear error instead of Prisma P1012).
-  # 2. Apply pending schema migrations — structure only, never data.
-  # 3. Build.
-  # Deployments never seed or create records: no sample clients, no accounts,
-  # no passwords. The first Admin is created explicitly at /staff/setup with
-  # the SETUP_TOKEN; suggested client groups are added from the Groups page.
-  # DATABASE_URL must hold a different database for Production and for
-  # Deploy Previews / Branch deploys (set per context in Netlify).
-  command = "node scripts/check-deploy-env.mjs && npx prisma migrate deploy && npx next build"
+  # Database: Netlify Database (@netlify/database). Netlify provisions it and
+  # applies the SQL files in netlify/database/migrations automatically — to
+  # each deploy preview's database branch before the preview is published, and
+  # to production just before publish. The build never connects to the
+  # database and never runs migrations itself.
+  #
+  # Deployments never create sample clients, staff accounts or passwords. The
+  # first Admin is created explicitly at /staff/setup with SETUP_TOKEN.
+  # check-deploy-env.mjs stops the build with a clear message if a required
+  # setting (e.g. APP_ENCRYPTION_KEY) is missing.
+  command = "node scripts/check-deploy-env.mjs && npx next build"
   publish = ".next"
 
 [build.environment]

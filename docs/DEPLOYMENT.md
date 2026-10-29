@@ -1,92 +1,101 @@
 # Deploying TTurner Client Connect on Netlify
 
-## Database: what this project expects
+## Database: Netlify Database (managed PostgreSQL)
 
-- **PostgreSQL 14 or newer**, reached through Prisma using one environment variable, `DATABASE_URL`.
-- Any managed Postgres works. The simplest options with Netlify are:
-  - **Neon** (serverless Postgres, free tier, built-in branching for preview databases) — recommended.
-  - Netlify DB (which is Neon, provisioned from the Netlify dashboard).
-  - Supabase or another hosted Postgres.
-- Use the **direct** connection string, not the pooled/PgBouncer one (Neon pooled hosts contain `-pooler`):
-  Prisma migrations need a direct connection. Add `?sslmode=require`.
+This project uses **Netlify Database** (`@netlify/database`), Netlify's built-in Postgres:
 
-The build fails early with a plain-English message if `DATABASE_URL` is missing, points at localhost,
-uses a pooled host, or lacks SSL (`scripts/check-deploy-env.mjs`).
+- Netlify **provisions the database automatically** because `@netlify/database` is a dependency.
+  There is no connection string to create, copy, paste or store — nothing goes in chat or GitHub.
+- At runtime Netlify injects `NETLIFY_DB_URL`; `src/lib/prisma.ts` connects with it.
+- Schema changes live in `netlify/database/migrations/` (one folder per migration with `migration.sql`,
+  applied in name order). **Netlify applies them itself**: to each deploy preview's database branch
+  before the preview is published, and to production just before publish. A failing migration blocks
+  the deploy instead of breaking the live site.
+- The build (`node scripts/check-deploy-env.mjs && npx next build`) never connects to the database and
+  never runs migrations — that's why the old `P1012: DATABASE_URL not found` error can't recur.
+- Do **not** add a `DATABASE_URL` variable in Netlify; it's ignored there (the build prints a warning).
 
-## 1. Create the databases (production and preview are separate)
+### What deploys can and can't change
 
-With Neon (neon.tech → sign in with GitHub or email):
+- Migrations create tables, plus one data migration, `seed_default_groups`, which inserts six empty
+  client-group names with `ON CONFLICT DO NOTHING` — it never modifies or removes existing rows.
+- No deploy creates clients, contacts, staff or client accounts, or passwords. Fictional sample data
+  (`npm run db:sample`) and local seeding refuse to run on Netlify.
+- The first Admin is created explicitly (below).
 
-1. **Create project** → name `tturner-client-connect`, Postgres 16, region nearest you (e.g. US East).
-2. The default branch (`main`) is **production**. Copy nothing yet.
-3. **Branches → Create branch** → name `preview`, from `main`. This is a separate database for deploy previews.
-4. For each branch: **Connection details** → choose the branch → turn **Connection pooling off** → copy the
-   connection string. It looks like `postgresql://USER:PASSWORD@ep-xxxx.us-east-2.aws.neon.tech/neondb?sslmode=require`.
-   Paste it **only** into Netlify (next step) — never into chat, email, or GitHub.
+### Production vs. preview databases
 
-## 2. Add environment variables in Netlify
+Each deploy preview / branch deploy runs on **its own database branch, forked from production**. Changes
+made in a preview never reach production, but **a preview contains a copy of production client data**,
+and preview URLs are shareable. Every page still requires a staff or client login, and preview sessions
+use the preview database's accounts. Recommended for a CRM holding tax and financial records:
 
-Netlify → your site → **Site configuration → Environment variables → Add a variable → Add a single variable**.
-For each variable below choose **Scopes: Builds and Functions** (functions = server runtime), then
-**Values: Different value for each deploy context** where noted.
+- **Turn off deploy previews and branch deploys** for this site (Site configuration → Build & deploy →
+  Branches and deploy contexts → Deploy Previews: *Don't deploy pull requests*; Branch deploys:
+  *Deploy only the production branch*), **or**
+- keep them only after you've confirmed with Netlify support/plan settings that previews can be
+  password-protected, and treat preview links as confidential.
 
-| Variable | Value | Contexts |
-|---|---|---|
-| `DATABASE_URL` | Neon **main** direct string | Production |
-| `DATABASE_URL` | Neon **preview** direct string | Deploy previews, Branch deploys |
-| `APP_ENCRYPTION_KEY` | 48 random characters (`openssl rand -base64 48`) — different per context | all |
-| `APP_URL` | `https://<your-site>.netlify.app` (or your domain) | Production |
-| `SETUP_TOKEN` | 24+ random characters, used once at `/staff/setup` | Production (and previews if needed) |
-| `CRON_SECRET` | 32+ random characters | all |
-| `LIVE_SENDING_ENABLED` | `false` | all |
-| `NOTIFICATIONS_ENABLED` | `false` until email/Twilio are verified | all |
+Your choice — I haven't changed Netlify site settings.
 
-Tick **"Contains secret values"** for `DATABASE_URL`, `APP_ENCRYPTION_KEY`, `SETUP_TOKEN`, `CRON_SECRET`
-and any provider keys. Optional provider variables are listed in `.env.example`.
+## Environment variables to add in Netlify
 
-> Changing `APP_ENCRYPTION_KEY` later invalidates two-step-verification enrolments; set it once and keep it.
+Site configuration → **Environment variables** → Add a variable. Scopes: **Builds** and **Functions**.
+Mark secrets as **Contains secret values**.
 
-## 3. Deploy
+| Variable | Value |
+|---|---|
+| `APP_ENCRYPTION_KEY` | 48 random characters (generate on your own computer: `openssl rand -base64 48`). Set once; changing it resets two-step verification. **Required** — the build stops without it. |
+| `APP_URL` | `https://<your-site>.netlify.app` or your domain |
+| `SETUP_TOKEN` | 24+ random characters; used once at `/staff/setup`, then delete it |
+| `CRON_SECRET` | 32+ random characters (hourly automations) |
+| `LIVE_SENDING_ENABLED` | `false` |
+| `NOTIFICATIONS_ENABLED` | `false` until email/Twilio are verified |
 
-Trigger a deploy (Deploys → Trigger deploy → Deploy site). The build runs:
+Optional provider variables are listed in `.env.example` and docs/INTEGRATIONS.md.
 
-```
-node scripts/check-deploy-env.mjs && npx prisma migrate deploy && npx next build
-```
+## First deploy and first Admin
 
-- `prisma migrate deploy` only applies schema migrations. **Deploys never create data**: no sample
-  clients, no accounts, no passwords, and they never overwrite rows.
-- Fictional sample data (`npm run db:sample`) refuses to run against a non-local database.
+1. Merge the pull request into `main` (or trigger a deploy). Watch the deploy log for
+   "Deployment settings look complete" and the migration step.
+2. Open `https://<site>/staff/setup`, enter `SETUP_TOKEN`, your name, email and a strong password.
+3. Scan the QR code with an authenticator app; save the recovery codes somewhere safe.
+4. Setup locks itself once a staff account exists. Delete `SETUP_TOKEN` from Netlify.
+5. Invite Daria: **Settings → Invite a staff member** (one-time link, valid 7 days).
 
-## 4. First Admin (explicit, one time)
-
-1. Open `https://<site>/staff/setup`, enter the `SETUP_TOKEN`, your name, email and a strong password.
-2. Scan the QR code with an authenticator app and store the recovery codes.
-3. The setup page locks itself once any staff account exists. Remove or rotate `SETUP_TOKEN` in Netlify.
-4. Invite Daria from **Settings → Invite a staff member** (one-time link, 7 days).
-5. Groups: **Clients → Groups → Add suggested groups** (Admin only).
-
-## 5. Verify after deploying
+## Verify after deploying
 
 - `/welcome` shows Client Login and Staff Login.
 - Staff: sign in → two-step code → dashboard loads (database read).
-- Add a fictional test client, then archive it (database write).
-- Client: from that client's **Portal & signatures** tab create an invitation, open the link in a private
-  window, set a password and two-step verification, and confirm the client sees only that account.
+- Create a clearly fictional test client, then archive it (database write).
+- From that client's **Portal & signatures** tab create a portal invitation; open it in a private
+  window, set a password and two-step verification; confirm only that account is visible.
 - Sign out of both.
+
+## Local development
+
+```bash
+cp .env.example .env            # DATABASE_URL = a LOCAL Postgres
+npm install
+npm run db:migrate:local        # applies netlify/database/migrations locally (refuses non-local hosts)
+npm run db:sample               # optional FICTIONAL clients
+```
+
+Creating a migration: change `prisma/schema.prisma`, then
+`npm run -s db:diff > netlify/database/migrations/<YYYYMMDDHHMMSS>_<name>/migration.sql`
+(against an up-to-date local database), review the SQL, run `npm run db:migrate:local`, commit both.
+Never edit a migration that has been deployed — add a new one.
 
 ## Backups and recovery
 
-- Neon keeps point-in-time history (restore window depends on plan: 1 day free, up to 30 days paid).
-  Restore: Neon → Branches → `main` → **Restore** to a timestamp, or create a branch from a past time and
-  repoint `DATABASE_URL`.
-- Weekly logical backup (recommended): from a trusted computer,
-  `pg_dump "$DATABASE_URL" -Fc -f tturner-$(date +%F).dump`, stored in encrypted storage — never in GitHub.
-- Uploaded files are in Netlify Blobs stores `client-connect-documents` (client/tax documents) and
-  `client-connect-files` (marketing media). They are tied to the site; export with the Netlify CLI
-  (`netlify blobs:list` / `blobs:get`) for off-site copies.
+- Netlify Database is managed Postgres with point-in-time recovery; check your plan's restore window in
+  the Netlify UI (Database → Backups/Restore).
+- Recommended weekly logical backup from a trusted computer using the Netlify CLI
+  (`netlify database connect` gives a connection for `pg_dump -Fc`), stored in encrypted storage —
+  never in GitHub.
+- Uploaded files live in Netlify Blobs (`client-connect-documents` for client/tax documents,
+  `client-connect-files` for marketing media); export with `netlify blobs:list` / `netlify blobs:get`.
 
 ## Upload size
 
 Netlify Functions accept request bodies of about 6 MB, so uploads through the app are capped at 5 MB.
-Larger videos for social media need direct-to-storage uploads (planned with direct social publishing).

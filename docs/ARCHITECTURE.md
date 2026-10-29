@@ -3,7 +3,8 @@
 ## Stack (Netlify-compatible)
 
 - **Next.js 16 (App Router, Server Components, Server Actions)** on Netlify's Next.js Runtime.
-- **PostgreSQL + Prisma** — one database per deploy context (production, previews).
+- **Netlify Database (managed Postgres) + Prisma** — provisioned by Netlify; migrations in
+  `netlify/database/migrations/` are applied by Netlify on deploy (previews run on forked branches).
 - **Authentication**: built in, not a third-party service. Separate identities for staff (`User`) and clients
   (`PortalUser`), separate session tables and cookies, bcrypt passwords, TOTP two-step verification
   (required for both), DB-backed sessions with idle and absolute expiry, single-use invite/reset tokens.

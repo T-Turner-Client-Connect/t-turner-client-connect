@@ -2,7 +2,7 @@
 
 | Area | Status in this build | What activates it |
 |---|---|---|
-| Database (Postgres) | Required | `DATABASE_URL` — see DEPLOYMENT.md |
+| Database | Netlify Database, provisioned automatically | Nothing to paste — see DEPLOYMENT.md |
 | Private file storage | Working (Netlify Blobs on Netlify, local folder in dev) | Automatic on Netlify |
 | Staff + client sign-in, 2-step verification | Working | `APP_ENCRYPTION_KEY` |
 | Portal messaging, documents, bookkeeping, requests | Working | — |
