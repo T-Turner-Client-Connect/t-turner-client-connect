@@ -1,8 +1,9 @@
+import { BUSINESS } from "@/lib/business";
 import type { CampaignPurpose } from "@prisma/client";
 import { estimateSegments } from "@/lib/sms";
 import { MMS_SAFE_BYTES } from "@/lib/files";
 
-export const ORG_NAME = "T. Turner & Associates, LLC";
+export const ORG_NAME = BUSINESS.legalName;
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -75,7 +76,7 @@ export function renderSms(input: {
   flyer?: { title: string; mimeType: string; sizeBytes: number } | null;
   flyerLinkPlaceholder?: string;
 }): SmsPreview {
-  let text = `${ORG_NAME.replace(", LLC", "")}: ${input.body.trim()}`;
+  let text = `${BUSINESS.shortName}: ${input.body.trim()}`;
   let media: SmsPreview["media"] = "none";
   let mediaNote: string | null = null;
   if (input.flyer) {

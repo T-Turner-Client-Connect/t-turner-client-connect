@@ -797,6 +797,10 @@ model Notification {
   status         NotificationStatus @default(PENDING)
   statusDetail   String?
   idempotencyKey String             @unique
+  // Twilio Message SID (texts) — used by delivery-status callbacks.
+  providerSid    String?            @unique
+  // Latest provider delivery status, e.g. queued | sent | delivered | undelivered | failed
+  deliveryStatus String?
   sentAt         DateTime?
   createdAt      DateTime           @default(now())
 
@@ -1430,4 +1434,71 @@ model SocialAccount {
   disconnectedAt DateTime?
 
   @@unique([platform, externalId])
+}
+
+// ===========================================================================
+// SMS CONSENT LEDGER & INBOUND TEXTS
+// ===========================================================================
+//
+// Phone-level, category-specific text permissions. The newest event per
+// phone + category is the current state. Every SMS send checks this ledger
+// (plus Suppression) on the server. Imports never write here.
+
+enum SmsConsentCategory {
+  SERVICE
+  MARKETING
+}
+
+model SmsConsentSubmission {
+  id               String   @id @default(cuid())
+  name             String
+  phoneNormalized  String
+  serviceOptIn     Boolean
+  marketingOptIn   Boolean
+  consentVersion   String
+  // Exact wording displayed next to each checkbox at the time of submission.
+  serviceText      String
+  marketingText    String
+  sourcePage       String
+  // Hashed (keyed) client IP for abuse prevention — the raw IP is not stored.
+  ipHash           String?
+  userAgent        String?
+  matchedClientIds String[]
+  createdAt        DateTime @default(now())
+
+  @@index([phoneNormalized, createdAt])
+  @@index([createdAt])
+}
+
+model SmsConsentEvent {
+  id              String             @id @default(cuid())
+  phoneNormalized String
+  category        SmsConsentCategory
+  status          ConsentStatus
+  // WEB_FORM | STOP_KEYWORD | START_KEYWORD | CLIENT_PORTAL | STAFF
+  source          String
+  sourcePage      String?
+  consentVersion  String?
+  consentText     String?
+  submissionId    String?
+  inboundSmsId    String?
+  actorId         String?
+  createdAt       DateTime           @default(now())
+
+  @@index([phoneNormalized, category, createdAt])
+}
+
+model InboundSms {
+  id              String   @id @default(cuid())
+  providerSid     String   @unique
+  fromNormalized  String
+  toNumber        String?
+  body            String
+  // STOP | START | HELP | null
+  keyword         String?
+  matchedClientId String?
+  conversationId  String?
+  receivedAt      DateTime @default(now())
+
+  @@index([fromNormalized, receivedAt])
 }

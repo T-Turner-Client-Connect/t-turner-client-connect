@@ -9,7 +9,7 @@
 | Password-reset email | Admin-generated links work now; email delivery needs Resend | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` |
 | Portal notifications (email/text) | Recorded; delivered only when enabled | `NOTIFICATIONS_ENABLED=true` + Resend/Twilio |
 | Campaign email/text sending | **Locked.** Drafts, audiences, previews and test sends (simulated without a provider) work | Resend + Twilio + `LIVE_SENDING_ENABLED=true` + the messaging stage |
-| Two-way texting / delivery receipts | Next stage | Twilio webhooks |
+| SMS consent, STOP/HELP, delivery receipts | Built: public consent page, per-phone consent ledger, signed Twilio webhooks | Twilio console webhook + Advanced Opt-Out — see SMS-PROGRAM.md |
 | Malware scanning | Setup required (files are type-checked; marked "Not scanned") | `MALWARE_SCAN_URL` |
 | Jotform contracts | Links and in-portal embed work; completion confirmed by staff | `JOTFORM_API_KEY` + `JOTFORM_WEBHOOK_SECRET`, webhook `https://<site>/api/webhooks/jotform?secret=…`, hidden field `assignment_ref` on each form |
 | Tax e-signatures | **Setup required.** Requests can be prepared; signed-outside-the-app copies can be recorded (clearly labelled) | A provider verified for the exact tax forms, IRS identity requirements, joint signers and record retention |

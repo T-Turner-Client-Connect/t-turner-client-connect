@@ -10,7 +10,7 @@ import { scanConfigured } from "@/lib/scan";
 import { directPublishingStatus, PLATFORM_LABELS } from "@/lib/social/rules";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
-import { integrationStatus } from "@/lib/integrations";
+import { appUrl, integrationStatus } from "@/lib/integrations";
 import { storageDriverName } from "@/lib/storage";
 import { formatPhone } from "@/lib/normalize";
 import { fmtDate, fmtDateTime } from "@/lib/format";
@@ -39,6 +39,13 @@ export default async function SettingsPage() {
     isAdmin ? prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 75, include: { actor: { select: { name: true } } } }) : [],
   ]);
   const i = integrationStatus();
+  const [consentSubs, unmatchedTexts] = await Promise.all([
+    prisma.smsConsentSubmission.findMany({ orderBy: { createdAt: "desc" }, take: 25 }),
+    prisma.inboundSms.findMany({ where: { matchedClientId: null }, orderBy: { receivedAt: "desc" }, take: 25 }),
+  ]);
+  const consentClients = new Map(
+    (await prisma.client.findMany({ where: { id: { in: consentSubs.flatMap((c) => c.matchedClientIds) } }, select: { id: true, displayName: true } })).map((c) => [c.id, c.displayName]),
+  );
   const retention = new Map((await prisma.retentionPolicy.findMany()).map((r) => [r.category, r.years]));
   const social = directPublishingStatus(new Set((await prisma.socialAccount.findMany({ where: { disconnectedAt: null } })).map((a) => a.platform)));
 
@@ -152,6 +159,48 @@ export default async function SettingsPage() {
             </div>
           </Card>
         )}
+
+        <Card title="SMS consent & incoming texts" className="lg:col-span-2">
+          <div className="mb-4 rounded-lg bg-ivory-50 p-3 text-sm">
+            <p className="font-semibold">Twilio webhook addresses (Messaging Service → Integration)</p>
+            <p>Incoming messages: <code className="break-all">{appUrl()}/api/webhooks/twilio/inbound</code> (HTTP POST)</p>
+            <p>Delivery status is sent automatically to <code className="break-all">{appUrl()}/api/webhooks/twilio/status</code>.</p>
+            <p className="mt-1 text-slate-600">Public consent page: <a className="underline" href="/sms-consent" target="_blank">{appUrl()}/sms-consent</a></p>
+          </div>
+          <h3 className="mb-2 font-semibold">Recent consent form submissions</h3>
+          {consentSubs.length === 0 ? (
+            <p className="mb-4 text-sm text-slate-600">None yet.</p>
+          ) : (
+            <ul className="mb-4 divide-y divide-ivory-200 text-sm">
+              {consentSubs.map((c) => (
+                <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <span>
+                    <strong>{c.name}</strong> · {formatPhone(c.phoneNormalized)} ·{" "}
+                    {c.matchedClientIds.length ? c.matchedClientIds.map((id) => <a key={id} className="underline" href={`/clients/${id}`}>{consentClients.get(id) ?? "client"}</a>) : <span className="text-amber-800">No matching client — add this number to a client to link it</span>}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Badge tone={c.serviceOptIn ? "green" : "gray"}>Service {c.serviceOptIn ? "yes" : "no"}</Badge>
+                    <Badge tone={c.marketingOptIn ? "green" : "gray"}>Marketing {c.marketingOptIn ? "yes" : "no"}</Badge>
+                    <span className="text-xs text-slate-500">{fmtDateTime(c.createdAt)}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <h3 className="mb-2 font-semibold">Incoming texts not matched to a client</h3>
+          {unmatchedTexts.length === 0 ? (
+            <p className="text-sm text-slate-600">None.</p>
+          ) : (
+            <ul className="divide-y divide-ivory-200 text-sm">
+              {unmatchedTexts.map((t) => (
+                <li key={t.id} className="py-2">
+                  <span className="font-semibold">{formatPhone(t.fromNormalized)}</span> {t.keyword && <Badge tone={t.keyword === "STOP" ? "red" : "gray"}>{t.keyword}</Badge>} · {fmtDateTime(t.receivedAt)}
+                  <p className="text-slate-700">{t.body}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
 
         <Card title="Do-not-contact list" className="lg:col-span-2">
           <p className="mb-3 text-sm text-slate-600">

@@ -2,6 +2,8 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { brandedNoticeHtml, sendTransactionalEmail } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
+import { sendSms } from "@/lib/twilio";
+import { smsSendAllowed } from "./sms-consent";
 
 /**
  * "Something new in your portal" notices. Account-service messages, kept
@@ -27,7 +29,7 @@ export function notificationText(kind: string) {
     line: `${line} in your T. Turner & Associates client portal.`,
     subject: `${line} — T. Turner & Associates`,
     body: `${line} in your T. Turner & Associates client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include account details or tax documents in emails or texts.`,
-    sms: `T. Turner & Associates: ${line} in your client portal. Sign in: ${appUrl()}/client Reply STOP to opt out of texts.`,
+    sms: `T. Turner & Associates: ${line} in your client portal. Sign in: ${appUrl()}/client Reply STOP to opt out, HELP for help.`,
   };
 }
 
@@ -50,23 +52,6 @@ function notificationsEnabled() {
   return process.env.NOTIFICATIONS_ENABLED === "true";
 }
 
-async function sendSms(to: string, body: string): Promise<{ ok: boolean; detail: string }> {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from: Record<string, string> | null = process.env.TWILIO_MESSAGING_SERVICE_SID
-    ? { MessagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID }
-    : process.env.TWILIO_FROM_NUMBER
-      ? { From: process.env.TWILIO_FROM_NUMBER }
-      : null;
-  if (!sid || !token || !from) return { ok: false, detail: "Text provider (Twilio) not set up" };
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ To: to, Body: body, ...from }),
-  });
-  return res.ok ? { ok: true, detail: "Accepted by Twilio" } : { ok: false, detail: `Twilio HTTP ${res.status}` };
-}
-
 /** Sends pending notices when providers are configured; otherwise records why not. */
 export async function dispatchPendingNotifications(portalUserId?: string) {
   const pending = await prisma.notification.findMany({
@@ -83,16 +68,25 @@ export async function dispatchPendingNotifications(portalUserId?: string) {
     const claimed = await prisma.notification.updateMany({ where: { id: n.id, status: "PENDING", sentAt: null }, data: { sentAt: new Date() } });
     if (claimed.count !== 1) continue;
     const text = notificationText(n.kind);
-    let result: { ok: boolean; detail: string };
+    let result: { ok: boolean; detail: string; sid?: string };
     if (n.channel === "EMAIL") {
       const ok = await sendTransactionalEmail(n.portalUser.email, text.subject, text.body, brandedNoticeHtml(text.heading, text.line, "Sign in to your portal", `${appUrl()}/client`));
       result = ok ? { ok, detail: "Accepted by email provider" } : { ok, detail: "Email provider not set up or rejected the message" };
     } else {
-      result = await sendSms(n.portalUser.phoneNormalized!, text.sms);
+      // Re-checked at send time: service-text consent on file and no STOP.
+      const phone = n.portalUser.phoneNormalized;
+      const allowed = phone ? await smsSendAllowed(phone, "SERVICE") : { ok: false, reason: "No mobile number" };
+      if (!allowed.ok) {
+        await prisma.notification.update({ where: { id: n.id }, data: { status: "SKIPPED", statusDetail: allowed.reason, sentAt: null } });
+        continue;
+      }
+      result = await sendSms(phone!, text.sms);
     }
     await prisma.notification.update({
       where: { id: n.id },
-      data: result.ok ? { status: "SENT", statusDetail: result.detail } : { status: "FAILED", statusDetail: result.detail, sentAt: null },
+      data: result.ok
+        ? { status: "SENT", statusDetail: result.detail, providerSid: result.sid ?? null, deliveryStatus: n.channel === "SMS" ? "accepted" : null }
+        : { status: "FAILED", statusDetail: result.detail, sentAt: null },
     });
   }
 }

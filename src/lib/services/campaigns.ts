@@ -167,6 +167,29 @@ export async function campaignRecipients(campaignId: string, now = new Date()) {
     ),
   );
   const suppressions = await activeSuppressionsFor(pairs);
+  // Phone-level SMS consent (consent page, STOP replies, portal settings) is
+  // merged in as consent history for whoever uses that number.
+  const phones = Array.from(new Set(pairs.filter((p) => p.channel === "SMS").map((p) => p.address)));
+  const ledger = phones.length
+    ? await prisma.smsConsentEvent.findMany({ where: { phoneNormalized: { in: phones } }, orderBy: { createdAt: "asc" } })
+    : [];
+  for (const c of clients) {
+    const people = [{ contactId: null as string | null, phone: c.phoneNormalized }, ...c.contacts.map((x) => ({ contactId: x.id as string | null, phone: x.phoneNormalized }))];
+    for (const person of people) {
+      for (const e of ledger.filter((l) => l.phoneNormalized === person.phone)) {
+        c.consentRecords.push({
+          contactId: person.contactId,
+          kind: e.category === "SERVICE" ? "SMS_SERVICE" : "SMS_MARKETING",
+          status: e.status,
+          effectiveAt: e.createdAt,
+          createdAt: e.createdAt,
+          expiresAt: null,
+          reviewedAt: null,
+          evidenceFileId: null,
+        });
+      }
+    }
+  }
   const manualExclusions = new Map(campaign.exclusions.map((e) => [e.clientId, e.reason]));
   return { campaign, ...resolveRecipients({ channel: campaign.channel, purpose: campaign.purpose, clients, manualExclusions, suppressions, now }) };
 }

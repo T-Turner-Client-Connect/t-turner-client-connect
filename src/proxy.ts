@@ -6,6 +6,8 @@ import { NextResponse, type NextRequest } from "next/server";
  * verifies the session, MFA state and permissions against the database — a
  * URL is never treated as protection.
  */
+// Public policy pages and the SMS consent form need no login.
+const PUBLIC_PAGES = ["/sms-consent", "/privacy-policy", "/terms"];
 const PUBLIC_STAFF = ["/welcome", "/staff/login", "/staff/setup", "/staff/invite/", "/staff/forgot-password", "/staff/reset-password/", "/brand/", "/icon.png", "/favicon"];
 const PUBLIC_PORTAL = ["/client/login", "/client/invite/", "/client/forgot-password", "/client/reset-password/"];
 // Webhooks authenticate themselves (shared secret + provider API verification).
@@ -15,7 +17,7 @@ const has = (req: NextRequest, names: string[]) => names.some((n) => req.cookies
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if ([...PUBLIC_STAFF, ...PUBLIC_PORTAL, ...PUBLIC_API].some((p) => pathname.startsWith(p))) return NextResponse.next();
+  if ([...PUBLIC_PAGES, ...PUBLIC_STAFF, ...PUBLIC_PORTAL, ...PUBLIC_API].some((p) => pathname.startsWith(p))) return NextResponse.next();
 
   const portalArea = pathname === "/client" || pathname.startsWith("/client/") || pathname.startsWith("/api/client/");
   const staffCookie = has(request, ["__Host-tcc_session", "tcc_session"]);

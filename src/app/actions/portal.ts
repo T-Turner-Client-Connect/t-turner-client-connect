@@ -13,6 +13,7 @@ import { confirmEnrollment, verifySecondFactor } from "@/lib/services/mfa";
 import { portalUploadDocument } from "@/lib/services/documents";
 import { markClientRead, portalSendMessage } from "@/lib/services/messaging";
 import { ValidationError } from "@/lib/services/clients";
+import { setPortalSmsConsent } from "@/lib/services/sms-consent";
 import { sendTransactionalEmail } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
 
@@ -144,7 +145,10 @@ export async function portalMarkReadAction(conversationId: string) {
 export async function portalPrefsAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const user = await requirePortalUser();
   return run(async () => {
-    await updateNotificationPrefs(user.id, { notifyByEmail: fd.get("notifyByEmail") === "on", notifyBySms: fd.get("notifyBySms") === "on", phone: str(fd, "phone") });
+    const notifyBySms = fd.get("notifyBySms") === "on";
+    await updateNotificationPrefs(user.id, { notifyByEmail: fd.get("notifyByEmail") === "on", notifyBySms, phone: str(fd, "phone") });
+    const updated = await prisma.portalUser.findUniqueOrThrow({ where: { id: user.id } });
+    await setPortalSmsConsent(user.id, updated.phoneNormalized, notifyBySms);
     return "Preferences saved.";
   });
 }

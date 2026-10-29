@@ -1,3 +1,4 @@
+import { PublicFooter } from "@/components/legal-links";
 import { Suspense } from "react";
 import { PortalNav } from "@/components/portal/portal-nav";
 import { requirePortalUser } from "@/lib/portal/session";
@@ -13,6 +14,7 @@ export default async function PortalLayout({ children }: { children: React.React
         <PortalNav accounts={accounts} name={user.name} signOut={portalLogoutAction} />
       </Suspense>
       <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
+      <PublicFooter />
     </div>
   );
 }

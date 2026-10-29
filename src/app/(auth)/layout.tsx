@@ -1,3 +1,4 @@
+import { LegalLinks } from "@/components/legal-links";
 import Image from "next/image";
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
@@ -7,6 +8,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
         <Image src="/brand/logo-full.png" alt="TTurner Client Connect" width={640} height={545} priority className="mx-auto mb-6 h-auto w-56" />
         <div className="rounded-2xl border border-navy-100 border-t-4 border-t-gold-500 bg-white p-6 shadow-sm sm:p-8">{children}</div>
         <p className="mt-6 text-center text-xs text-slate-500">T. Turner &amp; Associates, LLC · Private, invitation-only access</p>
+        <LegalLinks className="mt-3" />
       </div>
     </main>
   );
