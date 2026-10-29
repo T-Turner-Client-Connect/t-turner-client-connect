@@ -2014,3 +2014,49 @@ model ActivationRequest {
 
   @@index([status])
 }
+
+// ===========================================================================
+// STAFF TEXT ALERTS (Twilio)
+// ===========================================================================
+
+// Brief "you have a new client message" texts to the office phone. Never
+// include message contents. Off until an Admin turns them on.
+model StaffAlertSettings {
+  id          String   @id @default("default")
+  smsEnabled  Boolean  @default(false)
+  // E.164. The receiving phone, not the Twilio sending number.
+  phone       String   @default("+12056595448")
+  // Monday–Friday window in America/Chicago, "HH:MM" 24-hour.
+  windowStart String   @default("08:00")
+  windowEnd   String   @default("17:00")
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}
+
+enum StaffAlertStatus {
+  PENDING
+  SENT
+  SKIPPED
+  FAILED
+}
+
+model StaffAlert {
+  id              String           @id @default(cuid())
+  // "CLIENT_MESSAGE" or "TEST" (controlled test from Settings).
+  reason          String
+  to              String
+  body            String
+  // Unread conversations this alert covers (several are combined into one text).
+  conversationIds String[]
+  status          StaffAlertStatus @default(PENDING)
+  notBefore       DateTime
+  sentAt          DateTime?
+  providerSid     String?          @unique
+  // Twilio's own status from delivery callbacks: queued, sent, delivered, undelivered, failed.
+  deliveryStatus  String?
+  statusDetail    String?
+  createdById     String?
+  createdAt       DateTime         @default(now())
+
+  @@index([status, notBefore])
+}

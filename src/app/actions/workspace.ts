@@ -12,6 +12,7 @@ import { invitePortalUser, updatePortalAccess } from "@/lib/services/portal-acco
 import { assignContract, attachContractPdf, staffVerifyContract } from "@/lib/services/contracts";
 import { createSignatureRequest, recordOfflineSigned, sendSignatureRequest } from "@/lib/services/signatures";
 import { resetMfa } from "@/lib/services/mfa";
+import { sendTestText, updateStaffAlertSettings } from "@/lib/services/staff-alerts";
 import { appUrl } from "@/lib/integrations";
 import { prisma } from "@/lib/prisma";
 
@@ -290,5 +291,23 @@ export async function offlineSignedAction(clientId: string, requestId: string, _
     await recordOfflineSigned(actor, requestId, await fileFrom(fd), fd.get("publish") === "on");
     refresh(clientId);
     return "Signed copy recorded (signed outside the app).";
+  });
+}
+
+export async function staffAlertSettingsAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await updateStaffAlertSettings(actor, { smsEnabled: fd.get("smsEnabled") === "on", phone: str(fd, "phone"), windowStart: str(fd, "windowStart"), windowEnd: str(fd, "windowEnd") });
+    revalidatePath("/settings");
+    return "Staff alert settings saved.";
+  });
+}
+
+export async function sendTestTextAction(_prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await sendTestText(actor);
+    revalidatePath("/settings");
+    return "Twilio accepted the test text. Its delivery result and your reply will appear below — refresh in a minute.";
   });
 }

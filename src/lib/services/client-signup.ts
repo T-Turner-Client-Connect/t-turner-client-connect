@@ -20,6 +20,7 @@ import { maskEmail } from "./mfa";
 import { invitePortalUser } from "./portal-accounts";
 import { retentionDate } from "./documents";
 import { applySmsConsent } from "./sms-consent";
+import { queueStaffAlert } from "./staff-alerts";
 
 /**
  * "Create Client Account" (new clients) and "Activate your portal" (existing
@@ -288,7 +289,7 @@ async function finishLink(applicationId: string, clientId: string, portalUserId:
     await prisma.consentRecord.create({ data: { clientId, kind: "EMAIL_MARKETING", status: "GRANTED", source: "Client portal onboarding (client checked the box)", scope: "Newsletters and offers by email" } });
   }
   // Lands in the shared staff inbox like any client message.
-  await prisma.$transaction(async (tx) => {
+  const convoId = await prisma.$transaction(async (tx) => {
     const convo = await tx.conversation.create({ data: { clientId, subject: "New client account set up", awaitingStaff: true, unreadByStaff: true } });
     await tx.message.create({
       data: {
@@ -300,7 +301,9 @@ async function finishLink(applicationId: string, clientId: string, portalUserId:
         body: `I set up my portal account.\nServices I'm interested in: ${app.servicesRequested.join(", ")}${app.notes ? `\nNotes: ${app.notes}` : ""}${app.files.length ? `\nI uploaded ${app.files.length} document(s).` : ""}`,
       },
     });
+    return convo.id;
   });
+  await queueStaffAlert(convoId);
 }
 
 /**

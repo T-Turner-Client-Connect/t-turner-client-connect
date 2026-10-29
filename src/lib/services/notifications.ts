@@ -4,6 +4,7 @@ import { brandedNoticeHtml, sendTransactionalEmail } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
 import { sendSms } from "@/lib/twilio";
 import { smsSendAllowed } from "./sms-consent";
+import { chicagoParts } from "@/lib/tz";
 
 /**
  * "Something new in your portal" notices. Account-service messages, kept
@@ -24,8 +25,25 @@ const TEXT: Record<string, string> = {
   NEW_INVOICE: "A new invoice is available",
 };
 
+// Client texts are held outside 8 a.m.–8 p.m. Central and sent when the window opens.
+export const CLIENT_SMS_QUIET = { start: "08:00", end: "20:00" };
+function clientSmsAllowedNow(now = new Date()) {
+  const p = chicagoParts(now);
+  const t = `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+  return t >= CLIENT_SMS_QUIET.start && t < CLIENT_SMS_QUIET.end;
+}
+
 export function notificationText(kind: string) {
   const line = TEXT[kind] ?? "There's something new in your client portal";
+  if (kind === "NEW_MESSAGE") {
+    return {
+      heading: "Your team has replied",
+      line: "Your team has replied to your portal message. Sign in to view it.",
+      subject: "Your team has replied — TTurner & Associates",
+      body: `Your team has replied to your portal message in your TTurner & Associates Group client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include messages, account details or tax documents in emails or texts.`,
+      sms: `TTurner & Associates: Your team has replied to your portal message. Sign in to view it: ${appUrl()}/client Reply STOP to unsubscribe.`,
+    };
+  }
   return {
     heading: line,
     line: `${line} in your TTurner & Associates Group client portal.`,
@@ -64,6 +82,10 @@ export async function dispatchPendingNotifications(portalUserId?: string) {
   for (const n of pending) {
     if (!notificationsEnabled()) {
       await prisma.notification.update({ where: { id: n.id }, data: { statusDetail: "Notifications are turned off (NOTIFICATIONS_ENABLED is not true)" } });
+      continue;
+    }
+    if (n.channel === "SMS" && !clientSmsAllowedNow()) {
+      await prisma.notification.update({ where: { id: n.id }, data: { statusDetail: "Held for quiet hours — sends after 8 a.m. Central" } });
       continue;
     }
     // Claim the row first so concurrent dispatchers can't double-send.

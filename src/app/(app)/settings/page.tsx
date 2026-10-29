@@ -7,7 +7,9 @@ import { VerifyEmailCard } from "@/components/verification";
 import { clientEmailCodesAction, confirmVerifyEmailAction, sendVerifyEmailAction } from "@/app/actions/verification";
 import { authSettings, clientEmailCodesActive, emailProviderConfigured } from "@/lib/auth/client-auth";
 import { maskEmail } from "@/lib/services/mfa";
-import { resetStaffMfaAction, retentionAction } from "@/app/actions/workspace";
+import { resetStaffMfaAction, retentionAction, sendTestTextAction, staffAlertSettingsAction } from "@/app/actions/workspace";
+import { testResults } from "@/lib/services/staff-alerts";
+import { twilioConfigured } from "@/lib/twilio";
 import { CATEGORY_LABELS } from "@/lib/services/documents";
 import { jotformStatus } from "@/lib/services/contracts";
 import { signingProviderStatus } from "@/lib/services/signatures";
@@ -264,12 +266,55 @@ export default async function SettingsPage() {
         )}
 
         <Card title="SMS consent & incoming texts" className="lg:col-span-2">
-          <div className="mb-4 rounded-lg bg-ivory-50 p-3 text-sm">
-            <p className="font-semibold">Twilio webhook addresses (Messaging Service → Integration)</p>
-            <p>Incoming messages: <code className="break-all">{appUrl()}/api/webhooks/twilio/inbound</code> (HTTP POST)</p>
-            <p>Delivery status is sent automatically to <code className="break-all">{appUrl()}/api/webhooks/twilio/status</code>.</p>
-            <p className="mt-1 text-slate-600">Public consent page: <a className="underline" href="/sms-consent" target="_blank">{appUrl()}/sms-consent</a></p>
-          </div>
+          {await (async () => {
+            const t = await testResults();
+            const configured = twilioConfigured();
+            return (
+              <div className="mb-4 space-y-3 rounded-lg bg-ivory-50 p-3 text-sm" data-testid="twilio-card">
+                <p className="font-semibold">
+                  Text messages (Twilio): {configured ? <Badge tone="green">Connected</Badge> : <Badge tone="gray">Not set up</Badge>}{" "}
+                  <span className="font-normal text-slate-600">Bulk campaign texting stays off (LIVE_SENDING_ENABLED).</span>
+                </p>
+                <div>
+                  <p className="font-semibold">Webhook addresses — Twilio Console → Messaging → Services → your service → Integration</p>
+                  <p>Incoming messages (&ldquo;Send a webhook&rdquo;, HTTP POST): <code className="break-all">{appUrl()}/api/webhooks/twilio/inbound</code></p>
+                  <p>Delivery status (HTTP POST): <code className="break-all">{appUrl()}/api/webhooks/twilio/status</code> — included automatically with every text this app sends; you may also enter it as the service&apos;s Delivery Status Callback.</p>
+                  <p className="text-xs text-slate-600">These must match the live site address exactly (APP_URL), or Twilio&apos;s signature check fails and the request is refused.</p>
+                </div>
+                {isAdmin && (
+                  <>
+                    <ActionForm action={staffAlertSettingsAction} className="grid gap-2 sm:grid-cols-4">
+                      <label className="flex items-center gap-2 sm:col-span-4"><input type="checkbox" name="smsEnabled" defaultChecked={t.settings.smsEnabled} /> Text the office when a client sends a message (no message contents)</label>
+                      <Field label="Office phone (receives alerts)"><input className="input" name="phone" defaultValue={formatPhone(t.settings.phone)} /></Field>
+                      <Field label="Mon–Fri from (Central)"><input className="input" type="time" name="windowStart" defaultValue={t.settings.windowStart} /></Field>
+                      <Field label="until"><input className="input" type="time" name="windowEnd" defaultValue={t.settings.windowEnd} /></Field>
+                      <div className="flex items-end"><Button type="submit" variant="secondary">Save</Button></div>
+                      <p className="text-xs text-slate-600 sm:col-span-4">After-hours alerts wait for the next weekday window; several become one text; ones already read or resolved are skipped. In-site notices are not limited by these hours.</p>
+                    </ActionForm>
+                    <div>
+                      <p className="font-semibold">Controlled test</p>
+                      <p className="mb-2 text-slate-700">Sends one text to {formatPhone(t.settings.phone)}: &ldquo;TTurner Client Connect test… Reply YES to confirm two-way texting.&rdquo; Results below come from Twilio, not from this page.</p>
+                      <ActionForm action={sendTestTextAction}><Button type="submit" variant="secondary" disabled={!configured}>Send test text</Button></ActionForm>
+                      {t.tests.length > 0 && (
+                        <ul className="mt-2 space-y-1" data-testid="twilio-tests">
+                          {t.tests.map((x) => (
+                            <li key={x.id}>
+                              {fmtDateTime(x.createdAt)} · {x.status === "FAILED" ? <Badge tone="red">Not accepted</Badge> : <Badge tone={x.deliveryStatus === "delivered" ? "green" : x.deliveryStatus === "undelivered" || x.deliveryStatus === "failed" ? "red" : "gold"}>{x.deliveryStatus === "delivered" ? "Delivered (Twilio confirmed)" : x.deliveryStatus ? `Twilio: ${x.deliveryStatus}` : "Waiting for Twilio"}</Badge>}
+                              {x.statusDetail && <span className="ml-1 text-xs text-slate-600">{x.statusDetail}</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {t.tests.length > 0 && (
+                        <p className="mt-2">Replies from the office phone: {t.replies.length === 0 ? "none yet" : t.replies.map((r) => `“${r.body.slice(0, 40)}” at ${fmtDateTime(r.receivedAt)}`).join("; ")}</p>
+                      )}
+                    </div>
+                  </>
+                )}
+                <p className="text-slate-600">Public consent page: <a className="underline" href="/sms-consent" target="_blank">{appUrl()}/sms-consent</a></p>
+              </div>
+            );
+          })()}
           <h3 className="mb-2 font-semibold">Recent consent form submissions</h3>
           {consentSubs.length === 0 ? (
             <p className="mb-4 text-sm text-slate-600">None yet.</p>

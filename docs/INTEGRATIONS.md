@@ -18,6 +18,35 @@
 | Social publishing | **Manual publishing.** Suggested drafts from approved topics (built-in, no AI cost), approval with flagged-claim verification, one in-site reminder per platform when due, Download / Copy caption & hashtags / Open platform, mark posted per platform (link optional) | Direct publishing needs Meta App Review / TikTok audit; analytics-based times need connected accounts; an AI writer (optional) needs an AI provider API key |
 | Automations | Engine works; rules paused by default | `CRON_SECRET`, enable rules in Workflows → Automations |
 
+## Twilio texting
+
+Netlify environment variables (Site configuration → Environment variables; scopes Functions + Builds; Production):
+
+| Variable | Value | Secret |
+|---|---|---|
+| `TWILIO_ACCOUNT_SID` | Your Account SID (starts with AC) | yes |
+| `TWILIO_AUTH_TOKEN` | Your Auth Token | yes |
+| `TWILIO_MESSAGING_SERVICE_SID` | The Messaging Service SID (starts with MG) | no |
+| `APP_URL` | The live site address, exactly as Twilio calls it, no trailing slash | no |
+| `CRON_SECRET` | 32+ random characters (scheduled sends) | yes |
+| `NOTIFICATIONS_ENABLED` | `true` to send client portal notices by email/text | no |
+| `LIVE_SENDING_ENABLED` | leave `false` — bulk campaigns stay off | no |
+
+`TWILIO_FROM_NUMBER` is not needed when the Messaging Service SID is set. Leave `SMS_KEYWORD_REPLIES`
+unset so Twilio's Advanced Opt-Out sends the STOP/HELP replies (set HELP text in the Messaging Service).
+
+Webhooks (Twilio Console → Messaging → Services → your service → Integration):
+- Incoming messages: "Send a webhook", Request URL `<APP_URL>/api/webhooks/twilio/inbound`, HTTP **POST**.
+- Delivery status: every text this app sends includes `StatusCallback=<APP_URL>/api/webhooks/twilio/status`
+  automatically (HTTP POST). Optionally also enter it as the service's Delivery Status Callback.
+- Both verify Twilio's X-Twilio-Signature against `APP_URL`; a mismatch is refused (403).
+
+Staff alerts: Settings → Text messages: off by default; office phone (default +1 205-659-5448), Monday–Friday
+8:00–17:00 Central. After-hours alerts wait for the next window, are combined, and are skipped if the
+conversation was read or resolved. Client texts are held 8 p.m.–8 a.m. Central, require service-text
+consent, and stop after STOP. **Controlled test**: Settings → Send test text → Twilio's delivery result and
+the office phone's reply appear in the same panel.
+
 ## Sign-in verification
 
 - **Staff**: password + authenticator app (6-digit code, never "sent" or resent), with 10 one-time
