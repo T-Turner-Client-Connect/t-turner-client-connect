@@ -7,8 +7,11 @@ import type { SocialPlatform } from "@prisma/client";
 import { Badge, Button, Field, Notice } from "@/components/ui";
 import { saveSocialDraftAction } from "@/app/actions/social";
 import { PLATFORM_LABELS, validateTarget, type MediaInfo } from "@/lib/social/rules";
+import { captionWithHashtags, flagClaims, nextRecommendedSlot, parseHashtags, TIME_SUGGESTION_NOTE } from "@/lib/social/suggest";
+import { utcToChicagoLocal } from "@/lib/tz";
 
-type Target = { platform: SocialPlatform; caption: string; mediaIds: string[] };
+type Target = { platform: SocialPlatform; caption: string; hashtags: string; mediaIds: string[]; locked?: boolean };
+const full = (t: Target) => captionWithHashtags(t.caption, parseHashtags(t.hashtags));
 const ALL: SocialPlatform[] = ["FACEBOOK", "INSTAGRAM", "TIKTOK"];
 
 function Preview({ platform, caption, media }: { platform: SocialPlatform; caption: string; media: MediaInfo[] }) {
@@ -44,6 +47,8 @@ export function SocialComposer({
   initialTargets,
   library,
   editable,
+  approved,
+  initialTimeSuggested,
 }: {
   postId: string;
   initialTitle: string;
@@ -51,10 +56,13 @@ export function SocialComposer({
   initialTargets: Target[];
   library: MediaInfo[];
   editable: boolean;
+  approved?: boolean;
+  initialTimeSuggested?: boolean;
 }) {
   const router = useRouter();
   const [title, setTitle] = useState(initialTitle);
   const [when, setWhen] = useState(initialScheduledAt ?? "");
+  const [timeSuggested, setTimeSuggested] = useState(!!initialTimeSuggested);
   const [targets, setTargets] = useState<Target[]>(initialTargets);
   const [active, setActive] = useState<SocialPlatform>(initialTargets[0]?.platform ?? "FACEBOOK");
   const [msg, setMsg] = useState<{ ok?: string; error?: string } | null>(null);
@@ -65,7 +73,7 @@ export function SocialComposer({
   const togglePlatform = (p: SocialPlatform, on: boolean) => {
     if (on) {
       const base = targets[0];
-      setTargets([...targets, { platform: p, caption: base?.caption ?? "", mediaIds: base?.mediaIds ?? [] }]);
+      setTargets([...targets, { platform: p, caption: base?.caption ?? "", hashtags: base?.hashtags ?? "", mediaIds: base?.mediaIds ?? [] }]);
       setActive(p);
     } else {
       const next = targets.filter((t) => t.platform !== p);
@@ -77,7 +85,7 @@ export function SocialComposer({
 
   function save() {
     start(async () => {
-      const res = await saveSocialDraftAction(postId, { title, scheduledAt: when || null, targets });
+      const res = await saveSocialDraftAction(postId, { title, scheduledAt: when || null, timeSuggested, targets: targets.map(({ platform, caption, hashtags, mediaIds }) => ({ platform, caption, hashtags, mediaIds })) });
       setMsg(res);
       router.refresh();
     });
@@ -87,8 +95,20 @@ export function SocialComposer({
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <Field label="Working title" className="sm:col-span-2"><input className="input" value={title} onChange={(e) => setTitle(e.target.value)} disabled={!editable} /></Field>
-        <Field label="Planned date (for the calendar)"><input className="input" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} disabled={!editable} /></Field>
+        <Field label="Post on (Central time)" hint={timeSuggested ? TIME_SUGGESTION_NOTE : undefined}>
+          <input className="input" type="datetime-local" value={when} onChange={(e) => { setWhen(e.target.value); setTimeSuggested(false); }} disabled={!editable} />
+        </Field>
       </div>
+      {editable && (
+        <button
+          type="button"
+          className="text-sm font-semibold text-navy-900 underline"
+          onClick={() => { setWhen(utcToChicagoLocal(nextRecommendedSlot(targets.map((t) => t.platform), new Date()))); setTimeSuggested(true); }}
+        >
+          Suggest a time (recommendation)
+        </button>
+      )}
+      {approved && editable && <Notice tone="warn">This post is approved. Saving any change to the wording, media, hashtags or time sends it back to Awaiting approval.</Notice>}
       <fieldset>
         <legend className="mb-2 text-sm font-semibold text-navy-900">Platforms</legend>
         <div className="flex flex-wrap gap-2">
@@ -105,7 +125,7 @@ export function SocialComposer({
         <>
           <div role="tablist" className="flex gap-1 border-b border-navy-100">
             {targets.map((t) => {
-              const problems = validateTarget(t.platform, t.caption, t.mediaIds.map((id) => byId.get(id)!).filter(Boolean));
+              const problems = validateTarget(t.platform, full(t), t.mediaIds.map((id) => byId.get(id)!).filter(Boolean));
               return (
                 <button
                   key={t.platform}
@@ -122,9 +142,22 @@ export function SocialComposer({
           {current && (
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="space-y-3">
-                <Field label={`${PLATFORM_LABELS[active]} caption`} hint={`${current.caption.length.toLocaleString()} characters`}>
-                  <textarea className="input" rows={7} value={current.caption} onChange={(e) => update({ caption: e.target.value })} disabled={!editable} />
+                {current.locked && <Notice tone="success">Already posted on {PLATFORM_LABELS[active]} — this version is locked.</Notice>}
+                <Field label={`${PLATFORM_LABELS[active]} caption`} hint={`${full(current).length.toLocaleString()} characters with hashtags`}>
+                  <textarea className="input" rows={7} value={current.caption} onChange={(e) => update({ caption: e.target.value })} disabled={!editable || current.locked} aria-label={`${PLATFORM_LABELS[active]} caption`} />
                 </Field>
+                <Field label="Hashtags" hint="Separate with spaces. # is optional.">
+                  <input className="input" value={current.hashtags} onChange={(e) => update({ hashtags: e.target.value })} disabled={!editable || current.locked} aria-label={`${PLATFORM_LABELS[active]} hashtags`} />
+                </Field>
+                {(() => {
+                  const flags = flagClaims(`${current.caption} ${current.hashtags}`);
+                  return flags.length ? (
+                    <Notice tone="warn" title="Verify before approval">
+                      <ul className="list-disc pl-5">{flags.map((f) => <li key={`${f.kind}${f.text}`}>{f.kind}: “{f.text}”</li>)}</ul>
+                      <p className="mt-1">Dates, tax rules, prices, promotions, testimonials and hours must be confirmed by the approver.</p>
+                    </Notice>
+                  ) : null;
+                })()}
                 <fieldset>
                   <legend className="mb-1 text-sm font-semibold text-navy-900">Media (in order)</legend>
                   {library.length === 0 ? (
@@ -139,7 +172,7 @@ export function SocialComposer({
                               type="checkbox"
                               className="sr-only"
                               checked={idx >= 0}
-                              disabled={!editable}
+                              disabled={!editable || current.locked}
                               onChange={(e) => update({ mediaIds: e.target.checked ? [...current.mediaIds, m.id] : current.mediaIds.filter((x) => x !== m.id) })}
                             />
                             {m.mimeType.startsWith("image/") ? (
@@ -156,7 +189,7 @@ export function SocialComposer({
                   )}
                 </fieldset>
                 {(() => {
-                  const problems = validateTarget(active, current.caption, current.mediaIds.map((id) => byId.get(id)!).filter(Boolean));
+                  const problems = validateTarget(active, full(current), current.mediaIds.map((id) => byId.get(id)!).filter(Boolean));
                   return problems.length ? (
                     <Notice tone="error" title={`${PLATFORM_LABELS[active]} requirements`}><ul className="list-disc pl-5">{problems.map((p) => <li key={p}>{p}</li>)}</ul></Notice>
                   ) : (
@@ -166,7 +199,7 @@ export function SocialComposer({
               </div>
               <div>
                 <p className="mb-2 text-sm font-semibold text-navy-900">Preview</p>
-                <Preview platform={active} caption={current.caption} media={current.mediaIds.map((id) => byId.get(id)!).filter(Boolean)} />
+                <Preview platform={active} caption={full(current)} media={current.mediaIds.map((id) => byId.get(id)!).filter(Boolean)} />
                 <p className="mt-2 text-xs text-slate-500">Approximate preview. Each platform crops and styles posts its own way.</p>
               </div>
             </div>
@@ -184,7 +217,7 @@ export function SocialComposer({
   );
 }
 
-export function CopyCaption({ text }: { text: string }) {
+export function CopyCaption({ text, label = "Copy caption & hashtags" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <Button
@@ -195,7 +228,7 @@ export function CopyCaption({ text }: { text: string }) {
         setTimeout(() => setCopied(false), 2000);
       }}
     >
-      {copied ? "Copied ✓" : "Copy caption"}
+      {copied ? "Copied ✓" : label}
     </Button>
   );
 }

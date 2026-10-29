@@ -1408,20 +1408,77 @@ enum SocialTargetStatus {
 }
 
 model SocialPost {
-  id           String           @id @default(cuid())
+  id                 String           @id @default(cuid())
+  title              String
+  status             SocialPostStatus @default(DRAFT)
+  scheduledAt        DateTime?
+  createdById        String
+  approvedById       String?
+  approvedAt         DateTime?
+  approvalNote       String?
+  // Set only when the approver confirmed flagged, time-sensitive claims; cleared on any edit.
+  claimsVerifiedAt   DateTime?
+  claimsVerifiedById String?
+  // Suggested from an approved content topic (built-in generator).
+  topicId            String?
+  topic              ContentTopic?    @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  // Which caption variant was generated last (regenerate rotates it).
+  generatorVariant   Int              @default(0)
+  // The planned time came from the recommendation helper, not analytics.
+  timeSuggested      Boolean          @default(false)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  targets   SocialPostTarget[]
+  revisions SocialPostRevision[]
+
+  @@index([scheduledAt])
+  @@index([topicId])
+}
+
+// Edit history: every save, approval decision, schedule change and posting.
+model SocialPostRevision {
+  id        String     @id @default(cuid())
+  postId    String
+  post      SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  actorId   String
+  action    String
+  snapshot  Json
+  createdAt DateTime   @default(now())
+
+  @@index([postId, createdAt])
+}
+
+enum ContentCategory {
+  SERVICE
+  TAX_SEASON
+  BOOKKEEPING_TIP
+  BUSINESS_SETUP
+  NONPROFIT
+  OFFICE_ANNOUNCEMENT
+  HOLIDAY
+}
+
+// Approved talking points the suggestion helper may use. Suggestions never
+// add facts beyond these — no invented prices, promotions, deadlines,
+// testimonials or hours.
+model ContentTopic {
+  id           String          @id @default(cuid())
+  category     ContentCategory
   title        String
-  status       SocialPostStatus @default(DRAFT)
-  scheduledAt  DateTime?
+  keyMessage   String
+  callToAction String?
+  hashtags     String[]
+  // For holidays/announcements: the date entered by staff (never invented).
+  eventDate    DateTime?       @db.Date
   createdById  String
   approvedById String?
   approvedAt   DateTime?
-  approvalNote String?
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  archivedAt   DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 
-  targets SocialPostTarget[]
-
-  @@index([scheduledAt])
+  posts SocialPost[]
 }
 
 model SocialPostTarget {
@@ -1430,6 +1487,8 @@ model SocialPostTarget {
   post           SocialPost         @relation(fields: [postId], references: [id], onDelete: Cascade)
   platform       SocialPlatform
   caption        String             @default("")
+  // Kept separate so "Copy caption & hashtags" and the hashtag limits work.
+  hashtags       String[]           @default([])
   // Ordered StoredFile ids from the media library.
   mediaIds       String[]
   status         SocialTargetStatus @default(DRAFT)
@@ -1442,6 +1501,8 @@ model SocialPostTarget {
   errorDetail    String?
   publishedAt    DateTime?
   confirmedById  String?
+  // Set once when the post becomes due — one reminder per platform, never repeated.
+  reminderAt     DateTime?
   updatedAt      DateTime           @updatedAt
 
   @@unique([postId, platform])

@@ -15,7 +15,7 @@
 | Jotform contracts | Links and in-portal embed work; completion confirmed by staff | `JOTFORM_API_KEY` + `JOTFORM_WEBHOOK_SECRET`, webhook `https://<site>/api/webhooks/jotform?secret=…`, hidden field `assignment_ref` on each form |
 | Tax e-signatures | **Setup required.** Requests can be prepared; signed-outside-the-app copies can be recorded (clearly labelled) | A provider verified for the exact tax forms, IRS identity requirements, joint signers and record retention |
 | TaxAct | **Staff-controlled CSV import** of e-file statuses (Clients → Imports → TaxAct) and of contact exports | See below |
-| Social publishing | **Manual publishing** with media download, copy caption, open platform, confirm with post link | See below |
+| Social publishing | **Manual publishing.** Suggested drafts from approved topics (built-in, no AI cost), approval with flagged-claim verification, one in-site reminder per platform when due, Download / Copy caption & hashtags / Open platform, mark posted per platform (link optional) | Direct publishing needs Meta App Review / TikTok audit; analytics-based times need connected accounts; an AI writer (optional) needs an AI provider API key |
 | Automations | Engine works; rules paused by default | `CRON_SECRET`, enable rules in Workflows → Automations |
 
 ## Staff invitation email (Resend)

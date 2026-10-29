@@ -4,8 +4,9 @@ export function fmtDate(d: Date | null | undefined): string {
   return d ? format(d, "MMM d, yyyy") : "—";
 }
 
+// Timestamps are shown in the office's time zone (America/Chicago), not the server's.
 export function fmtDateTime(d: Date | null | undefined): string {
-  return d ? format(d, "MMM d, yyyy h:mm a") : "—";
+  return d ? new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(d) : "—";
 }
 
 export function fromNow(d: Date): string {

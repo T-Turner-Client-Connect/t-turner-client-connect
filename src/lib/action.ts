@@ -1,5 +1,6 @@
 import "server-only";
 import { unstable_rethrow } from "next/navigation";
+import { chicagoLocalToUtc } from "@/lib/tz";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { ValidationError } from "@/lib/services/clients";
 import { ImportError } from "@/lib/services/imports";
@@ -32,6 +33,8 @@ export function str(fd: FormData, key: string): string {
 export function dateOrNull(fd: FormData, key: string): Date | null {
   const v = str(fd, key);
   if (!v) return null;
+  // Date-and-time fields are office (Central) time, not the server's time zone.
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return chicagoLocalToUtc(v);
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
 }
