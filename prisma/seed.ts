@@ -4,7 +4,7 @@
 // seed_default_groups migration (ON CONFLICT DO NOTHING).
 import { PrismaClient } from "@prisma/client";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({ datasourceUrl: process.env.DATABASE_URL || process.env.NETLIFY_DB_URL });
 
 if (process.env.CONTEXT && process.env.CONTEXT !== "dev") {
   console.error("prisma/seed.ts is for local development and does not run on Netlify deploys.");

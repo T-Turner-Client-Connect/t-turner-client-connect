@@ -7,7 +7,7 @@ import "server-only";
 export function integrationStatus() {
   const env = process.env;
   return {
-    database: Boolean(env.DATABASE_URL),
+    database: Boolean(env.DATABASE_URL || env.NETLIFY_DB_URL),
     appUrl: Boolean(env.APP_URL),
     email: Boolean(env.RESEND_API_KEY && env.EMAIL_FROM_ADDRESS),
     twilio: Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && (env.TWILIO_MESSAGING_SERVICE_SID || env.TWILIO_FROM_NUMBER)),

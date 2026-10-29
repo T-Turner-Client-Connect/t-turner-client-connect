@@ -16,7 +16,7 @@
   # first Admin is created explicitly at /staff/setup with SETUP_TOKEN.
   # check-deploy-env.mjs stops the build with a clear message if a required
   # setting (e.g. APP_ENCRYPTION_KEY) is missing.
-  command = "node scripts/check-deploy-env.mjs && npx next build"
+  command = "node scripts/check-deploy-env.mjs && npx prisma generate && npx next build"
   publish = ".next"
 
 [build.environment]
