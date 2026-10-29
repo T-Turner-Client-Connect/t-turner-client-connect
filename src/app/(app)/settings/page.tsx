@@ -3,6 +3,10 @@ import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui"
 import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clients";
 import { inviteAction, privateInviteLinkAction, resendInviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
 import { inviteState, recentInvites, type InviteState } from "@/lib/services/staff-invitations";
+import { VerifyEmailCard } from "@/components/verification";
+import { clientEmailCodesAction, confirmVerifyEmailAction, sendVerifyEmailAction } from "@/app/actions/verification";
+import { authSettings, clientEmailCodesActive, emailProviderConfigured } from "@/lib/auth/client-auth";
+import { maskEmail } from "@/lib/services/mfa";
 import { resetStaffMfaAction, retentionAction } from "@/app/actions/workspace";
 import { CATEGORY_LABELS } from "@/lib/services/documents";
 import { jotformStatus } from "@/lib/services/contracts";
@@ -174,6 +178,49 @@ export default async function SettingsPage() {
           )}
           {!isAdmin && <p className="mt-3 text-sm text-slate-600">Only Admins can invite or change staff accounts.</p>}
         </Card>
+
+        {isAdmin && (
+          <Card title="Client sign-in">
+            {await (async () => {
+              const [auth, active, me] = await Promise.all([authSettings(), clientEmailCodesActive(), prisma.user.findUniqueOrThrow({ where: { id: user.id } })]);
+              return (
+                <div className="space-y-3 text-sm" data-testid="client-signin-card">
+                  <p>
+                    Clients now sign in with:{" "}
+                    <Badge tone={active ? "green" : "navy"}>{active ? "Password + emailed code" : "Password + authenticator app"}</Badge>
+                  </p>
+                  <p className="text-slate-700">Staff always use an authenticator app and recovery codes. Emailed codes for clients turn on only after email delivery is proven.</p>
+                  <ol className="list-decimal space-y-2 pl-5">
+                    <li>Email set up (Resend): {emailProviderConfigured() ? <Badge tone="green">Configured</Badge> : <Badge tone="gray">Not set up</Badge>}</li>
+                    <li>
+                      Prove delivery: send yourself a test code and enter it.{" "}
+                      {auth.emailDeliveryVerifiedAt ? <Badge tone="green">Delivery confirmed {fmtDateTime(auth.emailDeliveryVerifiedAt)}</Badge> : null}
+                      <div className="mt-2">
+                        <VerifyEmailCard
+                          verified={!!auth.emailDeliveryVerifiedAt && !!me.emailVerifiedAt}
+                          masked={maskEmail(me.email)}
+                          emailReady={emailProviderConfigured()}
+                          sendAction={sendVerifyEmailAction.bind(null, "staff")}
+                          confirmAction={confirmVerifyEmailAction.bind(null, "staff")}
+                        />
+                      </div>
+                    </li>
+                    <li>
+                      Switch clients to emailed codes:{" "}
+                      {auth.clientEmailCodes ? (
+                        <ActionForm action={clientEmailCodesAction.bind(null, false)} className="inline-block"><Button variant="ghost">Turn off</Button></ActionForm>
+                      ) : (
+                        <ActionForm action={clientEmailCodesAction.bind(null, true)} className="inline-block" confirm="Switch clients to password + emailed code? Existing authenticator users can keep theirs as a backup.">
+                          <Button variant="secondary">Turn on</Button>
+                        </ActionForm>
+                      )}
+                    </li>
+                  </ol>
+                </div>
+              );
+            })()}
+          </Card>
+        )}
 
         <Card title="Integrations">
           <ul className="divide-y divide-navy-100">

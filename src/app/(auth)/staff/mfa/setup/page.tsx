@@ -6,7 +6,7 @@ import { beginEnrollment } from "@/lib/services/mfa";
 
 export const metadata = { title: "Set up two-step verification" };
 
-export default async function MfaSetupPage() {
+export default async function MfaSetupPage({ searchParams }: { searchParams: Promise<{ recovered?: string }> }) {
   const state = await getSessionState();
   if (!state) redirect("/staff/login");
   if (state.mfaEnrolled) redirect(state.mfaPassed ? "/" : "/staff/mfa");
@@ -14,6 +14,11 @@ export default async function MfaSetupPage() {
   return (
     <>
       <h1 className="mb-2 text-2xl font-bold">Set up two-step verification</h1>
+      {(await searchParams).recovered && (
+        <p className="mb-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-900" role="status">
+          Recovery worked. Set up your authenticator app again below, and save your new recovery codes. Remember to delete STAFF_RECOVERY_CODE in Netlify.
+        </p>
+      )}
       <p className="mb-4 text-sm text-slate-600">
         Required for every staff account because this system holds client information. Install an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password…), then scan this code.
       </p>

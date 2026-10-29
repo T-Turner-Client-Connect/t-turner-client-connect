@@ -117,6 +117,8 @@ export async function resetPortalPassword(token: string, password: string) {
     if (claimed.count !== 1) throw new ValidationError("This reset link has already been used.");
     await tx.portalUser.update({ where: { id: record.portalUserId }, data: { passwordHash } });
     await tx.portalSession.deleteMany({ where: { portalUserId: record.portalUserId } });
+    // A new password also forgets every "remembered" device.
+    await tx.trustedDevice.updateMany({ where: { portalUserId: record.portalUserId, revokedAt: null }, data: { revokedAt: new Date() } });
     await audit(tx, { actorId: null, action: "portal.password_reset", entityType: "PortalUser", entityId: record.portalUserId });
   });
 }

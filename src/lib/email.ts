@@ -20,7 +20,8 @@ export async function sendEmail(input: {
   if (!key || !from) return { ok: false, reason: "not_configured", detail: "Email isn't set up yet (RESEND_API_KEY and EMAIL_FROM_ADDRESS)." };
   let res: Response;
   try {
-    res = await fetch("https://api.resend.com/emails", {
+    // RESEND_API_BASE exists only to point automated tests at a local mock.
+    res = await fetch(`${(process.env.RESEND_API_BASE || "https://api.resend.com").replace(/\/$/, "")}/emails`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
@@ -36,8 +37,9 @@ export async function sendEmail(input: {
         ...(input.tags ? { tags: Object.entries(input.tags).map(([name, value]) => ({ name, value })) } : {}),
       }),
     });
-  } catch {
-    console.error("Transactional email failed: network error");
+  } catch (err) {
+    const code = (err as { cause?: { code?: string } }).cause?.code ?? (err as Error).name;
+    console.error(`Transactional email failed: network error (${code})`);
     return { ok: false, reason: "network", detail: "Couldn't reach the email provider." };
   }
   if (!res.ok) {

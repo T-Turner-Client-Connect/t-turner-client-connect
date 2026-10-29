@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { hashToken, newToken } from "@/lib/auth/tokens";
+import { clientEmailCodesActive } from "@/lib/auth/client-auth";
 
 const SECURE = process.env.NODE_ENV === "production";
 // Separate cookie from staff sessions: a client login can never act as staff.
@@ -18,8 +19,9 @@ export type PortalActor = { id: string; name: string; email: string };
 export async function createPortalSession(portalUserId: string) {
   const token = newToken();
   const expiresAt = new Date(Date.now() + ABSOLUTE_LIFETIME_MS);
-  await prisma.portalSession.create({ data: { tokenHash: hashToken(token), portalUserId, expiresAt } });
+  const session = await prisma.portalSession.create({ data: { tokenHash: hashToken(token), portalUserId, expiresAt } });
   (await cookies()).set(PORTAL_COOKIE, token, { httpOnly: true, secure: SECURE, sameSite: "lax", path: "/", expires: expiresAt });
+  return session.id;
 }
 
 export async function destroyPortalSession() {
@@ -43,7 +45,9 @@ export const getPortalSessionState = cache(async () => {
   if (now - session.lastSeenAt.getTime() > TOUCH_INTERVAL_MS) {
     await prisma.portalSession.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });
   }
-  return { actor: { id: u.id, name: u.name, email: u.email } as PortalActor, sessionId: session.id, mfaPassed: session.mfaPassed, mfaEnrolled: !!u.mfaEnabledAt };
+  // With emailed codes on, clients never need to set up an authenticator app.
+  const emailCodes = await clientEmailCodesActive();
+  return { actor: { id: u.id, name: u.name, email: u.email } as PortalActor, sessionId: session.id, mfaPassed: session.mfaPassed, mfaEnrolled: emailCodes || !!u.mfaEnabledAt, emailCodes };
 });
 
 export async function markPortalMfaPassed(sessionId: string) {

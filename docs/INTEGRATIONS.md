@@ -15,8 +15,27 @@
 | Jotform contracts | Links and in-portal embed work; completion confirmed by staff | `JOTFORM_API_KEY` + `JOTFORM_WEBHOOK_SECRET`, webhook `https://<site>/api/webhooks/jotform?secret=…`, hidden field `assignment_ref` on each form |
 | Tax e-signatures | **Setup required.** Requests can be prepared; signed-outside-the-app copies can be recorded (clearly labelled) | A provider verified for the exact tax forms, IRS identity requirements, joint signers and record retention |
 | TaxAct | **Staff-controlled CSV import** of e-file statuses (Clients → Imports → TaxAct) and of contact exports | See below |
-| Social publishing | **Manual publishing** with media download, copy caption, open platform, confirm with post link | See below |
+| Social publishing | **Manual publishing.** Suggested drafts from approved topics (built-in, no AI cost), approval with flagged-claim verification, one in-site reminder per platform when due, Download / Copy caption & hashtags / Open platform, mark posted per platform (link optional) | Direct publishing needs Meta App Review / TikTok audit; analytics-based times need connected accounts; an AI writer (optional) needs an AI provider API key |
 | Automations | Engine works; rules paused by default | `CRON_SECRET`, enable rules in Workflows → Automations |
+
+## Sign-in verification
+
+- **Staff**: password + authenticator app (6-digit code, never "sent" or resent), with 10 one-time
+  recovery codes. A code is accepted once (replay-protected). Lost both? Another Admin resets it in
+  Settings → Staff accounts. Sole Admin: **owner recovery** at `/staff/recover` needs the account password
+  plus a one-time `STAFF_RECOVERY_CODE` (20+ random characters) you add in Netlify (secret, then
+  redeploy, then delete it after use). Verification is never disabled globally.
+- If an authenticator can't be read (the `APP_ENCRYPTION_KEY` changed after enrollment), the sign-in
+  screen says so instead of failing; recovery codes still work. Never change `APP_ENCRYPTION_KEY` to fix sign-in.
+- **Clients**: password + a 6-digit code emailed to their account address (no app). Codes expire in 10
+  minutes, work once, allow 5 attempts, 60-second resend cooldown, 5 sends/hour. "Sent" is shown only
+  after Resend accepts the email. Optional "Remember this device" for 30 days, revocable by the client
+  (Account) and cleared by password reset or a staff reset.
+- Client email codes stay **off** until: Resend is configured → an Admin sends a test code to themselves
+  and enters it (Settings → Client sign-in) → an Admin turns them on. Until then clients use the
+  authenticator app, so an email problem can't lock anyone out. Clients already using an authenticator
+  can keep it as a backup or remove it in Account.
+- Text-message codes are not used for sign-in.
 
 ## Staff invitation email (Resend)
 

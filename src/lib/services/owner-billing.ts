@@ -35,7 +35,10 @@ const dateOnly = (s: string) => new Date(`${s}T00:00:00.000Z`);
 export const todayYmd = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
 
 export async function billingSettings() {
-  return (await prisma.billingSettings.findUnique({ where: { id: "default" } })) ?? (await prisma.billingSettings.create({ data: { id: "default" } }));
+  const found = await prisma.billingSettings.findUnique({ where: { id: "default" } });
+  if (found) return found;
+  // Two first requests can race to create the row; the loser just reads it.
+  return prisma.billingSettings.create({ data: { id: "default" } }).catch(() => prisma.billingSettings.findUniqueOrThrow({ where: { id: "default" } }));
 }
 
 export type SettingsInput = {

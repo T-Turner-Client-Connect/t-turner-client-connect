@@ -164,8 +164,9 @@ describe("two-step verification", () => {
     expect(row.mfaSecretEnc).not.toContain(secret);
     await expect(confirmEnrollment(subject, "000000")).rejects.toThrow(/didn't match/);
     const codes = await confirmEnrollment(subject, currentTotp(secret));
-    expect(codes).toHaveLength(8);
-    expect(await verifySecondFactor(subject, currentTotp(secret))).toBe(true);
+    expect(codes).toHaveLength(10);
+    // The code that finished setup can't be replayed to sign in.
+    expect(await verifySecondFactor(subject, currentTotp(secret))).toBe(false);
     expect(await verifySecondFactor(subject, "123456")).toBe(false);
     expect(await verifySecondFactor(subject, codes[0])).toBe(true);
     expect(await verifySecondFactor(subject, codes[0])).toBe(false);

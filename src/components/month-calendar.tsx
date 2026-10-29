@@ -1,6 +1,14 @@
 import Link from "next/link";
 import clsx from "clsx";
 import { addDays, endOfMonth, endOfWeek, format, isSameDay, isSameMonth, startOfMonth, startOfWeek } from "date-fns";
+import { chicagoParts } from "@/lib/tz";
+
+// Re-express an instant as the same wall-clock time in the server's own zone,
+// so events land on their Central-time day whatever zone the server runs in.
+const officeWallClock = (d: Date) => {
+  const p = chicagoParts(d);
+  return new Date(p.year, p.month - 1, p.day, p.hour, p.minute);
+};
 
 export type CalendarEvent = { id: string; at: Date; title: string; href?: string; tone?: "navy" | "gold" | "green" | "red" | "gray" };
 
@@ -13,14 +21,15 @@ const TONES = {
 };
 
 /** Month grid on wider screens, an agenda list on phones. */
-export function MonthCalendar({ month, events, basePath }: { month: Date; events: CalendarEvent[]; basePath: string }) {
+export function MonthCalendar({ month, events: raw, basePath }: { month: Date; events: CalendarEvent[]; basePath: string }) {
+  const events = raw.map((e) => ({ ...e, at: officeWallClock(e.at) }));
   const start = startOfWeek(startOfMonth(month));
   const end = endOfWeek(endOfMonth(month));
   const days: Date[] = [];
   for (let d = start; d <= end; d = addDays(d, 1)) days.push(d);
   const prev = format(addDays(startOfMonth(month), -1), "yyyy-MM");
   const next = format(addDays(endOfMonth(month), 1), "yyyy-MM");
-  const today = new Date();
+  const today = officeWallClock(new Date());
   const sep = basePath.includes("?") ? "&" : "?";
   const inMonth = events.filter((e) => isSameMonth(e.at, month)).sort((a, b) => a.at.getTime() - b.at.getTime());
 
@@ -63,6 +72,6 @@ export function MonthCalendar({ month, events, basePath }: { month: Date; events
 }
 
 export function monthFromParam(v?: string) {
-  const m = v && /^\d{4}-\d{2}$/.test(v) ? new Date(`${v}-01T12:00:00`) : new Date();
+  const m = v && /^\d{4}-\d{2}$/.test(v) ? new Date(`${v}-01T12:00:00`) : officeWallClock(new Date());
   return Number.isNaN(m.getTime()) ? new Date() : m;
 }

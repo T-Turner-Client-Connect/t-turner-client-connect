@@ -9,7 +9,8 @@ import { verifyPassword } from "@/lib/auth/password";
 import { normalizeEmail } from "@/lib/normalize";
 import { createPortalSession, destroyPortalSession, getPortalSessionState, markPortalMfaPassed, requirePortalUser } from "@/lib/portal/session";
 import { acceptPortalInvite, createPortalReset, resetPortalPassword, updateNotificationPrefs } from "@/lib/services/portal-accounts";
-import { confirmEnrollment, verifySecondFactor } from "@/lib/services/mfa";
+import { confirmEnrollment } from "@/lib/services/mfa";
+import { clientEmailCodesActive, revokeTrustedDevice, trustedDeviceFor } from "@/lib/auth/client-auth";
 import { portalUploadDocument } from "@/lib/services/documents";
 import { markClientRead, portalSendMessage } from "@/lib/services/messaging";
 import { ValidationError } from "@/lib/services/clients";
@@ -37,7 +38,15 @@ export async function portalLoginAction(_prev: ActionState, fd: FormData): Promi
   }
   await prisma.loginAttempt.create({ data: { email: key, ip, success: true } });
   await prisma.portalUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-  await createPortalSession(user.id);
+  const sessionId = await createPortalSession(user.id);
+  if (await clientEmailCodesActive()) {
+    // A remembered device skips the emailed code until it expires or is revoked.
+    if (await trustedDeviceFor(user.id)) {
+      await markPortalMfaPassed(sessionId);
+      redirect("/client");
+    }
+    redirect("/client/mfa");
+  }
   redirect(user.mfaEnabledAt ? "/client/mfa" : "/client/mfa/setup");
 }
 
@@ -77,19 +86,6 @@ export async function portalResetAction(token: string, _prev: ActionState, fd: F
   });
   if (result?.ok) redirect("/client/login?reset=1");
   return result;
-}
-
-export async function portalVerifyMfaAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
-  const state = await getPortalSessionState();
-  if (!state) redirect("/client/login");
-  const key = `mfa:portal:${state.actor.id}`;
-  if ((await failures(key)) >= 5) return { error: "Too many wrong codes. Wait 15 minutes and try again." };
-  if (!(await verifySecondFactor({ kind: "portal", id: state.actor.id }, str(fd, "code")))) {
-    await prisma.loginAttempt.create({ data: { email: key, ip: await clientIp(), success: false } });
-    return { error: "That code didn't work. Use the newest code from your authenticator app, or a recovery code." };
-  }
-  await markPortalMfaPassed(state.sessionId);
-  redirect("/client");
 }
 
 export async function portalConfirmMfaSetupAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
@@ -150,5 +146,27 @@ export async function portalPrefsAction(_prev: ActionState, fd: FormData): Promi
     const updated = await prisma.portalUser.findUniqueOrThrow({ where: { id: user.id } });
     await setPortalSmsConsent(user.id, updated.phoneNormalized, notifyBySms);
     return "Preferences saved.";
+  });
+}
+
+export async function revokeDeviceAction(deviceId: string, _prev: ActionState): Promise<ActionState> {
+  const user = await requirePortalUser();
+  return run(async () => {
+    await revokeTrustedDevice(user.id, deviceId);
+    revalidatePath("/client/account");
+    return "That device will need an emailed code next time.";
+  });
+}
+
+/** With emailed codes on, a client may remove an old authenticator app while signed in. */
+export async function removeAuthenticatorAction(_prev: ActionState): Promise<ActionState> {
+  const user = await requirePortalUser();
+  return run(async () => {
+    if (!(await clientEmailCodesActive())) throw new ValidationError("Your authenticator app is still needed until emailed codes are switched on.");
+    await prisma.portalUser.update({ where: { id: user.id }, data: { mfaSecretEnc: null, mfaEnabledAt: null, mfaLastStep: null } });
+    await prisma.mfaRecoveryCode.deleteMany({ where: { portalUserId: user.id } });
+    await prisma.auditLog.create({ data: { action: "mfa.client_switched_to_email", entityType: "PortalUser", entityId: user.id } });
+    revalidatePath("/client/account");
+    return "Authenticator app removed. You'll sign in with a code sent to your email.";
   });
 }

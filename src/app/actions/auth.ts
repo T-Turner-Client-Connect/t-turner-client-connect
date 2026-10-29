@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { run, str, type ActionState } from "@/lib/action";
 import { clientIp, createSession, destroySession, getSessionState, markMfaPassed } from "@/lib/auth/session";
-import { confirmEnrollment, verifySecondFactor } from "@/lib/services/mfa";
+import { confirmEnrollment } from "@/lib/services/mfa";
 import { verifyPassword } from "@/lib/auth/password";
 import { normalizeEmail } from "@/lib/normalize";
 import { acceptInvite, bootstrapFirstAdmin, createPasswordReset, resetPassword } from "@/lib/services/users";
@@ -87,26 +87,6 @@ export async function resetPasswordAction(token: string, _prev: ActionState, fd:
   });
   if (result?.ok) redirect("/staff/login?reset=1");
   return result;
-}
-
-const MFA_MAX_FAILURES = 5;
-
-async function mfaLocked(key: string) {
-  const since = new Date(Date.now() - WINDOW_MS);
-  return (await prisma.loginAttempt.count({ where: { email: key, success: false, createdAt: { gte: since } } })) >= MFA_MAX_FAILURES;
-}
-
-export async function verifyMfaAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
-  const state = await getSessionState();
-  if (!state) redirect("/staff/login");
-  const key = `mfa:staff:${state.actor.id}`;
-  if (await mfaLocked(key)) return { error: "Too many wrong codes. Wait 15 minutes and try again." };
-  if (!(await verifySecondFactor({ kind: "staff", id: state.actor.id }, str(fd, "code")))) {
-    await prisma.loginAttempt.create({ data: { email: key, ip: await clientIp(), success: false } });
-    return { error: "That code didn't work. Use the newest code from your authenticator app, or a recovery code." };
-  }
-  await markMfaPassed(state.sessionId);
-  redirect("/");
 }
 
 export async function confirmMfaSetupAction(_prev: ActionState, fd: FormData): Promise<ActionState> {

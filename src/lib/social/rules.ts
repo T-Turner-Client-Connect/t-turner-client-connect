@@ -73,11 +73,21 @@ export function validPermalink(platform: SocialPlatform, url: string): boolean {
 export const TARGET_STATUS_LABELS = {
   DRAFT: "Draft",
   SCHEDULED: "Scheduled",
+  // Only ever set from a platform API response (direct publishing isn't connected).
   PUBLISHED: "Published",
   FAILED: "Failed",
-  REQUIRES_MANUAL_POSTING: "Requires manual posting",
-  POSTED_MANUALLY: "Posted manually (confirmed by staff)",
+  REQUIRES_MANUAL_POSTING: "Ready to publish",
+  POSTED_MANUALLY: "Posted manually",
   CANCELLED: "Cancelled",
+} as const;
+
+export const POST_STATUS = {
+  DRAFT: { label: "Draft", tone: "gray" },
+  PENDING_APPROVAL: { label: "Awaiting approval", tone: "gold" },
+  APPROVED: { label: "Approved", tone: "navy" },
+  SCHEDULED: { label: "Approved · scheduled", tone: "navy" },
+  COMPLETED: { label: "Posted manually", tone: "green" },
+  CANCELLED: { label: "Cancelled", tone: "red" },
 } as const;
 
 /** Direct publishing status per platform. Nothing is connected in this build. */
