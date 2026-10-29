@@ -127,9 +127,11 @@ export async function portalUploadAction(clientId: string, _prev: ActionState, f
   return run(async () => {
     const file = await optionalFile(fd, "file");
     if (!file) throw new ValidationError("Choose a file to upload.");
-    await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), ...file });
+    const y = str(fd, "year");
+    if (!y && !str(fd, "periodId") && !str(fd, "requestId")) throw new ValidationError("Choose the tax year this document is for, or “Not sure”.");
+    await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), year: y === "unsure" ? "unsure" : y ? Number(y) : null, ...file });
     revalidatePath("/client", "layout");
-    return "Uploaded securely. Thank you!";
+    return "Uploaded securely. It's being checked for viruses, then our team will review it. Thank you!";
   });
 }
 

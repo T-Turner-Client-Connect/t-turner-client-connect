@@ -172,7 +172,7 @@ export async function portalSendMessage(
     return m;
   });
   // Brief text to the office phone (no message contents), within staff alert hours.
-  await queueStaffAlert(message.conversationId);
+  await queueStaffAlert({ conversationId: message.conversationId });
   return message;
 }
 

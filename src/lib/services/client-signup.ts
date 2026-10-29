@@ -13,6 +13,7 @@ import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import { appUrl } from "@/lib/integrations";
 import { normalizeEmail, normalizePhone } from "@/lib/normalize";
 import { storage } from "@/lib/storage";
+import { scanBytes } from "@/lib/scan";
 import { BUSINESS, SMS_CONSENT_TEXT } from "@/lib/business";
 import type { PortalActor } from "@/lib/portal/session";
 import { ValidationError } from "./clients";
@@ -269,12 +270,19 @@ async function finishLink(applicationId: string, clientId: string, portalUserId:
     create: { portalUserId, clientId, role: "OWNER", canViewTax: true, grantedById },
   });
   for (const f of app.files.filter((f) => !f.movedDocumentId)) {
+    const bytes = await storage.get(f.storageKey);
+    const scan = bytes ? await scanBytes(bytes, f.originalName) : "PENDING";
+    if (scan === "INFECTED") {
+      await storage.remove(f.storageKey).catch(() => {});
+      continue;
+    }
     const doc = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({
         data: { kind: "CLIENT_DOCUMENT", storageKey: f.storageKey, originalName: f.originalName, title: f.originalName.replace(/\.[^.]+$/, ""), mimeType: f.mimeType, sizeBytes: f.sizeBytes, uploadedByPortalUserId: portalUserId },
       });
       return tx.document.create({
-        data: { clientId, category: "CLIENT_UPLOADS", title: file.title, year: new Date().getFullYear(), visibility: "PUBLISHED", publishedAt: new Date(), fileId: file.id, uploadedByPortalId: portalUserId, retainUntil: await retentionDate("CLIENT_UPLOADS") },
+        // Year unknown at sign-up and quarantined until clean; staff review it.
+        data: { clientId, category: "CLIENT_UPLOADS", title: file.title, year: null, visibility: "PUBLISHED", publishedAt: new Date(), fileId: file.id, uploadedByPortalId: portalUserId, needsReview: true, scanStatus: scan, retainUntil: await retentionDate("CLIENT_UPLOADS") },
       });
     });
     await prisma.onboardingFile.update({ where: { id: f.id }, data: { movedDocumentId: doc.id } });
@@ -303,7 +311,7 @@ async function finishLink(applicationId: string, clientId: string, portalUserId:
     });
     return convo.id;
   });
-  await queueStaffAlert(convoId);
+  await queueStaffAlert({ conversationId: convoId });
 }
 
 /**

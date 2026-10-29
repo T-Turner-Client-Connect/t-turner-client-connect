@@ -284,7 +284,9 @@ export default async function SettingsPage() {
                 {isAdmin && (
                   <>
                     <ActionForm action={staffAlertSettingsAction} className="grid gap-2 sm:grid-cols-4">
-                      <label className="flex items-center gap-2 sm:col-span-4"><input type="checkbox" name="smsEnabled" defaultChecked={t.settings.smsEnabled} /> Text the office when a client sends a message (no message contents)</label>
+                      <label className="flex items-center gap-2 sm:col-span-4"><input type="checkbox" name="smsEnabled" defaultChecked={t.settings.smsEnabled} /> Text the office when a client sends a message or uploads a document (no contents)</label>
+                      <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" name="emailEnabled" defaultChecked={t.settings.emailEnabled} /> Also email a link-only summary to</label>
+                      <Field label="Office email" className="sm:col-span-2"><input className="input" type="email" name="email" defaultValue={t.settings.email} /></Field>
                       <Field label="Office phone (receives alerts)"><input className="input" name="phone" defaultValue={formatPhone(t.settings.phone)} /></Field>
                       <Field label="Mon–Fri from (Central)"><input className="input" type="time" name="windowStart" defaultValue={t.settings.windowStart} /></Field>
                       <Field label="until"><input className="input" type="time" name="windowEnd" defaultValue={t.settings.windowEnd} /></Field>

@@ -922,6 +922,14 @@ model Document {
   filing            FilingRecord?        @relation(fields: [filingId], references: [id], onDelete: SetNull)
   // "OFFICIAL_ACK" | "AGENCY_NOTICE" | "CORRESPONDENCE" | "FIRM_SUMMARY"
   filingDocType     String?
+  // Client uploads stay "Needs Review" until a staff member acknowledges them.
+  needsReview       Boolean              @default(false)
+  reviewedAt        DateTime?
+  reviewedById      String?
+  // Staff-chosen type for tax documents (return, TaxAct export, acceptance
+  // notice, extension, amendment…). Informational only: it never changes a
+  // filing's status or marks work complete.
+  docType           String?
 
   @@index([clientId, category, year, month])
   @@index([visibility])
@@ -2022,15 +2030,18 @@ model ActivationRequest {
 // Brief "you have a new client message" texts to the office phone. Never
 // include message contents. Off until an Admin turns them on.
 model StaffAlertSettings {
-  id          String   @id @default("default")
-  smsEnabled  Boolean  @default(false)
+  id           String   @id @default("default")
+  smsEnabled   Boolean  @default(false)
   // E.164. The receiving phone, not the Twilio sending number.
-  phone       String   @default("+12056595448")
+  phone        String   @default("+12056595448")
   // Monday–Friday window in America/Chicago, "HH:MM" 24-hour.
-  windowStart String   @default("08:00")
-  windowEnd   String   @default("17:00")
-  updatedById String?
-  updatedAt   DateTime @updatedAt
+  windowStart  String   @default("08:00")
+  windowEnd    String   @default("17:00")
+  // Link-only email summary of new client activity (any time of day).
+  emailEnabled Boolean  @default(true)
+  email        String   @default("info@tturnerassociates.com")
+  updatedById  String?
+  updatedAt    DateTime @updatedAt
 }
 
 enum StaffAlertStatus {
@@ -2042,12 +2053,16 @@ enum StaffAlertStatus {
 
 model StaffAlert {
   id              String           @id @default(cuid())
-  // "CLIENT_MESSAGE" or "TEST" (controlled test from Settings).
+  // "CLIENT_MESSAGE" (messages and/or uploads) or "TEST" (controlled test from Settings).
   reason          String
+  // "SMS" (office phone, weekday window) or "EMAIL" (office inbox, link only).
+  channel         String           @default("SMS")
   to              String
   body            String
   // Unread conversations this alert covers (several are combined into one text).
   conversationIds String[]
+  // New client uploads covered by this alert (still "Needs Review").
+  documentIds     String[]
   status          StaffAlertStatus @default(PENDING)
   notBefore       DateTime
   sentAt          DateTime?
@@ -2059,4 +2074,18 @@ model StaffAlert {
   createdAt       DateTime         @default(now())
 
   @@index([status, notBefore])
+}
+
+// Results of the Admin scanner self-test (EICAR test string must be caught,
+// a clean file must pass). Files are released from quarantine only by a
+// "CLEAN" result from a configured scanner.
+model ScannerCheck {
+  id          String   @id @default(cuid())
+  provider    String
+  eicarResult String
+  cleanResult String
+  ok          Boolean
+  detail      String?
+  runById     String
+  createdAt   DateTime @default(now())
 }

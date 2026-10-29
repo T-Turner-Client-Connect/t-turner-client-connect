@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser, updatePortalAccess } from "@/lib/services/portal-accounts";
@@ -13,6 +13,10 @@ import { requireClientAccess } from "@/lib/portal/access";
 import { createDocumentRequest } from "@/lib/services/bookkeeping";
 
 beforeEach(resetDb);
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 const PDF = new TextEncoder().encode("%PDF-1.4\n% fictional test document\n");
 
@@ -45,6 +49,9 @@ describe("portal access control", () => {
   });
 
   it("documents: staff-only, other clients, and tax permission are enforced", async () => {
+    // A stand-in scanner that passes everything, so this test checks permissions only.
+    vi.stubEnv("MALWARE_SCAN_URL", "https://scanner.test/scan");
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ clean: true }), { status: 200 }));
     const { staff, bakery, owner, assistant, stranger } = await setup();
     const published = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "PUBLISHED", bytes: PDF, originalName: "pl.pdf", year: 2026, month: 9, reportType: "PROFIT_AND_LOSS" });
     const internal = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "STAFF_ONLY", bytes: PDF, originalName: "workpaper.pdf" });

@@ -11,12 +11,34 @@
 | Portal notifications (email/text) | Recorded; delivered only when enabled | `NOTIFICATIONS_ENABLED=true` + Resend/Twilio |
 | Campaign email/text sending | **Locked.** Drafts, audiences, previews and test sends (simulated without a provider) work | Resend + Twilio + `LIVE_SENDING_ENABLED=true` + the messaging stage |
 | SMS consent, STOP/HELP, delivery receipts | Built: public consent page, per-phone consent ledger, signed Twilio webhooks | Twilio console webhook + Advanced Opt-Out — see SMS-PROGRAM.md |
-| Malware scanning | Setup required (files are type-checked; marked "Not scanned") | `MALWARE_SCAN_URL` |
+| Malware scanning | **Quarantine enforced.** Every client document is blocked (no download, not shown to clients) until a scanner returns clean | `MALWARE_SCAN_PROVIDER` + scanner settings — see below |
 | Jotform contracts | Links and in-portal embed work; completion confirmed by staff | `JOTFORM_API_KEY` + `JOTFORM_WEBHOOK_SECRET`, webhook `https://<site>/api/webhooks/jotform?secret=…`, hidden field `assignment_ref` on each form |
 | Tax e-signatures | **Setup required.** Requests can be prepared; signed-outside-the-app copies can be recorded (clearly labelled) | A provider verified for the exact tax forms, IRS identity requirements, joint signers and record retention |
 | TaxAct | **Staff-controlled CSV import** of e-file statuses (Clients → Imports → TaxAct) and of contact exports | See below |
 | Social publishing | **Manual publishing.** Suggested drafts from approved topics (built-in, no AI cost), approval with flagged-claim verification, one in-site reminder per platform when due, Download / Copy caption & hashtags / Open platform, mark posted per platform (link optional) | Direct publishing needs Meta App Review / TikTok audit; analytics-based times need connected accounts; an AI writer (optional) needs an AI provider API key |
 | Automations | Engine works; rules paused by default | `CRON_SECRET`, enable rules in Workflows → Automations |
+
+## Malware scanning (quarantine)
+
+Every uploaded client document (staff or client upload, onboarding files) is quarantined until a
+configured scanner returns **clean**: nobody can download it, it doesn't appear in the client's portal,
+and "publish" waits for the scan (the client is notified only then). Infected files are refused at upload,
+or destroyed if a later scan finds them, keeping only the record. Quarantined files are re-scanned every
+10 minutes and from Documents → "Scan quarantined files now". Documents → "Run scanner self-test" proves
+the setup: the harmless EICAR test string must be caught and a clean file must pass.
+
+Choose one (Netlify → Environment variables, Production):
+
+| Option | Variables | Notes |
+|---|---|---|
+| **Self-hosted ClamAV (recommended)** | `MALWARE_SCAN_PROVIDER=clamav-rest`, `MALWARE_SCAN_URL=https://<your scanner>/api/v1/scan`, `MALWARE_SCAN_FIELD=FILES` (default), optional `MALWARE_SCAN_TOKEN` (secret) | Files never leave infrastructure you control. Run a ClamAV REST container (for example `benzino77/clamav-rest-api`) on a small always-on host with HTTPS and a token/IP restriction. |
+| Cloudmersive Virus Scan API | `MALWARE_SCAN_PROVIDER=cloudmersive`, `CLOUDMERSIVE_API_KEY` (secret) | Hosted service; client files are sent to Cloudmersive for scanning — review their data-processing terms first. |
+| Any service answering `{"clean": true/false}` | `MALWARE_SCAN_URL`, optional `MALWARE_SCAN_TOKEN` | Raw bytes in the request body. |
+
+Never use VirusTotal or any service that shares uploaded files publicly.
+
+**After deploying with quarantine:** documents uploaded before this change were never scanned, so they are
+quarantined too until the scanner is connected and the 10-minute job (or "Scan now") passes them.
 
 ## Twilio texting
 

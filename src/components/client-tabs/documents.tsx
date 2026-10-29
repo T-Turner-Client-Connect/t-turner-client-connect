@@ -1,9 +1,12 @@
+import { SCAN_LABELS } from "@/lib/scan-labels";
+import { TAX_DOC_TYPES } from "@/lib/document-types";
 import type { DocumentCategory } from "@prisma/client";
 import type { Actor } from "@/lib/auth/actor";
 import { ActionForm } from "@/components/action-form";
 import { ConfirmButton } from "@/components/confirm-button";
-import { Badge, Button, Card, EmptyState, Field, Notice } from "@/components/ui";
-import { deleteDocumentAction, setVisibilityAction, uploadDocumentAction } from "@/app/actions/workspace";
+import { Badge, Button, Card, EmptyState, Notice } from "@/components/ui";
+import { acknowledgeDocumentsAction, deleteDocumentAction, setVisibilityAction } from "@/app/actions/workspace";
+import { UploadDocumentForm } from "@/components/upload-document-form";
 import { prisma } from "@/lib/prisma";
 import { CATEGORY_LABELS, downloadToken, REPORT_LABELS } from "@/lib/services/documents";
 import { MONTHS } from "@/lib/services/bookkeeping";
@@ -11,12 +14,7 @@ import { scanConfigured } from "@/lib/scan";
 import { formatBytes } from "@/lib/files";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 
-const SCAN = {
-  CLEAN: { tone: "green", text: "Scanned clean" },
-  PENDING: { tone: "amber", text: "Scan pending" },
-  INFECTED: { tone: "red", text: "Infected — blocked" },
-  NOT_SCANNED: { tone: "gray", text: "Not scanned" },
-} as const;
+const SCAN = SCAN_LABELS;
 
 export async function DocumentsTab({ clientId, user }: { clientId: string; user: Actor }) {
   const docs = await prisma.document.findMany({
@@ -48,8 +46,23 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
       <div className="space-y-4 lg:col-span-2">
         {!scanConfigured() && (
           <Notice tone="warn" title="Malware scanning: setup required">
-            Uploaded files are checked for type and size but not virus-scanned until a scanner is connected (MALWARE_SCAN_URL). Open client uploads with care.
+            New files stay quarantined — no downloads and nothing shown to the client — until a malware scanner is connected and the file passes. See Documents → Malware scanning.
           </Notice>
+        )}
+        {live.some((d) => d.needsReview) && (
+          <Card title={`New from the client — needs review (${live.filter((d) => d.needsReview).length})`}>
+            <ul className="divide-y divide-navy-100 text-sm" data-testid="needs-review">
+              {live.filter((d) => d.needsReview).map((d) => (
+                <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <span>
+                    <strong>{d.title}</strong> · {d.year ?? "year not given"} · {fmtDateTime(d.createdAt)} · <Badge tone={SCAN[d.scanStatus].tone}>{SCAN[d.scanStatus].text}</Badge>
+                  </span>
+                  <ActionForm action={acknowledgeDocumentsAction.bind(null, clientId, d.id)}><Button variant="ghost">Mark reviewed</Button></ActionForm>
+                </li>
+              ))}
+            </ul>
+            <ActionForm action={acknowledgeDocumentsAction.bind(null, clientId, null)} className="mt-2"><Button variant="secondary">Mark all reviewed</Button></ActionForm>
+          </Card>
         )}
         {live.length === 0 && <EmptyState title="No documents yet">Upload reports, tax documents or contracts on the right.</EmptyState>}
         {(Object.keys(CATEGORY_LABELS) as DocumentCategory[]).filter((c) => tree.has(c)).map((cat) => (
@@ -64,20 +77,31 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
                       <li key={d.id} className="py-2">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <a href={link} target="_blank" rel="noopener" className="font-medium text-navy-900 underline">{d.title}</a>
+                            {d.scanStatus === "CLEAN" ? (
+                              <a href={link} target="_blank" rel="noopener" className="font-medium text-navy-900 underline">{d.title}</a>
+                            ) : (
+                              <span className="font-medium text-navy-900">{d.title}</span>
+                            )}
                             <p className="text-xs text-slate-600">
                               {d.file.originalName} · {formatBytes(d.file.sizeBytes)} · {d.uploadedByPortal ? `Uploaded by client (${d.uploadedByPortal.name})` : `Uploaded by ${d.uploadedByStaff?.name ?? "staff"}`} · {fmtDate(d.createdAt)}
                               {d.retainUntil && ` · Keep until ${fmtDate(d.retainUntil)}`}
                               {d.retainUntil && d.retainUntil < now && " (retention period ended)"}
                             </p>
                             <div className="mt-1 flex flex-wrap gap-1">
-                              <Badge tone={d.visibility === "PUBLISHED" ? "green" : "gray"}>{d.visibility === "PUBLISHED" ? "Visible to client" : "Staff only"}</Badge>
+                              <Badge tone={d.visibility === "PUBLISHED" ? "green" : "gray"}>
+                                {d.visibility === "PUBLISHED" ? (d.scanStatus === "CLEAN" ? "Visible to client" : "Will show to client after the scan passes") : "Staff only"}
+                              </Badge>
+                              {d.docType && <Badge tone="navy">{TAX_DOC_TYPES[d.docType as keyof typeof TAX_DOC_TYPES] ?? d.docType}</Badge>}
                               {d.reportType && <Badge tone="navy">{REPORT_LABELS[d.reportType]}</Badge>}
                               <Badge tone={SCAN[d.scanStatus].tone}>{SCAN[d.scanStatus].text}</Badge>
                             </div>
                           </div>
                           <div className="flex flex-wrap gap-1">
-                            <a className="rounded-lg px-3 py-2 text-sm font-semibold text-navy-900 hover:bg-navy-100" href={`${link}?download=1`}>Download</a>
+                            {d.scanStatus === "CLEAN" ? (
+                              <a className="rounded-lg px-3 py-2 text-sm font-semibold text-navy-900 hover:bg-navy-100" href={`${link}?download=1`}>Download</a>
+                            ) : (
+                              <span className="px-3 py-2 text-xs text-slate-600">Download blocked until the scan passes</span>
+                            )}
                             {d.visibility === "PUBLISHED" ? (
                               <ConfirmButton action={setVisibilityAction.bind(null, clientId, d.id, "STAFF_ONLY")} variant="ghost">Unpublish</ConfirmButton>
                             ) : (
@@ -116,37 +140,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
         )}
       </div>
       <Card title="Upload a document">
-        <ActionForm action={uploadDocumentAction.bind(null, clientId)} className="space-y-3" resetOnSuccess>
-          <Field label="File" hint="PDF, JPG or PNG up to 5 MB."><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required /></Field>
-          <Field label="Title"><input className="input" name="title" placeholder="e.g. September 2026 P&L" /></Field>
-          <Field label="Category">
-            <select className="input" name="category" defaultValue="BOOKKEEPING">
-              {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </Field>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Year"><input className="input" name="year" inputMode="numeric" defaultValue={now.getFullYear()} /></Field>
-            <Field label="Month">
-              <select className="input" name="month" defaultValue="">
-                <option value="">—</option>
-                {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-              </select>
-            </Field>
-          </div>
-          <Field label="Report type (bookkeeping)">
-            <select className="input" name="reportType" defaultValue="">
-              <option value="">Not a report</option>
-              {Object.entries(REPORT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </Field>
-          <Field label="Who can see it">
-            <select className="input" name="visibility" defaultValue="STAFF_ONLY">
-              <option value="STAFF_ONLY">Staff only</option>
-              <option value="PUBLISHED">Publish to client portal (sends a sign-in notice)</option>
-            </select>
-          </Field>
-          <Button type="submit">Upload</Button>
-        </ActionForm>
+        <UploadDocumentForm clientId={clientId} />
       </Card>
     </div>
   );

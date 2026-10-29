@@ -9,7 +9,8 @@ import { allowedCategories, requireClientAccess } from "@/lib/portal/access";
 import { storage } from "@/lib/storage";
 import { sign, verifySignature } from "@/lib/crypto";
 import { imageSize, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
-import { scanBytes } from "@/lib/scan";
+import { scanBytes, scanConfigured } from "@/lib/scan";
+import { queueStaffAlert } from "./staff-alerts";
 import { ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
 
@@ -34,7 +35,7 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
   if (bytes.length > MAX_UPLOAD_BYTES) throw new ValidationError(`Files can be up to ${MAX_UPLOAD_LABEL}.`);
   const type = sniffType(bytes);
   if (!type) throw new ValidationError("Upload a PDF, JPG, or PNG file.");
-  const scan = await scanBytes(bytes);
+  const scan = await scanBytes(bytes, originalName);
   if (scan === "INFECTED") throw new ValidationError("This file was flagged by the virus scanner and was not saved.");
   const size = type.mime.startsWith("image/") ? imageSize(bytes, type.mime) : null;
   const storageKey = `client_document/${randomUUID()}`;
@@ -75,6 +76,7 @@ export type StaffUploadInput = {
   visibility: DocumentVisibility;
   reportType?: ReportType | null;
   periodId?: string | null;
+  docType?: string | null;
   bytes: Uint8Array;
   originalName: string;
   notify?: boolean;
@@ -101,6 +103,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
           publishedAt: published ? new Date() : null,
           reportType: input.reportType ?? null,
           periodId: input.periodId ?? null,
+          docType: input.docType ?? null,
           fileId: file.id,
           scanStatus: stored.scan,
           uploadedByStaffId: actor.id,
@@ -111,7 +114,8 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
       await audit(tx, { actorId: actor.id, action: "document.uploaded", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { category: input.category, visibility: input.visibility } });
       return doc;
     });
-    if (doc.visibility === "PUBLISHED" && input.notify !== false) await notifyClientUsers(doc.clientId, "NEW_DOCUMENT", doc.id, doc.category);
+    // Clients are told only once the file has passed the malware scan.
+    if (doc.visibility === "PUBLISHED" && doc.scanStatus === "CLEAN" && input.notify !== false) await notifyClientUsers(doc.clientId, "NEW_DOCUMENT", doc.id, doc.category);
     return doc;
   } catch (err) {
     await storage.remove(stored.storageKey).catch(() => {});
@@ -128,15 +132,17 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
     prisma.documentAccessLog.create({ data: { documentId, action: visibility === "PUBLISHED" ? "PUBLISH" : "UNPUBLISH", staffUserId: actor.id } }),
     prisma.auditLog.create({ data: { actorId: actor.id, action: visibility === "PUBLISHED" ? "document.published" : "document.unpublished", entityType: "Document", entityId: documentId, clientId: doc.clientId } }),
   ]);
-  if (visibility === "PUBLISHED" && !doc.publishedAt) await notifyClientUsers(doc.clientId, "NEW_DOCUMENT", doc.id, doc.category);
+  if (visibility === "PUBLISHED" && !doc.publishedAt && doc.scanStatus === "CLEAN") await notifyClientUsers(doc.clientId, "NEW_DOCUMENT", doc.id, doc.category);
 }
 
 /** Client upload, optionally answering a document request. */
 export async function portalUploadDocument(
   user: PortalActor,
-  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; bytes: Uint8Array; originalName: string },
+  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; bytes: Uint8Array; originalName: string },
 ) {
   await requireClientAccess(user.id, input.clientId, "upload");
+  const thisYear = new Date().getFullYear();
+  if (typeof input.year === "number" && (input.year < thisYear - 15 || input.year > thisYear + 1)) throw new ValidationError("Choose a tax year from the list.");
   let periodId = input.periodId ?? null;
   if (input.requestId) {
     const req = await prisma.documentRequest.findFirst({ where: { id: input.requestId, clientId: input.clientId } });
@@ -148,14 +154,15 @@ export async function portalUploadDocument(
   const period = periodId ? await prisma.bookkeepingPeriod.findUnique({ where: { id: periodId } }) : null;
   const stored = await storeDocumentFile(input.bytes, input.originalName, { portal: user });
   try {
-    return await prisma.$transaction(async (tx) => {
+    const saved = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });
       const doc = await tx.document.create({
         data: {
           clientId: input.clientId,
           category: "CLIENT_UPLOADS",
           title: input.title?.trim().slice(0, 200) || file.title,
-          year: period?.year ?? new Date().getFullYear(),
+          // The client confirms the year; "Not sure" stays empty for staff to classify.
+          year: period?.year ?? (typeof input.year === "number" ? input.year : null),
           month: period?.month ?? null,
           // Uploads by the client are visible back to the client.
           visibility: "PUBLISHED",
@@ -163,6 +170,8 @@ export async function portalUploadDocument(
           fileId: file.id,
           scanStatus: stored.scan,
           uploadedByPortalId: user.id,
+          // Stays "Needs Review" until a staff member acknowledges it.
+          needsReview: true,
           periodId,
           requestId: input.requestId ?? null,
           retainUntil: await retentionDate("CLIENT_UPLOADS"),
@@ -173,6 +182,9 @@ export async function portalUploadDocument(
       await audit(tx, { actorId: null, action: "document.client_uploaded", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { portalUserId: user.id, requestId: input.requestId ?? null } });
       return doc;
     });
+    // Grouped office alerts: a text inside weekday hours and a link-only email.
+    await queueStaffAlert({ documentId: saved.id });
+    return saved;
   } catch (err) {
     await storage.remove(stored.storageKey).catch(() => {});
     throw err;
@@ -183,7 +195,8 @@ export async function portalUploadDocument(
 export async function portalDocuments(user: PortalActor, clientId: string) {
   const access = await requireClientAccess(user.id, clientId);
   return prisma.document.findMany({
-    where: { clientId, deletedAt: null, visibility: "PUBLISHED", category: { in: allowedCategories(access) }, scanStatus: { not: "INFECTED" } },
+    // Quarantined files (not yet scanned clean) never reach the portal.
+    where: { clientId, deletedAt: null, visibility: "PUBLISHED", category: { in: allowedCategories(access) }, scanStatus: "CLEAN" },
     include: { file: { select: { mimeType: true, sizeBytes: true, originalName: true } } },
     orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
   });
@@ -221,8 +234,10 @@ export async function authorizeDownload(token: string, viewer: { staffId?: strin
   if (parsed.who !== expectedWho) return null;
   const doc = await prisma.document.findUnique({ where: { id: parsed.documentId }, include: { file: true } });
   if (!doc || doc.deletedAt) return null;
+  // Quarantine: nobody — staff or client — downloads a file until it has scanned clean.
+  if (doc.scanStatus !== "CLEAN") return null;
   if (viewer.portalUserId) {
-    if (doc.visibility !== "PUBLISHED" || doc.scanStatus === "INFECTED") return null;
+    if (doc.visibility !== "PUBLISHED") return null;
     try {
       const access = await requireClientAccess(viewer.portalUserId, doc.clientId);
       if (!allowedCategories(access).includes(doc.category as never)) return null;
@@ -267,3 +282,62 @@ async function notifyClientUsers(clientId: string, kind: string, refId: string, 
 }
 
 export { notifyClientUsers };
+
+// --- Malware scan quarantine ------------------------------------------------
+
+/**
+ * Re-scans quarantined client documents. CLEAN releases the file (and sends
+ * the client's "new document" notice if it was published); INFECTED destroys
+ * the stored bytes and keeps only the record. Safe to run repeatedly.
+ */
+export async function scanQuarantined(limit = 25) {
+  if (!scanConfigured()) return { scanned: 0, clean: 0, infected: 0 };
+  const docs = await prisma.document.findMany({
+    where: { deletedAt: null, scanStatus: { in: ["NOT_SCANNED", "PENDING"] } },
+    include: { file: true },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+  });
+  let clean = 0;
+  let infected = 0;
+  for (const d of docs) {
+    const bytes = await storage.get(d.file.storageKey);
+    if (!bytes) continue;
+    const result = await scanBytes(bytes, d.file.originalName);
+    if (result === "CLEAN") {
+      const res = await prisma.document.updateMany({ where: { id: d.id, scanStatus: { in: ["NOT_SCANNED", "PENDING"] } }, data: { scanStatus: "CLEAN" } });
+      if (res.count === 1) {
+        clean++;
+        await prisma.auditLog.create({ data: { action: "document.scan_clean", entityType: "Document", entityId: d.id, clientId: d.clientId } });
+        if (d.visibility === "PUBLISHED" && d.uploadedByStaffId) await notifyClientUsers(d.clientId, "NEW_DOCUMENT", d.id, d.category);
+      }
+    } else if (result === "INFECTED") {
+      await storage.remove(d.file.storageKey).catch(() => {});
+      await prisma.document.update({ where: { id: d.id }, data: { scanStatus: "INFECTED", visibility: "STAFF_ONLY" } });
+      await prisma.auditLog.create({ data: { action: "document.scan_infected_destroyed", entityType: "Document", entityId: d.id, clientId: d.clientId } });
+      infected++;
+    } else if (d.scanStatus === "NOT_SCANNED") {
+      await prisma.document.update({ where: { id: d.id }, data: { scanStatus: "PENDING" } });
+    }
+  }
+  return { scanned: docs.length, clean, infected };
+}
+
+export async function quarantinedDocuments() {
+  return prisma.document.findMany({
+    where: { deletedAt: null, scanStatus: { not: "CLEAN" } },
+    include: { client: { select: { id: true, displayName: true } } },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+}
+
+/** Staff acknowledge a client upload (clears "Needs Review"). */
+export async function acknowledgeDocuments(actor: Actor, clientId: string, documentIds?: string[]) {
+  const res = await prisma.document.updateMany({
+    where: { clientId, needsReview: true, ...(documentIds ? { id: { in: documentIds } } : {}) },
+    data: { needsReview: false, reviewedAt: new Date(), reviewedById: actor.id },
+  });
+  if (res.count) await prisma.auditLog.create({ data: { actorId: actor.id, action: "document.reviewed", entityType: "Client", entityId: clientId, clientId, details: { count: res.count } } });
+  return res.count;
+}

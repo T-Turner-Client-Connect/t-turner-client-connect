@@ -26,7 +26,7 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
         clientId,
         deletedAt: null,
         visibility: "PUBLISHED",
-        scanStatus: { not: "INFECTED" },
+        scanStatus: "CLEAN",
         category: { in: categories },
         uploadedByStaffId: { not: null },
         // Unopened by this viewer
@@ -45,7 +45,7 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
 
 export async function loadPortalDocuments(clientId: string, perms: Perms) {
   return prisma.document.findMany({
-    where: { clientId, deletedAt: null, visibility: "PUBLISHED", scanStatus: { not: "INFECTED" }, category: { in: allowedCategories(perms as PortalAccess) } },
+    where: { clientId, deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN", category: { in: allowedCategories(perms as PortalAccess) } },
     include: { file: { select: { mimeType: true, sizeBytes: true } } },
     orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
   });

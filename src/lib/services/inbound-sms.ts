@@ -59,7 +59,7 @@ export async function handleInboundSms(params: Record<string, string>): Promise<
       await tx.auditLog.create({ data: { action: "message.received", entityType: "InboundSms", entityId: inbound.id, clientId, details: { channel: "SMS" } } });
       return convo.id;
     });
-    await queueStaffAlert(convoId);
+    await queueStaffAlert({ conversationId: convoId });
   }
   return { reply: null };
 }

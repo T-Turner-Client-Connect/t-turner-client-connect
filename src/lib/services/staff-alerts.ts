@@ -1,10 +1,15 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { assertAdmin, type Actor } from "@/lib/auth/actor";
-import { normalizePhone } from "@/lib/normalize";
+import { normalizeEmail, normalizePhone } from "@/lib/normalize";
 import { sendSms, twilioConfigured } from "@/lib/twilio";
 import { chicagoLocalToUtc, chicagoParts } from "@/lib/tz";
 import { ValidationError } from "./clients";
+import { emailProviderConfigured } from "@/lib/auth/client-auth";
+import { brandedEmailHtml, sendEmail } from "@/lib/email";
+import { appUrl } from "@/lib/integrations";
+import { fmtChicago } from "@/lib/tz";
+import { CATEGORY_LABELS } from "./documents";
 
 /**
  * Staff text alerts: a brief notice to the office phone when a client sends
@@ -22,14 +27,19 @@ export async function staffAlertSettings() {
   return prisma.staffAlertSettings.create({ data: { id: "default" } }).catch(() => prisma.staffAlertSettings.findUniqueOrThrow({ where: { id: "default" } }));
 }
 
-export async function updateStaffAlertSettings(actor: Actor, input: { smsEnabled: boolean; phone: string; windowStart: string; windowEnd: string }) {
+export async function updateStaffAlertSettings(actor: Actor, input: { smsEnabled: boolean; phone: string; windowStart: string; windowEnd: string; emailEnabled?: boolean; email?: string }) {
   assertAdmin(actor);
   const phone = normalizePhone(input.phone);
   if (!phone) throw new ValidationError("Enter a valid US phone number for staff alerts.");
   if (!/^\d{2}:\d{2}$/.test(input.windowStart) || !/^\d{2}:\d{2}$/.test(input.windowEnd) || input.windowStart >= input.windowEnd) throw new ValidationError("Choose a start time before the end time.");
   if (input.smsEnabled && !twilioConfigured()) throw new ValidationError("Connect Twilio first (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID).");
   await staffAlertSettings();
-  await prisma.staffAlertSettings.update({ where: { id: "default" }, data: { smsEnabled: input.smsEnabled, phone, windowStart: input.windowStart, windowEnd: input.windowEnd, updatedById: actor.id } });
+  const email = input.email !== undefined ? normalizeEmail(input.email) : undefined;
+  if (input.email !== undefined && !email) throw new ValidationError("Enter a valid email address for staff alerts.");
+  await prisma.staffAlertSettings.update({
+    where: { id: "default" },
+    data: { smsEnabled: input.smsEnabled, phone, windowStart: input.windowStart, windowEnd: input.windowEnd, ...(input.emailEnabled !== undefined ? { emailEnabled: input.emailEnabled } : {}), ...(email ? { email } : {}), updatedById: actor.id },
+  });
   await prisma.auditLog.create({ data: { actorId: actor.id, action: input.smsEnabled ? "staff_alerts.sms_on" : "staff_alerts.sms_off", entityType: "StaffAlertSettings", entityId: "default" } });
 }
 
@@ -57,47 +67,111 @@ export function nextWindowStart(now: Date, start: string, end: string): Date {
   return now;
 }
 
-/** Called whenever a client sends something. Combines with any alert still waiting. */
-export async function queueStaffAlert(conversationId: string) {
+export const STAFF_UPLOAD_TEXT = "TTurner Client Connect: A client uploaded new documents. Sign in to review them.";
+export const STAFF_BOTH_TEXT = "TTurner Client Connect: You have new client messages and documents. Sign in to view and respond.";
+const EMAIL_GROUPING_MS = 5 * 60 * 1000;
+// A short wait gathers a burst of activity into one text, and the office phone
+// gets at most one alert text per 15 minutes.
+const SMS_GROUPING_MS = 3 * 60 * 1000;
+const SMS_MIN_GAP_MS = 15 * 60 * 1000;
+
+/**
+ * Called whenever a client sends a message or uploads a document. Joins any
+ * alert still waiting, so a burst of activity becomes one text and one email.
+ */
+export async function queueStaffAlert(ref: { conversationId?: string; documentId?: string }) {
   const s = await staffAlertSettings();
-  if (!s.smsEnabled || !twilioConfigured()) return;
   const now = new Date();
+  const lastText = await prisma.staffAlert.findFirst({ where: { reason: "CLIENT_MESSAGE", channel: "SMS", status: "SENT" }, orderBy: { sentAt: "desc" }, select: { sentAt: true } });
+  const earliestText = new Date(Math.max(now.getTime() + SMS_GROUPING_MS, (lastText?.sentAt?.getTime() ?? 0) + SMS_MIN_GAP_MS));
+  const channels = [
+    ...(s.smsEnabled && twilioConfigured() ? [{ channel: "SMS", to: s.phone, notBefore: nextWindowStart(earliestText, s.windowStart, s.windowEnd) }] : []),
+    ...(s.emailEnabled && emailProviderConfigured() ? [{ channel: "EMAIL", to: s.email, notBefore: new Date(now.getTime() + EMAIL_GROUPING_MS) }] : []),
+  ];
+  if (!channels.length) return;
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('staff-alert-queue'))`;
-    const pending = await tx.staffAlert.findFirst({ where: { reason: "CLIENT_MESSAGE", status: "PENDING" } });
-    if (pending) {
-      if (!pending.conversationIds.includes(conversationId)) await tx.staffAlert.update({ where: { id: pending.id }, data: { conversationIds: { push: conversationId } } });
-      return;
+    for (const c of channels) {
+      const pending = await tx.staffAlert.findFirst({ where: { reason: "CLIENT_MESSAGE", channel: c.channel, status: "PENDING" } });
+      if (pending) {
+        await tx.staffAlert.update({
+          where: { id: pending.id },
+          data: {
+            ...(ref.conversationId && !pending.conversationIds.includes(ref.conversationId) ? { conversationIds: { push: ref.conversationId } } : {}),
+            ...(ref.documentId && !pending.documentIds.includes(ref.documentId) ? { documentIds: { push: ref.documentId } } : {}),
+          },
+        });
+      } else {
+        await tx.staffAlert.create({
+          data: { reason: "CLIENT_MESSAGE", channel: c.channel, to: c.to, body: "", conversationIds: ref.conversationId ? [ref.conversationId] : [], documentIds: ref.documentId ? [ref.documentId] : [], notBefore: c.notBefore },
+        });
+      }
     }
-    await tx.staffAlert.create({ data: { reason: "CLIENT_MESSAGE", to: s.phone, body: STAFF_ALERT_TEXT, conversationIds: [conversationId], notBefore: nextWindowStart(now, s.windowStart, s.windowEnd) } });
   });
   await dispatchStaffAlerts(now);
 }
 
-/** Sends due alerts inside the window. Safe to run often: each alert is claimed once. */
+async function openItems(conversationIds: string[], documentIds: string[]) {
+  const [convos, docs] = await Promise.all([
+    prisma.conversation.findMany({ where: { id: { in: conversationIds }, unreadByStaff: true, closedAt: null }, include: { client: { select: { id: true, displayName: true } } } }),
+    prisma.document.findMany({ where: { id: { in: documentIds }, needsReview: true, deletedAt: null }, include: { client: { select: { id: true, displayName: true } } } }),
+  ]);
+  return { convos, docs };
+}
+
+function emailSummary(items: Awaited<ReturnType<typeof openItems>>) {
+  const lines: string[] = [];
+  for (const c of items.convos) lines.push(`• New message from ${c.client.displayName} (${fmtChicago(c.lastMessageAt)} CT) — ${appUrl()}/clients/${c.client.id}?tab=messages`);
+  for (const d of items.docs) {
+    lines.push(`• ${d.client.displayName} uploaded a document: ${CATEGORY_LABELS[d.category]}, ${d.year ? `tax year ${d.year}` : "tax year not given"}, ${fmtChicago(d.createdAt)} CT — ${appUrl()}/clients/${d.client.id}?tab=documents`);
+  }
+  return lines;
+}
+
+/** Sends due alerts (texts only inside the weekday window). Safe to run often: each alert is claimed once. */
 export async function dispatchStaffAlerts(now = new Date()) {
   const s = await staffAlertSettings();
-  if (!inWindow(now, s.windowStart, s.windowEnd)) return 0;
-  const due = await prisma.staffAlert.findMany({ where: { reason: "CLIENT_MESSAGE", status: "PENDING", notBefore: { lte: now } } });
+  const smsWindow = inWindow(now, s.windowStart, s.windowEnd);
+  const due = await prisma.staffAlert.findMany({ where: { reason: "CLIENT_MESSAGE", status: "PENDING", notBefore: { lte: now }, ...(smsWindow ? {} : { channel: "EMAIL" }) } });
   let sent = 0;
   for (const a of due) {
-    const stillOpen = await prisma.conversation.count({ where: { id: { in: a.conversationIds }, unreadByStaff: true, closedAt: null } });
-    if (!stillOpen) {
-      await prisma.staffAlert.updateMany({ where: { id: a.id, status: "PENDING" }, data: { status: "SKIPPED", statusDetail: "Already read or resolved before the alert window" } });
+    const items = await openItems(a.conversationIds, a.documentIds);
+    if (!items.convos.length && !items.docs.length) {
+      await prisma.staffAlert.updateMany({ where: { id: a.id, status: "PENDING" }, data: { status: "SKIPPED", statusDetail: "Already read, reviewed or resolved before the alert went out" } });
       continue;
     }
-    if (!s.smsEnabled || !twilioConfigured()) {
-      await prisma.staffAlert.updateMany({ where: { id: a.id, status: "PENDING" }, data: { status: "SKIPPED", statusDetail: "Staff text alerts are turned off" } });
+    const enabled = a.channel === "SMS" ? s.smsEnabled && twilioConfigured() : s.emailEnabled && emailProviderConfigured();
+    if (!enabled) {
+      await prisma.staffAlert.updateMany({ where: { id: a.id, status: "PENDING" }, data: { status: "SKIPPED", statusDetail: `Staff ${a.channel === "SMS" ? "text" : "email"} alerts are turned off` } });
       continue;
     }
     const claimed = await prisma.staffAlert.updateMany({ where: { id: a.id, status: "PENDING", sentAt: null }, data: { sentAt: now } });
     if (claimed.count !== 1) continue;
-    const res = await sendSms(s.phone, a.body);
-    await prisma.staffAlert.update({
-      where: { id: a.id },
-      data: res.ok ? { status: "SENT", providerSid: res.sid ?? null, deliveryStatus: "accepted", statusDetail: res.detail, to: s.phone } : { status: "FAILED", statusDetail: res.detail },
-    });
-    if (res.ok) sent++;
+    if (a.channel === "SMS") {
+      const body = items.convos.length && items.docs.length ? STAFF_BOTH_TEXT : items.docs.length ? STAFF_UPLOAD_TEXT : STAFF_ALERT_TEXT;
+      const res = await sendSms(s.phone, body);
+      await prisma.staffAlert.update({
+        where: { id: a.id },
+        data: res.ok ? { status: "SENT", body, providerSid: res.sid ?? null, deliveryStatus: "accepted", statusDetail: res.detail, to: s.phone } : { status: "FAILED", body, statusDetail: res.detail },
+      });
+      if (res.ok) sent++;
+    } else {
+      const lines = emailSummary(items);
+      const paragraphs = ["New client activity in TTurner Client Connect:", ...lines, "Documents and messages stay in the secure system — sign in to view them. Nothing is attached to this email."];
+      const res = await sendEmail({
+        to: s.email,
+        subject: `New client activity (${lines.length}) — TTurner Client Connect`,
+        text: paragraphs.join("\n"),
+        html: brandedEmailHtml({ heading: "New client activity", paragraphs, button: { label: "Sign in to Client Connect", url: `${appUrl()}/staff/login` } }),
+        idempotencyKey: `staff-alert/${a.id}`,
+        tags: { category: "staff_alert" },
+      });
+      await prisma.staffAlert.update({
+        where: { id: a.id },
+        data: res.ok ? { status: "SENT", body: paragraphs.join("\n"), providerSid: res.providerId ? `email:${res.providerId}` : null, deliveryStatus: "accepted", statusDetail: "Accepted by email provider", to: s.email } : { status: "FAILED", statusDetail: res.detail },
+      });
+      if (res.ok) sent++;
+    }
   }
   return sent;
 }

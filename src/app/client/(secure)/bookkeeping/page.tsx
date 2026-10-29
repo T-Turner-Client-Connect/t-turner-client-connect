@@ -23,7 +23,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       ? prisma.bookkeepingPeriod.findMany({
           where: { clientId: current.clientId },
           include: {
-            documents: { where: { deletedAt: null, visibility: "PUBLISHED", scanStatus: { not: "INFECTED" } }, orderBy: { createdAt: "desc" } },
+            documents: { where: { deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN" }, orderBy: { createdAt: "desc" } },
             requests: { where: { status: { not: "CANCELLED" } }, orderBy: { createdAt: "asc" } },
           },
           orderBy: [{ year: "desc" }, { month: "desc" }],
