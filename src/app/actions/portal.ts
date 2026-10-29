@@ -1,5 +1,7 @@
 "use server";
 
+import { isClientDocType } from "@/lib/document-types";
+
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
@@ -128,8 +130,11 @@ export async function portalUploadAction(clientId: string, _prev: ActionState, f
     const file = await optionalFile(fd, "file");
     if (!file) throw new ValidationError("Choose a file to upload.");
     const y = str(fd, "year");
-    if (!y && !str(fd, "periodId") && !str(fd, "requestId")) throw new ValidationError("Choose the tax year this document is for, or “Not sure”.");
-    await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), year: y === "unsure" ? "unsure" : y ? Number(y) : null, ...file });
+    const contextual = str(fd, "periodId") || str(fd, "requestId");
+    if (!y && !contextual) throw new ValidationError("Choose the tax year this document is for, or “Not sure”.");
+    const docType = str(fd, "docType");
+    if (!contextual && !isClientDocType(docType)) throw new ValidationError("Choose what kind of document this is.");
+    await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), year: y === "unsure" ? "unsure" : y ? Number(y) : null, docType: isClientDocType(docType) ? docType : null, ...file });
     revalidatePath("/client", "layout");
     return "Uploaded securely. It's being checked for viruses, then our team will review it. Thank you!";
   });

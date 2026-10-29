@@ -8,7 +8,9 @@ import { dispatchStaffAlerts, updateStaffAlertSettings } from "@/lib/services/st
 import { storage } from "@/lib/storage";
 import { chicagoLocalToUtc } from "@/lib/tz";
 
-const PDF = new TextEncoder().encode("%PDF-1.4\n% fictional\n");
+let pdfSeq = 0;
+// Each upload gets unique bytes: the vault keeps one copy of identical files.
+const pdfBytes = () => new TextEncoder().encode(`%PDF-1.4\n% fictional ${pdfSeq++}\n`);
 type Call = { url: string; headers: Record<string, string>; body: unknown };
 let calls: Call[] = [];
 let verdict: (body: unknown) => unknown = () => ({ clean: true });
@@ -55,18 +57,18 @@ describe("scanner adapters", () => {
   });
 
   it("call each provider the documented way, and the self-test needs EICAR caught and a clean file passed", async () => {
-    expect(await scanBytes(PDF)).toBe("NOT_SCANNED");
+    expect(await scanBytes(pdfBytes())).toBe("NOT_SCANNED");
     vi.stubEnv("MALWARE_SCAN_PROVIDER", "cloudmersive");
     vi.stubEnv("CLOUDMERSIVE_API_KEY", "cm_key");
     verdict = () => ({ CleanResult: true });
-    expect(await scanBytes(PDF, "a.pdf")).toBe("CLEAN");
+    expect(await scanBytes(pdfBytes(), "a.pdf")).toBe("CLEAN");
     expect(calls.at(-1)!.url).toBe("https://api.cloudmersive.com/virus/scan/file");
     expect(calls.at(-1)!.headers.Apikey).toBe("cm_key");
     expect((calls.at(-1)!.body as FormData).get("inputFile")).toBeInstanceOf(Blob);
 
     vi.stubEnv("MALWARE_SCAN_PROVIDER", "clamav-rest");
     vi.stubEnv("MALWARE_SCAN_URL", "https://clamav.example.com/api/v1/scan");
-    expect(await scanBytes(PDF, "a.pdf")).toBe("CLEAN");
+    expect(await scanBytes(pdfBytes(), "a.pdf")).toBe("CLEAN");
     expect((calls.at(-1)!.body as FormData).get("FILES")).toBeInstanceOf(Blob);
 
     // A scanner that passes everything fails the self-test (EICAR must be caught).
@@ -80,7 +82,7 @@ describe("scanner adapters", () => {
 describe("quarantine", () => {
   it("blocks download and client visibility until the scan passes, then releases and notifies", async () => {
     const { tab, client, user } = await setup();
-    const doc = await staffUploadDocument(tab, { clientId: client.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "TAX_RETURN", bytes: PDF, originalName: "1040.pdf" });
+    const doc = await staffUploadDocument(tab, { clientId: client.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "TAX_RETURN", bytes: pdfBytes(), originalName: "1040.pdf" });
     expect(doc.scanStatus).toBe("NOT_SCANNED");
     expect(await authorizeDownload(downloadToken(doc.id, { staffId: tab.id }), { staffId: tab.id })).toBeNull();
     expect(await authorizeDownload(downloadToken(doc.id, { portalUserId: user.id }), { portalUserId: user.id })).toBeNull();
@@ -99,7 +101,7 @@ describe("quarantine", () => {
 
   it("destroys infected files and keeps only the record", async () => {
     const { tab, client } = await setup();
-    const doc = await staffUploadDocument(tab, { clientId: client.id, category: "OTHER", visibility: "PUBLISHED", bytes: PDF, originalName: "x.pdf" });
+    const doc = await staffUploadDocument(tab, { clientId: client.id, category: "OTHER", visibility: "PUBLISHED", bytes: pdfBytes(), originalName: "x.pdf" });
     const file = await prisma.storedFile.findUniqueOrThrow({ where: { id: doc.fileId } });
     vi.stubEnv("MALWARE_SCAN_URL", "https://scanner.test/scan");
     verdict = () => ({ clean: false });
@@ -113,7 +115,7 @@ describe("quarantine", () => {
     const { tab, client } = await setup();
     vi.stubEnv("MALWARE_SCAN_URL", "https://scanner.test/scan");
     vi.stubGlobal("fetch", async () => new Response("down", { status: 503 }));
-    const doc = await staffUploadDocument(tab, { clientId: client.id, category: "OTHER", visibility: "STAFF_ONLY", bytes: PDF, originalName: "y.pdf" });
+    const doc = await staffUploadDocument(tab, { clientId: client.id, category: "OTHER", visibility: "STAFF_ONLY", bytes: pdfBytes(), originalName: "y.pdf" });
     expect(doc.scanStatus).toBe("PENDING");
     await scanQuarantined();
     expect((await prisma.document.findUniqueOrThrow({ where: { id: doc.id } })).scanStatus).toBe("PENDING");
@@ -131,8 +133,8 @@ describe("client uploads", () => {
     await updateStaffAlertSettings(tab, { smsEnabled: true, phone: "205-659-5448", windowStart: "08:00", windowEnd: "17:00", emailEnabled: true, email: "info@tturnerassociates.com" });
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(chicagoLocalToUtc("2026-11-03T10:00")!); // Tuesday
-    const a = await portalUploadDocument(user, { clientId: client.id, year: 2025, title: "W-2", bytes: PDF, originalName: "w2.pdf" });
-    const b = await portalUploadDocument(user, { clientId: client.id, year: "unsure", title: "Receipt", bytes: PDF, originalName: "r.pdf" });
+    const a = await portalUploadDocument(user, { clientId: client.id, year: 2025, title: "W-2", bytes: pdfBytes(), originalName: "w2.pdf" });
+    const b = await portalUploadDocument(user, { clientId: client.id, year: "unsure", title: "Receipt", bytes: pdfBytes(), originalName: "r.pdf" });
     expect(a).toMatchObject({ needsReview: true, year: 2025 });
     expect(b.year).toBeNull();
 
@@ -159,7 +161,7 @@ describe("client uploads", () => {
 
     expect(await acknowledgeDocuments(tab, client.id)).toBe(2);
     // Reviewed before a later text window: that alert is skipped.
-    const c = await portalUploadDocument(user, { clientId: client.id, year: 2025, bytes: PDF, originalName: "late.pdf" });
+    const c = await portalUploadDocument(user, { clientId: client.id, year: 2025, bytes: pdfBytes(), originalName: "late.pdf" });
     await acknowledgeDocuments(tab, client.id, [c.id]);
     vi.setSystemTime(chicagoLocalToUtc("2026-11-03T10:30")!);
     await dispatchStaffAlerts();

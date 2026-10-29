@@ -29,14 +29,14 @@ export function UploadDocumentForm({ clientId, clients }: { clientId?: string; c
           {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
       </Field>
-      <Field label="Tax year"><input className="input" name="year" inputMode="numeric" defaultValue={year - 1} /></Field>
+      <Field label="Tax year" hint="Required for tax records."><input className="input" name="year" inputMode="numeric" defaultValue={year - 1} /></Field>
       <Field label="Month (bookkeeping, optional)">
         <select className="input" name="month" defaultValue="">
           <option value="">—</option>
           {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
         </select>
       </Field>
-      <Field label="Tax document type (optional)" hint="Labels the file only — it never marks a return accepted or work complete.">
+      <Field label="Tax document type" hint="Required for tax records. Federal, state and amended returns appear separately in the client's Retrieve Tax Filings. Labels the file only — it never marks a return accepted or work complete.">
         <select className="input" name="docType" defaultValue="">
           <option value="">—</option>
           {Object.entries(TAX_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}

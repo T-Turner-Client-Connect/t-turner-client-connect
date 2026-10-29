@@ -1,5 +1,6 @@
 import type { Contact } from "@prisma/client";
 import { ActionForm } from "@/components/action-form";
+import { confirmIdentityAction } from "@/app/actions/tax-center";
 import { Badge, Button, Card, Field, Notice } from "@/components/ui";
 import {
   assignContractAction,
@@ -51,7 +52,8 @@ export async function PortalTab({ clientId, contacts }: { clientId: string; cont
                 <div>
                   <p className="font-semibold">{g.portalUser.name} <span className="font-normal text-slate-600">· {g.portalUser.email}</span></p>
                   <p className="text-xs text-slate-600">
-                    {g.role === "OWNER" ? "Owner" : "Authorized contact"} · last sign-in {g.portalUser.lastLoginAt ? fmtDateTime(g.portalUser.lastLoginAt) : "never"} · {g.portalUser.mfaEnabledAt ? "2-step on" : "2-step not set up"}
+                    {g.role === "OWNER" ? "Owner" : "Authorized contact"} · last sign-in {g.portalUser.lastLoginAt ? fmtDateTime(g.portalUser.lastLoginAt) : "never"} · {g.portalUser.mfaEnabledAt ? "2-step on" : "2-step not set up"} ·{" "}
+                    {g.portalUser.emailVerifiedAt ? "email verified" : g.portalUser.identityVerifiedAt ? `identity confirmed by staff ${fmtDate(g.portalUser.identityVerifiedAt)}` : "not verified — past-year tax records locked"}
                   </p>
                 </div>
                 {g.revokedAt ? <Badge tone="red">Access revoked</Badge> : <Badge tone="green">Active</Badge>}
@@ -66,6 +68,15 @@ export async function PortalTab({ clientId, contacts }: { clientId: string; cont
                 </select>
                 <Button type="submit" variant="secondary">Save</Button>
               </ActionForm>
+              {!g.portalUser.emailVerifiedAt && !g.portalUser.identityVerifiedAt && !g.revokedAt && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-sm underline">Confirm identity to unlock past-year records</summary>
+                  <ActionForm action={confirmIdentityAction.bind(null, clientId, g.portalUserId)} className="mt-1 flex flex-wrap items-end gap-2">
+                    <Field label="How you confirmed it"><input className="input w-80" name="note" placeholder="e.g. Called the number on file, verified DOB" required /></Field>
+                    <Button type="submit" variant="secondary">Confirm identity</Button>
+                  </ActionForm>
+                </details>
+              )}
               {g.portalUser.mfaEnabledAt && (
                 <ActionForm action={resetPortalMfaAction.bind(null, clientId, g.portalUserId)} confirm="Reset their two-step verification? Only do this after confirming their identity by phone." className="mt-1">
                   <Button type="submit" variant="ghost">Reset 2-step (lost phone)</Button>

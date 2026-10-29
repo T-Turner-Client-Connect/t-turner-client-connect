@@ -1,4 +1,4 @@
-import { PageHeader, Notice } from "@/components/ui";
+import { Notice } from "@/components/ui";
 import { PortalHomeView } from "@/components/portal/home-view";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
@@ -14,8 +14,14 @@ export default async function PortalHome({ searchParams }: { searchParams: Promi
   const data = await loadPortalHome(current.clientId, current, user.id);
   return (
     <>
-      <PageHeader title={`Welcome, ${user.name.split(" ")[0]}`} subtitle={<>Viewing <strong>{current.client.businessName || current.client.displayName}</strong></>} />
-      <PortalHomeView data={data} q={`?account=${current.clientId}`} linkFor={(id) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`} />
+      <PortalHomeView
+        data={data}
+        q={`?account=${current.clientId}`}
+        clientId={current.clientId}
+        name={user.name.split(" ")[0]}
+        accountName={current.client.businessName || current.client.displayName}
+        linkFor={(id) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`}
+      />
     </>
   );
 }

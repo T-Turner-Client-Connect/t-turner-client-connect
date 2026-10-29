@@ -1,5 +1,5 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DocumentCategory, DocumentVisibility, ReportType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
@@ -28,13 +28,29 @@ export const REPORT_LABELS: Record<ReportType, string> = {
   OTHER_REPORT: "Other report",
 };
 
-type Uploader = { staff: Actor } | { portal: PortalActor };
+// "system": files received from an integration (e.g. a Jotform submission).
+type Uploader = { staff: Actor } | { portal: PortalActor } | { system: string };
 
-export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader) {
+export const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * Originals are stored once per client: the same file (by content) can't be
+ * added twice. Points the uploader at the copy already in the vault.
+ */
+export async function assertNotDuplicate(clientId: string, sha256: string, forClient = false) {
+  const existing = await prisma.document.findFirst({ where: { clientId, deletedAt: null, file: { sha256 } }, select: { title: true, year: true } });
+  // Clients aren't told the title (it may be a staff-only draft).
+  if (existing && forClient) throw new ValidationError("We already have this exact file, so it wasn't added again.");
+  if (existing) throw new ValidationError(`This file is already saved${existing.year ? ` under ${existing.year}` : ""} as “${existing.title}”, so it wasn't added again.`);
+}
+
+export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string) {
   if (bytes.length === 0) throw new ValidationError("The file is empty.");
   if (bytes.length > MAX_UPLOAD_BYTES) throw new ValidationError(`Files can be up to ${MAX_UPLOAD_LABEL}.`);
   const type = sniffType(bytes);
   if (!type) throw new ValidationError("Upload a PDF, JPG, or PNG file.");
+  const sha256 = sha256Of(bytes);
+  if (clientId) await assertNotDuplicate(clientId, sha256, "portal" in uploader);
   const scan = await scanBytes(bytes, originalName);
   if (scan === "INFECTED") throw new ValidationError("This file was flagged by the virus scanner and was not saved.");
   const size = type.mime.startsWith("image/") ? imageSize(bytes, type.mime) : null;
@@ -55,6 +71,7 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
       height: size?.height ?? null,
       uploadedById: "staff" in uploader ? uploader.staff.id : null,
       uploadedByPortalUserId: "portal" in uploader ? uploader.portal.id : null,
+      sha256,
     },
   };
 }
@@ -87,7 +104,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
   if (input.periodId && !(await prisma.bookkeepingPeriod.count({ where: { id: input.periodId, clientId: input.clientId } }))) throw new ValidationError("Bookkeeping month not found.");
-  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor });
+  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.clientId);
   try {
     const doc = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });
@@ -138,7 +155,7 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
 /** Client upload, optionally answering a document request. */
 export async function portalUploadDocument(
   user: PortalActor,
-  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; bytes: Uint8Array; originalName: string },
+  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; docType?: string | null; bytes: Uint8Array; originalName: string },
 ) {
   await requireClientAccess(user.id, input.clientId, "upload");
   const thisYear = new Date().getFullYear();
@@ -152,7 +169,7 @@ export async function portalUploadDocument(
     throw new ForbiddenError();
   }
   const period = periodId ? await prisma.bookkeepingPeriod.findUnique({ where: { id: periodId } }) : null;
-  const stored = await storeDocumentFile(input.bytes, input.originalName, { portal: user });
+  const stored = await storeDocumentFile(input.bytes, input.originalName, { portal: user }, input.clientId);
   try {
     const saved = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });
@@ -174,6 +191,7 @@ export async function portalUploadDocument(
           needsReview: true,
           periodId,
           requestId: input.requestId ?? null,
+          docType: input.docType ?? null,
           retainUntil: await retentionDate("CLIENT_UPLOADS"),
         },
       });
@@ -244,8 +262,23 @@ export async function authorizeDownload(token: string, viewer: { staffId?: strin
     } catch {
       return null;
     }
+    if (isHistorical(doc) && !(await portalVerified(viewer.portalUserId))) return null;
   }
   return doc;
+}
+
+/**
+ * Past-year records from our office (before last tax year) open only for a
+ * portal login with a proven email address or staff-confirmed identity.
+ * The client's own uploads are never locked.
+ */
+export function isHistorical(doc: { year: number | null; uploadedByStaffId: string | null }, now = new Date()) {
+  return !!doc.uploadedByStaffId && doc.year !== null && doc.year < now.getFullYear() - 1;
+}
+
+export async function portalVerified(portalUserId: string) {
+  const u = await prisma.portalUser.findUnique({ where: { id: portalUserId }, select: { emailVerifiedAt: true, identityVerifiedAt: true } });
+  return !!(u?.emailVerifiedAt || u?.identityVerifiedAt);
 }
 
 // --- Retention & audited deletion -----------------------------------------

@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { downloadToken } from "@/lib/services/documents";
 import { AMENDMENT_LABELS, FILING_LABELS, filingStatusLabel, filingTitle, PREP_LABELS } from "@/lib/tax/normalize";
 import { fmtDate, fmtDateTime } from "@/lib/format";
+import { TaxCenterStaff } from "./tax-center-staff";
 
 const DOC_TYPE = { OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Agency notice", CORRESPONDENCE: "Correspondence", FIRM_SUMMARY: "Our summary" } as const;
 
@@ -25,6 +26,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
 
   return (
     <div className="space-y-4">
+      <TaxCenterStaff clientId={clientId} />
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Add a filing">
           <ActionForm action={createFilingAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-2" resetOnSuccess>

@@ -74,6 +74,12 @@ export async function uploadDocumentAction(fixedClientId: string | null, _prev: 
     if (!clientId) throw new ValidationError("Choose a client.");
     const docType = str(fd, "docType");
     if (docType && !isTaxDocType(docType)) throw new ValidationError("Choose a valid document type.");
+    // Tax records go into the client's yearly vault: year and type are required.
+    if (str(fd, "category") === "TAXES") {
+      const y = intOrNull(str(fd, "year"));
+      if (!y || y < 2000 || y > new Date().getFullYear() + 1) throw new ValidationError("Enter the tax year for this tax record.");
+      if (!docType) throw new ValidationError("Choose the tax document type (federal return, state return, amended return…).");
+    }
     const file = await fileFrom(fd);
     const doc = await staffUploadDocument(actor, {
       clientId,

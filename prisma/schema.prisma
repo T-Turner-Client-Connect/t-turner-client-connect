@@ -201,6 +201,11 @@ model Client {
   // True when the record (or part of it) came from tax-preparation software
   // such as a TaxAct export. Drives Section 7216 eligibility checks.
   taxReturnDerived Boolean      @default(false)
+  // Tax entity for deadline cards: SOLE_PROPRIETOR | PARTNERSHIP | S_CORP |
+  // C_CORP | NONPROFIT | TRUST_ESTATE. Null = not recorded yet.
+  entityType       String?
+  // Month (1–12) the business's tax year ends. Null = calendar year (December).
+  fiscalYearEnd    Int?
   source           String?
   assignedToId     String?
   assignedTo       User?        @relation("AssignedStaff", fields: [assignedToId], references: [id], onDelete: SetNull)
@@ -231,6 +236,8 @@ model Client {
   appointments       Appointment[]
   pipelineCards      PipelineCard[]
   filings            FilingRecord[]
+  questionnaires     QuestionnaireSubmission[]
+  taxYearProgress    TaxYearProgress[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -435,11 +442,15 @@ model StoredFile {
   uploadedBy             User?       @relation(fields: [uploadedById], references: [id])
   uploadedByPortalUserId String?
   uploadedByPortalUser   PortalUser? @relation(fields: [uploadedByPortalUserId], references: [id])
+  // SHA-256 of the bytes: the same file is stored once per client.
+  sha256                 String?
   createdAt              DateTime    @default(now())
 
   campaigns      Campaign[]
   consentRecords ConsentRecord[]
   document       Document?
+
+  @@index([sha256])
 }
 
 // ---------------------------------------------------------------------------
@@ -631,32 +642,37 @@ model MfaRecoveryCode {
 // PortalAccess on the server.
 
 model PortalUser {
-  id              String    @id @default(cuid())
-  email           String    @unique
-  name            String
-  phone           String?
-  phoneNormalized String?
-  passwordHash    String?
-  mfaSecretEnc    String?
-  mfaEnabledAt    DateTime?
-  mfaLastStep     Int?
+  id                   String    @id @default(cuid())
+  email                String    @unique
+  name                 String
+  phone                String?
+  phoneNormalized      String?
+  passwordHash         String?
+  mfaSecretEnc         String?
+  mfaEnabledAt         DateTime?
+  mfaLastStep          Int?
   // Proven by entering a code emailed to this address (enables email codes).
-  emailVerifiedAt DateTime?
+  emailVerifiedAt      DateTime?
   // Resource Center: the state shown first (clients can switch anytime).
-  preferredState  String?
-  active          Boolean   @default(true)
+  preferredState       String?
+  // Staff confirmed who this login belongs to (e.g. by phone or ID) when
+  // the invitation link wasn't delivered by email. Either this or a proven
+  // email address unlocks past-year tax records.
+  identityVerifiedAt   DateTime?
+  identityVerifiedById String?
+  active               Boolean   @default(true)
   // Account-service notifications (new message / document / request).
   // Separate from marketing consent.
-  notifyByEmail   Boolean   @default(true)
-  notifyBySms     Boolean   @default(false)
+  notifyByEmail        Boolean   @default(true)
+  notifyBySms          Boolean   @default(false)
   // Optional link to the CRM contact this login belongs to.
-  contactId       String?   @unique
-  contact         Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactId            String?   @unique
+  contact              Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
   // "INVITED" (staff or activation invitation) or "SELF_SIGNUP".
-  origin          String    @default("INVITED")
-  lastLoginAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  origin               String    @default("INVITED")
+  lastLoginAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   access         PortalAccess[]
   sessions       PortalSession[]
@@ -1030,13 +1046,115 @@ model Announcement {
   // Set = client-specific update; null = announcement to the groups below.
   clientId    String?
   client      Client?   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // A future time schedules the announcement.
   publishedAt DateTime?
   expiresAt   DateTime?
+  // "ALL" | "INDIVIDUAL" | "BUSINESS" | "BOOKKEEPING"; null = the groups below.
+  audience    String?
+  // TAX_SEASON | DOCUMENT_TIPS | OFFICE_HOURS | HOLIDAY | SERVICE | DEADLINE | GENERAL
+  topic       String?
+  pinned      Boolean   @default(false)
   createdById String
   createdBy   User      @relation(fields: [createdById], references: [id])
   createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
 
   groups AnnouncementGroup[]
+}
+
+// Official tax dates shown in the client countdowns. Only rows with a
+// source link and a review date are shown to clients.
+model TaxDeadline {
+  id             String    @id @default(cuid())
+  // See src/lib/tax/deadlines.ts (TAX_SEASON_OPENS, INDIVIDUAL, PARTNERSHIP,
+  // S_CORP, C_CORP, and their *_EXTENDED forms).
+  kind           String
+  // The tax year the return covers (2026 returns are due in 2027).
+  taxYear        Int
+  // Whose deadline: "US" (IRS) or a state code.
+  jurisdiction   String    @default("US")
+  // Set on an IRS row that replaces the general date only for clients in
+  // that state (disaster relief). "" = applies everywhere.
+  reliefState    String    @default("")
+  // Calendar date, YYYY-MM-DD (date-only, never shifted by time zone).
+  dueDate        String
+  timeNote       String?
+  notes          String?
+  sourceUrl      String?
+  lastReviewedAt DateTime?
+  reviewedById   String?
+  hidden         Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([kind, taxYear, jurisdiction, reliefState])
+}
+
+// ===========================================================================
+// MY TAX CENTER
+// ===========================================================================
+
+// The Jotform tax questionnaire for one tax year (and audience).
+model TaxQuestionnaire {
+  id            String   @id @default(cuid())
+  taxYear       Int
+  // "ALL" | "INDIVIDUAL" | "BUSINESS"
+  audience      String   @default("ALL")
+  title         String
+  // Numeric Jotform form ID from the owner. Null = not set up yet.
+  jotformFormId String?
+  active        Boolean  @default(true)
+  updatedById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  submissions QuestionnaireSubmission[]
+
+  @@unique([taxYear, audience])
+}
+
+// A completed questionnaire linked to one client and tax year, either
+// reported by Jotform (verified through the API) or imported by staff after
+// they confirmed the client match.
+model QuestionnaireSubmission {
+  id              String            @id @default(cuid())
+  clientId        String
+  client          Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  taxYear         Int
+  questionnaireId String?
+  questionnaire   TaxQuestionnaire? @relation(fields: [questionnaireId], references: [id], onDelete: SetNull)
+  jotformFormId   String
+  submissionId    String            @unique
+  submittedAt     DateTime?
+  // "jotform_webhook" | "staff_import" | "staff_verified"
+  source          String
+  // Encrypted question/answer pairs (staff only).
+  answersEnc      String?
+  // How the client match was confirmed.
+  matchNote       String?
+  linkedById      String?
+  documentIds     String[]
+  createdAt       DateTime          @default(now())
+
+  @@index([clientId, taxYear])
+}
+
+// Staff-entered progress for one client and tax year. Questionnaire,
+// documents, preparation, filing and agency acceptance are separate.
+model TaxYearProgress {
+  id                  String    @id @default(cuid())
+  clientId            String
+  client              Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  taxYear             Int
+  // NOT_STARTED | SOME_RECEIVED | ALL_RECEIVED
+  documentsStatus     String    @default("NOT_STARTED")
+  documentsUpdatedAt  DateTime?
+  estimatedCompletion DateTime?
+  estimateNote        String?
+  updatedById         String?
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([clientId, taxYear])
 }
 
 model AnnouncementGroup {

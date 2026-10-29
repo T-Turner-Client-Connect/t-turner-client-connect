@@ -18,7 +18,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const PDF = new TextEncoder().encode("%PDF-1.4\n% fictional test document\n");
+let pdfSeq = 0;
+// Each upload gets unique bytes: the vault keeps one copy of identical files.
+const pdfBytes = () => new TextEncoder().encode(`%PDF-1.4\n% fictional ${pdfSeq++} test document\n`);
 
 async function setup() {
   const staff = await makeUser("ADMIN");
@@ -53,9 +55,9 @@ describe("portal access control", () => {
     vi.stubEnv("MALWARE_SCAN_URL", "https://scanner.test/scan");
     vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ clean: true }), { status: 200 }));
     const { staff, bakery, owner, assistant, stranger } = await setup();
-    const published = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "PUBLISHED", bytes: PDF, originalName: "pl.pdf", year: 2026, month: 9, reportType: "PROFIT_AND_LOSS" });
-    const internal = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "STAFF_ONLY", bytes: PDF, originalName: "workpaper.pdf" });
-    const tax = await staffUploadDocument(staff, { clientId: bakery.id, category: "TAXES", visibility: "PUBLISHED", bytes: PDF, originalName: "return.pdf" });
+    const published = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "PUBLISHED", bytes: pdfBytes(), originalName: "pl.pdf", year: 2026, month: 9, reportType: "PROFIT_AND_LOSS" });
+    const internal = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "STAFF_ONLY", bytes: pdfBytes(), originalName: "workpaper.pdf" });
+    const tax = await staffUploadDocument(staff, { clientId: bakery.id, category: "TAXES", visibility: "PUBLISHED", bytes: pdfBytes(), originalName: "return.pdf" });
 
     const ownerDocs = (await portalDocuments(owner, bakery.id)).map((d) => d.id);
     expect(ownerDocs).toContain(published.id);
@@ -88,16 +90,16 @@ describe("portal access control", () => {
   it("uploads go only to accounts the user can access and answer requests", async () => {
     const { staff, bakery, owner, stranger } = await setup();
     const req = await createDocumentRequest(staff, { clientId: bakery.id, title: "September bank statement" });
-    const doc = await portalUploadDocument(owner, { clientId: bakery.id, requestId: req.id, bytes: PDF, originalName: "sept.pdf" });
+    const doc = await portalUploadDocument(owner, { clientId: bakery.id, requestId: req.id, bytes: pdfBytes(), originalName: "sept.pdf" });
     expect(doc.category).toBe("CLIENT_UPLOADS");
     expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: req.id } })).status).toBe("SUBMITTED");
-    await expect(portalUploadDocument(stranger, { clientId: bakery.id, bytes: PDF, originalName: "x.pdf" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(portalUploadDocument(stranger, { clientId: bakery.id, bytes: pdfBytes(), originalName: "x.pdf" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(portalUploadDocument(owner, { clientId: bakery.id, bytes: new TextEncoder().encode("MZ fake exe"), originalName: "virus.pdf" })).rejects.toThrow(/PDF, JPG, or PNG/);
   });
 
   it("audited deletion destroys the file but keeps the record", async () => {
     const { staff, bakery } = await setup();
-    const doc = await staffUploadDocument(staff, { clientId: bakery.id, category: "OTHER", visibility: "STAFF_ONLY", bytes: PDF, originalName: "old.pdf" });
+    const doc = await staffUploadDocument(staff, { clientId: bakery.id, category: "OTHER", visibility: "STAFF_ONLY", bytes: pdfBytes(), originalName: "old.pdf" });
     const daria = await makeUser("STAFF");
     await expect(deleteDocument(daria, doc.id, "duplicate")).rejects.toBeInstanceOf(ForbiddenError);
     await expect(deleteDocument(staff, doc.id, " ")).rejects.toThrow(/why/);
@@ -152,10 +154,10 @@ describe("contracts and signatures", () => {
 
   it("tax signatures are setup-required; offline copies are labeled as such", async () => {
     const { staff, bakery } = await setup();
-    const pkg = await staffUploadDocument(staff, { clientId: bakery.id, category: "TAXES", visibility: "STAFF_ONLY", bytes: PDF, originalName: "8879.pdf" });
+    const pkg = await staffUploadDocument(staff, { clientId: bakery.id, category: "TAXES", visibility: "STAFF_ONLY", bytes: pdfBytes(), originalName: "8879.pdf" });
     const req = await createSignatureRequest(staff, { clientId: bakery.id, title: "2025 Form 8879", taxYear: 2025, packageDocumentId: pkg.id, signers: [{ name: "Priya", role: "TAXPAYER" }] });
     await expect(sendSignatureRequest(staff, req.id)).rejects.toThrow(/not set up/);
-    await recordOfflineSigned(staff, req.id, { bytes: PDF, originalName: "signed.pdf" }, false);
+    await recordOfflineSigned(staff, req.id, { bytes: pdfBytes(), originalName: "signed.pdf" }, false);
     const done = await prisma.signatureRequest.findUniqueOrThrow({ where: { id: req.id }, include: { signedDocument: true } });
     expect(done.status).toBe("SIGNED_OFFLINE_UPLOADED");
     expect(done.signedDocument?.title).toMatch(/signed outside the app/);

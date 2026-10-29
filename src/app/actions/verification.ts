@@ -97,7 +97,8 @@ export async function confirmVerifyEmailAction(kind: Kind, _prev: ActionState, f
   const subject = await signedIn(kind);
   const r = await verifyEmailCode(subject, "VERIFY_EMAIL", str(fd, "code"));
   if (!r.ok) return { error: REASON_TEXT[r.reason] };
-  revalidatePath(kind === "staff" ? "/settings" : "/client/account");
+  if (kind === "staff") revalidatePath("/settings");
+  else revalidatePath("/client", "layout");
   return { ok: "Email delivery confirmed.", at: Date.now() };
 }
 
