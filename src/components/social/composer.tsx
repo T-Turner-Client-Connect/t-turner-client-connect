@@ -27,7 +27,7 @@ function Preview({ platform, caption, media }: { platform: SocialPlatform; capti
     <div className={clsx("overflow-hidden rounded-xl border bg-white shadow-sm", platform === "TIKTOK" ? "mx-auto max-w-[220px] border-slate-800 bg-black text-white" : "border-slate-200")}>
       <div className={clsx("flex items-center gap-2 px-3 py-2 text-sm font-semibold", platform === "TIKTOK" && "order-last")}>
         <span className="flex size-7 items-center justify-center rounded-full bg-navy-900 text-[10px] text-gold-500">TT</span>
-        T. Turner &amp; Associates
+        TTurner &amp; Associates Group
       </div>
       {platform === "FACEBOOK" && caption && <p className="whitespace-pre-wrap px-3 pb-2 text-sm">{caption}</p>}
       {visual}

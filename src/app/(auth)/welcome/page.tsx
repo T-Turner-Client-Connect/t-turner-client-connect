@@ -11,7 +11,7 @@ export default async function Welcome() {
   return (
     <>
       <h1 className="text-center text-2xl font-bold sm:text-3xl">Welcome to TTurner Client Connect</h1>
-      <p className="mb-7 mt-2 text-center text-[15px] text-slate-600">Secure communication with T. Turner &amp; Associates, LLC. Please choose how you&apos;re signing in.</p>
+      <p className="mb-7 mt-2 text-center text-[15px] text-slate-600">Secure communication with TTurner &amp; Associates Group, LLC. Please choose how you&apos;re signing in.</p>
       <div className="space-y-4">
         <Link
           href={client ? "/client" : "/client/login"}
@@ -31,7 +31,7 @@ export default async function Welcome() {
           <Briefcase className="size-8 shrink-0 text-navy-800" aria-hidden />
           <span className="flex-1">
             <span className="block font-serif text-xl font-semibold">{staff ? "Continue to the CRM" : "Staff Login"}</span>
-            <span className="text-sm text-slate-600">For T. Turner &amp; Associates team members</span>
+            <span className="text-sm text-slate-600">For TTurner &amp; Associates Group team members</span>
           </span>
           <span aria-hidden className="text-2xl">→</span>
         </Link>

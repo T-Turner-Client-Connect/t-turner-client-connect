@@ -41,7 +41,7 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
 
   return (
     <>
-      <PageHeader title="Messages" subtitle="Secure messages with T. Turner & Associates." />
+      <PageHeader title="Messages" subtitle="Secure messages with TTurner & Associates Group." />
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-2">
           <Link href={`/client/messages${q}`} className="block rounded-lg border border-navy-100 bg-white px-3 py-2 text-sm font-semibold text-navy-900">+ New message</Link>
@@ -73,7 +73,7 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
                       {m.attachments.map((a) => (
                         <a key={a.id} className={`mt-1 block text-sm underline ${mine ? "text-gold-300" : ""}`} href={`/api/documents/${downloadToken(a.id, { portalUserId: user.id })}`} target="_blank" rel="noopener">📎 {a.title}</a>
                       ))}
-                      <p className={`mt-1 text-xs ${mine ? "text-navy-100" : "text-slate-500"}`}>{mine ? m.portalAuthor?.name ?? "You" : m.staffAuthor?.name ?? "T. Turner & Associates"} · {fmtDateTime(m.createdAt)}</p>
+                      <p className={`mt-1 text-xs ${mine ? "text-navy-100" : "text-slate-500"}`}>{mine ? m.portalAuthor?.name ?? "You" : m.staffAuthor?.name ?? "TTurner & Associates Group"} · {fmtDateTime(m.createdAt)}</p>
                     </li>
                   );
                 })}

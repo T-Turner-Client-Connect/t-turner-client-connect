@@ -28,7 +28,7 @@ beforeEach(async () => {
   sent = [];
   reply = () => new Response(JSON.stringify({ id: `re_${++n}` }), { status: 200 });
   vi.stubEnv("RESEND_API_KEY", "re_test_key");
-  vi.stubEnv("EMAIL_FROM_ADDRESS", "T. Turner & Associates, LLC <invites@mail.example.com>");
+  vi.stubEnv("EMAIL_FROM_ADDRESS", "TTurner & Associates Group, LLC <invites@mail.example.com>");
   vi.stubEnv("APP_URL", "https://crm.example.com");
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
     await new Promise((r) => setTimeout(r, 5));
@@ -51,10 +51,10 @@ describe("staff invitation emails", () => {
     const mail = sent[0];
     expect(mail.url).toBe("https://api.resend.com/emails");
     expect(mail.body.to).toEqual(["daria.new@example.com"]);
-    expect(mail.body.from).toContain("T. Turner & Associates, LLC");
+    expect(mail.body.from).toContain("TTurner & Associates Group, LLC");
     expect(mail.body.subject).toBe("Your staff invitation to TTurner Client Connect");
     expect(mail.body.html).toContain("Create Your Staff Account");
-    expect(mail.body.html).toContain("T. Turner &amp; Associates, LLC");
+    expect(mail.body.html).toContain("TTurner &amp; Associates Group, LLC");
     expect(mail.body.html).toContain("https://crm.example.com/staff/invite/");
     expect(mail.body.tags).toEqual([{ name: "category", value: "staff_invitation" }]);
     expect(mail.headers["Idempotency-Key"]).toBe(`staff-invite/${out.inviteId}`);
@@ -279,6 +279,6 @@ describe("staff invitation emails", () => {
     expect(mail.html).toContain("Daria &lt;b&gt;");
     expect(mail.html).toContain("Create Your Staff Account");
     expect(mail.text).toContain("November 5, 2026");
-    expect(mail.text).toContain("T. Turner & Associates, LLC");
+    expect(mail.text).toContain("TTurner & Associates Group, LLC");
   });
 });

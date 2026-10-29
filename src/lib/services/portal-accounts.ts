@@ -65,7 +65,7 @@ export async function findOpenPortalInvite(token: string) {
 
 export async function acceptPortalInvite(token: string, password: string) {
   const invite = await findOpenPortalInvite(token);
-  if (!invite) throw new ValidationError("This invitation is invalid or has expired. Ask T. Turner & Associates for a new one.");
+  if (!invite) throw new ValidationError("This invitation is invalid or has expired. Ask TTurner & Associates Group for a new one.");
   const problem = passwordProblem(password);
   if (problem) throw new ValidationError(problem);
   const passwordHash = await hashPassword(password);

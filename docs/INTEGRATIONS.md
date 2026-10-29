@@ -48,7 +48,7 @@ Setup (nothing here goes in GitHub or chat):
    `email.bounced`, `email.failed`, `email.complained`; copy its signing secret (`whsec_…`).
 4. **Netlify → Site configuration → Environment variables** (scopes: Functions + Builds; contexts: Production,
    and Deploy Previews only if previews should send): `RESEND_API_KEY` (secret), `RESEND_WEBHOOK_SECRET`
-   (secret), `EMAIL_FROM_ADDRESS` e.g. `T. Turner & Associates, LLC <invitations@mail.<yourdomain>>`,
+   (secret), `EMAIL_FROM_ADDRESS` e.g. `TTurner & Associates Group, LLC <invitations@mail.<yourdomain>>`,
    `APP_URL` = the live site address (links in the email use it). Redeploy.
 5. Settings → Integrations shows *Email (Resend)* and *Email delivery confirmations* as Configured.
 

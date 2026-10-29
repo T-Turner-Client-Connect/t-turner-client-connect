@@ -1,6 +1,6 @@
 # TTurner Client Connect
 
-Private CRM and secure client portal for T. Turner & Associates, LLC — clients, conversations,
+Private CRM and secure client portal for TTurner & Associates Group, LLC — clients, conversations,
 bookkeeping, tax filings, campaigns, social media and follow-ups.
 
 - **Staff Login**: `/staff/login` · **Client Login**: `/client/login` · chooser at `/welcome`
