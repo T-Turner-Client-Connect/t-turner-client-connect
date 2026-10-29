@@ -12,7 +12,7 @@ export default async function PortalLayout({ children }: { children: React.React
   // A login not yet connected to any client account sees only its setup page.
   if (accounts.length === 0) redirect("/client/start");
   return (
-    <div className="min-h-dvh">
+    <div className="lux-page min-h-dvh">
       <Suspense>
         <PortalNav accounts={accounts} name={user.name} signOut={portalLogoutAction} />
       </Suspense>

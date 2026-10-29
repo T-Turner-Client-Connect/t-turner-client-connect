@@ -13,6 +13,7 @@ export function PortalNav({ accounts, name, signOut }: { accounts: { id: string;
   const q = account ? `?account=${account}` : "";
   const links = [
     ["/client", "Home"],
+    ["/client/tax-center", "Tax Center"],
     ["/client/messages", "Messages"],
     ["/client/documents", "Documents"],
     ["/client/bookkeeping", "Bookkeeping"],

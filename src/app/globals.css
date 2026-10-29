@@ -89,3 +89,42 @@
   from { background-position: 200% 0; }
   to { background-position: -200% 0; }
 }
+
+/* Client portal: soft ivory-and-gold page background. */
+.lux-page {
+  background:
+    radial-gradient(1100px 520px at 0% -8%, rgb(210 164 63 / 0.16), transparent 62%),
+    radial-gradient(900px 480px at 100% 4%, rgb(0 20 82 / 0.08), transparent 60%),
+    linear-gradient(180deg, #fcfaf4 0%, #f5efe1 100%);
+  background-attachment: fixed;
+}
+
+/* Deep navy banner with a gold glow, fine pinstripes and a gold hairline. */
+.lux-hero {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(700px 260px at 88% -30%, rgb(232 204 138 / 0.35), transparent 65%),
+    radial-gradient(500px 240px at -10% 120%, rgb(210 164 63 / 0.18), transparent 70%),
+    linear-gradient(135deg, #000a2b 0%, #001452 55%, #0b2266 100%);
+  box-shadow: 0 20px 45px -20px rgb(0 12 51 / 0.55), inset 0 0 0 1px rgb(210 164 63 / 0.45);
+}
+.lux-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: repeating-linear-gradient(135deg, rgb(232 204 138 / 0.05) 0 1px, transparent 1px 16px);
+}
+.lux-tile {
+  box-shadow: 0 1px 2px rgb(0 20 82 / 0.06), 0 10px 24px -14px rgb(0 20 82 / 0.25);
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+.lux-tile:hover {
+  border-color: var(--color-gold-500);
+  box-shadow: 0 2px 4px rgb(0 20 82 / 0.08), 0 18px 34px -16px rgb(0 20 82 / 0.35);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lux-tile:hover { transform: translateY(-2px); }
+}
