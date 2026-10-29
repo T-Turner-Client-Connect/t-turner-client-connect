@@ -1,5 +1,6 @@
 // Baseline reference data only — no client records, no staff accounts.
-// Safe to run on every deploy.
+// For local databases. Deployed sites get the same groups from the
+// seed_default_groups migration in netlify/database/migrations.
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();

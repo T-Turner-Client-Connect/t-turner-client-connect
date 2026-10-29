@@ -12,14 +12,14 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "db:migrate": "prisma migrate dev",
-    "db:deploy": "prisma migrate deploy",
+    "db:diff": "prisma migrate diff --from-url \"$DATABASE_URL\" --to-schema-datamodel prisma/schema.prisma --script",
     "db:seed": "tsx prisma/seed.ts",
     "db:sample": "tsx prisma/sample-data.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.7",
+    "@netlify/database": "^2.0.1",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
