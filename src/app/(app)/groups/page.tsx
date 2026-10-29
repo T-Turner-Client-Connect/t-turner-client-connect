@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, PageHeader } from "@/components/ui";
-import { createGroupAction, deleteGroupAction } from "@/app/actions/clients";
+import { addSuggestedGroupsAction, createGroupAction, deleteGroupAction } from "@/app/actions/clients";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 
@@ -35,6 +35,7 @@ export default async function GroupsPage() {
             </li>
           ))}
         </ul>
+        <div className="space-y-4">
         <Card title="New group">
           <ActionForm action={createGroupAction} className="space-y-3" resetOnSuccess>
             <Field label="Name"><input className="input" name="name" required maxLength={100} /></Field>
@@ -42,6 +43,13 @@ export default async function GroupsPage() {
             <Button type="submit">Create group</Button>
           </ActionForm>
         </Card>
+        {user.role === "ADMIN" && (
+          <Card title="Suggested groups">
+            <p className="mb-3 text-sm text-slate-600">Individual Tax Clients, Business Owners, Bookkeeping, Payroll, Nonprofit Interest and Prospects. Existing groups aren&apos;t changed.</p>
+            <ActionForm action={addSuggestedGroupsAction}><Button type="submit" variant="secondary">Add suggested groups</Button></ActionForm>
+          </Card>
+        )}
+        </div>
       </div>
     </>
   );

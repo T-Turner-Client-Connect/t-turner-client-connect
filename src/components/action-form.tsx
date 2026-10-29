@@ -12,6 +12,7 @@ export function ActionForm({
   resetOnSuccess,
   showSuccess = true,
   confirm,
+  idempotent,
 }: {
   action: (prev: State, fd: FormData) => Promise<State>;
   children: ReactNode;
@@ -19,10 +20,15 @@ export function ActionForm({
   resetOnSuccess?: boolean;
   showSuccess?: boolean;
   confirm?: string;
+  // Sends an idempotencyKey with the form: the same key on a retry, a new
+  // one after each success, so a double-submit can't create a duplicate.
+  idempotent?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, null);
   const ref = useRef<HTMLFormElement>(null);
+  const keyRef = useRef<string | null>(null);
   useEffect(() => {
+    if (state?.ok) keyRef.current = null;
     if (state?.ok && resetOnSuccess) ref.current?.reset();
   }, [state, resetOnSuccess]);
   return (
@@ -36,6 +42,10 @@ export function ActionForm({
         e.preventDefault();
         if (confirm && !window.confirm(confirm)) return;
         const fd = new FormData(e.currentTarget);
+        if (idempotent) {
+          keyRef.current ??= crypto.randomUUID();
+          fd.set("idempotencyKey", keyRef.current);
+        }
         startTransition(() => formAction(fd));
       }}
     >

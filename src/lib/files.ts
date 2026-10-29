@@ -1,12 +1,26 @@
 // Upload validation by file signature, not by the name or browser-supplied type.
 
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+// Netlify Functions accept request bodies up to about 6 MB, so uploads that
+// pass through the app are capped just under that. Larger videos need direct
+// uploads to external storage (planned with direct social publishing).
+export const MAX_UPLOAD_BYTES = Math.floor(5.5 * 1024 * 1024);
+export const MAX_UPLOAD_LABEL = "5 MB";
 // Most US carriers reliably deliver MMS images up to about 600 KB–1 MB.
 export const MMS_SAFE_BYTES = 600 * 1024;
 
-export type SniffedType = { mime: "image/png" | "image/jpeg" | "application/pdf"; ext: "png" | "jpg" | "pdf" };
+export type SniffedType =
+  | { mime: "image/png"; ext: "png" }
+  | { mime: "image/jpeg"; ext: "jpg" }
+  | { mime: "application/pdf"; ext: "pdf" }
+  | { mime: "video/mp4"; ext: "mp4" }
+  | { mime: "video/quicktime"; ext: "mov" };
 
-export function sniffType(bytes: Uint8Array): SniffedType | null {
+/** Video is only accepted into the marketing media library, never client documents. */
+export function sniffType(bytes: Uint8Array, opts: { allowVideo?: boolean } = {}): SniffedType | null {
+  if (opts.allowVideo && bytes.length > 12 && String.fromCharCode(...bytes.slice(4, 8)) === "ftyp") {
+    const brand = String.fromCharCode(...bytes.slice(8, 12));
+    return brand === "qt  " ? { mime: "video/quicktime", ext: "mov" } : { mime: "video/mp4", ext: "mp4" };
+  }
   if (bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
     return { mime: "image/png", ext: "png" };
   }

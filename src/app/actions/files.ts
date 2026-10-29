@@ -13,8 +13,8 @@ export async function uploadFlyerAction(_prev: ActionState, fd: FormData): Promi
     const file = fd.get("file");
     if (!(file instanceof File) || file.size === 0) throw new ValidationError("Choose a file to upload.");
     await saveUpload(actor, { kind: "FLYER", bytes: new Uint8Array(await file.arrayBuffer()), originalName: file.name, title: str(fd, "title") });
-    revalidatePath("/flyers");
-    return "Flyer added to the library.";
+    revalidatePath("/media");
+    return "Added to the media library.";
   });
 }
 
@@ -24,5 +24,5 @@ export async function archiveFlyerAction(fileId: string, archived: boolean) {
     prisma.storedFile.update({ where: { id: fileId, kind: "FLYER" }, data: { archivedAt: archived ? new Date() : null } }),
     prisma.auditLog.create({ data: { actorId: actor.id, action: archived ? "file.archived" : "file.restored", entityType: "StoredFile", entityId: fileId } }),
   ]);
-  revalidatePath("/flyers");
+  revalidatePath("/media");
 }

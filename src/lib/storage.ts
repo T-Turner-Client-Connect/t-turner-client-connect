@@ -13,7 +13,8 @@ type Driver = {
   remove(key: string): Promise<void>;
 };
 
-const STORE_NAME = "client-connect-files";
+// Client documents use their own store, separate from marketing flyers.
+const storeFor = (key: string) => (key.startsWith("client_document/") ? "client-connect-documents" : "client-connect-files");
 
 function onNetlify(): boolean {
   const forced = process.env.STORAGE_DRIVER;
@@ -24,16 +25,16 @@ function onNetlify(): boolean {
 const netlifyDriver: Driver = {
   async put(key, data) {
     const { getStore } = await import("@netlify/blobs");
-    await getStore({ name: STORE_NAME, consistency: "strong" }).set(key, data.slice().buffer as ArrayBuffer);
+    await getStore({ name: storeFor(key), consistency: "strong" }).set(key, data.slice().buffer as ArrayBuffer);
   },
   async get(key) {
     const { getStore } = await import("@netlify/blobs");
-    const buf = await getStore({ name: STORE_NAME, consistency: "strong" }).get(key, { type: "arrayBuffer" });
+    const buf = await getStore({ name: storeFor(key), consistency: "strong" }).get(key, { type: "arrayBuffer" });
     return buf ? new Uint8Array(buf) : null;
   },
   async remove(key) {
     const { getStore } = await import("@netlify/blobs");
-    await getStore({ name: STORE_NAME, consistency: "strong" }).delete(key);
+    await getStore({ name: storeFor(key), consistency: "strong" }).delete(key);
   },
 };
 

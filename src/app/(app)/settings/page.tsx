@@ -2,6 +2,12 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clients";
 import { inviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
+import { resetStaffMfaAction, retentionAction } from "@/app/actions/workspace";
+import { CATEGORY_LABELS } from "@/lib/services/documents";
+import { jotformStatus } from "@/lib/services/contracts";
+import { signingProviderStatus } from "@/lib/services/signatures";
+import { scanConfigured } from "@/lib/scan";
+import { directPublishingStatus, PLATFORM_LABELS } from "@/lib/social/rules";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { integrationStatus } from "@/lib/integrations";
@@ -33,6 +39,8 @@ export default async function SettingsPage() {
     isAdmin ? prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 75, include: { actor: { select: { name: true } } } }) : [],
   ]);
   const i = integrationStatus();
+  const retention = new Map((await prisma.retentionPolicy.findMany()).map((r) => [r.category, r.years]));
+  const social = directPublishingStatus(new Set((await prisma.socialAccount.findMany({ where: { disconnectedAt: null } })).map((a) => a.platform)));
 
   return (
     <>
@@ -68,6 +76,11 @@ export default async function SettingsPage() {
                       <ActionForm action={resetLinkAction.bind(null, s.id)}>
                         <Button type="submit" variant="ghost">Create password reset link</Button>
                       </ActionForm>
+                      {s.mfaEnabledAt && s.id !== user.id && (
+                        <ActionForm action={resetStaffMfaAction.bind(null, s.id)} confirm="Reset two-step verification? Confirm their identity in person or by phone first.">
+                          <Button type="submit" variant="ghost">Reset two-step verification (lost phone)</Button>
+                        </ActionForm>
+                      )}
                     </div>
                   </details>
                 )}
@@ -107,6 +120,14 @@ export default async function SettingsPage() {
             <Status ok={i.appUrl} label="Site address" detail="APP_URL, used in invitation, reset and unsubscribe links" />
             <Status ok={i.email} label="Email (Resend)" detail="RESEND_API_KEY and EMAIL_FROM_ADDRESS. Password-reset emails work once set; campaign email arrives in the next stage." />
             <Status ok={i.twilio} label="Text messages (Twilio)" detail="TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and a Messaging Service SID or from-number. Used from the next stage." />
+            <Status ok={(process.env.APP_ENCRYPTION_KEY?.length ?? 0) >= 32} label="Encryption key" detail="APP_ENCRYPTION_KEY protects two-step secrets and signs download links" />
+            <Status ok={process.env.NOTIFICATIONS_ENABLED === "true"} label="Client portal notifications" detail="NOTIFICATIONS_ENABLED=true plus email/Twilio. Notices carry a sign-in link only." />
+            <Status ok={scanConfigured()} label="Malware scanning" detail="MALWARE_SCAN_URL (e.g. a ClamAV REST service) for uploaded files" />
+            <Status ok={jotformStatus().verifiedCompletion} label="Jotform" detail="JOTFORM_API_KEY + JOTFORM_WEBHOOK_SECRET for verified completion. Form links work without them." />
+            <Status ok={false} label="Tax e-signatures" detail={`${signingProviderStatus().label}. Needs a provider verified for the specific tax forms, identity checks and joint signers.`} />
+            <Status ok={false} label="TaxAct" detail="No public TaxAct API. E-file statuses arrive by staff import of TaxAct's E-file Details CSV (Clients → Imports)." />
+            <Status ok={Boolean(process.env.CRON_SECRET)} label="Scheduled automations" detail="CRON_SECRET lets the hourly Netlify function run reminders" />
+            {social.map((p) => <Status key={p.platform} ok={p.available} label={`${PLATFORM_LABELS[p.platform]} direct publishing`} detail={p.reason} />)}
             <li className="flex flex-wrap items-start justify-between gap-2 py-2">
               <div>
                 <p className="font-medium">Live sending</p>
@@ -116,6 +137,21 @@ export default async function SettingsPage() {
             </li>
           </ul>
         </Card>
+
+        {isAdmin && (
+          <Card title="Document retention" className="lg:col-span-2">
+            <p className="mb-3 text-sm text-slate-600">Sets a keep-until date on new documents. Nothing is deleted automatically — expired documents are listed on the Documents page for an Admin to review, and every deletion is logged with a reason.</p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              {(Object.keys(CATEGORY_LABELS) as (keyof typeof CATEGORY_LABELS)[]).map((cat) => (
+                <ActionForm key={cat} action={retentionAction} className="space-y-2 rounded-xl border border-ivory-200 p-3">
+                  <input type="hidden" name="category" value={cat} />
+                  <Field label={CATEGORY_LABELS[cat]} hint="Years (blank = keep until deleted)"><input className="input" name="years" inputMode="numeric" defaultValue={retention.get(cat) ?? ""} /></Field>
+                  <Button type="submit" variant="secondary">Save</Button>
+                </ActionForm>
+              ))}
+            </div>
+          </Card>
+        )}
 
         <Card title="Do-not-contact list" className="lg:col-span-2">
           <p className="mb-3 text-sm text-slate-600">

@@ -2,7 +2,7 @@ import { getCurrentUser } from "@/lib/auth/session";
 import { readStoredFile } from "@/lib/services/files";
 
 // Files are private: every request is checked against the staff session.
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
   const { id } = await ctx.params;
@@ -14,7 +14,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     headers: {
       "Content-Type": file.mimeType,
       "Content-Length": String(bytes.byteLength),
-      "Content-Disposition": `inline; filename="${safeName}"`,
+      "Content-Disposition": `${new URL(req.url).searchParams.get("download") === "1" ? "attachment" : "inline"}; filename="${safeName}"`,
       "Cache-Control": "private, no-store",
       "X-Content-Type-Options": "nosniff",
       // Uploads are signature-checked PNG/JPEG/PDF. Browsers' PDF viewers don't

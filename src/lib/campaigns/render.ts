@@ -38,7 +38,7 @@ export function renderEmailHtml(input: EmailRenderInput): string {
   const flyer = input.flyer
     ? input.flyer.mimeType.startsWith("image/")
       ? `<p style="margin:0 0 16px"><img src="${escapeHtml(input.flyer.url)}" alt="${escapeHtml(input.flyer.title)}" style="max-width:100%;height:auto;border:0"></p>`
-      : `<p style="margin:0 0 16px"><a href="${escapeHtml(input.flyer.url)}" style="color:#0b1f5c;font-weight:bold">View: ${escapeHtml(input.flyer.title)} (PDF)</a></p>`
+      : `<p style="margin:0 0 16px"><a href="${escapeHtml(input.flyer.url)}" style="color:#0b1f5c;font-weight:bold">View: ${escapeHtml(input.flyer.title)}${input.flyer.mimeType === "application/pdf" ? " (PDF)" : ""}</a></p>`
     : "";
   const isPromo = input.purpose !== "SERVICE";
   const footer = [

@@ -6,9 +6,15 @@
 # redirect; it would break server-rendered and authenticated routes.
 
 [build]
-  # Applies pending database migrations (no-op when none), seeds baseline
-  # groups and templates (idempotent, no client data), then builds.
-  command = "npx prisma migrate deploy && npx tsx prisma/seed.ts && npx next build"
+  # 1. Check required environment variables (clear error instead of Prisma P1012).
+  # 2. Apply pending schema migrations — structure only, never data.
+  # 3. Build.
+  # Deployments never seed or create records: no sample clients, no accounts,
+  # no passwords. The first Admin is created explicitly at /staff/setup with
+  # the SETUP_TOKEN; suggested client groups are added from the Groups page.
+  # DATABASE_URL must hold a different database for Production and for
+  # Deploy Previews / Branch deploys (set per context in Netlify).
+  command = "node scripts/check-deploy-env.mjs && npx prisma migrate deploy && npx next build"
   publish = ".next"
 
 [build.environment]
@@ -16,3 +22,7 @@
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
+
+[functions]
+  # automations-cron.mts calls /api/cron/automations hourly (reminders + notification dispatch).
+  directory = "netlify/functions"

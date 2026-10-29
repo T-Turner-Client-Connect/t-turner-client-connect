@@ -1,107 +1,168 @@
 import Link from "next/link";
-import { addDays, startOfDay } from "date-fns";
-import { Badge, Card, EmptyState, LinkButton, Notice, PageHeader, Stat } from "@/components/ui";
+import { endOfDay, startOfDay } from "date-fns";
+import { Badge, Card, LinkButton, Notice, PageHeader, Stat } from "@/components/ui";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
-import { fmtDate, fmtDateTime } from "@/lib/format";
+import { workQueue } from "@/lib/services/workqueue";
+import { MONTHS, PERIOD_LABELS } from "@/lib/services/bookkeeping";
+import { filingTitle } from "@/lib/tax/normalize";
+import { fmtDate, fmtDateTime, fromNow } from "@/lib/format";
 import { integrationStatus } from "@/lib/integrations";
 
 export const metadata = { title: "Dashboard" };
 
+function Empty({ children }: { children: React.ReactNode }) {
+  return <p className="rounded-lg bg-ivory-50 px-3 py-4 text-sm text-slate-600">{children}</p>;
+}
+
 export default async function Dashboard() {
   const user = await requireUser();
   const now = new Date();
-  const today = startOfDay(now);
-  const weekOut = addDays(today, 8);
-  const [total, active, prospects, openTasks, overdue, upcoming, drafts, recentImports] = await Promise.all([
-    prisma.client.count({ where: { archivedAt: null } }),
-    prisma.client.count({ where: { archivedAt: null, status: "ACTIVE" } }),
-    prisma.client.count({ where: { archivedAt: null, status: "PROSPECT" } }),
-    prisma.task.count({ where: { status: "OPEN" } }),
+  const [q, dueToday, appointmentsToday, owing, totals, rejected] = await Promise.all([
+    workQueue(),
     prisma.task.findMany({
-      where: { status: "OPEN", dueAt: { lt: today } },
+      where: { status: "OPEN", dueAt: { lte: endOfDay(now) } },
       include: { client: { select: { id: true, displayName: true } }, assignee: { select: { name: true } } },
       orderBy: { dueAt: "asc" },
-      take: 10,
+      take: 12,
     }),
-    prisma.task.findMany({
-      where: { status: "OPEN", dueAt: { gte: today, lt: weekOut } },
-      include: { client: { select: { id: true, displayName: true } }, assignee: { select: { name: true } } },
-      orderBy: { dueAt: "asc" },
-      take: 10,
-    }),
-    prisma.campaign.count({ where: { status: "DRAFT" } }),
-    prisma.importBatch.findMany({ orderBy: { createdAt: "desc" }, take: 3, include: { importedBy: { select: { name: true } } } }),
+    prisma.appointment.findMany({ where: { cancelledAt: null, startsAt: { gte: startOfDay(now), lte: endOfDay(now) } }, include: { client: { select: { id: true, displayName: true } } }, orderBy: { startsAt: "asc" } }),
+    prisma.documentRequest.groupBy({ by: ["clientId"], where: { status: "OPEN" }, _count: true, _min: { dueAt: true } }),
+    Promise.all([
+      prisma.client.count({ where: { archivedAt: null } }),
+      prisma.client.count({ where: { archivedAt: null, status: "ACTIVE" } }),
+      prisma.task.count({ where: { status: "OPEN" } }),
+      prisma.conversation.count({ where: { unreadByStaff: true, closedAt: null } }),
+    ]),
+    prisma.filingRecord.findMany({ where: { filingStatus: "REJECTED" }, include: { client: { select: { id: true, displayName: true } } }, take: 10 }),
   ]);
+  const owingClients = owing.length
+    ? await prisma.client.findMany({ where: { id: { in: owing.map((o) => o.clientId) } }, select: { id: true, displayName: true } })
+    : [];
+  const names = new Map(owingClients.map((c) => [c.id, c.displayName]));
+  const [total, active, openTasks, unread] = totals;
   const integrations = integrationStatus();
-
-  const taskRow = (t: (typeof overdue)[number], late: boolean) => (
-    <li key={t.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
-      <div>
-        <p className="font-medium text-navy-900">{t.title}</p>
-        <p className="text-sm text-slate-600">
-          {t.client ? <Link className="underline" href={`/clients/${t.client.id}`}>{t.client.displayName}</Link> : "No client"} · {t.assignee?.name ?? "Unassigned"}
-        </p>
-      </div>
-      <Badge tone={late ? "red" : t.priority === "HIGH" ? "gold" : "gray"}>{late ? "Overdue · " : ""}Due {fmtDate(t.dueAt)}</Badge>
-    </li>
-  );
 
   return (
     <>
       <PageHeader
-        title={`Welcome, ${user.name.split(" ")[0]}`}
+        title={`Good ${now.getHours() < 12 ? "morning" : now.getHours() < 17 ? "afternoon" : "evening"}, ${user.name.split(" ")[0]}`}
         subtitle={fmtDate(now)}
         actions={
           <>
-            <LinkButton href="/clients/new">Add client</LinkButton>
-            <LinkButton href="/campaigns/new" variant="gold">New campaign</LinkButton>
+            <LinkButton href="/clients/new" variant="secondary">Add client</LinkButton>
+            <LinkButton href="/imports/new" variant="secondary">Import contacts</LinkButton>
+            <LinkButton href="/conversations/new">New message</LinkButton>
+            <LinkButton href="/campaigns/new" variant="gold">Create campaign</LinkButton>
           </>
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-        <Stat label="Total clients" value={total} href="/clients" />
-        <Stat label="Active clients" value={active} href="/clients?status=ACTIVE" />
-        <Stat label="Prospects" value={prospects} href="/clients?status=PROSPECT" />
-        <Stat label="Open tasks" value={openTasks} hint={overdue.length ? `${overdue.length} overdue` : undefined} href="/tasks" />
-        <Stat label="Unread conversations" value="—" hint="Shared inbox arrives with texting setup" />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Active clients" value={active} hint={`${total} total`} href="/clients?status=ACTIVE" />
+        <Stat label="Unread conversations" value={unread} href="/conversations?filter=unread" />
+        <Stat label="Open tasks" value={openTasks} href="/tasks" />
+        <Stat label="Clients owing documents" value={owing.length} href="/workflows?tab=bookkeeping" />
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        <Card title="Overdue tasks" actions={<Link href="/tasks" className="text-sm underline">All tasks</Link>}>
-          {overdue.length ? <ul className="divide-y divide-navy-100">{overdue.map((t) => taskRow(t, true))}</ul> : <p className="text-sm text-slate-600">Nothing overdue.</p>}
-        </Card>
-        <Card title="Due in the next 7 days">
-          {upcoming.length ? <ul className="divide-y divide-navy-100">{upcoming.map((t) => taskRow(t, false))}</ul> : <p className="text-sm text-slate-600">No tasks due this week.</p>}
-        </Card>
-        <Card title="Campaign delivery" actions={<Link href="/campaigns" className="text-sm underline">Campaigns</Link>}>
-          <p className="text-sm text-slate-700">
-            {drafts} draft{drafts === 1 ? "" : "s"} in progress. No campaigns have been sent — delivery results will appear here once
-            sending is set up and a campaign goes out.
-          </p>
-        </Card>
-        <Card title="Recent imports" actions={<Link href="/imports" className="text-sm underline">Imports</Link>}>
-          {recentImports.length ? (
-            <ul className="divide-y divide-navy-100 text-sm">
-              {recentImports.map((b) => (
-                <li key={b.id} className="flex justify-between gap-2 py-2">
-                  <Link href={`/imports/${b.id}`} className="font-medium underline">{b.fileName}</Link>
-                  <span className="text-slate-600">{b.importedBy.name} · {fmtDateTime(b.createdAt)}</span>
+        <Card title="Who needs a response?" actions={<Link href="/conversations?filter=awaiting" className="text-sm underline">All conversations</Link>}>
+          {q.unanswered.length ? (
+            <ul className="divide-y divide-ivory-200">
+              {q.unanswered.slice(0, 8).map((c) => (
+                <li key={c.id} className="flex items-center justify-between gap-2 py-2.5">
+                  <Link href={`/clients/${c.client.id}?tab=messages&c=${c.id}`} className="min-w-0">
+                    <span className="block truncate font-medium text-navy-900">{c.client.displayName}</span>
+                    <span className="block truncate text-sm text-slate-600">{c.subject}</span>
+                  </Link>
+                  <span className="shrink-0 text-xs text-slate-500">{fromNow(c.lastMessageAt)}</span>
                 </li>
               ))}
             </ul>
           ) : (
-            <EmptyState title="No imports yet">Bring in contacts from a TaxAct export on the Imports page.</EmptyState>
+            <Empty>No one is waiting on a reply.</Empty>
+          )}
+        </Card>
+
+        <Card title="What's due today?" actions={<Link href="/tasks" className="text-sm underline">Tasks & calendar</Link>}>
+          {dueToday.length || appointmentsToday.length ? (
+            <ul className="divide-y divide-ivory-200">
+              {appointmentsToday.map((a) => (
+                <li key={a.id} className="flex items-center justify-between gap-2 py-2.5">
+                  <span><Badge tone="navy">Appointment</Badge> <Link className="font-medium underline" href={`/clients/${a.client.id}`}>{a.client.displayName}</Link> · {a.title}</span>
+                  <span className="text-sm text-slate-600">{fmtDateTime(a.startsAt).split(" ").slice(3).join(" ")}</span>
+                </li>
+              ))}
+              {dueToday.map((t) => (
+                <li key={t.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                  <span>
+                    <span className="font-medium text-navy-900">{t.title}</span>
+                    <span className="block text-sm text-slate-600">{t.client?.displayName ?? "No client"} · {t.assignee?.name ?? "Unassigned"}</span>
+                  </span>
+                  <Badge tone={t.dueAt! < startOfDay(now) ? "red" : "gold"}>{t.dueAt! < startOfDay(now) ? `Overdue · ${fmtDate(t.dueAt)}` : "Today"}</Badge>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Empty>Nothing due today.</Empty>
+          )}
+        </Card>
+
+        <Card title="Which clients owe documents?">
+          {owing.length ? (
+            <ul className="divide-y divide-ivory-200 text-sm">
+              {owing.slice(0, 10).map((o) => (
+                <li key={o.clientId} className="flex items-center justify-between gap-2 py-2">
+                  <Link className="font-medium underline" href={`/clients/${o.clientId}?tab=bookkeeping`}>{names.get(o.clientId)}</Link>
+                  <span>{o._count} open request{o._count === 1 ? "" : "s"}{o._min.dueAt && <span className="text-slate-600"> · next due {fmtDate(o._min.dueAt)}</span>}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Empty>No outstanding document requests.</Empty>
+          )}
+          {q.submittedRequests.length > 0 && <p className="mt-3 text-sm"><Badge tone="gold">{q.submittedRequests.length}</Badge> client upload(s) waiting for your review.</p>}
+        </Card>
+
+        <Card title="Which bookkeeping months need attention?">
+          {q.periodsAwaiting.length ? (
+            <ul className="divide-y divide-ivory-200 text-sm">
+              {q.periodsAwaiting.slice(0, 10).map((p) => (
+                <li key={p.id} className="flex items-center justify-between gap-2 py-2">
+                  <Link className="font-medium underline" href={`/clients/${p.client.id}?tab=bookkeeping`}>{p.client.displayName}</Link>
+                  <span>{MONTHS[p.month - 1]} {p.year} · {PERIOD_LABELS[p.status]} · client uploaded files</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Empty>No months with new client uploads waiting.</Empty>
+          )}
+        </Card>
+
+        <Card title="Contracts & signatures outstanding" className="lg:col-span-2">
+          {q.contracts.length || q.signatures.length || rejected.length ? (
+            <ul className="grid gap-x-6 divide-y divide-ivory-200 text-sm md:grid-cols-2 md:divide-y-0">
+              {q.contracts.map((c) => (
+                <li key={c.id} className="py-2"><Badge tone="amber">Contract</Badge> <Link className="underline" href={`/clients/${c.client.id}?tab=portal`}>{c.client.displayName}</Link> · {c.title}{c.dueAt && ` · due ${fmtDate(c.dueAt)}`}</li>
+              ))}
+              {q.signatures.map((s) => (
+                <li key={s.id} className="py-2"><Badge tone="navy">Signature</Badge> <Link className="underline" href={`/clients/${s.client.id}?tab=portal`}>{s.client.displayName}</Link> · {s.title} ({s.status.toLowerCase().replace(/_/g, " ")})</li>
+              ))}
+              {rejected.map((f) => (
+                <li key={f.id} className="py-2"><Badge tone="red">Rejected filing</Badge> <Link className="underline" href={`/clients/${f.client.id}?tab=taxes`}>{f.client.displayName}</Link> · {filingTitle(f)}</li>
+              ))}
+            </ul>
+          ) : (
+            <Empty>Nothing outstanding.</Empty>
           )}
         </Card>
       </div>
 
       {(!integrations.email || !integrations.twilio) && (
         <div className="mt-6">
-          <Notice tone="info" title="Sending is not set up yet">
-            Email and text sending are turned off until the providers are connected and tested. Campaigns can be drafted and previewed now.
-            {user.role === "ADMIN" && <> See <Link className="underline" href="/settings">Settings</Link> for what&apos;s needed.</>}
+          <Notice tone="info" title="Live sending is off">
+            Email and text sending stay off until providers are connected and tested. Portal messages work now.
+            {user.role === "ADMIN" && <> See <Link className="underline" href="/settings">Settings</Link>.</>}
           </Notice>
         </div>
       )}

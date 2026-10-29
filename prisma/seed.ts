@@ -1,8 +1,15 @@
-// Baseline reference data only — no client records, no staff accounts.
-// Safe to run on every deploy.
+// LOCAL DEVELOPMENT ONLY (npm run db:seed). Not part of any deployment.
+// Adds the suggested client groups — no clients, accounts or passwords — and
+// never changes existing rows. In production, an Admin adds the same groups
+// with "Add suggested groups" on the Groups page.
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
+
+if (process.env.CONTEXT && process.env.CONTEXT !== "dev") {
+  console.error("prisma/seed.ts is for local development and does not run on Netlify deploys.");
+  process.exit(1);
+}
 
 const DEFAULT_GROUPS = [
   ["Individual Tax Clients", "Individuals we prepare tax returns for"],

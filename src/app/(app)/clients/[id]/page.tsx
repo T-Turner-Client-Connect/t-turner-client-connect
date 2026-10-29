@@ -12,6 +12,11 @@ import { clientTimeline } from "@/lib/services/clients";
 import { CONSENT_LABELS, currentConsent, TAX_INFO_KINDS } from "@/lib/consent";
 import { formatPhone } from "@/lib/normalize";
 import { CLIENT_STATUS_LABELS, CLIENT_TYPE_LABELS, fmtDate, fmtDateTime } from "@/lib/format";
+import { MessagesTab } from "@/components/client-tabs/messages";
+import { DocumentsTab } from "@/components/client-tabs/documents";
+import { BookkeepingTab } from "@/components/client-tabs/bookkeeping";
+import { PortalTab } from "@/components/client-tabs/portal";
+import { TaxesTab } from "@/components/client-tabs/taxes";
 
 export const metadata = { title: "Client" };
 
@@ -19,9 +24,20 @@ const PERSON_KINDS: ConsentKind[] = ["SMS_SERVICE", "SMS_MARKETING", "EMAIL_MARK
 const STATUS_TONE = { GRANTED: "green", REVOKED: "red", UNKNOWN: "gray" } as const;
 const STATUS_TEXT = { GRANTED: "Yes", REVOKED: "Opted out", UNKNOWN: "Unknown" } as const;
 
-export default async function ClientPage({ params }: { params: Promise<{ id: string }> }) {
+const TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "messages", label: "Messages" },
+  { key: "documents", label: "Documents" },
+  { key: "bookkeeping", label: "Bookkeeping" },
+  { key: "taxes", label: "Taxes" },
+  { key: "portal", label: "Portal & signatures" },
+] as const;
+
+export default async function ClientPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | undefined>> }) {
   const user = await requireUser();
   const { id } = await params;
+  const sp = await searchParams;
+  const tab = TABS.find((t) => t.key === sp.tab)?.key ?? "overview";
   const client = await prisma.client.findUnique({
     where: { id },
     include: {
@@ -80,9 +96,32 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
         }
       />
       {client.archivedAt && (
-        <div className="mb-4"><Notice tone="warn">This client is archived. They won&apos;t receive campaigns. All history is kept.</Notice></div>
+        <div className="mb-4"><Notice tone="warn">This client is archived. They won&apos;t receive campaigns or portal access. All history is kept.</Notice></div>
       )}
 
+      <nav aria-label="Client sections" className="mb-5 flex gap-1 overflow-x-auto rounded-xl border border-navy-100 bg-white p-1">
+        {TABS.map((t) => (
+          <Link
+            key={t.key}
+            href={`/clients/${id}${t.key === "overview" ? "" : `?tab=${t.key}`}`}
+            aria-current={tab === t.key ? "page" : undefined}
+            className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold ${tab === t.key ? "bg-navy-900 text-white" : "text-navy-900 hover:bg-navy-50"}`}
+          >
+            {t.label}
+          </Link>
+        ))}
+        <Link href={`/clients/${id}/client-preview`} className="ml-auto whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold text-gold-700 hover:bg-gold-100">
+          Preview portal ↗
+        </Link>
+      </nav>
+
+      {tab === "messages" && <MessagesTab clientId={id} conversationId={sp.c} user={user} />}
+      {tab === "documents" && <DocumentsTab clientId={id} user={user} />}
+      {tab === "bookkeeping" && <BookkeepingTab clientId={id} />}
+      {tab === "taxes" && <TaxesTab clientId={id} user={user} />}
+      {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} />}
+
+      {tab === "overview" && (
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
           <Card title="Details">
@@ -323,6 +362,7 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
           </Card>
         </div>
       </div>
+      )}
     </>
   );
 }

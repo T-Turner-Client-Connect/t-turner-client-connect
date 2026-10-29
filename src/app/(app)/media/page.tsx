@@ -8,7 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { formatBytes, MMS_SAFE_BYTES } from "@/lib/files";
 import { fmtDate } from "@/lib/format";
 
-export const metadata = { title: "Flyer library" };
+export const metadata = { title: "Media library" };
 
 export default async function FlyersPage({ searchParams }: { searchParams: Promise<{ archived?: string }> }) {
   await requireUser();
@@ -20,20 +20,22 @@ export default async function FlyersPage({ searchParams }: { searchParams: Promi
   });
   return (
     <>
-      <PageHeader title="Flyer library" subtitle="Reusable flyers and documents for campaigns. Files are private to signed-in staff." />
+      <PageHeader title="Media library" subtitle="Promotional flyers, images and videos for email, text and social posts. Kept separate from client and tax documents." />
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <p className="mb-3 text-sm">
-            {archived ? <a className="underline" href="/flyers">← Back to library</a> : <a className="underline" href="/flyers?archived=1">View archived flyers</a>}
+            {archived ? <a className="underline" href="/media">← Back to library</a> : <a className="underline" href="/media?archived=1">View archived media</a>}
           </p>
           {flyers.length === 0 ? (
-            <EmptyState title={archived ? "No archived flyers" : "No flyers yet"}>Upload a PNG, JPG, or PDF to get started.</EmptyState>
+            <EmptyState title={archived ? "No archived media" : "No media yet"}>Upload a JPG, PNG, PDF, MP4 or MOV to get started.</EmptyState>
           ) : (
             <ul className="grid gap-3 sm:grid-cols-2">
               {flyers.map((f) => (
                 <li key={f.id} className="overflow-hidden rounded-xl border border-navy-100 bg-white">
                   <a href={`/api/files/${f.id}`} target="_blank" rel="noopener" className="flex h-48 items-center justify-center bg-navy-50">
-                    {f.mimeType.startsWith("image/") ? (
+                    {f.mimeType.startsWith("video/") ? (
+                      <video src={`/api/files/${f.id}`} className="h-full w-full object-contain" controls preload="metadata" />
+                    ) : f.mimeType.startsWith("image/") ? (
                       // eslint-disable-next-line @next/next/no-img-element -- private, authenticated file route
                       <img src={`/api/files/${f.id}`} alt={f.title} className="h-full w-full object-contain" />
                     ) : (
@@ -43,7 +45,7 @@ export default async function FlyersPage({ searchParams }: { searchParams: Promi
                   <div className="space-y-1 p-3">
                     <p className="font-semibold text-navy-900">{f.title}</p>
                     <p className="text-xs text-slate-600">{f.originalName} · {formatBytes(f.sizeBytes)}{f.width ? ` · ${f.width}×${f.height}` : ""}</p>
-                    <p className="text-xs text-slate-600">Added {fmtDate(f.createdAt)} by {f.uploadedBy.name}</p>
+                    <p className="text-xs text-slate-600">Added {fmtDate(f.createdAt)} by {f.uploadedBy?.name ?? "staff"}</p>
                     <div className="flex flex-wrap gap-1 pt-1">
                       {f.mimeType.startsWith("image/") && f.sizeBytes <= MMS_SAFE_BYTES ? <Badge tone="green">Text-ready (MMS)</Badge> : <Badge tone="gray">Texts get a link</Badge>}
                       {f._count.campaigns > 0 && <Badge tone="gold">Used in {f._count.campaigns} campaign{f._count.campaigns > 1 ? "s" : ""}</Badge>}
@@ -57,10 +59,10 @@ export default async function FlyersPage({ searchParams }: { searchParams: Promi
             </ul>
           )}
         </div>
-        <Card title="Upload a flyer">
+        <Card title="Add media">
           <ActionForm action={uploadFlyerAction} className="space-y-3" resetOnSuccess>
-            <Field label="File" hint="PNG, JPG, or PDF up to 10 MB. Images under 600 KB can be sent as picture texts.">
-              <input className="input" type="file" name="file" accept="image/png,image/jpeg,application/pdf" required />
+            <Field label="File" hint="JPG, PNG, PDF, MP4 or MOV up to 5 MB. JPG images under 600 KB can go out as picture texts; Instagram and TikTok need JPG images.">
+              <input className="input" type="file" name="file" accept="image/png,image/jpeg,application/pdf,video/mp4,video/quicktime" required />
             </Field>
             <Field label="Title"><input className="input" name="title" placeholder="e.g. 2026 Tax Season Flyer" /></Field>
             <Button type="submit">Upload</Button>

@@ -259,6 +259,6 @@ describe("roles and accounts", () => {
 
   it("rejects disguised uploads", async () => {
     const daria = await makeUser("STAFF");
-    await expect(saveUpload(daria, { kind: "FLYER", bytes: new TextEncoder().encode("<svg onload=alert(1)>"), originalName: "flyer.png" })).rejects.toThrow(/PNG, JPG, or PDF/);
+    await expect(saveUpload(daria, { kind: "FLYER", bytes: new TextEncoder().encode("<svg onload=alert(1)>"), originalName: "flyer.png" })).rejects.toThrow(/PNG, JPG, PDF/);
   });
 });

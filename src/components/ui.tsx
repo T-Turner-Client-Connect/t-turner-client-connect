@@ -6,8 +6,9 @@ type Variant = "primary" | "gold" | "secondary" | "danger" | "ghost";
 
 const variants: Record<Variant, string> = {
   primary: "bg-navy-900 text-white hover:bg-navy-800",
-  gold: "bg-gold-500 text-navy-950 hover:bg-gold-600 hover:text-white",
-  secondary: "bg-white text-navy-900 border border-navy-100 hover:border-navy-700",
+  // Navy text on gold keeps contrast high; gold is an accent, never body text.
+  gold: "bg-gold-500 text-navy-950 hover:bg-gold-300",
+  secondary: "bg-white text-navy-900 border border-ivory-200 shadow-sm hover:border-navy-700",
   danger: "bg-white text-red-700 border border-red-200 hover:bg-red-50",
   ghost: "text-navy-900 hover:bg-navy-100",
 };
@@ -30,7 +31,7 @@ export function LinkButton({ variant = "primary", className, ...props }: Compone
 
 export function Card({ className, children, title, actions }: { className?: string; children: ReactNode; title?: ReactNode; actions?: ReactNode }) {
   return (
-    <section className={clsx("rounded-xl border border-navy-100 bg-white p-4 shadow-sm sm:p-5", className)}>
+    <section className={clsx("rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_1px_2px_rgba(0,20,82,0.04),0_8px_24px_-12px_rgba(0,20,82,0.12)] sm:p-6", className)}>
       {(title || actions) && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           {title && <h2 className="text-lg font-semibold">{title}</h2>}
@@ -44,9 +45,9 @@ export function Card({ className, children, title, actions }: { className?: stri
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b border-ivory-200 pb-5">
       <div>
-        <h1 className="text-2xl font-bold sm:text-3xl">{title}</h1>
+        <h1 className="text-[1.7rem] font-bold leading-tight tracking-tight sm:text-[2.1rem]">{title}</h1>
         {subtitle && <p className="mt-1 text-slate-600">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
@@ -56,7 +57,7 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
 
 const badgeTones = {
   navy: "bg-navy-100 text-navy-900",
-  gold: "bg-gold-100 text-gold-600",
+  gold: "bg-gold-100 text-gold-700",
   green: "bg-emerald-50 text-emerald-800",
   red: "bg-red-50 text-red-800",
   gray: "bg-slate-100 text-slate-700",
@@ -94,7 +95,7 @@ export function Notice({ tone = "info", children, title }: { tone?: "info" | "wa
 
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <div className="rounded-xl border border-dashed border-navy-100 bg-white px-6 py-10 text-center">
+    <div className="rounded-2xl border border-dashed border-ivory-200 bg-ivory-50 px-6 py-12 text-center">
       <p className="font-serif text-lg text-navy-900">{title}</p>
       {children && <div className="mt-2 text-sm text-slate-600">{children}</div>}
     </div>
@@ -109,7 +110,7 @@ export function Stat({ label, value, hint, href }: { label: string; value: React
       {hint && <p className="mt-1 text-xs text-slate-600">{hint}</p>}
     </>
   );
-  const cls = "block rounded-xl border border-navy-100 border-t-4 border-t-gold-500 bg-white p-4 shadow-sm";
+  const cls = "block rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_1px_2px_rgba(0,20,82,0.04),0_8px_24px_-12px_rgba(0,20,82,0.12)] relative overflow-hidden before:absolute before:inset-x-0 before:top-0 before:h-1 before:bg-gradient-to-r before:from-gold-500 before:to-gold-300";
   return href ? (
     <Link href={href} className={clsx(cls, "hover:border-navy-700")}>
       {body}

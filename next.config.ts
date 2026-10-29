@@ -11,8 +11,8 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   experimental: {
-    // Mapped import rows and consent-evidence uploads (max 10 MB) go through Server Actions.
-    serverActions: { bodySizeLimit: "11mb" },
+    // Mapped import rows and uploads go through Server Actions (Netlify caps bodies at ~6 MB).
+    serverActions: { bodySizeLimit: "6mb" },
   },
   async headers() {
     return [

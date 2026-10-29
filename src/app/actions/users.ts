@@ -15,7 +15,7 @@ export async function inviteAction(_prev: ActionState, fd: FormData): Promise<Ac
     const role = str(fd, "role") === "ADMIN" ? "ADMIN" : "STAFF";
     const token = await createInvite(actor, { email: str(fd, "email"), name: str(fd, "name"), role });
     revalidatePath("/settings");
-    return `Invitation created. Send this one-time link to them privately (valid 7 days): ${appUrl()}/invite/${token}`;
+    return `Invitation created. Send this one-time link to them privately (valid 7 days): ${appUrl()}/staff/invite/${token}`;
   });
 }
 
@@ -35,7 +35,7 @@ export async function resetLinkAction(userId: string, _prev: ActionState): Promi
     if (!user) throw new ValidationError("Staff member not found.");
     const reset = await createPasswordReset(user.email, actor);
     if (!reset) throw new ValidationError("That account is inactive.");
-    return `One-time reset link (valid 1 hour): ${appUrl()}/reset-password/${reset.token}`;
+    return `One-time reset link (valid 1 hour): ${appUrl()}/staff/reset-password/${reset.token}`;
   });
 }
 

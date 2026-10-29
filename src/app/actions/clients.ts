@@ -155,3 +155,25 @@ export async function liftSuppressionAction(suppressionId: string, _prev: Action
     return "Opt-out lifted.";
   });
 }
+
+/** Explicit Admin action replacing deploy-time seeding. Never changes existing groups. */
+export async function addSuggestedGroupsAction(_prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { assertAdmin } = await import("@/lib/auth/actor");
+    assertAdmin(actor);
+    const { SUGGESTED_GROUPS } = await import("@/lib/data/default-groups");
+    const { prisma } = await import("@/lib/prisma");
+    let added = 0;
+    for (const [name, description] of SUGGESTED_GROUPS) {
+      const exists = await prisma.group.findFirst({ where: { name: { equals: name, mode: "insensitive" } } });
+      if (!exists) {
+        await prisma.group.create({ data: { name, description } });
+        added++;
+      }
+    }
+    await prisma.auditLog.create({ data: { actorId: actor.id, action: "group.suggested_added", entityType: "Group", details: { added } } });
+    revalidatePath("/groups");
+    return added ? `Added ${added} suggested group(s).` : "All suggested groups already exist.";
+  });
+}

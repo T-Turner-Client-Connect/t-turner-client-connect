@@ -14,12 +14,13 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const noUsers = (await prisma.user.count()) === 0;
   return (
     <>
-      <h1 className="mb-4 text-2xl font-bold">Staff sign in</h1>
+      <h1 className="mb-1 text-2xl font-bold">Staff Login</h1>
+      <p className="mb-4 text-sm text-slate-600">T. Turner &amp; Associates team only. <Link href="/client/login" className="underline">Client? Sign in here</Link>.</p>
       {reset && <div className="mb-4"><Notice tone="success">Password updated. Sign in with your new password.</Notice></div>}
       {noUsers && (
         <div className="mb-4">
           <Notice title="First time here?">
-            No staff accounts exist yet. <Link className="font-semibold underline" href="/setup">Create the first Admin</Link>.
+            No staff accounts exist yet. <Link className="font-semibold underline" href="/staff/setup">Create the first Admin</Link>.
           </Notice>
         </div>
       )}
@@ -33,7 +34,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         <Button type="submit" className="w-full">Sign in</Button>
       </ActionForm>
       <p className="mt-4 text-center text-sm">
-        <Link href="/forgot-password" className="text-navy-800 underline">Forgot your password?</Link>
+        <Link href="/staff/forgot-password" className="text-navy-800 underline">Forgot your password?</Link>
       </p>
     </>
   );
