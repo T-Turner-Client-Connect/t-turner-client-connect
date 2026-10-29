@@ -41,6 +41,9 @@ model User {
   role         Role      @default(STAFF)
   passwordHash String?
   active       Boolean   @default(true)
+  // TOTP secret (base32), stored encrypted with APP_ENCRYPTION_KEY.
+  mfaSecretEnc String?
+  mfaEnabledAt DateTime?
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -58,11 +61,24 @@ model User {
   files           StoredFile[]
   consentRecords  ConsentRecord[]      @relation("ConsentRecordedBy")
   consentReviews  ConsentRecord[]      @relation("ConsentReviewedBy")
+  recoveryCodes   MfaRecoveryCode[]
+  conversations   Conversation[]       @relation("ConversationAssignee")
+  messages        Message[]            @relation("StaffMessages")
+  documents       Document[]           @relation("StaffDocuments")
+  periods         BookkeepingPeriod[]
+  docRequests     DocumentRequest[]
+  announcements   Announcement[]
+  signatureReqs   SignatureRequest[]
+  contracts       ContractAssignment[]
+  portalInvites   PortalInvite[]
 }
 
 model Session {
   id         String   @id @default(cuid())
   tokenHash  String   @unique
+  // False until the second factor is verified; a half-signed-in session can
+  // only reach the MFA screens.
+  mfaPassed  Boolean  @default(false)
   userId     String
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt  DateTime
@@ -150,6 +166,9 @@ model Client {
   services         String[]
   tags             String[]
   notes            String?
+  // The client's ID in TaxAct (or other tax software), used to match
+  // e-file status imports. Never matched by name alone.
+  taxSoftwareId    String?      @unique
   // True when the record (or part of it) came from tax-preparation software
   // such as a TaxAct export. Drives Section 7216 eligibility checks.
   taxReturnDerived Boolean      @default(false)
@@ -168,6 +187,19 @@ model Client {
   auditLogs          AuditLog[]
   campaignInclusions CampaignInclusion[]
   campaignExclusions CampaignExclusion[]
+  portalAccess       PortalAccess[]
+  portalInvites      PortalInvite[]
+  conversations      Conversation[]
+  documents          Document[]
+  periods            BookkeepingPeriod[]
+  docRequests        DocumentRequest[]
+  announcements      Announcement[]
+  deadlines          ClientDeadline[]
+  signatureReqs      SignatureRequest[]
+  contracts          ContractAssignment[]
+  appointments       Appointment[]
+  pipelineCards      PipelineCard[]
+  filings            FilingRecord[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -190,6 +222,7 @@ model Contact {
   updatedAt       DateTime @updatedAt
 
   consentRecords ConsentRecord[]
+  portalUser     PortalUser?
 
   @@index([clientId])
   @@index([emailNormalized])
@@ -202,8 +235,9 @@ model Group {
   description String?
   createdAt   DateTime @default(now())
 
-  clients   ClientGroup[]
-  campaigns CampaignGroup[]
+  clients       ClientGroup[]
+  campaigns     CampaignGroup[]
+  announcements AnnouncementGroup[]
 }
 
 model ClientGroup {
@@ -349,26 +383,32 @@ model Task {
 enum FileKind {
   FLYER
   CONSENT_EVIDENCE
+  // Client documents live in a separate private store from marketing files.
+  CLIENT_DOCUMENT
 }
 
 model StoredFile {
-  id           String    @id @default(cuid())
-  kind         FileKind
+  id                     String      @id @default(cuid())
+  kind                   FileKind
   // Key inside the private storage bucket. Never a public URL.
-  storageKey   String    @unique
-  originalName String
-  title        String
-  mimeType     String
-  sizeBytes    Int
-  width        Int?
-  height       Int?
-  archivedAt   DateTime?
-  uploadedById String
-  uploadedBy   User      @relation(fields: [uploadedById], references: [id])
-  createdAt    DateTime  @default(now())
+  storageKey             String      @unique
+  originalName           String
+  title                  String
+  mimeType               String
+  sizeBytes              Int
+  width                  Int?
+  height                 Int?
+  archivedAt             DateTime?
+  // Exactly one of these is set: staff upload or client (portal) upload.
+  uploadedById           String?
+  uploadedBy             User?       @relation(fields: [uploadedById], references: [id])
+  uploadedByPortalUserId String?
+  uploadedByPortalUser   PortalUser? @relation(fields: [uploadedByPortalUserId], references: [id])
+  createdAt              DateTime    @default(now())
 
   campaigns      Campaign[]
   consentRecords ConsentRecord[]
+  document       Document?
 }
 
 // ---------------------------------------------------------------------------
@@ -529,4 +569,936 @@ model AuditLog {
   @@index([clientId, createdAt])
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// ===========================================================================
+// MULTI-FACTOR AUTHENTICATION
+// ===========================================================================
+
+model MfaRecoveryCode {
+  id           String      @id @default(cuid())
+  codeHash     String
+  usedAt       DateTime?
+  userId       String?
+  user         User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  portalUserId String?
+  portalUser   PortalUser? @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  createdAt    DateTime    @default(now())
+
+  @@index([userId])
+  @@index([portalUserId])
+}
+
+// ===========================================================================
+// CLIENT PORTAL ACCOUNTS & ACCESS
+// ===========================================================================
+//
+// Portal users are a separate identity type from staff. A portal user sees
+// only the client records granted through PortalAccess — one owner can be
+// granted several businesses, and a business can grant several people
+// (each with their own login). Every portal query is scoped through
+// PortalAccess on the server.
+
+model PortalUser {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String
+  phone           String?
+  phoneNormalized String?
+  passwordHash    String?
+  mfaSecretEnc    String?
+  mfaEnabledAt    DateTime?
+  active          Boolean   @default(true)
+  // Account-service notifications (new message / document / request).
+  // Separate from marketing consent.
+  notifyByEmail   Boolean   @default(true)
+  notifyBySms     Boolean   @default(false)
+  // Optional link to the CRM contact this login belongs to.
+  contactId       String?   @unique
+  contact         Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  access        PortalAccess[]
+  sessions      PortalSession[]
+  resetTokens   PortalResetToken[]
+  recoveryCodes MfaRecoveryCode[]
+  messages      Message[]           @relation("PortalMessages")
+  files         StoredFile[]
+  documents     Document[]          @relation("PortalDocuments")
+  notifications Notification[]
+  accessLogs    DocumentAccessLog[]
+}
+
+enum PortalRole {
+  // Taxpayer / business owner
+  OWNER
+  // Authorized additional contact (bookkeeper, spouse, office manager…)
+  AUTHORIZED_CONTACT
+}
+
+model PortalAccess {
+  id                 String     @id @default(cuid())
+  portalUserId       String
+  portalUser         PortalUser @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  clientId           String
+  client             Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  role               PortalRole @default(OWNER)
+  canMessage         Boolean    @default(true)
+  canUpload          Boolean    @default(true)
+  canViewBookkeeping Boolean    @default(true)
+  canViewTax         Boolean    @default(true)
+  canViewContracts   Boolean    @default(true)
+  grantedById        String?
+  createdAt          DateTime   @default(now())
+  revokedAt          DateTime?
+
+  @@unique([portalUserId, clientId])
+  @@index([clientId])
+}
+
+model PortalInvite {
+  id          String     @id @default(cuid())
+  email       String
+  name        String
+  clientId    String
+  client      Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  role        PortalRole @default(OWNER)
+  contactId   String?
+  tokenHash   String     @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  revokedAt   DateTime?
+  invitedById String
+  invitedBy   User       @relation(fields: [invitedById], references: [id])
+  createdAt   DateTime   @default(now())
+
+  @@index([email])
+}
+
+model PortalSession {
+  id           String     @id @default(cuid())
+  tokenHash    String     @unique
+  mfaPassed    Boolean    @default(false)
+  portalUserId String
+  portalUser   PortalUser @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  expiresAt    DateTime
+  createdAt    DateTime   @default(now())
+  lastSeenAt   DateTime   @default(now())
+
+  @@index([portalUserId])
+}
+
+model PortalResetToken {
+  id           String     @id @default(cuid())
+  tokenHash    String     @unique
+  portalUserId String
+  portalUser   PortalUser @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  expiresAt    DateTime
+  usedAt       DateTime?
+  createdAt    DateTime   @default(now())
+}
+
+// ===========================================================================
+// CONVERSATIONS (unified: portal, email, text)
+// ===========================================================================
+
+enum MessageChannel {
+  PORTAL
+  EMAIL
+  SMS
+  // Staff-only note inside a conversation. Never shown to clients.
+  INTERNAL_NOTE
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  // Portal messages are delivered when saved.
+  DELIVERED
+  // Email/SMS lifecycle — only set from provider responses and webhooks.
+  QUEUED
+  PROVIDER_ACCEPTED
+  FAILED
+  BOUNCED
+  UNSUBSCRIBED
+  // Never used for real sends: demo/test mode only, always labeled.
+  SIMULATED
+}
+
+model Conversation {
+  id            String             @id @default(cuid())
+  clientId      String
+  client        Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  subject       String
+  assignedToId  String?
+  assignedTo    User?              @relation("ConversationAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  // Questions about a bookkeeping month attach to that period.
+  periodId      String?
+  period        BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  // True when the newest message is from the client and nobody has replied.
+  awaitingStaff Boolean            @default(false)
+  // Shared inbox: cleared when any staff member opens it.
+  unreadByStaff Boolean            @default(false)
+  closedAt      DateTime?
+  lastMessageAt DateTime           @default(now())
+  createdAt     DateTime           @default(now())
+
+  messages Message[]
+
+  @@index([clientId, lastMessageAt])
+  @@index([awaitingStaff])
+}
+
+model Message {
+  id             String           @id @default(cuid())
+  conversationId String
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  channel        MessageChannel
+  direction      MessageDirection
+  body           String
+  subject        String?
+  staffAuthorId  String?
+  staffAuthor    User?            @relation("StaffMessages", fields: [staffAuthorId], references: [id], onDelete: SetNull)
+  portalAuthorId String?
+  portalAuthor   PortalUser?      @relation("PortalMessages", fields: [portalAuthorId], references: [id], onDelete: SetNull)
+  status         MessageStatus
+  providerId     String?
+  errorDetail    String?
+  // Prevents duplicate sends when a request is retried.
+  idempotencyKey String?          @unique
+  readByClientAt DateTime?
+  createdAt      DateTime         @default(now())
+
+  attachments Document[] @relation("MessageAttachments")
+
+  @@index([conversationId, createdAt])
+}
+
+// Outbox of "you have something new in your portal" notices. They contain a
+// sign-in link only — never document contents or account details.
+enum NotificationStatus {
+  PENDING
+  SENT
+  SKIPPED
+  FAILED
+}
+
+model Notification {
+  id             String             @id @default(cuid())
+  portalUserId   String
+  portalUser     PortalUser         @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  channel        Channel
+  kind           String
+  status         NotificationStatus @default(PENDING)
+  statusDetail   String?
+  idempotencyKey String             @unique
+  // Twilio Message SID (texts) — used by delivery-status callbacks.
+  providerSid    String?            @unique
+  // Latest provider delivery status, e.g. queued | sent | delivered | undelivered | failed
+  deliveryStatus String?
+  sentAt         DateTime?
+  createdAt      DateTime           @default(now())
+
+  @@index([status, createdAt])
+}
+
+// ===========================================================================
+// DOCUMENT CENTER
+// ===========================================================================
+
+enum DocumentCategory {
+  BOOKKEEPING
+  TAXES
+  CONTRACTS
+  CLIENT_UPLOADS
+  OTHER
+}
+
+enum DocumentVisibility {
+  STAFF_ONLY
+  PUBLISHED
+}
+
+enum ScanStatus {
+  // No scanner configured — shown as "Not scanned" with a warning.
+  NOT_SCANNED
+  PENDING
+  CLEAN
+  INFECTED
+}
+
+enum ReportType {
+  PROFIT_AND_LOSS
+  BALANCE_SHEET
+  OTHER_REPORT
+}
+
+model Document {
+  id                 String             @id @default(cuid())
+  // The client (person or business) this document belongs to.
+  clientId           String
+  client             Client             @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  category           DocumentCategory
+  title              String
+  year               Int?
+  month              Int?
+  visibility         DocumentVisibility @default(STAFF_ONLY)
+  publishedAt        DateTime?
+  reportType         ReportType?
+  fileId             String             @unique
+  file               StoredFile         @relation(fields: [fileId], references: [id])
+  scanStatus         ScanStatus         @default(NOT_SCANNED)
+  uploadedByStaffId  String?
+  uploadedByStaff    User?              @relation("StaffDocuments", fields: [uploadedByStaffId], references: [id], onDelete: SetNull)
+  uploadedByPortalId String?
+  uploadedByPortal   PortalUser?        @relation("PortalDocuments", fields: [uploadedByPortalId], references: [id], onDelete: SetNull)
+  periodId           String?
+  period             BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  requestId          String?
+  request            DocumentRequest?   @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  retainUntil        DateTime?
+  // Audited deletion: metadata is kept, the stored file is destroyed.
+  deletedAt          DateTime?
+  deletedById        String?
+  deletionReason     String?
+  createdAt          DateTime           @default(now())
+
+  messages          Message[]            @relation("MessageAttachments")
+  accessLogs        DocumentAccessLog[]
+  signaturePackages SignatureRequest[]   @relation("SignaturePackage")
+  signatureSigned   SignatureRequest[]   @relation("SignatureCompleted")
+  signatureAudit    SignatureRequest[]   @relation("SignatureAuditTrail")
+  contractPdfs      ContractAssignment[]
+  // Acknowledgments, agency notices and correspondence for one filing.
+  filingId          String?
+  filing            FilingRecord?        @relation(fields: [filingId], references: [id], onDelete: SetNull)
+  // "OFFICIAL_ACK" | "AGENCY_NOTICE" | "CORRESPONDENCE" | "FIRM_SUMMARY"
+  filingDocType     String?
+
+  @@index([clientId, category, year, month])
+  @@index([visibility])
+}
+
+model DocumentAccessLog {
+  id           String      @id @default(cuid())
+  documentId   String
+  document     Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  action       String // VIEW | DOWNLOAD | UPLOAD | PUBLISH | UNPUBLISH | DELETE
+  staffUserId  String?
+  portalUserId String?
+  portalUser   PortalUser? @relation(fields: [portalUserId], references: [id], onDelete: SetNull)
+  ip           String?
+  createdAt    DateTime    @default(now())
+
+  @@index([documentId, createdAt])
+}
+
+model RetentionPolicy {
+  category    DocumentCategory @id
+  // Years to keep after upload. Null = keep until deleted manually.
+  years       Int?
+  updatedAt   DateTime         @updatedAt
+  updatedById String?
+}
+
+// ===========================================================================
+// BOOKKEEPING WORKSPACES
+// ===========================================================================
+
+enum PeriodStatus {
+  AWAITING_DOCUMENTS
+  IN_PROGRESS
+  READY_FOR_REVIEW
+  COMPLETE
+}
+
+model BookkeepingPeriod {
+  id          String       @id @default(cuid())
+  clientId    String
+  client      Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  year        Int
+  month       Int
+  status      PeriodStatus @default(AWAITING_DOCUMENTS)
+  staffNote   String?
+  updatedById String?
+  updatedBy   User?        @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  documents     Document[]
+  requests      DocumentRequest[]
+  conversations Conversation[]
+
+  @@unique([clientId, year, month])
+}
+
+enum RequestStatus {
+  OPEN
+  SUBMITTED
+  ACCEPTED
+  CANCELLED
+}
+
+model DocumentRequest {
+  id           String             @id @default(cuid())
+  clientId     String
+  client       Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  periodId     String?
+  period       BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  title        String
+  instructions String?
+  category     DocumentCategory   @default(CLIENT_UPLOADS)
+  dueAt        DateTime?
+  remindAt     DateTime?
+  status       RequestStatus      @default(OPEN)
+  createdById  String
+  createdBy    User               @relation(fields: [createdById], references: [id])
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  documents Document[]
+
+  @@index([clientId, status])
+}
+
+// ===========================================================================
+// UPDATES, ANNOUNCEMENTS & DEADLINES
+// ===========================================================================
+
+model Announcement {
+  id          String    @id @default(cuid())
+  title       String
+  body        String
+  // Set = client-specific update; null = announcement to the groups below.
+  clientId    String?
+  client      Client?   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  publishedAt DateTime?
+  expiresAt   DateTime?
+  createdById String
+  createdBy   User      @relation(fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+
+  groups AnnouncementGroup[]
+}
+
+model AnnouncementGroup {
+  announcementId String
+  groupId        String
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  group          Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([announcementId, groupId])
+}
+
+model ClientDeadline {
+  id              String   @id @default(cuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  title           String
+  dueAt           DateTime
+  visibleToClient Boolean  @default(true)
+  createdById     String
+  createdAt       DateTime @default(now())
+
+  @@index([clientId, dueAt])
+}
+
+// ===========================================================================
+// TAX SIGNATURES (provider-backed) & CONTRACTS (Jotform)
+// ===========================================================================
+
+enum SignatureStatus {
+  DRAFT
+  SENT
+  VIEWED
+  PARTIALLY_SIGNED
+  COMPLETED
+  DECLINED
+  EXPIRED
+  // Signed outside the app; staff uploaded the signed copy. Never shown as
+  // an electronic signature collected through the app.
+  SIGNED_OFFLINE_UPLOADED
+}
+
+model SignatureRequest {
+  id                   String          @id @default(cuid())
+  clientId             String
+  client               Client          @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  title                String
+  taxYear              Int?
+  status               SignatureStatus @default(DRAFT)
+  // Null until a verified signing provider is configured.
+  provider             String?
+  providerEnvelopeId   String?         @unique
+  packageDocumentId    String?
+  packageDocument      Document?       @relation("SignaturePackage", fields: [packageDocumentId], references: [id], onDelete: SetNull)
+  signedDocumentId     String?
+  signedDocument       Document?       @relation("SignatureCompleted", fields: [signedDocumentId], references: [id], onDelete: SetNull)
+  auditTrailDocumentId String?
+  auditTrailDocument   Document?       @relation("SignatureAuditTrail", fields: [auditTrailDocumentId], references: [id], onDelete: SetNull)
+  sentAt               DateTime?
+  completedAt          DateTime?
+  expiresAt            DateTime?
+  createdById          String
+  createdBy            User            @relation(fields: [createdById], references: [id])
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  signers SignatureSigner[]
+
+  @@index([clientId, status])
+}
+
+model SignatureSigner {
+  id        String           @id @default(cuid())
+  requestId String
+  request   SignatureRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  name      String
+  email     String?
+  // TAXPAYER | SPOUSE | OFFICER | OTHER
+  role      String
+  status    String           @default("PENDING")
+  signedAt  DateTime?
+  order     Int              @default(1)
+}
+
+enum ContractStatus {
+  ASSIGNED
+  // Jotform reported a submission (verified via API/webhook).
+  SUBMITTED
+  COMPLETED
+  CANCELLED
+}
+
+model ContractAssignment {
+  id               String         @id @default(cuid())
+  // The person or business this contract is for.
+  clientId         String
+  client           Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  title            String
+  jotformFormId    String
+  status           ContractStatus @default(ASSIGNED)
+  submissionId     String?        @unique
+  submittedAt      DateTime?
+  // How completion was confirmed: "jotform_webhook" | "jotform_api" | "staff_verified"
+  completionSource String?
+  pdfDocumentId    String?
+  pdfDocument      Document?      @relation(fields: [pdfDocumentId], references: [id], onDelete: SetNull)
+  dueAt            DateTime?
+  createdById      String
+  createdBy        User           @relation(fields: [createdById], references: [id])
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([clientId, status])
+}
+
+// ===========================================================================
+// CALENDAR
+// ===========================================================================
+
+model Appointment {
+  id          String    @id @default(cuid())
+  clientId    String
+  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  title       String
+  startsAt    DateTime
+  location    String?
+  staffId     String?
+  cancelledAt DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  @@index([startsAt])
+}
+
+// ===========================================================================
+// WORKFLOWS: PIPELINES & AUTOMATIONS
+// ===========================================================================
+//
+// Prospect pipeline stages are configurable and cards are stored here.
+// Bookkeeping and Tax boards are views over BookkeepingPeriod.status and
+// FilingRecord.prepStatus so there is a single source of truth.
+
+model PipelineStage {
+  id        String   @id @default(cuid())
+  pipeline  String // "PROSPECTS"
+  name      String
+  position  Int
+  // Moving a card here marks the client Active (e.g. "Active Client").
+  isWon     Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  cards PipelineCard[]
+
+  @@index([pipeline, position])
+}
+
+model PipelineCard {
+  id        String        @id @default(cuid())
+  clientId  String
+  client    Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  stageId   String
+  stage     PipelineStage @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  note      String?
+  ownerId   String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@unique([clientId, stageId])
+  @@index([stageId])
+}
+
+enum AutomationKind {
+  MISSING_DOCUMENT_REMINDER
+  APPOINTMENT_REMINDER
+  CONTRACT_FOLLOW_UP
+}
+
+model AutomationRule {
+  id              String         @id @default(cuid())
+  kind            AutomationKind @unique
+  name            String
+  // Paused rules don't run; nothing is sent while paused.
+  enabled         Boolean        @default(false)
+  // Days relative to the due date / appointment (negative = before).
+  offsetDays      Int
+  // Minimum days between reminders for the same item.
+  repeatEveryDays Int?
+  maxReminders    Int            @default(3)
+  updatedById     String?
+  updatedAt       DateTime       @updatedAt
+
+  runs AutomationRun[]
+}
+
+model AutomationRun {
+  id        String         @id @default(cuid())
+  ruleId    String
+  rule      AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  // The item reminded about, e.g. "request:<id>"
+  targetKey String
+  clientId  String?
+  // Unique per rule + item + reminder number: retries can't duplicate.
+  dedupeKey String         @unique
+  outcome   String // "QUEUED" | "SKIPPED:<reason>" | "CANCELLED"
+  createdAt DateTime       @default(now())
+
+  @@index([ruleId, createdAt])
+}
+
+// ===========================================================================
+// TAX WORKSPACE
+// ===========================================================================
+//
+// One FilingRecord per client + tax year + return type + jurisdiction +
+// filing type. Preparation status (internal) and filing status (e-file
+// acknowledgment) are separate fields with separate histories, and federal
+// and state filings are separate records, so one never changes the other.
+
+enum FilingType {
+  ORIGINAL
+  EXTENSION
+  AMENDED
+}
+
+enum PrepStatus {
+  AWAITING_INFORMATION
+  IN_PROGRESS
+  UNDER_REVIEW
+  AWAITING_SIGNATURE
+  READY_TO_FILE
+}
+
+enum FilingStatus {
+  NOT_SUBMITTED
+  SUBMITTED
+  PENDING_ACKNOWLEDGMENT
+  ACCEPTED
+  REJECTED
+}
+
+enum FilingMethod {
+  ELECTRONIC
+  PAPER
+}
+
+// What happened after an amended return was accepted for processing.
+enum AmendmentOutcome {
+  NONE
+  PROCESSING
+  PROCESSING_COMPLETE
+  CHANGES_APPROVED
+  CHANGES_ADJUSTED
+  REFUND_ISSUED
+  BALANCE_DUE_NOTICE
+}
+
+enum StatusSource {
+  STAFF
+  TAXACT_IMPORT
+}
+
+model FilingRecord {
+  id               String           @id @default(cuid())
+  clientId         String
+  client           Client           @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  taxYear          Int
+  // e.g. 1040, 1120-S, 1065, 990, 1041, 1120
+  returnType       String
+  // "FEDERAL" or a two-letter state code
+  jurisdiction     String
+  filingType       FilingType       @default(ORIGINAL)
+  method           FilingMethod     @default(ELECTRONIC)
+  prepStatus       PrepStatus       @default(AWAITING_INFORMATION)
+  filingStatus     FilingStatus     @default(NOT_SUBMITTED)
+  amendmentOutcome AmendmentOutcome @default(NONE)
+  submittedAt      DateTime?
+  acknowledgedAt   DateTime?
+  // Submission ID / DCN when the source provides it.
+  filingReference  String?
+  rejectionCodes   String?
+  statusSource     StatusSource?
+  // Time of the source event behind the current filing status; older
+  // imports never overwrite a newer verified status.
+  statusAsOf       DateTime?
+  lastVerifiedAt   DateTime?
+  lastVerifiedById String?
+  // Visible in the client's portal tax view.
+  visibleToClient  Boolean          @default(true)
+  notes            String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  events     FilingStatusEvent[]
+  documents  Document[]
+  importRows TaxImportRow[]
+
+  @@unique([clientId, taxYear, returnType, jurisdiction, filingType])
+  @@index([filingStatus])
+  @@index([prepStatus])
+}
+
+model FilingStatusEvent {
+  id                 String       @id @default(cuid())
+  filingId           String
+  filing             FilingRecord @relation(fields: [filingId], references: [id], onDelete: Cascade)
+  // "PREP" or "FILING" or "AMENDMENT"
+  field              String
+  fromValue          String?
+  toValue            String
+  source             StatusSource
+  actorId            String?
+  importBatchId      String?
+  // Required to record ACCEPTED: an acknowledgment document or a note of how staff verified it.
+  evidenceDocumentId String?
+  verificationNote   String?
+  eventAt            DateTime
+  createdAt          DateTime     @default(now())
+
+  @@index([filingId, createdAt])
+}
+
+model TaxImportBatch {
+  id           String       @id @default(cuid())
+  source       String // e.g. "TaxAct Professional — E-file Details report"
+  fileName     String
+  mapping      Json
+  // Which statuses staff chose to import, e.g. ["ACCEPTED"]
+  statusFilter String[]
+  status       ImportStatus @default(REVIEW)
+  importedById String
+  createdAt    DateTime     @default(now())
+  committedAt  DateTime?
+  appliedCount Int          @default(0)
+  skippedCount Int          @default(0)
+
+  rows TaxImportRow[]
+}
+
+model TaxImportRow {
+  id        String         @id @default(cuid())
+  batchId   String
+  batch     TaxImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  rowNumber Int
+  // Mapped fields only (no SSN/EIN). Cleared after commit.
+  data      Json?
+  errors    String[]
+  warnings  String[]
+  // "MATCH" | "NEW_FILING" | "AMBIGUOUS" | "NO_CLIENT" | "STALE" | "FILTERED" | "ERROR"
+  match     String
+  clientId  String?
+  filingId  String?
+  filing    FilingRecord?  @relation(fields: [filingId], references: [id], onDelete: SetNull)
+  decision  String? // "apply" | "skip"
+  applied   Boolean        @default(false)
+
+  @@index([batchId, rowNumber])
+}
+
+// ===========================================================================
+// SOCIAL MEDIA
+// ===========================================================================
+//
+// Uses the marketing media library (StoredFile kind FLYER), which is kept
+// apart from client/tax documents. Direct publishing is off until a platform
+// account is connected through its official authorization flow and approved;
+// until then targets become "Requires manual posting" at their scheduled time
+// and only a staff confirmation (with the post link) marks them posted.
+
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+  TIKTOK
+}
+
+enum SocialPostStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum SocialTargetStatus {
+  DRAFT
+  SCHEDULED
+  // Direct publishing only — set from the platform's API response.
+  PUBLISHED
+  FAILED
+  REQUIRES_MANUAL_POSTING
+  // Staff confirmed they posted it by hand (with the post link).
+  POSTED_MANUALLY
+  CANCELLED
+}
+
+model SocialPost {
+  id           String           @id @default(cuid())
+  title        String
+  status       SocialPostStatus @default(DRAFT)
+  scheduledAt  DateTime?
+  createdById  String
+  approvedById String?
+  approvedAt   DateTime?
+  approvalNote String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  targets SocialPostTarget[]
+
+  @@index([scheduledAt])
+}
+
+model SocialPostTarget {
+  id             String             @id @default(cuid())
+  postId         String
+  post           SocialPost         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  platform       SocialPlatform
+  caption        String             @default("")
+  // Ordered StoredFile ids from the media library.
+  mediaIds       String[]
+  status         SocialTargetStatus @default(DRAFT)
+  // "DIRECT" only when a connected, approved account exists.
+  publishMode    String             @default("MANUAL")
+  // Prevents a retry from publishing twice.
+  idempotencyKey String             @unique @default(cuid())
+  externalPostId String?
+  permalink      String?
+  errorDetail    String?
+  publishedAt    DateTime?
+  confirmedById  String?
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([postId, platform])
+  @@index([status])
+}
+
+model SocialAccount {
+  id             String         @id @default(cuid())
+  platform       SocialPlatform
+  accountName    String
+  externalId     String
+  // Encrypted with APP_ENCRYPTION_KEY; never sent to the browser.
+  tokenEnc       String
+  scopes         String[]
+  // Platform approval state for direct publishing, e.g. "app_review_approved".
+  approvalState  String?
+  connectedById  String
+  connectedAt    DateTime       @default(now())
+  disconnectedAt DateTime?
+
+  @@unique([platform, externalId])
+}
+
+// ===========================================================================
+// SMS CONSENT LEDGER & INBOUND TEXTS
+// ===========================================================================
+//
+// Phone-level, category-specific text permissions. The newest event per
+// phone + category is the current state. Every SMS send checks this ledger
+// (plus Suppression) on the server. Imports never write here.
+
+enum SmsConsentCategory {
+  SERVICE
+  MARKETING
+}
+
+model SmsConsentSubmission {
+  id               String   @id @default(cuid())
+  name             String
+  phoneNormalized  String
+  serviceOptIn     Boolean
+  marketingOptIn   Boolean
+  consentVersion   String
+  // Exact wording displayed next to each checkbox at the time of submission.
+  serviceText      String
+  marketingText    String
+  sourcePage       String
+  // Hashed (keyed) client IP for abuse prevention — the raw IP is not stored.
+  ipHash           String?
+  userAgent        String?
+  matchedClientIds String[]
+  createdAt        DateTime @default(now())
+
+  @@index([phoneNormalized, createdAt])
+  @@index([createdAt])
+}
+
+model SmsConsentEvent {
+  id              String             @id @default(cuid())
+  phoneNormalized String
+  category        SmsConsentCategory
+  status          ConsentStatus
+  // WEB_FORM | STOP_KEYWORD | START_KEYWORD | CLIENT_PORTAL | STAFF
+  source          String
+  sourcePage      String?
+  consentVersion  String?
+  consentText     String?
+  submissionId    String?
+  inboundSmsId    String?
+  actorId         String?
+  createdAt       DateTime           @default(now())
+
+  @@index([phoneNormalized, category, createdAt])
+}
+
+model InboundSms {
+  id              String   @id @default(cuid())
+  providerSid     String   @unique
+  fromNormalized  String
+  toNumber        String?
+  body            String
+  // STOP | START | HELP | null
+  keyword         String?
+  matchedClientId String?
+  conversationId  String?
+  receivedAt      DateTime @default(now())
+
+  @@index([fromNormalized, receivedAt])
 }

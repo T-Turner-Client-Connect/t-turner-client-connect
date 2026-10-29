@@ -1,9 +1,15 @@
-// Baseline reference data only — no client records, no staff accounts.
-// Safe to run repeatedly. On Netlify the same groups are inserted by the
-// netlify/database/migrations seed migration, so this is for local databases.
+// LOCAL DEVELOPMENT ONLY (npm run db:seed). Not part of any deployment.
+// Adds the suggested client groups — no clients, accounts or passwords — and
+// never changes existing rows. Hosted databases get the same groups from the
+// seed_default_groups migration (ON CONFLICT DO NOTHING).
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient({ datasourceUrl: process.env.DATABASE_URL || process.env.NETLIFY_DB_URL });
+
+if (process.env.CONTEXT && process.env.CONTEXT !== "dev") {
+  console.error("prisma/seed.ts is for local development and does not run on Netlify deploys.");
+  process.exit(1);
+}
 
 const DEFAULT_GROUPS = [
   ["Individual Tax Clients", "Individuals we prepare tax returns for"],

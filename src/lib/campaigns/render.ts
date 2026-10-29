@@ -1,8 +1,9 @@
+import { BUSINESS } from "@/lib/business";
 import type { CampaignPurpose } from "@prisma/client";
 import { estimateSegments } from "@/lib/sms";
 import { MMS_SAFE_BYTES } from "@/lib/files";
 
-export const ORG_NAME = "T. Turner & Associates, LLC";
+export const ORG_NAME = BUSINESS.legalName;
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -38,7 +39,7 @@ export function renderEmailHtml(input: EmailRenderInput): string {
   const flyer = input.flyer
     ? input.flyer.mimeType.startsWith("image/")
       ? `<p style="margin:0 0 16px"><img src="${escapeHtml(input.flyer.url)}" alt="${escapeHtml(input.flyer.title)}" style="max-width:100%;height:auto;border:0"></p>`
-      : `<p style="margin:0 0 16px"><a href="${escapeHtml(input.flyer.url)}" style="color:#0b1f5c;font-weight:bold">View: ${escapeHtml(input.flyer.title)} (PDF)</a></p>`
+      : `<p style="margin:0 0 16px"><a href="${escapeHtml(input.flyer.url)}" style="color:#0b1f5c;font-weight:bold">View: ${escapeHtml(input.flyer.title)}${input.flyer.mimeType === "application/pdf" ? " (PDF)" : ""}</a></p>`
     : "";
   const isPromo = input.purpose !== "SERVICE";
   const footer = [
@@ -75,7 +76,7 @@ export function renderSms(input: {
   flyer?: { title: string; mimeType: string; sizeBytes: number } | null;
   flyerLinkPlaceholder?: string;
 }): SmsPreview {
-  let text = `${ORG_NAME.replace(", LLC", "")}: ${input.body.trim()}`;
+  let text = `${BUSINESS.shortName}: ${input.body.trim()}`;
   let media: SmsPreview["media"] = "none";
   let mediaNote: string | null = null;
   if (input.flyer) {

@@ -49,3 +49,18 @@ export async function setTaskDone(actor: Actor, taskId: string, done: boolean) {
     return task;
   });
 }
+
+export async function addAppointment(actor: Actor, input: { clientId: string; title: string; startsAt: Date | null; location?: string; staffId?: string | null }) {
+  if (!input.title.trim() || !input.startsAt) throw new ValidationError("Add a title, date and time.");
+  if (!(await prisma.client.count({ where: { id: input.clientId } }))) throw new ValidationError("Choose a client.");
+  const a = await prisma.appointment.create({
+    data: { clientId: input.clientId, title: input.title.trim().slice(0, 200), startsAt: input.startsAt, location: input.location?.trim() || null, staffId: input.staffId || actor.id, createdById: actor.id },
+  });
+  await audit(prisma, { actorId: actor.id, action: "appointment.created", entityType: "Appointment", entityId: a.id, clientId: input.clientId });
+  return a;
+}
+
+export async function cancelAppointment(actor: Actor, appointmentId: string) {
+  const a = await prisma.appointment.update({ where: { id: appointmentId }, data: { cancelledAt: new Date() } });
+  await audit(prisma, { actorId: actor.id, action: "appointment.cancelled", entityType: "Appointment", entityId: appointmentId, clientId: a.clientId });
+}

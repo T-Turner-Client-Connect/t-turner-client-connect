@@ -15,7 +15,7 @@ export default async function ImportsPage() {
   });
   return (
     <>
-      <PageHeader title="Imports" subtitle="Every import records its date, source, and the staff member who ran it." actions={<LinkButton href="/imports/new">Import contacts</LinkButton>} />
+      <PageHeader title="Imports" subtitle="Every import records its date, source, and the staff member who ran it." actions={<><LinkButton href="/imports/tax" variant="secondary">Import TaxAct e-file statuses</LinkButton><LinkButton href="/imports/new">Import contacts</LinkButton></>} />
       {batches.length === 0 ? (
         <EmptyState title="No imports yet">Export your client list from TaxAct as CSV or Excel, then import it here.</EmptyState>
       ) : (

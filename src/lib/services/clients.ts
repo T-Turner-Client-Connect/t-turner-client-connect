@@ -262,7 +262,25 @@ export async function recordConsent(actor: Actor, clientId: string, input: Conse
   }
   const now = new Date();
   if (input.effectiveAt && input.effectiveAt > now) throw new ValidationError("The date can't be in the future.");
+  const smsCategory = input.kind === "SMS_SERVICE" ? "SERVICE" : input.kind === "SMS_MARKETING" ? "MARKETING" : null;
+  let smsPhone: string | null = null;
+  if (smsCategory) {
+    const person = input.contactId
+      ? await prisma.contact.findUnique({ where: { id: input.contactId }, select: { phoneNormalized: true } })
+      : await prisma.client.findUnique({ where: { id: clientId }, select: { phoneNormalized: true } });
+    smsPhone = person?.phoneNormalized ?? null;
+  }
   return prisma.$transaction(async (tx) => {
+    // Text permissions are tracked per phone number so every send checks one ledger.
+    if (smsCategory && smsPhone && (input.status === "GRANTED" || input.status === "REVOKED")) {
+      await tx.smsConsentEvent.create({
+        data: { phoneNormalized: smsPhone, category: smsCategory, status: input.status, source: "STAFF", consentText: input.scope?.trim() || null, actorId: actor.id },
+      });
+      if (input.status === "GRANTED") {
+        const stop = await tx.suppression.findFirst({ where: { channel: "SMS", addressNormalized: smsPhone, liftedAt: null } });
+        if (stop) throw new ValidationError("This number replied STOP. It can only be opted back in by the person themselves (consent page or a new written opt-in reviewed by an Admin).");
+      }
+    }
     const record = await tx.consentRecord.create({
       data: {
         clientId,

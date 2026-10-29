@@ -14,10 +14,11 @@ const ABSOLUTE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 const TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
+/** Starts a session that only reaches the MFA screens until verified. */
 export async function createSession(userId: string): Promise<void> {
   const token = newToken();
   const expiresAt = new Date(Date.now() + ABSOLUTE_LIFETIME_MS);
-  await prisma.session.create({ data: { tokenHash: hashToken(token), userId, expiresAt } });
+  await prisma.session.create({ data: { tokenHash: hashToken(token), userId, expiresAt, mfaPassed: false } });
   const jar = await cookies();
   jar.set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -35,8 +36,10 @@ export async function destroySession(): Promise<void> {
   jar.delete(SESSION_COOKIE);
 }
 
-/** Current signed-in user, or null. Memoized for the duration of a request. */
-export const getCurrentUser = cache(async (): Promise<Actor | null> => {
+type SessionState = { actor: Actor; sessionId: string; mfaPassed: boolean; mfaEnrolled: boolean };
+
+/** The session behind the cookie, whether or not MFA is done yet. */
+export const getSessionState = cache(async (): Promise<SessionState | null> => {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
@@ -59,13 +62,24 @@ export const getCurrentUser = cache(async (): Promise<Actor | null> => {
     await prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });
   }
   const { id, role, name, email } = session.user;
-  return { id, role, name, email };
+  return { actor: { id, role, name, email }, sessionId: session.id, mfaPassed: session.mfaPassed, mfaEnrolled: !!session.user.mfaEnabledAt };
 });
 
+/** Fully signed-in staff member (password + second factor), or null. */
+export const getCurrentUser = cache(async (): Promise<Actor | null> => {
+  const state = await getSessionState();
+  return state?.mfaPassed ? state.actor : null;
+});
+
+export async function markMfaPassed(sessionId: string): Promise<void> {
+  await prisma.session.update({ where: { id: sessionId }, data: { mfaPassed: true, lastSeenAt: new Date() } });
+}
+
 export async function requireUser(): Promise<Actor> {
-  const user = await getCurrentUser();
-  if (!user) redirect("/login");
-  return user;
+  const state = await getSessionState();
+  if (!state) redirect("/staff/login");
+  if (!state.mfaPassed) redirect(state.mfaEnrolled ? "/staff/mfa" : "/staff/mfa/setup");
+  return state.actor;
 }
 
 export async function requireAdmin(): Promise<Actor> {

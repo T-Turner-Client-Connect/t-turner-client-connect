@@ -2,9 +2,15 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clients";
 import { inviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
+import { resetStaffMfaAction, retentionAction } from "@/app/actions/workspace";
+import { CATEGORY_LABELS } from "@/lib/services/documents";
+import { jotformStatus } from "@/lib/services/contracts";
+import { signingProviderStatus } from "@/lib/services/signatures";
+import { scanConfigured } from "@/lib/scan";
+import { directPublishingStatus, PLATFORM_LABELS } from "@/lib/social/rules";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
-import { integrationStatus } from "@/lib/integrations";
+import { appUrl, integrationStatus } from "@/lib/integrations";
 import { storageDriverName } from "@/lib/storage";
 import { formatPhone } from "@/lib/normalize";
 import { fmtDate, fmtDateTime } from "@/lib/format";
@@ -33,6 +39,15 @@ export default async function SettingsPage() {
     isAdmin ? prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 75, include: { actor: { select: { name: true } } } }) : [],
   ]);
   const i = integrationStatus();
+  const [consentSubs, unmatchedTexts] = await Promise.all([
+    prisma.smsConsentSubmission.findMany({ orderBy: { createdAt: "desc" }, take: 25 }),
+    prisma.inboundSms.findMany({ where: { matchedClientId: null }, orderBy: { receivedAt: "desc" }, take: 25 }),
+  ]);
+  const consentClients = new Map(
+    (await prisma.client.findMany({ where: { id: { in: consentSubs.flatMap((c) => c.matchedClientIds) } }, select: { id: true, displayName: true } })).map((c) => [c.id, c.displayName]),
+  );
+  const retention = new Map((await prisma.retentionPolicy.findMany()).map((r) => [r.category, r.years]));
+  const social = directPublishingStatus(new Set((await prisma.socialAccount.findMany({ where: { disconnectedAt: null } })).map((a) => a.platform)));
 
   return (
     <>
@@ -68,6 +83,11 @@ export default async function SettingsPage() {
                       <ActionForm action={resetLinkAction.bind(null, s.id)}>
                         <Button type="submit" variant="ghost">Create password reset link</Button>
                       </ActionForm>
+                      {s.mfaEnabledAt && s.id !== user.id && (
+                        <ActionForm action={resetStaffMfaAction.bind(null, s.id)} confirm="Reset two-step verification? Confirm their identity in person or by phone first.">
+                          <Button type="submit" variant="ghost">Reset two-step verification (lost phone)</Button>
+                        </ActionForm>
+                      )}
                     </div>
                   </details>
                 )}
@@ -107,6 +127,14 @@ export default async function SettingsPage() {
             <Status ok={i.appUrl} label="Site address" detail="APP_URL, used in invitation, reset and unsubscribe links" />
             <Status ok={i.email} label="Email (Resend)" detail="RESEND_API_KEY and EMAIL_FROM_ADDRESS. Password-reset emails work once set; campaign email arrives in the next stage." />
             <Status ok={i.twilio} label="Text messages (Twilio)" detail="TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and a Messaging Service SID or from-number. Used from the next stage." />
+            <Status ok={(process.env.APP_ENCRYPTION_KEY?.length ?? 0) >= 32} label="Encryption key" detail="APP_ENCRYPTION_KEY protects two-step secrets and signs download links" />
+            <Status ok={process.env.NOTIFICATIONS_ENABLED === "true"} label="Client portal notifications" detail="NOTIFICATIONS_ENABLED=true plus email/Twilio. Notices carry a sign-in link only." />
+            <Status ok={scanConfigured()} label="Malware scanning" detail="MALWARE_SCAN_URL (e.g. a ClamAV REST service) for uploaded files" />
+            <Status ok={jotformStatus().verifiedCompletion} label="Jotform" detail="JOTFORM_API_KEY + JOTFORM_WEBHOOK_SECRET for verified completion. Form links work without them." />
+            <Status ok={false} label="Tax e-signatures" detail={`${signingProviderStatus().label}. Needs a provider verified for the specific tax forms, identity checks and joint signers.`} />
+            <Status ok={false} label="TaxAct" detail="No public TaxAct API. E-file statuses arrive by staff import of TaxAct's E-file Details CSV (Clients → Imports)." />
+            <Status ok={Boolean(process.env.CRON_SECRET)} label="Scheduled automations" detail="CRON_SECRET lets the hourly Netlify function run reminders" />
+            {social.map((p) => <Status key={p.platform} ok={p.available} label={`${PLATFORM_LABELS[p.platform]} direct publishing`} detail={p.reason} />)}
             <li className="flex flex-wrap items-start justify-between gap-2 py-2">
               <div>
                 <p className="font-medium">Live sending</p>
@@ -115,6 +143,63 @@ export default async function SettingsPage() {
               <Badge tone="red">Off</Badge>
             </li>
           </ul>
+        </Card>
+
+        {isAdmin && (
+          <Card title="Document retention" className="lg:col-span-2">
+            <p className="mb-3 text-sm text-slate-600">Sets a keep-until date on new documents. Nothing is deleted automatically — expired documents are listed on the Documents page for an Admin to review, and every deletion is logged with a reason.</p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              {(Object.keys(CATEGORY_LABELS) as (keyof typeof CATEGORY_LABELS)[]).map((cat) => (
+                <ActionForm key={cat} action={retentionAction} className="space-y-2 rounded-xl border border-ivory-200 p-3">
+                  <input type="hidden" name="category" value={cat} />
+                  <Field label={CATEGORY_LABELS[cat]} hint="Years (blank = keep until deleted)"><input className="input" name="years" inputMode="numeric" defaultValue={retention.get(cat) ?? ""} /></Field>
+                  <Button type="submit" variant="secondary">Save</Button>
+                </ActionForm>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        <Card title="SMS consent & incoming texts" className="lg:col-span-2">
+          <div className="mb-4 rounded-lg bg-ivory-50 p-3 text-sm">
+            <p className="font-semibold">Twilio webhook addresses (Messaging Service → Integration)</p>
+            <p>Incoming messages: <code className="break-all">{appUrl()}/api/webhooks/twilio/inbound</code> (HTTP POST)</p>
+            <p>Delivery status is sent automatically to <code className="break-all">{appUrl()}/api/webhooks/twilio/status</code>.</p>
+            <p className="mt-1 text-slate-600">Public consent page: <a className="underline" href="/sms-consent" target="_blank">{appUrl()}/sms-consent</a></p>
+          </div>
+          <h3 className="mb-2 font-semibold">Recent consent form submissions</h3>
+          {consentSubs.length === 0 ? (
+            <p className="mb-4 text-sm text-slate-600">None yet.</p>
+          ) : (
+            <ul className="mb-4 divide-y divide-ivory-200 text-sm">
+              {consentSubs.map((c) => (
+                <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <span>
+                    <strong>{c.name}</strong> · {formatPhone(c.phoneNormalized)} ·{" "}
+                    {c.matchedClientIds.length ? c.matchedClientIds.map((id) => <a key={id} className="underline" href={`/clients/${id}`}>{consentClients.get(id) ?? "client"}</a>) : <span className="text-amber-800">No matching client — add this number to a client to link it</span>}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Badge tone={c.serviceOptIn ? "green" : "gray"}>Service {c.serviceOptIn ? "yes" : "no"}</Badge>
+                    <Badge tone={c.marketingOptIn ? "green" : "gray"}>Marketing {c.marketingOptIn ? "yes" : "no"}</Badge>
+                    <span className="text-xs text-slate-500">{fmtDateTime(c.createdAt)}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <h3 className="mb-2 font-semibold">Incoming texts not matched to a client</h3>
+          {unmatchedTexts.length === 0 ? (
+            <p className="text-sm text-slate-600">None.</p>
+          ) : (
+            <ul className="divide-y divide-ivory-200 text-sm">
+              {unmatchedTexts.map((t) => (
+                <li key={t.id} className="py-2">
+                  <span className="font-semibold">{formatPhone(t.fromNormalized)}</span> {t.keyword && <Badge tone={t.keyword === "STOP" ? "red" : "gray"}>{t.keyword}</Badge>} · {fmtDateTime(t.receivedAt)}
+                  <p className="text-slate-700">{t.body}</p>
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
 
         <Card title="Do-not-contact list" className="lg:col-span-2">

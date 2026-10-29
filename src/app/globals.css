@@ -8,29 +8,38 @@
   --color-navy-100: #e5e9f4;
   --color-navy-50: #f3f5fa;
   --color-gold-600: #b48a2c;
+  /* Darker gold for text on light backgrounds (meets 4.5:1). */
+  --color-gold-700: #6b4e10;
   --color-gold-500: #d2a43f;
   --color-gold-300: #e8cc8a;
   --color-gold-100: #f8efd9;
+  /* Warm ivory surfaces */
+  --color-ivory-50: #fdfbf6;
+  --color-ivory-100: #f8f4ea;
+  --color-ivory-200: #efe8d8;
   --font-serif: Georgia, "Times New Roman", serif;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
 }
 
-html {
-  -webkit-text-size-adjust: 100%;
-}
+/* Base styles live in the base layer so utility classes (e.g. text-white) can override them. */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
 
-body {
-  background: var(--color-navy-50);
-  color: #1c2333;
-  font-family: var(--font-sans);
-  font-size: 16px;
-}
+  body {
+    background: var(--color-ivory-100);
+    color: #1c2333;
+    font-family: var(--font-sans);
+    font-size: 16px;
+  }
 
-h1,
-h2,
-h3 {
-  font-family: var(--font-serif);
-  color: var(--color-navy-900);
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-serif);
+    color: var(--color-navy-900);
+  }
 }
 
 :focus-visible {
@@ -38,20 +47,45 @@ h3 {
   outline-offset: 2px;
 }
 
-.input {
-  width: 100%;
-  border: 1px solid #c7cddc;
-  border-radius: 0.5rem;
-  background: white;
-  padding: 0.55rem 0.75rem;
-  font-size: 1rem;
-  line-height: 1.4;
+@layer components {
+  .input {
+    width: 100%;
+    border: 1px solid #c7cddc;
+    border-radius: 0.5rem;
+    background: white;
+    padding: 0.55rem 0.75rem;
+    font-size: 1rem;
+    line-height: 1.4;
+  }
+  .input:focus {
+    border-color: var(--color-navy-700);
+    outline: 2px solid var(--color-gold-300);
+    outline-offset: 0;
+  }
+  textarea.input {
+    min-height: 6rem;
+  }
 }
-.input:focus {
-  border-color: var(--color-navy-700);
-  outline: 2px solid var(--color-gold-300);
-  outline-offset: 0;
+
+/* Restrained motion; respects reduced-motion settings. */
+@media (prefers-reduced-motion: no-preference) {
+  a,
+  button {
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+  }
 }
-textarea.input {
-  min-height: 6rem;
+
+.skeleton {
+  background: linear-gradient(90deg, var(--color-ivory-200), var(--color-ivory-50), var(--color-ivory-200));
+  background-size: 200% 100%;
+  border-radius: 0.75rem;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton {
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+}
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
 }

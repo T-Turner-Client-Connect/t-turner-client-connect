@@ -11,8 +11,16 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   experimental: {
-    // Mapped import rows and consent-evidence uploads (max 10 MB) go through Server Actions.
-    serverActions: { bodySizeLimit: "11mb" },
+    // Mapped import rows and uploads go through Server Actions (Netlify caps bodies at ~6 MB).
+    serverActions: { bodySizeLimit: "6mb" },
+  },
+  // Old addresses from the first release keep working.
+  async redirects() {
+    return [
+      { source: "/login", destination: "/staff/login", permanent: false },
+      { source: "/portal", destination: "/client", permanent: false },
+      { source: "/portal/:path*", destination: "/client/:path*", permanent: false },
+    ];
   },
   async headers() {
     return [

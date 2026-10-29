@@ -4,7 +4,7 @@ import { ForbiddenError } from "@/lib/auth/actor";
 import { ValidationError } from "@/lib/services/clients";
 import { ImportError } from "@/lib/services/imports";
 
-export type ActionState = { error?: string; ok?: string; at?: number } | null;
+export type ActionState = { error?: string; ok?: string; at?: number; codes?: string[] } | null;
 
 /**
  * Runs a Server Action body and turns expected failures into a message for

@@ -6,11 +6,17 @@
 # redirect; it would break server-rendered and authenticated routes.
 
 [build]
-  # The build never touches the database. Netlify applies the SQL migrations in
-  # netlify/database/migrations (schema + baseline groups) to the attached
-  # Netlify Database right before each deploy is published. When the Prisma
-  # schema changes, copy the new prisma/migrations/<name>/migration.sql there.
-  command = "npx prisma generate && npx next build"
+  # Database: Netlify Database (@netlify/database). Netlify provisions it and
+  # applies the SQL files in netlify/database/migrations automatically — to
+  # each deploy preview's database branch before the preview is published, and
+  # to production just before publish. The build never connects to the
+  # database and never runs migrations itself.
+  #
+  # Deployments never create sample clients, staff accounts or passwords. The
+  # first Admin is created explicitly at /staff/setup with SETUP_TOKEN.
+  # check-deploy-env.mjs stops the build with a clear message if a required
+  # setting (e.g. APP_ENCRYPTION_KEY) is missing.
+  command = "node scripts/check-deploy-env.mjs && npx prisma generate && npx next build"
   publish = ".next"
 
 [build.environment]
@@ -18,3 +24,7 @@
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
+
+[functions]
+  # automations-cron.mts calls /api/cron/automations hourly (reminders + notification dispatch).
+  directory = "netlify/functions"

@@ -5,7 +5,8 @@ import { ActionForm } from "@/components/action-form";
 import { AudiencePicker } from "@/components/audience-picker";
 import { RecipientReview } from "@/components/recipient-review";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
-import { deleteDraftAction, updateCampaignAction } from "@/app/actions/campaigns";
+import { deleteDraftAction, sendOrScheduleAction, setFlyerAction, testSendAction, updateCampaignAction } from "@/app/actions/campaigns";
+import { liveSendBlockers } from "@/lib/services/campaigns";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { campaignRecipients } from "@/lib/services/campaigns";
@@ -17,14 +18,15 @@ import { CHANNEL_LABELS } from "@/lib/format";
 export const metadata = { title: "Campaign" };
 
 const STEPS = [
-  { key: "message", label: "1. Message" },
-  { key: "audience", label: "2. Audience" },
-  { key: "review", label: "3. Review recipients" },
-  { key: "preview", label: "4. Preview" },
+  { key: "message", label: "1. Create message" },
+  { key: "flyer", label: "2. Add flyer" },
+  { key: "audience", label: "3. Choose audience" },
+  { key: "review", label: "4. Review" },
+  { key: "send", label: "5. Send or schedule" },
 ] as const;
 
 export default async function CampaignPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ step?: string }> }) {
-  await requireUser();
+  const user = await requireUser();
   const { id } = await params;
   const stepParam = (await searchParams).step;
   const step = STEPS.find((s) => s.key === stepParam)?.key ?? "message";
@@ -71,8 +73,14 @@ export default async function CampaignPage({ params, searchParams }: { params: P
 
       {step === "message" && <MessageStep campaign={campaign} editable={editable} usesEmail={usesEmail} usesSms={usesSms} />}
       {step === "audience" && <AudienceStep campaignId={id} editable={editable} groupIds={campaign.groups.map((g) => g.groupId)} clientIds={campaign.inclusions.map((i) => i.clientId)} excludedIds={campaign.exclusions.map((e) => e.clientId)} />}
-      {step === "review" && <ReviewStep campaignId={id} editable={editable} />}
-      {step === "preview" && <PreviewStep campaign={campaign} usesEmail={usesEmail} usesSms={usesSms} />}
+      {step === "flyer" && <FlyerStep campaign={campaign} editable={editable} />}
+      {step === "review" && (
+        <div className="space-y-6">
+          <PreviewStep campaign={campaign} usesEmail={usesEmail} usesSms={usesSms} />
+          <ReviewStep campaignId={id} editable={editable} />
+        </div>
+      )}
+      {step === "send" && <SendStep campaignId={id} userEmail={user.email} actor={user} />}
     </>
   );
 }
@@ -80,7 +88,6 @@ export default async function CampaignPage({ params, searchParams }: { params: P
 type CampaignWithFlyer = NonNullable<Awaited<ReturnType<typeof prisma.campaign.findUnique>>> & { flyer: { id: string; title: string; mimeType: string; sizeBytes: number } | null };
 
 async function MessageStep({ campaign, editable, usesEmail, usesSms }: { campaign: CampaignWithFlyer; editable: boolean; usesEmail: boolean; usesSms: boolean }) {
-  const flyers = await prisma.storedFile.findMany({ where: { kind: "FLYER", archivedAt: null }, orderBy: { createdAt: "desc" }, select: { id: true, title: true, mimeType: true } });
   return (
     <Card>
       <ActionForm action={updateCampaignAction.bind(null, campaign.id)} className="space-y-4">
@@ -109,17 +116,11 @@ async function MessageStep({ campaign, editable, usesEmail, usesSms }: { campaig
               <textarea className="input" name="smsBody" rows={3} maxLength={1600} defaultValue={campaign.smsBody ?? ""} />
             </Field>
           )}
-          <Field label="Flyer" hint={<>From the <Link className="underline" href="/flyers">flyer library</Link>. Email shows images inline and links PDFs; texts send small images as MMS and link anything else.</>}>
-            <select className="input" name="flyerId" defaultValue={campaign.flyerId ?? ""}>
-              <option value="">No flyer</option>
-              {flyers.map((f) => <option key={f.id} value={f.id}>{f.title} ({f.mimeType === "application/pdf" ? "PDF" : "image"})</option>)}
-            </select>
-          </Field>
         </fieldset>
         {editable && (
           <div className="flex flex-wrap gap-2">
             <Button type="submit">Save draft</Button>
-            <Link href={`/campaigns/${campaign.id}?step=audience`} className="self-center text-sm underline">Next: choose audience →</Link>
+            <Link href={`/campaigns/${campaign.id}?step=flyer`} className="self-center text-sm underline">Next: add a flyer →</Link>
           </div>
         )}
       </ActionForm>
@@ -162,8 +163,25 @@ async function AudienceStep({ campaignId, editable, groupIds, clientIds, exclude
 
 async function ReviewStep({ campaignId, editable }: { campaignId: string; editable: boolean }) {
   const { eligible, excluded, selectedClientCount } = await campaignRecipients(campaignId);
+  const dupes = excluded.filter((x) => /sent once/.test(x.reason)).length;
+  const missing = excluded.filter((x) => /No valid/.test(x.reason)).length;
+  const manual = excluded.filter((x) => x.manual).length;
+  const archived = excluded.filter((x) => x.reason === "Client is archived").length;
+  const permission = excluded.length - dupes - missing - manual - archived;
   return (
     <>
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-6">
+        {[
+          ["Emails", eligible.filter((r) => r.channel === "EMAIL").length],
+          ["Texts", eligible.filter((r) => r.channel === "SMS").length],
+          ["Duplicates removed", dupes],
+          ["Missing contact details", missing],
+          ["Permission / opt-out", permission],
+          ["Removed by staff", manual],
+        ].map(([l, v]) => (
+          <div key={l} className="rounded-2xl border border-ivory-200 bg-white p-4"><p className="text-xs text-slate-600">{l}</p><p className="font-serif text-2xl font-bold text-navy-900">{v}</p></div>
+        ))}
+      </div>
       <p className="mb-3 text-sm text-slate-700">
         {selectedClientCount} client{selectedClientCount === 1 ? "" : "s"} selected. Eligibility is checked on the server using recorded permissions and opt-outs, and is checked again right
         before anything is sent.
@@ -231,6 +249,68 @@ async function PreviewStep({ campaign, usesEmail, usesSms }: { campaign: Campaig
           </Card>
         )}
       </div>
+    </div>
+  );
+}
+
+async function FlyerStep({ campaign, editable }: { campaign: CampaignWithFlyer; editable: boolean }) {
+  const media = await prisma.storedFile.findMany({ where: { kind: "FLYER", archivedAt: null }, orderBy: { createdAt: "desc" }, select: { id: true, title: true, mimeType: true, sizeBytes: true } });
+  return (
+    <Card title="Add a flyer (optional)">
+      {media.length === 0 ? (
+        <p className="text-sm text-slate-600">The <Link className="underline" href="/media">media library</Link> is empty. Upload a flyer there first.</p>
+      ) : (
+        <ActionForm action={setFlyerAction.bind(null, campaign.id)} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            <label className="flex aspect-square cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-ivory-200 bg-ivory-50 text-sm has-[:checked]:border-gold-500">
+              <input type="radio" name="flyerId" value="" defaultChecked={!campaign.flyerId} disabled={!editable} className="sr-only" /> No flyer
+            </label>
+            {media.map((m) => (
+              <label key={m.id} className="cursor-pointer overflow-hidden rounded-xl border-2 border-transparent bg-white has-[:checked]:border-gold-500">
+                <input type="radio" name="flyerId" value={m.id} defaultChecked={campaign.flyerId === m.id} disabled={!editable} className="sr-only" />
+                {m.mimeType.startsWith("image/") ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- private, authenticated file route
+                  <img src={`/api/files/${m.id}`} alt="" className="aspect-square w-full object-cover" />
+                ) : (
+                  <span className="flex aspect-square items-center justify-center bg-ivory-50 text-3xl">{m.mimeType.startsWith("video/") ? "🎬" : "📄"}</span>
+                )}
+                <span className="block truncate px-2 py-1 text-xs">{m.title}</span>
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-slate-600">Email shows images in the message and links other files. Texts send JPG/PNG under 600 KB as a picture message and link anything else.</p>
+          {editable && <Button type="submit">Save flyer</Button>}
+        </ActionForm>
+      )}
+    </Card>
+  );
+}
+
+async function SendStep({ campaignId, userEmail, actor }: { campaignId: string; userEmail: string; actor: Awaited<ReturnType<typeof requireUser>> }) {
+  const blockers = await liveSendBlockers(actor, campaignId);
+  const { eligible } = await campaignRecipients(campaignId);
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card title="Test send (staff only)">
+        <p className="mb-3 text-sm text-slate-600">Sends one copy to a staff email address. Separate from live sending; never goes to clients.</p>
+        <ActionForm action={testSendAction.bind(null, campaignId)} className="flex flex-wrap items-end gap-2">
+          <Field label="Your staff email"><input className="input" type="email" name="testEmail" defaultValue={userEmail} required /></Field>
+          <Button type="submit" variant="secondary">Send test</Button>
+        </ActionForm>
+      </Card>
+      <Card title="Send or schedule">
+        <p className="mb-2 text-sm">Final recipients right now: <strong>{eligible.length}</strong> message(s). Consent and opt-outs are re-checked immediately before sending.</p>
+        {blockers.length > 0 && (
+          <Notice tone="warn" title="Live sending is locked">
+            <ul className="list-disc pl-5">{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+          </Notice>
+        )}
+        <ActionForm action={sendOrScheduleAction.bind(null, campaignId)} className="mt-3 space-y-3" confirm="Send this campaign to the final recipients?">
+          <Field label="Schedule for (optional)"><input className="input" type="datetime-local" name="scheduledAt" disabled={blockers.length > 0} /></Field>
+          <label className="flex items-start gap-2 text-sm"><input type="checkbox" name="confirm" className="mt-1 accent-navy-900" disabled={blockers.length > 0} /> I reviewed the final recipients and the preview.</label>
+          <Button type="submit" variant="gold" disabled={blockers.length > 0}>Send campaign</Button>
+        </ActionForm>
+      </Card>
     </div>
   );
 }

@@ -167,6 +167,61 @@ export async function campaignRecipients(campaignId: string, now = new Date()) {
     ),
   );
   const suppressions = await activeSuppressionsFor(pairs);
+  // Phone-level SMS consent (consent page, STOP replies, portal settings) is
+  // merged in as consent history for whoever uses that number.
+  const phones = Array.from(new Set(pairs.filter((p) => p.channel === "SMS").map((p) => p.address)));
+  const ledger = phones.length
+    ? await prisma.smsConsentEvent.findMany({ where: { phoneNormalized: { in: phones } }, orderBy: { createdAt: "asc" } })
+    : [];
+  for (const c of clients) {
+    const people = [{ contactId: null as string | null, phone: c.phoneNormalized }, ...c.contacts.map((x) => ({ contactId: x.id as string | null, phone: x.phoneNormalized }))];
+    for (const person of people) {
+      for (const e of ledger.filter((l) => l.phoneNormalized === person.phone)) {
+        c.consentRecords.push({
+          contactId: person.contactId,
+          kind: e.category === "SERVICE" ? "SMS_SERVICE" : "SMS_MARKETING",
+          status: e.status,
+          effectiveAt: e.createdAt,
+          createdAt: e.createdAt,
+          expiresAt: null,
+          reviewedAt: null,
+          evidenceFileId: null,
+        });
+      }
+    }
+  }
   const manualExclusions = new Map(campaign.exclusions.map((e) => [e.clientId, e.reason]));
   return { campaign, ...resolveRecipients({ channel: campaign.channel, purpose: campaign.purpose, clients, manualExclusions, suppressions, now }) };
+}
+
+export async function setCampaignFlyer(actor: Actor, campaignId: string, flyerId: string | null) {
+  await editableCampaign(campaignId);
+  if (flyerId && !(await prisma.storedFile.count({ where: { id: flyerId, kind: "FLYER", archivedAt: null } }))) throw new ValidationError("Choose from the media library.");
+  await prisma.campaign.update({ where: { id: campaignId }, data: { flyerId } });
+  await audit(prisma, { actorId: actor.id, action: "campaign.flyer_set", entityType: "Campaign", entityId: campaignId });
+}
+
+/**
+ * Everything that must be true before a campaign can be sent or scheduled.
+ * Enforced on the server; the UI only displays the result.
+ */
+export async function liveSendBlockers(actor: Actor, campaignId: string): Promise<string[]> {
+  const { integrationStatus } = await import("@/lib/integrations");
+  const i = integrationStatus();
+  const c = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+  const blockers: string[] = [];
+  if (!i.liveSendingFlag) blockers.push("Live sending is turned off (LIVE_SENDING_ENABLED). It stays off until providers, permissions and a test delivery are verified.");
+  if (c.channel !== "SMS" && !i.email) blockers.push("Email provider isn't configured.");
+  if (c.channel !== "EMAIL" && !i.twilio) blockers.push("Twilio isn't configured.");
+  if (c.channel !== "SMS" && !c.emailSubject) blockers.push("Add an email subject.");
+  if (!c.body.trim() && !c.smsBody?.trim()) blockers.push("Write the message.");
+  if (c.purpose !== "SERVICE" && !process.env.BUSINESS_MAILING_ADDRESS) blockers.push("Promotional email needs BUSINESS_MAILING_ADDRESS for the footer.");
+  if (actor.role !== "ADMIN") blockers.push("An Admin must give the final send.");
+  blockers.push("Campaign delivery (queue, delivery webhooks, unsubscribe handling) is enabled in the messaging stage.");
+  return blockers;
+}
+
+export async function sendOrSchedule(actor: Actor, campaignId: string): Promise<never> {
+  const blockers = await liveSendBlockers(actor, campaignId);
+  throw new ValidationError(`Not sent. ${blockers[0]}`);
 }
