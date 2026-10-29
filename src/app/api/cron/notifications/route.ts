@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { dispatchPendingNotifications } from "@/lib/services/notifications";
 import { dispatchStaffAlerts } from "@/lib/services/staff-alerts";
 import { scanQuarantined } from "@/lib/services/documents";
+import { checkResourceLinks } from "@/lib/services/resources";
 
 // Called every 10 minutes by netlify/functions/notifications-cron.mts with CRON_SECRET:
 // re-scans quarantined files, sends client notices held for quiet hours and staff alerts
@@ -16,5 +17,7 @@ export async function POST(req: Request) {
   const scan = await scanQuarantined(50);
   await dispatchPendingNotifications();
   const staffAlerts = await dispatchStaffAlerts();
-  return Response.json({ ok: true, staffAlerts, scan });
+  // A few Resource Center links per run, each re-checked weekly.
+  const links = await checkResourceLinks(5, 7);
+  return Response.json({ ok: true, staffAlerts, scan, links });
 }

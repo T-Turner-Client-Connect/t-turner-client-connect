@@ -1,3 +1,5 @@
+import { CheckYourRefund } from "@/components/resources/check-refund";
+import { refundLinks } from "@/lib/resources/refunds";
 import Link from "next/link";
 import { Briefcase, ShieldCheck } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth/session";
@@ -42,6 +44,7 @@ export default async function Welcome() {
           <p className="mt-2 text-sm"><Link href="/client/activate" className="underline">Already a client? Activate your portal.</Link></p>
         </div>
       )}
+      <div className="mt-6"><CheckYourRefund {...(await refundLinks())} /></div>
       <p className="mt-6 text-center text-xs text-slate-500">Staff accounts are by invitation only.</p>
     </>
   );

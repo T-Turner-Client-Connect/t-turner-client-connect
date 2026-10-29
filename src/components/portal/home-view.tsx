@@ -30,6 +30,17 @@ export function PortalHomeView({ data, linkFor, q, readOnly }: { data: Home; lin
           </div>
         </section>
       )}
+      <Link
+        href={readOnly ? "#" : `/client/resources${q}`}
+        className="flex items-center justify-between gap-4 rounded-2xl border-2 border-gold-500 bg-gradient-to-r from-navy-900 to-navy-800 p-5 text-white shadow-md hover:from-navy-800"
+        data-testid="resources-button"
+      >
+        <span>
+          <span className="block font-serif text-xl font-bold">Resources</span>
+          <span className="text-sm text-navy-100">Official tax, license and filing links for your state, plus IRS, SBA and SAM.gov.</span>
+        </span>
+        <span aria-hidden className="text-3xl text-gold-500">→</span>
+      </Link>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Link href={`/client/messages${q}`} className="rounded-2xl border border-ivory-200 border-t-4 border-t-gold-500 bg-white p-4 shadow-sm"><p className="text-sm text-slate-600">Unread messages</p><p className="font-serif text-3xl font-bold text-navy-900">{data.unread}</p></Link>
         <Link href={`/client/documents${q}`} className="rounded-2xl border border-ivory-200 border-t-4 border-t-gold-500 bg-white p-4 shadow-sm"><p className="text-sm text-slate-600">New documents</p><p className="font-serif text-3xl font-bold text-navy-900">{data.newDocs.length}</p></Link>

@@ -642,6 +642,8 @@ model PortalUser {
   mfaLastStep     Int?
   // Proven by entering a code emailed to this address (enables email codes).
   emailVerifiedAt DateTime?
+  // Resource Center: the state shown first (clients can switch anytime).
+  preferredState  String?
   active          Boolean   @default(true)
   // Account-service notifications (new message / document / request).
   // Separate from marketing consent.
@@ -2088,4 +2090,56 @@ model ScannerCheck {
   detail      String?
   runById     String
   createdAt   DateTime @default(now())
+}
+
+// ===========================================================================
+// CLIENT RESOURCE CENTER
+// ===========================================================================
+
+// One official link (or an honest "not applicable" note) for a state, DC,
+// a county/city, or federal ("US"). Shipped verified data lives here and is
+// editable by Admins; nothing is presented as complete when it isn't.
+model Resource {
+  id                 String    @id @default(cuid())
+  // Two-letter state code, "DC", or "US" for federal.
+  jurisdiction       String
+  county             String?
+  city               String?
+  // e.g. TAX_PORTAL, SALES_USE_TAX, ALCOHOL_LICENSING, FEDERAL_SAM …
+  category           String
+  title              String
+  // One plain sentence: what this link actually handles.
+  purpose            String
+  agency             String
+  url                String?
+  phone              String?
+  // VERIFIED | NEEDS_VERIFICATION | NOT_APPLICABLE | UNAVAILABLE
+  status             String    @default("NEEDS_VERIFICATION")
+  // How the link was confirmed: fetched | official-result | in-text | staff
+  verificationMethod String?
+  notes              String?
+  lastVerifiedAt     DateTime?
+  // Live link check from the deployed site (HTTP status), never from guesses.
+  linkCheckedAt      DateTime?
+  linkCheckStatus    Int?
+  linkCheckOk        Boolean?
+  hidden             Boolean   @default(false)
+  sortOrder          Int       @default(0)
+  updatedById        String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([jurisdiction, category])
+}
+
+model ResourceFaq {
+  id          String   @id @default(cuid())
+  question    String
+  answer      String
+  tags        String[]
+  sortOrder   Int      @default(0)
+  hidden      Boolean  @default(false)
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
