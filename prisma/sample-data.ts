@@ -2,7 +2,7 @@
 // Refuses to run against a non-local database unless ALLOW_SAMPLE_DATA=true.
 import { PrismaClient } from "@prisma/client";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({ datasourceUrl: process.env.DATABASE_URL || process.env.NETLIFY_DB_URL });
 
 const url = process.env.DATABASE_URL ?? "";
 if (!/localhost|127\.0\.0\.1/.test(url) && process.env.ALLOW_SAMPLE_DATA !== "true") {
