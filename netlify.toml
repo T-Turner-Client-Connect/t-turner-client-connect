@@ -6,9 +6,11 @@
 # redirect; it would break server-rendered and authenticated routes.
 
 [build]
-  # Applies pending database migrations (no-op when none), seeds baseline
-  # groups and templates (idempotent, no client data), then builds.
-  command = "npx prisma migrate deploy && npx tsx prisma/seed.ts && npx next build"
+  # The build never touches the database. Netlify applies the SQL migrations in
+  # netlify/database/migrations (schema + baseline groups) to the attached
+  # Netlify Database right before each deploy is published. When the Prisma
+  # schema changes, copy the new prisma/migrations/<name>/migration.sql there.
+  command = "npx prisma generate && npx next build"
   publish = ".next"
 
 [build.environment]
