@@ -1,10 +1,14 @@
 # My Tax Center, Retrieve Tax Filings, and Tax Countdowns
 
 ## What clients see
-- **Home** is kept simple: a navy and gold welcome banner showing the next deadline that applies to the client, then link tiles: My Tax Center, Retrieve Tax Filings, Document Vault, Messages, Document Requests, Invoices & Payments, News & Tax Countdowns, Resource Center, Contracts & Signatures, Refer a Friend (plus Bookkeeping when a report is ready). Badges show counts such as unread messages and open requests.
-- **My Tax Center** (`/client/tax-center`) has three steps (questionnaire by year, upload documents, retrieve tax filings) and the progress for each tax year.
-- **News & Tax Countdowns** (`/client/news`) has the countdown cards and the announcements.
-- **Refer a Friend** (`/client/referrals`) has a short form that sends a secure message to the office.
+- **Portal frame:** a navy sidebar on large screens with the TTurner wordmark and Overview, My Tax Center, Document Vault, Messages (unread badge), Invoices, Resource Center and Referrals, plus smaller links to Tax Filings, News & Countdowns, Contracts & Signatures, Bookkeeping and Account Settings. A mountain scene and "Your success builds brighter tomorrows" sit at the bottom. On phones the sidebar opens from a menu button. The top bar has a messages bell and the client's name menu (account switcher, settings, sign out).
+- **Overview (home)**, matching the owner's reference design:
+  - Welcome banner with a mountain landscape and the next deadline that applies.
+  - **My Tax Center** card with a tax-year dropdown and year chips (2022 to the current year), and three actions: Complete Tax Questionnaire (opens that year's Jotform form), Upload Documents and Retrieve Tax Filings.
+  - "{year} Tax Preparation" (status, progress bar of the 5 steps, View checklist) and "Documents requested".
+  - My Document Vault (latest year folders), Messages (latest two conversations), Invoices & Payments (outstanding balance or "You're all set").
+  - Client Resource Center (state picker + four category shortcuts) and an Announcements carousel that starts with the next deadline.
+- **My Tax Center** (`/client/tax-center`), **News & Tax Countdowns** (`/client/news`) and **Refer a Friend** (`/client/referrals`) hold the full detail.
 
 ## Separate statuses
 Each tax year tracks five steps independently:

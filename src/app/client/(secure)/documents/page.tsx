@@ -18,7 +18,7 @@ import { fmtDateTime } from "@/lib/format";
 
 export const metadata = { title: "Documents" };
 
-export default async function PortalDocuments({ searchParams }: { searchParams: Promise<{ account?: string; year?: string }> }) {
+export default async function PortalDocuments({ searchParams }: { searchParams: Promise<{ account?: string; year?: string; upload?: string }> }) {
   const user = await requirePortalUser();
   const sp = await searchParams;
   const { current } = await resolveAccount(user.id, sp.account);
@@ -70,7 +70,7 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
               </Field>
               <Field label="Short description (optional)"><input className="input" name="title" placeholder="e.g. 1099-NEC from Acme" /></Field>
               <Field label="Tax year this is for">
-                <select className="input" name="year" required defaultValue="">
+                <select className="input" name="year" required defaultValue={Number(sp.upload) >= thisYear - 7 && Number(sp.upload) <= thisYear ? sp.upload : ""}>
                   <option value="" disabled>Choose…</option>
                   {Array.from({ length: 8 }, (_, i) => thisYear - i).map((y) => <option key={y} value={y}>{y}</option>)}
                   <option value="unsure">Not sure</option>

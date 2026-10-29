@@ -8,9 +8,10 @@ import { fmtChicago } from "@/lib/tz";
 
 export const metadata = { title: "My Tax Center" };
 
-export default async function TaxCenter({ searchParams }: { searchParams: Promise<{ account?: string }> }) {
+export default async function TaxCenter({ searchParams }: { searchParams: Promise<{ account?: string; year?: string }> }) {
   const user = await requirePortalUser();
-  const { current } = await resolveAccount(user.id, (await searchParams).account);
+  const sp = await searchParams;
+  const { current } = await resolveAccount(user.id, sp.account);
   if (!current) return null;
   if (!current.canViewTax) return <Notice>Tax information isn&apos;t included in your access to this account.</Notice>;
   const data = await loadPortalHome(current.clientId, current, user.id);
@@ -38,7 +39,7 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
 
       <section className="mt-6 rounded-2xl border border-ivory-200 bg-white p-5" data-testid="service-progress">
         <h2 className="mb-3 font-serif text-xl font-bold">Progress</h2>
-        {data.progress.map((y) => (
+        {(data.statuses.some((x) => x.year === Number(sp.year)) ? data.statuses.filter((x) => x.year === Number(sp.year)) : data.progress).map((y) => (
           <div key={y.year} className="mb-4 last:mb-0">
             <p className="mb-2 font-semibold text-navy-900">
               {y.year} tax year

@@ -189,7 +189,7 @@ export function ResourceCenter({
         if (section.key === "LOCAL" && !localOptions.length) return null;
         if (q && !items.length && section.key !== "NONPROFIT") return null;
         return (
-          <section key={section.key} aria-labelledby={`s-${section.key}`} className="rounded-2xl border border-ivory-200 bg-ivory-50 p-4 sm:p-6" data-section={section.key}>
+          <section key={section.key} id={section.key.toLowerCase()} aria-labelledby={`s-${section.key}`} className="scroll-mt-20 rounded-2xl border border-ivory-200 bg-ivory-50 p-4 sm:p-6" data-section={section.key}>
             <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h2 id={`s-${section.key}`} className="font-serif text-xl font-bold text-navy-900">{section.key === "FEDERAL" ? section.title : `${section.title} — ${stateName(state)}`}</h2>

@@ -7,6 +7,8 @@ import { announcementsForClient, countdownsFor } from "@/lib/services/news";
 import { isPortalVerified, questionnaireUrl, questionnaireYears, taxYearStatuses, vaultYears } from "@/lib/services/tax-center";
 import { isStateCode } from "@/lib/resources/catalog";
 import { isHistorical } from "@/lib/services/documents";
+import { portalBilling } from "@/lib/services/owner-billing";
+import type { PortalActor } from "./session";
 
 type Perms = Pick<PortalAccess, "canMessage" | "canUpload" | "canViewBookkeeping" | "canViewTax" | "canViewContracts" | "canViewBilling">;
 
@@ -48,16 +50,26 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
   const viewer = viewerPortalUserId ? await prisma.portalUser.findUnique({ where: { id: viewerPortalUserId }, select: { preferredState: true } }) : null;
   const [countdowns, statuses, vault, questionnaires, verified, latestThread, billing] = await Promise.all([
     countdownsFor(clientId),
-    perms.canViewTax ? taxYearStatuses(clientId, [thisYear - 1, thisYear - 2, thisYear]) : [],
+    perms.canViewTax ? taxYearStatuses(clientId, questionnaireYears()) : [],
     vaultYears(clientId, categories),
     perms.canViewTax
       ? Promise.all(questionnaireYears().map(async (year) => ({ year, url: await questionnaireUrl(clientId, client.clientType, year), completed: (await prisma.questionnaireSubmission.count({ where: { clientId, taxYear: year } })) > 0 })))
       : [],
     viewerPortalUserId ? isPortalVerified(viewerPortalUserId) : true,
-    perms.canMessage ? prisma.conversation.findFirst({ where: { clientId }, orderBy: { lastMessageAt: "desc" }, select: { subject: true, lastMessageAt: true } }) : null,
-    perms.canViewBilling
-      ? prisma.invoice.findMany({ where: { clientId, publishedAt: { not: null }, state: { in: ["OFFERED", "ACCEPTED", "ISSUED"] } }, select: { state: true } })
+    perms.canMessage
+      ? prisma.conversation.findMany({
+          where: { clientId },
+          orderBy: { lastMessageAt: "desc" },
+          take: 2,
+          select: {
+            id: true,
+            subject: true,
+            lastMessageAt: true,
+            messages: { where: { channel: "PORTAL" }, orderBy: { createdAt: "desc" }, take: 1, select: { body: true, direction: true, readByClientAt: true } },
+          },
+        })
       : [],
+    perms.canViewBilling && viewerPortalUserId ? portalBilling({ id: viewerPortalUserId } as PortalActor, clientId) : [],
   ]);
   // Service progress: years with any activity (or last year's return by default).
   const progress = statuses.filter((s) => s.started);
@@ -73,11 +85,18 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
     signatures,
     countdowns,
     progress: progress.length ? progress : statuses.filter((s) => s.year === thisYear - 1),
+    statuses,
     vault,
     questionnaires,
     verified,
-    latestThread,
-    billing: { quotes: billing.filter((b) => b.state === "OFFERED").length, invoices: billing.filter((b) => b.state !== "OFFERED").length },
+    threads: latestThread.map((t) => {
+      const m = t.messages[0];
+      return { id: t.id, subject: t.subject, at: t.lastMessageAt, snippet: m ? m.body.replace(/\s+/g, " ").slice(0, 70) : "", unread: !!m && m.direction === "OUTBOUND" && !m.readByClientAt };
+    }),
+    billing: {
+      quotes: billing.filter((b) => b.state === "OFFERED").length,
+      outstanding: billing.filter((b) => b.state !== "OFFERED" && b.state !== "DECLINED" && (b.balanceCents ?? 0) > 0),
+    },
     perms,
     state,
     personalized: true,

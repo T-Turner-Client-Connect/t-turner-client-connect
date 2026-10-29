@@ -7,9 +7,10 @@ import { downloadToken } from "@/lib/services/documents";
 
 export const metadata = { title: "Client portal" };
 
-export default async function PortalHome({ searchParams }: { searchParams: Promise<{ account?: string }> }) {
+export default async function PortalHome({ searchParams }: { searchParams: Promise<{ account?: string; year?: string }> }) {
   const user = await requirePortalUser();
-  const { current } = await resolveAccount(user.id, (await searchParams).account);
+  const sp = await searchParams;
+  const { current } = await resolveAccount(user.id, sp.account);
   if (!current) return <Notice title="No accounts yet">Your login isn&apos;t connected to an account right now. Please contact our office.</Notice>;
   const data = await loadPortalHome(current.clientId, current, user.id);
   return (
@@ -20,6 +21,7 @@ export default async function PortalHome({ searchParams }: { searchParams: Promi
         clientId={current.clientId}
         name={user.name.split(" ")[0]}
         accountName={current.client.businessName || current.client.displayName}
+        year={Number(sp.year) || undefined}
         linkFor={(id) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`}
       />
     </>
