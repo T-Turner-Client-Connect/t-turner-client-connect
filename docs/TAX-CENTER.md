@@ -1,13 +1,10 @@
 # My Tax Center, Retrieve Tax Filings, and Tax Countdowns
 
-## What clients see (portal home)
-1. Welcome banner with the TTurner logo and the account being viewed.
-2. **News, Updates & Tax Countdowns**: countdown cards plus read-only announcements. On phones the cards swipe sideways.
-3. **My Tax Center**:
-   - **Complete Tax Questionnaire**: choose a year from 2022 to the current year, then open that year's Jotform form.
-   - **Upload Documents**: the tax year and kind of document are required.
-   - **Retrieve Tax Filings**: years 2020 to the current year.
-4. Service progress, document requests, the yearly Document Vault, Messages, Invoices & Payments, the Client Resource Center (state picker), and Referrals.
+## What clients see
+- **Home** is kept simple: a navy and gold welcome banner showing the next deadline that applies to the client, then link tiles: My Tax Center, Retrieve Tax Filings, Document Vault, Messages, Document Requests, Invoices & Payments, News & Tax Countdowns, Resource Center, Contracts & Signatures, Refer a Friend (plus Bookkeeping when a report is ready). Badges show counts such as unread messages and open requests.
+- **My Tax Center** (`/client/tax-center`) has three steps (questionnaire by year, upload documents, retrieve tax filings) and the progress for each tax year.
+- **News & Tax Countdowns** (`/client/news`) has the countdown cards and the announcements.
+- **Refer a Friend** (`/client/referrals`) has a short form that sends a secure message to the office.
 
 ## Separate statuses
 Each tax year tracks five steps independently:
