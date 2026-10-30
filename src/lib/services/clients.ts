@@ -20,6 +20,7 @@ const opt = z
 export const clientSchema = z.object({
   firstName: opt,
   lastName: opt,
+  preferredName: opt,
   businessName: opt,
   email: opt,
   phone: opt,
@@ -52,6 +53,7 @@ function toClientData(input: ClientInput) {
     data: {
       firstName: v.firstName ?? null,
       lastName: v.lastName ?? null,
+      preferredName: v.preferredName ?? null,
       businessName: v.businessName ?? null,
       displayName: buildDisplayName(v),
       email: v.email ?? null,
@@ -159,6 +161,7 @@ export function clientWhere(f: ClientFilters): Prisma.ClientWhereInput {
 
 const contactSchema = z.object({
   name: z.string().trim().min(1, "Enter the contact's name.").max(200),
+  preferredName: opt,
   title: opt,
   email: opt,
   phone: opt,
@@ -172,7 +175,7 @@ export async function saveContact(actor: Actor, clientId: string, contactId: str
   if (v.email && !emailNormalized) throw new ValidationError("That email address doesn't look right.");
   const phoneNormalized = normalizePhone(v.phone);
   if (v.phone && !phoneNormalized) throw new ValidationError("That phone number doesn't look right.");
-  const data = { name: v.name, title: v.title ?? null, email: v.email ?? null, emailNormalized, phone: v.phone ?? null, phoneNormalized };
+  const data = { name: v.name, preferredName: v.preferredName ?? null, title: v.title ?? null, email: v.email ?? null, emailNormalized, phone: v.phone ?? null, phoneNormalized };
   return prisma.$transaction(async (tx) => {
     const contact = contactId
       ? await tx.contact.update({ where: { id: contactId, clientId }, data })

@@ -123,7 +123,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       {tab === "documents" && <DocumentsTab clientId={id} user={user} />}
       {tab === "bookkeeping" && <BookkeepingTab clientId={id} />}
       {tab === "taxes" && <TaxesTab clientId={id} user={user} />}
-      {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} />}
+      {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} />}
 
       {tab === "overview" && (
       <div className="grid gap-4 lg:grid-cols-3">
@@ -161,6 +161,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
                       </summary>
                       <ActionForm action={saveContactAction.bind(null, id, c.id)} className="mt-3 grid gap-3 sm:grid-cols-2">
                         <Field label="Name"><input className="input" name="name" defaultValue={c.name} required /></Field>
+                        <Field label="Preferred name" hint="Portal greeting for a business"><input className="input" name="preferredName" defaultValue={c.preferredName ?? ""} /></Field>
                         <Field label="Title"><input className="input" name="title" defaultValue={c.title ?? ""} /></Field>
                         <Field label="Email"><input className="input" type="email" name="email" defaultValue={c.email ?? ""} /></Field>
                         <Field label="Mobile phone"><input className="input" type="tel" name="phone" defaultValue={c.phone ?? ""} /></Field>
@@ -178,6 +179,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
               <summary className="cursor-pointer text-sm font-semibold text-navy-800 underline">Add a contact</summary>
               <ActionForm action={saveContactAction.bind(null, id, null)} className="mt-3 grid gap-3 sm:grid-cols-2" resetOnSuccess>
                 <Field label="Name"><input className="input" name="name" required /></Field>
+                <Field label="Preferred name" hint="Portal greeting for a business"><input className="input" name="preferredName" /></Field>
                 <Field label="Title"><input className="input" name="title" placeholder="e.g. Office manager" /></Field>
                 <Field label="Email"><input className="input" type="email" name="email" /></Field>
                 <Field label="Mobile phone"><input className="input" type="tel" name="phone" /></Field>

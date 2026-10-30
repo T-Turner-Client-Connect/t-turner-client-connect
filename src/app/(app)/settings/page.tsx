@@ -4,6 +4,8 @@ import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clien
 import { inviteAction, privateInviteLinkAction, resendInviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
 import { identityAccessAction } from "@/app/actions/identity";
 import { billingAccessAction } from "@/app/actions/bookkeeping-clients";
+import { saveQuestionnaireAction } from "@/app/actions/tax-center";
+import { jotformConfig } from "@/lib/services/contracts";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { IdentityReminderPanel } from "@/components/identity-reminder-panel";
 import { inviteState, recentInvites, type InviteState } from "@/lib/services/staff-invitations";
@@ -220,6 +222,38 @@ export default async function SettingsPage() {
           {!isAdmin && <p className="mt-3 text-sm text-slate-600">Only Admins can invite or change staff accounts.</p>}
         </Card>
 
+        {isAdmin && (
+          <Card title="Tax questionnaires">
+            {await (async () => {
+              const rows = await prisma.taxQuestionnaire.findMany({ where: { audience: "ALL" }, orderBy: { taxYear: "desc" } });
+              const base = jotformConfig().formBase;
+              return (
+                <div className="space-y-3 text-sm" data-testid="questionnaire-settings">
+                  <p className="text-slate-600">The Jotform link clients open for each tax year. A year without a link shows “coming soon” with Start disabled. Opening a form never marks it complete — only a verified submission does. Submission IDs and matching stay on the staff side.</p>
+                  <ul className="divide-y divide-navy-100">
+                    {rows.map((q) => (
+                      <li key={q.id} className="py-2" data-year={q.taxYear}>
+                        <p className="flex flex-wrap items-center gap-2">
+                          <strong>{q.taxYear}</strong>
+                          {q.jotformFormId ? <Badge tone="green">Live</Badge> : <Badge tone="amber">Coming soon</Badge>}
+                          {q.jotformFormId && <a className="break-all text-xs underline" href={`${base}/${q.jotformFormId}`} target="_blank" rel="noopener noreferrer">{`${base}/${q.jotformFormId}`}</a>}
+                        </p>
+                        <ActionForm action={saveQuestionnaireAction.bind(null, q.id)} className="mt-1 flex flex-wrap items-end gap-2">
+                          <input type="hidden" name="taxYear" value={q.taxYear} />
+                          <input type="hidden" name="audience" value="ALL" />
+                          <input type="hidden" name="title" value={q.title} />
+                          <input type="hidden" name="active" value="on" />
+                          <Field label={q.jotformFormId ? "Replace link" : "Add the Jotform link"}><input className="input w-80" name="jotformFormId" placeholder="https://form.jotform.com/…" /></Field>
+                          <Button type="submit" variant="secondary">Save</Button>
+                        </ActionForm>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
+          </Card>
+        )}
         {isAdmin && (
           <Card title="Client sign-in">
             {await (async () => {

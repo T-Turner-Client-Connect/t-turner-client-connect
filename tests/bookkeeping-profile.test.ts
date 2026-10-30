@@ -104,7 +104,7 @@ describe("monthly bookkeeping billing", () => {
     let v = await billingView(tabitha, shop.id);
     if (!v.allowed) throw new Error("expected access");
     expect(v.billing?.monthlyFeeCents).toBe(35000);
-    expect(v.square).toEqual({ connected: false, card: null });
+    expect(v.square).toEqual({ connected: false, card: null, cardId: null });
     expect(v.chargeAuthorized).toBe(false);
     await expect(recordChargeAuthorization(tabitha, shop.id, { amount: "350", startDate: new Date(2026, 10, 5), method: "SIGNED_FORM", authorizedByName: "Sam Example", authorizedAt: new Date(2026, 9, 20) })).rejects.toThrow(/Attach the signed/);
     const form = await staffUploadDocument(tabitha, { clientId: shop.id, category: "CONTRACTS", visibility: "STAFF_ONLY", bytes: await pdf(), originalName: "authorization.pdf" });

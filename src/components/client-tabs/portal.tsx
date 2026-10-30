@@ -19,6 +19,8 @@ import { prisma } from "@/lib/prisma";
 import { contractFormUrl, jotformStatus } from "@/lib/services/contracts";
 import { SIGNATURE_LABELS, signingProviderStatus } from "@/lib/services/signatures";
 import { fmtDate, fmtDateTime } from "@/lib/format";
+import { adminActivationAction, privateActivationLinkAction, resetActivationLimitAction } from "@/app/actions/signup";
+import { senderWarning } from "@/lib/services/client-signup";
 
 const PERMS = [
   ["canMessage", "Messages"],
@@ -29,7 +31,17 @@ const PERMS = [
   ["canViewIdentity", "View own driver's license (Admin)"],
 ] as const;
 
-export async function PortalTab({ clientId, contacts }: { clientId: string; contacts: Contact[] }) {
+const EMAIL_TONE: Record<string, "green" | "gold" | "red" | "gray"> = { DELIVERED: "green", SENT: "gold", FAILED: "red" };
+
+export async function PortalTab({ clientId, contacts, isAdmin = false }: { clientId: string; contacts: Contact[]; isAdmin?: boolean }) {
+  const [activationEmails, clientRow, staffEmails] = await Promise.all([
+    prisma.portalInvite.findMany({ where: { clientId, sentByEmail: true }, orderBy: { createdAt: "desc" }, take: 10 }),
+    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { emailNormalized: true } }),
+    prisma.user.findMany({ select: { email: true } }),
+  ]);
+  const staffSet = new Set(staffEmails.map((u) => u.email));
+  const onFile = [...new Set([clientRow.emailNormalized, ...contacts.map((c) => c.emailNormalized)].filter((e): e is string => !!e))];
+  const warning = senderWarning();
   const [grants, invites, updates, deadlines, contracts, signatures, taxDocs] = await Promise.all([
     prisma.portalAccess.findMany({ where: { clientId }, include: { portalUser: true }, orderBy: { createdAt: "asc" } }),
     prisma.portalInvite.findMany({ where: { clientId, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } }),
@@ -89,6 +101,61 @@ export async function PortalTab({ clientId, contacts }: { clientId: string; cont
         {invites.length > 0 && (
           <ul className="mb-3 text-sm">{invites.map((i) => <li key={i.id}>Invitation pending: {i.name} ({i.email}) · expires {fmtDate(i.expiresAt)}</li>)}</ul>
         )}
+        <div className="mb-4 rounded-xl border border-ivory-200 p-3" data-testid="activation-emails">
+          <h3 className="mb-1 font-semibold">Activation emails</h3>
+          <p className="mb-2 text-xs text-slate-600">Sent by email only (never by text). “Sent” means Resend accepted it; “Delivered” appears only when Resend confirms delivery.</p>
+          {warning && <Notice tone="warn">{warning}</Notice>}
+          <ul className="mb-2 space-y-1 text-sm">
+            {activationEmails.map((i) => (
+              <li key={i.id}>
+                To <strong>{i.emailTo ?? i.email}</strong> · {fmtDateTime(i.emailSentAt ?? i.createdAt)}{" "}
+                <Badge tone={EMAIL_TONE[i.emailStatus ?? ""] ?? "gray"}>{i.acceptedAt ? "Activated" : i.revokedAt ? "Replaced" : i.emailStatus === "SENT" ? "Sent (awaiting delivery report)" : i.emailStatus === "DELIVERED" ? "Delivered" : i.emailStatus === "FAILED" ? "Failed" : "Not sent"}</Badge>
+                {i.emailError && <span className="block text-xs text-red-800">{i.emailError}</span>}
+                {i.emailProviderId && <span className="block text-xs text-slate-500">Resend message ID: {i.emailProviderId}</span>}
+              </li>
+            ))}
+            {activationEmails.length === 0 && <li className="text-slate-600">No activation emails yet.</li>}
+          </ul>
+          {onFile.some((e) => staffSet.has(e)) && (
+            <p className="mb-2 text-xs text-slate-700">An address on this record is also a staff login. That&apos;s fine when the person is both staff and this client — their client portal stays separate from their staff account, and sending needs your confirmation.</p>
+          )}
+          {isAdmin && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <ActionForm action={adminActivationAction.bind(null, clientId)} confirm="Email a new activation link to this address? Any earlier unused link stops working." className="flex flex-wrap items-end gap-2">
+                <Field label="Send a new activation link to">
+                  <select className="input" name="to" defaultValue="">
+                    <option value="">Choose an address on file…</option>
+                    {onFile.map((e) => <option key={e} value={e}>{e}{staffSet.has(e) ? " (also a staff login)" : ""}</option>)}
+                  </select>
+                </Field>
+                <label className="flex items-center gap-2 text-xs"><input type="checkbox" name="dualRole" /> This person is both staff and this client</label>
+                <Button type="submit" variant="secondary">Send activation link</Button>
+              </ActionForm>
+              <ActionForm action={resetActivationLimitAction.bind(null, clientId)} className="flex flex-wrap items-end gap-2">
+                <Field label="Too many attempts? Reset the limit for">
+                  <select className="input" name="email" defaultValue="">{onFile.map((e) => <option key={e} value={e}>{e}</option>)}</select>
+                </Field>
+                <Button type="submit" variant="ghost">Reset limit for this address</Button>
+              </ActionForm>
+              <details className="sm:col-span-2">
+                <summary className="cursor-pointer text-sm underline">Email not reaching them? Create a private activation link</summary>
+                <ActionForm action={privateActivationLinkAction.bind(null, clientId)} className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <Field label="For">
+                    <select className="input" name="to" defaultValue="">
+                      <option value="">Choose an address on file…</option>
+                      {onFile.map((e) => <option key={e} value={e}>{e}{staffSet.has(e) ? " (also a staff login)" : ""}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="How you verified their identity"><input className="input" name="how" placeholder="e.g. In person with photo ID" /></Field>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" name="verified" /> I verified this person&apos;s identity directly (not by email or text)</label>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" name="dualRole" /> This person is both staff and this client</label>
+                  <p className="text-xs text-slate-600 sm:col-span-2">Single use, expires in 24 hours, logged. Give it in person or read it by phone. They choose their own password — never ask for passwords or codes.</p>
+                  <div><Button type="submit" variant="secondary">Create private link</Button></div>
+                </ActionForm>
+              </details>
+            </div>
+          )}
+        </div>
         <h3 className="mb-2 font-semibold">Invite to the portal</h3>
         <ActionForm action={invitePortalAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-2" resetOnSuccess>
           <Field label="Name"><input className="input" name="name" required /></Field>

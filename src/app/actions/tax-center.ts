@@ -114,6 +114,8 @@ export async function saveQuestionnaireAction(id: string | null, _prev: ActionSt
   return run(async () => {
     await saveQuestionnaire(actor, { taxYear: Number(str(fd, "taxYear")), audience: str(fd, "audience") || "ALL", title: str(fd, "title"), jotformFormId: str(fd, "jotformFormId"), active: fd.get("active") === "on" }, id ?? undefined);
     revalidatePath("/news");
+    revalidatePath("/settings");
+    revalidatePath("/client", "layout");
     return "Questionnaire saved.";
   });
 }

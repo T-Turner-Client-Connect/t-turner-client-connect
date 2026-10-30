@@ -3,7 +3,7 @@ import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import type { ClientType, OnboardingApplication } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import type { Actor } from "@/lib/auth/actor";
+import { assertAdmin, type Actor } from "@/lib/auth/actor";
 import { hashPassword, passwordProblem } from "@/lib/auth/password";
 import { hashToken, newToken } from "@/lib/auth/tokens";
 import { authSettings, emailProviderConfigured } from "@/lib/auth/client-auth";
@@ -425,15 +425,110 @@ export async function declineApplication(actor: Actor, applicationId: string, no
 // Activate your portal (existing clients)
 // ---------------------------------------------------------------------------
 
+/** The staff login that shares this address, if any (a person can be both staff and a client). */
+async function staffWithAddress(email: string) {
+  return prisma.user.findUnique({ where: { email: normalizeEmail(email) ?? email }, select: { id: true, name: true } });
+}
+
+/** Addresses on this client's own record: the client email and its contacts' emails. */
+async function addressesOnFile(clientId: string) {
+  const c = await prisma.client.findUnique({ where: { id: clientId }, include: { contacts: { select: { emailNormalized: true, name: true } } } });
+  if (!c || c.archivedAt) throw new ValidationError("Client not found.");
+  const map = new Map<string, string>();
+  if (c.emailNormalized) map.set(c.emailNormalized, c.displayName);
+  for (const k of c.contacts) if (k.emailNormalized && !map.has(k.emailNormalized)) map.set(k.emailNormalized, k.name);
+  return { client: c, map };
+}
+
+/** Warning for Admins when the sender is Resend's testing address, which only delivers to the Resend account owner. */
+export function senderWarning() {
+  const from = process.env.EMAIL_FROM_ADDRESS ?? "";
+  return /@resend\.dev>?\s*$/i.test(from)
+    ? "EMAIL_FROM_ADDRESS uses Resend's testing sender (resend.dev). Resend accepts testing-sender emails only when they're addressed to the Resend account's own email and rejects them for anyone else, so clients can't receive them. Verify your domain in Resend and use an address on it."
+    : null;
+}
+
 async function emailActivationInvite(clientId: string, email: string, name: string, invitedBy: Actor | null) {
   const { token, grantedExisting } = await invitePortalUser(invitedBy ?? ({ id: null } as unknown as Actor), clientId, { email, name, role: "OWNER" });
   if (grantedExisting || !token) return { ok: true as const, grantedExisting: true };
   const invite = await prisma.portalInvite.findFirstOrThrow({ where: { email, clientId, acceptedAt: null, revokedAt: null }, orderBy: { createdAt: "desc" } });
-  await prisma.portalInvite.update({ where: { id: invite.id }, data: { sentByEmail: true } });
+  await prisma.portalInvite.update({ where: { id: invite.id }, data: { sentByEmail: true, emailTo: email } });
   const link = `${appUrl()}/client/invite/${token}`;
-  const body = mail("Activate your client portal", [`Hello ${name},`, `Here's your secure link to activate your ${BUSINESS.platformName} portal with ${BUSINESS.legalName}. It works once and expires in 7 days.`, "If you didn't ask for this, you can ignore this email."], { label: "Activate my portal", url: link });
+  const body = mail("Activate your client portal", [`Hello ${name},`, `Here's your secure link to activate your ${BUSINESS.platformName} portal with ${BUSINESS.displayName}. It works once and expires in 7 days.`, "If you didn't ask for this, you can ignore this email."], { label: "Activate my portal", url: link });
   const res = await sendEmail({ to: email, subject: `Activate your ${BUSINESS.platformName} portal`, ...body, idempotencyKey: `activation/${invite.id}`, tags: { category: "client_account" } });
+  // Record exactly where it went and what Resend said. DELIVERED comes only from Resend's signed webhook.
+  await prisma.portalInvite.update({
+    where: { id: invite.id },
+    data: res.ok ? { emailStatus: "SENT", emailProviderId: res.providerId, emailSentAt: new Date(), emailError: null } : { emailStatus: "FAILED", emailError: res.detail.slice(0, 300), emailSentAt: new Date() },
+  });
   return res.ok ? { ok: true as const, grantedExisting: false } : { ok: false as const, detail: res.detail };
+}
+
+/** Resend delivery events for activation emails. Returns true when the event matched one. */
+export async function applyActivationEmailEvent(type: string, providerId: string, reason?: string) {
+  const invite = await prisma.portalInvite.findUnique({ where: { emailProviderId: providerId } });
+  if (!invite) return false;
+  if (type === "email.delivered") {
+    await prisma.portalInvite.updateMany({ where: { id: invite.id, emailStatus: "SENT" }, data: { emailStatus: "DELIVERED", emailDeliveredAt: new Date() } });
+  } else if (type === "email.bounced" || type === "email.failed" || type === "email.complained") {
+    await prisma.portalInvite.updateMany({ where: { id: invite.id, emailStatus: { not: "DELIVERED" } }, data: { emailStatus: "FAILED", emailError: `${type === "email.bounced" ? "Bounced" : type === "email.complained" ? "Marked as spam" : "Not delivered"}${reason ? ` (${reason.slice(0, 160)})` : ""}` } });
+  }
+  return true;
+}
+
+/**
+ * Admin recovery for one client: emails a fresh activation link to an address
+ * on that client's record (the client email or one of its contacts). Earlier
+ * unused links stop working. Bypasses the public request limit for this send
+ * only, with its own two-minute cooldown, and is audited.
+ */
+export async function adminSendActivation(actor: Actor, clientId: string, toEmail: string, opts: { confirmDualRole?: boolean } = {}) {
+  assertAdmin(actor);
+  const to = normalizeEmail(toEmail);
+  const { client, map } = await addressesOnFile(clientId);
+  if (!to || !map.has(to)) throw new ValidationError("Choose an email address that's on this client's record.");
+  // Someone can be both staff and a client. An address shared with a staff login needs an explicit confirmation.
+  const staff = await staffWithAddress(to);
+  if (staff && !opts.confirmDualRole) throw new ValidationError(`${to} is also ${staff.name}'s staff login. If ${staff.name} is also this client, tick “This person is both staff and this client” and send again.`);
+  const recent = await prisma.portalInvite.findFirst({ where: { clientId, sentByEmail: true, emailSentAt: { gte: new Date(Date.now() - 2 * 60_000) } } });
+  if (recent) throw new ValidationError("An activation email went to this client less than two minutes ago. Check its status below before sending another.");
+  const sent = await emailActivationInvite(clientId, to, map.get(to) ?? client.displayName, actor);
+  await audit(prisma, { actorId: actor.id, action: sent.ok ? "portal.activation_resent_by_admin" : "portal.activation_resend_failed", entityType: "Client", entityId: clientId, clientId, details: { to, dualRole: !!staff } });
+  if (!sent.ok) throw new ValidationError(sent.detail);
+  if (sent.grantedExisting) return "This address already has a portal login; access to this account was added. Ask them to sign in (or use Forgot password).";
+  return `Activation link emailed to ${to}. Status updates below when Resend reports delivery.`;
+}
+
+/**
+ * Fallback when email can't reach the client: after an Admin has verified the
+ * person's identity directly, a single-use link valid for 24 hours, shown once
+ * to the Admin to give in person or read by phone. Logged with how identity
+ * was verified. Nobody is ever asked for a password or code.
+ */
+export async function adminPrivateActivationLink(actor: Actor, clientId: string, toEmail: string, input: { verified: boolean; how: string; confirmDualRole?: boolean }) {
+  assertAdmin(actor);
+  const to = normalizeEmail(toEmail);
+  const { client, map } = await addressesOnFile(clientId);
+  if (!to || !map.has(to)) throw new ValidationError("Choose an email address that's on this client's record.");
+  if (!input.verified || input.how.trim().length < 5) throw new ValidationError("Confirm you verified this person's identity directly, and say how (for example: in person with photo ID).");
+  const staff = await staffWithAddress(to);
+  if (staff && !input.confirmDualRole) throw new ValidationError(`${to} is also ${staff.name}'s staff login. Tick “This person is both staff and this client” to continue.`);
+  const res = await invitePortalUser(actor, clientId, { email: to, name: map.get(to) ?? client.displayName, role: "OWNER" });
+  if (res.grantedExisting || !res.token) return { link: null, message: "This address already has a portal login; access to this account was added. Ask them to sign in (or use Forgot password)." };
+  const invite = await prisma.portalInvite.findFirstOrThrow({ where: { email: to, clientId, acceptedAt: null, revokedAt: null }, orderBy: { createdAt: "desc" } });
+  await prisma.portalInvite.update({ where: { id: invite.id }, data: { expiresAt: new Date(Date.now() + 24 * 3600_000) } });
+  await audit(prisma, { actorId: actor.id, action: "portal.private_activation_link_created", entityType: "Client", entityId: clientId, clientId, details: { to, how: input.how.trim().slice(0, 200), dualRole: !!staff } });
+  return { link: `${appUrl()}/client/invite/${res.token}`, message: `Single-use link for ${to}, valid 24 hours. Give it to them in person or read it by phone — never by text or email from your own account. They create their own password; never ask for it or for any code.` };
+}
+
+/** Clears the public activation-request limit for one email address only (Admin, audited). */
+export async function resetActivationLimit(actor: Actor, email: string) {
+  assertAdmin(actor);
+  const e = normalizeEmail(email);
+  if (!e) throw new ValidationError("Enter a valid email address.");
+  const { count } = await prisma.loginAttempt.deleteMany({ where: { email: `activate-email:${e}`, success: false } });
+  await audit(prisma, { actorId: actor.id, action: "portal.activation_limit_reset", entityType: "ActivationRequest", details: { email: e, cleared: count } });
+  return count;
 }
 
 /**
@@ -473,12 +568,14 @@ export async function requestActivation(input: { email: string; name: string; ph
 export async function staffSendActivation(actor: Actor, requestId: string, clientId: string) {
   const req = await prisma.activationRequest.findUniqueOrThrow({ where: { id: requestId } });
   if (req.status !== "NEEDS_STAFF" && req.status !== "EMAIL_FAILED") throw new ValidationError("This request was already handled.");
-  const client = await prisma.client.findUnique({ where: { id: clientId } });
-  if (!client?.emailNormalized) throw new ValidationError("That client has no email on file. Add it to the client record first.");
-  const sent = await emailActivationInvite(clientId, client.emailNormalized, client.displayName, actor);
-  if (!sent.ok) throw new ValidationError(`The email couldn't be sent (${sent.detail}). Create a portal invitation from the client's Portal tab instead.`);
+  // The link goes to the address the person asked with, and only if it's on the chosen client's record —
+  // so picking the wrong client (or a record with someone else's email) can't send it to the wrong person.
+  const { client, map } = await addressesOnFile(clientId);
+  if (!map.has(req.emailNormalized)) throw new ValidationError(`The requested address isn't on ${client.displayName}'s record. Check that you chose the right client, or verify the person and add their email to the record first.`);
+  const sent = await emailActivationInvite(clientId, req.emailNormalized, map.get(req.emailNormalized) ?? client.displayName, actor);
+  if (!sent.ok) throw new ValidationError(`The email couldn't be sent (${sent.detail}).`);
   await prisma.activationRequest.update({ where: { id: requestId }, data: { status: "RESOLVED", resolvedById: actor.id, resolvedAt: new Date() } });
-  await audit(prisma, { actorId: actor.id, action: "portal.activation_sent", entityType: "Client", entityId: clientId, clientId });
+  await audit(prisma, { actorId: actor.id, action: "portal.activation_sent", entityType: "Client", entityId: clientId, clientId, details: { to: req.emailNormalized } });
 }
 
 export async function dismissActivation(actor: Actor, requestId: string) {

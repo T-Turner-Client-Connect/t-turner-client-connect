@@ -69,7 +69,7 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
       <section className="relative overflow-hidden rounded-3xl border border-ivory-200 bg-ivory-50 shadow-sm" data-testid="hero">
         <Mountains variant="light" className="absolute bottom-0 right-0 h-1/2 w-full opacity-80 sm:inset-y-0 sm:h-full sm:w-[70%] sm:opacity-100" />
         <div className="relative px-6 pb-24 pt-8 sm:px-10 sm:py-12">
-          <h1 className="max-w-[16ch] font-serif text-3xl font-bold leading-tight text-navy-900 sm:max-w-none sm:text-[2.6rem]">Welcome back, {name ?? "there"}</h1>
+          <h1 className="max-w-[16ch] font-serif text-3xl font-bold leading-tight text-navy-900 sm:max-w-none sm:text-[2.6rem]">{name ? `Welcome back, ${name}` : "Welcome back"}</h1>
           <p className="mt-2 max-w-[24ch] text-base text-navy-800 sm:max-w-none sm:text-lg">Your documents, tax filings, and updates—all in one place.</p>
           {next && (
             <Link href={href("/client/news")} className="mt-4 inline-flex items-center gap-2 rounded-full border border-gold-500/60 bg-white/80 px-3 py-1 text-xs font-semibold text-navy-900 backdrop-blur hover:bg-white" data-testid="hero-deadline">

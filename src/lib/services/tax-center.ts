@@ -86,10 +86,16 @@ export async function questionnaireFor(clientType: string, taxYear: number) {
   return rows.find((r) => r.audience === audience) ?? rows.find((r) => r.audience === "ALL") ?? null;
 }
 
-export function questionnaireYears() {
-  const ys: number[] = [];
-  for (let y = currentYear(); y >= FIRST_QUESTIONNAIRE_YEAR; y--) ys.push(y);
-  return ys;
+/**
+ * Years shown in a client's Tax Center: the current calendar year and the
+ * three before it, newest first (2026 → 2026, 2025, 2024, 2023). Rolls forward
+ * on January 1. Earlier years stay in the Document Vault and Retrieve Tax
+ * Filings (2020 onward); nothing is deleted or hidden there.
+ */
+export const TAX_CENTER_YEARS = 4;
+export function questionnaireYears(now = new Date()) {
+  const y = Number(now.toLocaleString("en-US", { timeZone: "America/Chicago", year: "numeric" }));
+  return Array.from({ length: TAX_CENTER_YEARS }, (_, i) => y - i);
 }
 
 const refSig = (clientId: string, year: number) => sign(`questionnaire:${clientId}:${year}`).slice(0, 22);

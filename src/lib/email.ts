@@ -49,6 +49,9 @@ export async function sendEmail(input: {
       message = String(((await res.json()) as { message?: unknown }).message ?? "").slice(0, 200);
     } catch {}
     console.error(`Transactional email failed with HTTP ${res.status}`);
+    if (res.status === 403 && /@resend\.dev>?\s*$/i.test(from)) {
+      return { ok: false, reason: "rejected", detail: "Resend refused the email: the testing sender (resend.dev) can only send to the Resend account's own address. Nothing was delivered. Verify your domain in Resend and set EMAIL_FROM_ADDRESS to an address on it." };
+    }
     return { ok: false, reason: "rejected", detail: `The email provider refused the message (HTTP ${res.status}${message ? `: ${message}` : ""}).` };
   }
   let providerId: string | null = null;
