@@ -259,6 +259,8 @@ model Client {
   bookkeepingAccounts  BookkeepingAccount[]
   bookkeepingBilling   BookkeepingBilling?
   chargeAuthorizations RecurringChargeAuthorization[]
+  businessOnboarding   BusinessOnboarding?
+  businessInfoChanges  BusinessInfoChange[]
   taxYearProgress      TaxYearProgress[]
 
   @@index([emailNormalized])
@@ -746,23 +748,31 @@ model PortalAccess {
 }
 
 model PortalInvite {
-  id          String     @id @default(cuid())
-  email       String
-  name        String
-  clientId    String
-  client      Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  role        PortalRole @default(OWNER)
-  contactId   String?
-  tokenHash   String     @unique
-  expiresAt   DateTime
-  acceptedAt  DateTime?
-  revokedAt   DateTime?
+  id               String     @id @default(cuid())
+  email            String
+  name             String
+  clientId         String
+  client           Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  role             PortalRole @default(OWNER)
+  contactId        String?
+  tokenHash        String     @unique
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  revokedAt        DateTime?
   // Null when sent by the system in answer to a client's activation request.
-  invitedById String?
+  invitedById      String?
   // True only when the link went out by email (activation); accepting it proves the address.
-  sentByEmail Boolean    @default(false)
-  invitedBy   User?      @relation(fields: [invitedById], references: [id])
-  createdAt   DateTime   @default(now())
+  sentByEmail      Boolean    @default(false)
+  invitedBy        User?      @relation(fields: [invitedById], references: [id])
+  // Activation email tracking: exact recipient, Resend's id, and what happened
+  // (SENT = accepted by Resend; DELIVERED / FAILED only from signed Resend events).
+  emailTo          String?
+  emailProviderId  String?    @unique
+  emailStatus      String?
+  emailError       String?
+  emailSentAt      DateTime?
+  emailDeliveredAt DateTime?
+  createdAt        DateTime   @default(now())
 
   @@index([email])
 }
@@ -2438,6 +2448,12 @@ model BookkeepingProfile {
   payrollAccessStatus String?
   // Payroll reports required each month (keys of PAYROLL_REPORT_TYPES).
   payrollReports      String[]  @default([])
+  // HMAC of the EIN, so duplicate businesses can be spotted without decrypting.
+  einHash             String?
+  contactEmail        String?
+  // When an Admin last verified the business information (client onboarding).
+  verifiedAt          DateTime?
+  verifiedById        String?
 }
 
 /// A client's bank or credit-card account for bookkeeping. Never holds
@@ -2457,6 +2473,8 @@ model BookkeepingAccount {
   // NOT_REQUESTED | REQUESTED | DELEGATED_ACCESS | OFFICIAL_CONNECTION | STATEMENTS_ONLY | REVOKED
   accessStatus String     @default("NOT_REQUESTED")
   accessNote   String?
+  // How the client gives access: DELEGATED (adds us as accountant user) | OFFICIAL_CONNECTION | STATEMENT_UPLOAD
+  accessMethod String?
   active       Boolean    @default(true)
   updatedById  String?
   createdAt    DateTime   @default(now())
@@ -2480,6 +2498,14 @@ model BookkeepingBilling {
   paymentStatus    String    @default("NOT_SET_UP")
   squareCustomerId String?
   squareCardId     String?
+  // Monthly tier name set by Tabitha (e.g. "Essentials").
+  tierName         String?
+  // Display details exactly as returned by Square for the card on file. Never the number or CVV.
+  cardBrand        String?
+  cardLast4        String?
+  cardExpMonth     Int?
+  cardExpYear      Int?
+  cardSavedAt      DateTime?
   notes            String?
   updatedById      String?
   updatedAt        DateTime  @updatedAt
@@ -2488,23 +2514,27 @@ model BookkeepingBilling {
 
 /// The client's authorization for recurring charges. A card on file alone authorizes nothing.
 model RecurringChargeAuthorization {
-  id                 String    @id @default(cuid())
-  clientId           String
-  client             Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  amountCents        Int
+  id                       String    @id @default(cuid())
+  clientId                 String
+  client                   Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  amountCents              Int
   // MONTHLY
-  frequency          String    @default("MONTHLY")
-  startDate          DateTime
+  frequency                String    @default("MONTHLY")
+  startDate                DateTime
   // SIGNED_FORM | SIGNED_CONTRACT | PORTAL_CONSENT
-  method             String
-  authorizedByName   String
-  authorizedAt       DateTime
-  evidenceDocumentId String?
-  recordedById       String
-  createdAt          DateTime  @default(now())
-  revokedAt          DateTime?
-  revokedById        String?
-  revokeReason       String?
+  method                   String
+  authorizedByName         String
+  authorizedAt             DateTime
+  evidenceDocumentId       String?
+  recordedById             String
+  createdAt                DateTime  @default(now())
+  revokedAt                DateTime?
+  revokedById              String?
+  revokeReason             String?
+  // Client consent in the portal: who accepted, the exact terms, and the card it applies to.
+  authorizedByPortalUserId String?
+  termsText                String?
+  cardLast4                String?
 
   @@index([clientId])
 }
@@ -2532,4 +2562,43 @@ model SystemHeartbeat {
   key    String   @id
   at     DateTime
   detail Json?
+}
+
+/// A client's business & bookkeeping onboarding: eligibility answers and a
+/// "Save & Continue Later" draft (the EIN inside the draft is encrypted).
+model BusinessOnboarding {
+  clientId          String    @id
+  client            Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // EXISTING | POTENTIAL
+  relationship      String?
+  wantsBookkeeping  Boolean?
+  draft             Json?
+  // NOT_STARTED | DRAFT | SUBMITTED (submitted at least once)
+  status            String    @default("NOT_STARTED")
+  submittedAt       DateTime?
+  updatedByPortalId String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+/// Business information submitted by a client. Verified details (BookkeepingProfile
+/// and accounts) change only when an Admin approves.
+model BusinessInfoChange {
+  id                   String    @id @default(cuid())
+  clientId             String
+  client               Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // INITIAL | UPDATE
+  kind                 String
+  // Proposed values. The EIN appears only encrypted (einEncrypted) with its last four and hash.
+  data                 Json
+  // PENDING | APPROVED | REJECTED | SUPERSEDED
+  status               String    @default("PENDING")
+  possibleDuplicateIds String[]  @default([])
+  submittedByPortalId  String?
+  submittedAt          DateTime  @default(now())
+  reviewedById         String?
+  reviewedAt           DateTime?
+  reviewNote           String?
+
+  @@index([clientId, status])
 }
