@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { requireClientAccess } from "@/lib/portal/access";
 import type { PortalActor } from "@/lib/portal/session";
 import { daysBetween, officeToday } from "@/lib/tax/deadlines";
@@ -48,10 +48,28 @@ export const maskedSsn = (last4: string | null) => `•••-••-${last4 ?? 
 // --- Who may see identity documents ------------------------------------------
 
 /** Admins and the staff member assigned to the client. */
+/**
+ * Admins, the staff member assigned to the client, and staff an Admin has
+ * explicitly granted identity access for all clients. That grant never
+ * opens the Owner's Office, which is bound to the owner's own account.
+ */
 export async function canStaffViewIdentity(actor: { id: string; role: string }, clientId: string) {
   if (actor.role === "ADMIN") return true;
-  const c = await prisma.client.findUnique({ where: { id: clientId }, select: { assignedToId: true } });
-  return !!c && c.assignedToId === actor.id;
+  const [c, u] = await Promise.all([
+    prisma.client.findUnique({ where: { id: clientId }, select: { assignedToId: true } }),
+    prisma.user.findUnique({ where: { id: actor.id }, select: { identityAccessAll: true, active: true } }),
+  ]);
+  if (!c || !u?.active) return false;
+  return c.assignedToId === actor.id || u.identityAccessAll;
+}
+
+/** Admin-only: let a staff member open identity documents for every client. */
+export async function setIdentityAccessAll(admin: Actor, userId: string, on: boolean) {
+  assertAdmin(admin);
+  const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  if (u.role === "ADMIN") throw new ValidationError("Admins already have identity access.");
+  await prisma.user.update({ where: { id: userId }, data: { identityAccessAll: on, identityAccessGrantedBy: on ? admin.id : null, identityAccessGrantedAt: on ? new Date() : null } });
+  await audit(prisma, { actorId: admin.id, action: on ? "identity.access_granted" : "identity.access_removed", entityType: "User", entityId: userId });
 }
 
 async function requireStaff(actor: Actor, clientId: string) {
@@ -115,7 +133,7 @@ export async function uploadIdentityDocument(who: { staff: Actor } | { portal: P
   if (existing && !reason) throw new ValidationError("Tell us why you're replacing the document on file.");
 
   const uploader = "staff" in who ? { staff: who.staff } : { portal: who.portal };
-  const stored = await storeDocumentFile(input.bytes, input.originalName, uploader, input.clientId);
+  const stored = await storeDocumentFile(input.bytes, input.originalName, uploader, input.clientId, { encrypt: true });
   try {
     const rec = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });
@@ -153,6 +171,7 @@ export async function uploadIdentityDocument(who: { staff: Actor } | { portal: P
       await audit(tx, { actorId: "staff" in who ? who.staff.id : null, action: "identity.uploaded", entityType: "IdentityDocument", entityId: rec.id, clientId: input.clientId, details: { type: input.type, role: person.role, replacement: !!existing } });
       return rec;
     });
+    await openVerificationTask(rec.id, "staff" in who ? who.staff.id : null);
     if ("portal" in who) await queueStaffAlert({ documentId: rec.documentId });
     return rec;
   } catch (err) {
@@ -186,6 +205,7 @@ export async function verifyIdentityDocument(actor: Actor, id: string, input: { 
   await prisma.$transaction(async (tx) => {
     await tx.identityDocument.updateMany({ where: { personId: rec.personId, type: rec.type, status: { in: ["VERIFIED", "EXPIRED"] }, NOT: { id } }, data: { status: "REPLACED", replacedAt: now } });
     await tx.identityDocument.update({ where: { id }, data: { status: "VERIFIED", verifiedAt: now, verifiedById: actor.id, expiresOn, last4, rejectedReason: null } });
+    if (rec.verificationTaskId) await tx.task.updateMany({ where: { id: rec.verificationTaskId, status: "OPEN" }, data: { status: "DONE", completedAt: now } });
     await tx.document.update({ where: { id: rec.documentId }, data: { needsReview: false, reviewedAt: now, reviewedById: actor.id } });
     await audit(tx, { actorId: actor.id, action: "identity.verified", entityType: "IdentityDocument", entityId: id, clientId: rec.clientId, details: { type: rec.type } });
   });
@@ -199,10 +219,33 @@ export async function rejectIdentityDocument(actor: Actor, id: string, reason: s
   const now = new Date();
   await prisma.$transaction(async (tx) => {
     await tx.identityDocument.update({ where: { id }, data: { status: "REJECTED", rejectedReason: reason.trim().slice(0, 300) } });
+    if (rec.verificationTaskId) await tx.task.updateMany({ where: { id: rec.verificationTaskId, status: "OPEN" }, data: { status: "DONE", completedAt: now } });
     await tx.document.update({ where: { id: rec.documentId }, data: { needsReview: false, reviewedAt: now, reviewedById: actor.id } });
     await audit(tx, { actorId: actor.id, action: "identity.rejected", entityType: "IdentityDocument", entityId: id, clientId: rec.clientId, details: { type: rec.type } });
   });
   await notifyHolders(rec.clientId, "ID_NEEDS_ATTENTION", `id-rejected:${id}`);
+}
+
+/**
+ * A staff task to review each upload (closed on verify or decline). Assigned
+ * to the client's staff member; the task text has no identity details.
+ */
+async function openVerificationTask(recordId: string, uploaderStaffId: string | null) {
+  const rec = await prisma.identityDocument.findUniqueOrThrow({ where: { id: recordId }, include: { person: true, client: { select: { displayName: true, assignedToId: true } } } });
+  const creator = uploaderStaffId ?? rec.client.assignedToId ?? (await prisma.user.findFirst({ where: { role: "ADMIN", active: true }, orderBy: { createdAt: "asc" }, select: { id: true } }))?.id;
+  if (!creator) return;
+  const label = ID_TYPES[rec.type as IdType].label;
+  const task = await prisma.task.create({
+    data: {
+      title: `Verify ${rec.replacementReason ? "replacement " : ""}${label.toLowerCase()} — ${rec.client.displayName}`,
+      details: `${ID_ROLES[rec.person.role as IdRole]}'s ${label.toLowerCase()} is Pending Verification${rec.replacementReason ? ` (${rec.replacementReason})` : ""}. Review it in the client's Documents tab → Identity Documents.`,
+      clientId: rec.clientId,
+      assigneeId: rec.client.assignedToId,
+      createdById: creator,
+      priority: rec.type === "DRIVERS_LICENSE" && rec.replacementReason ? "HIGH" : "NORMAL",
+    },
+  });
+  await prisma.identityDocument.update({ where: { id: recordId }, data: { verificationTaskId: task.id } });
 }
 
 async function notifyHolders(clientId: string, kind: string, refKey: string) {
@@ -255,7 +298,8 @@ export function identityAlerts(overview: Awaited<ReturnType<typeof identityOverv
   for (const { person, slots } of overview) {
     for (const s of slots) {
       const label = `${person.name}'s ${ID_TYPES[s.type].label.toLowerCase()}`;
-      if (s.current?.status === "EXPIRED" && !s.pending.length) out.push({ tone: "error", text: `${label} has expired. Please upload the renewed license.` });
+      // A pending or declined replacement never hides that the license on file has expired.
+      if (s.current?.status === "EXPIRED") out.push({ tone: "error", text: s.pending.length ? `${label} has expired. Your renewed license was received and is awaiting verification.` : `${label} has expired. Please upload the renewed license.` });
       else if (s.daysLeft !== null && s.daysLeft <= 60 && !s.pending.length) out.push({ tone: "warn", text: `${label} expires in ${s.daysLeft === 0 ? "less than a day" : `${s.daysLeft} day${s.daysLeft === 1 ? "" : "s"}`}. Please upload the updated license.` });
       if (s.rejected) out.push({ tone: "error", text: `We couldn't accept the ${ID_TYPES[s.type].label.toLowerCase()} uploaded for ${person.name}: ${s.rejected.rejectedReason}` });
     }
@@ -306,7 +350,8 @@ export async function identityChecklist(clientId: string) {
       .map((s) => ({
         type: s.type,
         label: ID_TYPES[s.type].label,
-        state: s.current?.status === "VERIFIED" ? "ON_FILE" : s.pending.length ? "PENDING" : s.current?.status === "EXPIRED" ? "EXPIRED" : "NEEDED",
+        state: s.current?.status === "VERIFIED" ? "ON_FILE" : s.current?.status === "EXPIRED" ? "EXPIRED" : s.pending.length ? "PENDING" : "NEEDED",
+        replacementPending: s.pending.length > 0,
         documentId: s.current?.documentId ?? s.pending[0]?.documentId ?? null,
         expiresOn: s.current?.status === "VERIFIED" ? s.current.expiresOn : null,
         verifiedAt: s.current?.verifiedAt ?? null,
@@ -315,3 +360,40 @@ export async function identityChecklist(clientId: string) {
 }
 
 export const CHECKLIST_LABEL = { ON_FILE: "On file — verified", PENDING: "Received — pending verification", EXPIRED: "Expired — upload the renewed license", NEEDED: "Not on file" } as const;
+
+export function checklistText(i: { state: string; replacementPending?: boolean }) {
+  if (i.state === "EXPIRED" && i.replacementPending) return "Expired — replacement awaiting verification";
+  return CHECKLIST_LABEL[i.state as keyof typeof CHECKLIST_LABEL];
+}
+
+// --- Reminder delivery check (Admin) ---------------------------------------------
+
+/**
+ * Sends the real reminder notice (generic text) to one portal login so an
+ * Admin can see it arrive. Reminders count as fully active only after
+ * NOTIFICATIONS_ENABLED is on and an Admin confirms a test was received.
+ */
+export async function sendIdentityReminderTest(admin: Actor, portalEmail: string) {
+  assertAdmin(admin);
+  const u = await prisma.portalUser.findUnique({ where: { email: portalEmail.trim().toLowerCase() } });
+  if (!u) throw new ValidationError("No portal login uses that email. Use a test client login you can check.");
+  if (!u.notifyByEmail && !(u.notifyBySms && u.phoneNormalized)) throw new ValidationError("That login has email and text notices turned off.");
+  const ref = `id-test:${Date.now()}`;
+  await queuePortalNotification(u.id, "ID_EXPIRING", ref);
+  await audit(prisma, { actorId: admin.id, action: "identity.reminder_test_sent", entityType: "PortalUser", entityId: u.id });
+  return prisma.notification.findMany({ where: { idempotencyKey: { startsWith: `${ref}:` } } });
+}
+
+export async function confirmIdentityReminderReceived(admin: Actor, channel: "EMAIL" | "SMS") {
+  assertAdmin(admin);
+  await audit(prisma, { actorId: admin.id, action: "identity.reminder_delivery_confirmed", entityType: "Notification", entityId: channel, details: { channel } });
+}
+
+export async function identityReminderStatus() {
+  const [recent, confirmations] = await Promise.all([
+    prisma.notification.findMany({ where: { kind: { in: ["ID_EXPIRING", "ID_EXPIRED", "ID_NEEDS_ATTENTION"] } }, orderBy: { createdAt: "desc" }, take: 8, include: { portalUser: { select: { email: true } } } }),
+    prisma.auditLog.findMany({ where: { action: "identity.reminder_delivery_confirmed" }, orderBy: { createdAt: "desc" }, take: 10 }),
+  ]);
+  const confirmedAt = (ch: string) => confirmations.find((c) => (c.details as { channel?: string } | null)?.channel === ch)?.createdAt ?? null;
+  return { enabled: process.env.NOTIFICATIONS_ENABLED === "true", recent, emailConfirmedAt: confirmedAt("EMAIL"), smsConfirmedAt: confirmedAt("SMS") };
+}

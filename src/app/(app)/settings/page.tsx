@@ -2,6 +2,8 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clients";
 import { inviteAction, privateInviteLinkAction, resendInviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
+import { identityAccessAction } from "@/app/actions/identity";
+import { IdentityReminderPanel } from "@/components/identity-reminder-panel";
 import { inviteState, recentInvites, type InviteState } from "@/lib/services/staff-invitations";
 import { VerifyEmailCard } from "@/components/verification";
 import { clientEmailCodesAction, confirmVerifyEmailAction, sendVerifyEmailAction } from "@/app/actions/verification";
@@ -83,6 +85,7 @@ export default async function SettingsPage() {
                   </div>
                   <div className="flex gap-1">
                     <Badge tone={s.role === "ADMIN" ? "gold" : "navy"}>{s.role === "ADMIN" ? "Admin" : "Staff"}</Badge>
+                    {s.role !== "ADMIN" && s.identityAccessAll && <Badge tone="amber">Identity docs: all clients</Badge>}
                     {!s.active && <Badge tone="red">Deactivated</Badge>}
                   </div>
                 </div>
@@ -99,6 +102,19 @@ export default async function SettingsPage() {
                         </Field>
                         <Button type="submit" variant="secondary">Save</Button>
                       </ActionForm>
+                      {s.role !== "ADMIN" && (
+                        <ActionForm
+                          action={identityAccessAction.bind(null, s.id, !s.identityAccessAll)}
+                          confirm={s.identityAccessAll ? undefined : `Let ${s.name} open identity documents (licenses, birth certificates, Social Security cards) for every client? This does not open your Owner's Office.`}
+                          className="rounded-lg bg-ivory-50 p-2 text-sm"
+                        >
+                          <p className="mb-1">
+                            Identity documents: {s.identityAccessAll ? <strong>all clients</strong> : <>only clients assigned to {s.name.split(" ")[0]}</>}
+                            <span className="block text-xs text-slate-600">Never includes the Owner&apos;s Office.</span>
+                          </p>
+                          <Button type="submit" variant="ghost">{s.identityAccessAll ? "Limit to assigned clients" : "Allow for all clients"}</Button>
+                        </ActionForm>
+                      )}
                       <ActionForm action={resetLinkAction.bind(null, s.id)}>
                         <Button type="submit" variant="ghost">Create password reset link</Button>
                       </ActionForm>
@@ -251,8 +267,9 @@ export default async function SettingsPage() {
         </Card>
 
         {isAdmin && (
-          <Card title="Document retention" className="lg:col-span-2">
-            <p className="mb-3 text-sm text-slate-600">Sets a keep-until date on new documents. Nothing is deleted automatically — expired documents are listed on the Documents page for an Admin to review, and every deletion is logged with a reason.</p>
+          <Card title="Document retention" className="scroll-mt-6 lg:col-span-2">
+            <span id="retention" />
+            <p className="mb-3 text-sm text-slate-600">&ldquo;Identity document&rdquo; covers driver&apos;s licenses, birth certificates and Social Security cards. Sets a keep-until date on new documents. Nothing is deleted automatically — expired documents are listed on the Documents page for an Admin to review, and every deletion is logged with a reason.</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               {(Object.keys(CATEGORY_LABELS) as (keyof typeof CATEGORY_LABELS)[]).map((cat) => (
                 <ActionForm key={cat} action={retentionAction} className="space-y-2 rounded-xl border border-ivory-200 p-3">
@@ -264,6 +281,8 @@ export default async function SettingsPage() {
             </div>
           </Card>
         )}
+
+        {isAdmin && <IdentityReminderPanel />}
 
         <Card title="SMS consent & incoming texts" className="lg:col-span-2">
           {await (async () => {

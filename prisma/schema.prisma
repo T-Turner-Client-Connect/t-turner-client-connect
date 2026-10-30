@@ -35,22 +35,28 @@ enum Role {
 }
 
 model User {
-  id              String    @id @default(cuid())
-  email           String    @unique
-  name            String
-  role            Role      @default(STAFF)
-  passwordHash    String?
-  active          Boolean   @default(true)
+  id                      String    @id @default(cuid())
+  email                   String    @unique
+  name                    String
+  role                    Role      @default(STAFF)
+  passwordHash            String?
+  active                  Boolean   @default(true)
   // TOTP secret (base32), stored encrypted with APP_ENCRYPTION_KEY.
-  mfaSecretEnc    String?
-  mfaEnabledAt    DateTime?
+  mfaSecretEnc            String?
+  mfaEnabledAt            DateTime?
   // Last accepted authenticator time-step: a code can't be replayed.
-  mfaLastStep     Int?
+  mfaLastStep             Int?
   // Proven by entering a code emailed to this address (enables email codes).
-  emailVerifiedAt DateTime?
-  lastLoginAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  emailVerifiedAt         DateTime?
+  lastLoginAt             DateTime?
+  // Admin-granted: open identity documents for every client (not only
+  // assigned ones). Has no effect on the Owner's Office, which is bound to
+  // the owner's own account.
+  identityAccessAll       Boolean   @default(false)
+  identityAccessGrantedBy String?
+  identityAccessGrantedAt DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   sessions        Session[]
   resetTokens     PasswordResetToken[]
@@ -446,6 +452,8 @@ model StoredFile {
   uploadedByPortalUser   PortalUser? @relation(fields: [uploadedByPortalUserId], references: [id])
   // SHA-256 of the bytes: the same file is stored once per client.
   sha256                 String?
+  // Bytes encrypted by the app (AES-256-GCM) before storage — identity documents.
+  encrypted              Boolean     @default(false)
   createdAt              DateTime    @default(now())
 
   campaigns      Campaign[]
@@ -2319,6 +2327,8 @@ model IdentityDocument {
   uploadedByStaffId  String?
   // Expiration reminders already sent: "60", "30", "7", "EXPIRED".
   remindersSent      String[]
+  // Staff task to review this upload; closed when it's verified or declined.
+  verificationTaskId String?
   createdAt          DateTime       @default(now())
 
   @@index([clientId, personId, type])

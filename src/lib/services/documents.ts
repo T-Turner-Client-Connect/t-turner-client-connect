@@ -7,7 +7,7 @@ import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
 import { allowedCategories, requireClientAccess } from "@/lib/portal/access";
 import { storage } from "@/lib/storage";
-import { sign, verifySignature } from "@/lib/crypto";
+import { decryptBytes, encryptBytes, sign, verifySignature } from "@/lib/crypto";
 import { imageSize, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import { scanBytes, scanConfigured } from "@/lib/scan";
 import { queueStaffAlert } from "./staff-alerts";
@@ -32,6 +32,13 @@ export const REPORT_LABELS: Record<ReportType, string> = {
 // "system": files received from an integration (e.g. a Jotform submission).
 type Uploader = { staff: Actor } | { portal: PortalActor } | { system: string };
 
+/** The original bytes of a stored document (decrypted when the app encrypted them). */
+export async function readDocumentBytes(file: { storageKey: string; encrypted: boolean }) {
+  const bytes = await storage.get(file.storageKey);
+  if (!bytes) return null;
+  return file.encrypted ? decryptBytes(bytes) : bytes;
+}
+
 export const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 /**
@@ -45,7 +52,7 @@ export async function assertNotDuplicate(clientId: string, sha256: string, forCl
   if (existing) throw new ValidationError(`This file is already saved${existing.year ? ` under ${existing.year}` : ""} as “${existing.title}”, so it wasn't added again.`);
 }
 
-export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string) {
+export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string, opts: { encrypt?: boolean } = {}) {
   if (bytes.length === 0) throw new ValidationError("The file is empty.");
   if (bytes.length > MAX_UPLOAD_BYTES) throw new ValidationError(`Files can be up to ${MAX_UPLOAD_LABEL}.`);
   const type = sniffType(bytes);
@@ -56,7 +63,8 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
   if (scan === "INFECTED") throw new ValidationError("This file was flagged by the virus scanner and was not saved.");
   const size = type.mime.startsWith("image/") ? imageSize(bytes, type.mime) : null;
   const storageKey = `client_document/${randomUUID()}`;
-  await storage.put(storageKey, bytes);
+  // Identity documents are encrypted by the app before they reach storage.
+  await storage.put(storageKey, opts.encrypt ? encryptBytes(bytes) : bytes);
   const name = originalName.replace(/[^\w.\- ()]/g, "_").slice(0, 150) || `document.${type.ext}`;
   return {
     storageKey,
@@ -73,6 +81,7 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
       uploadedById: "staff" in uploader ? uploader.staff.id : null,
       uploadedByPortalUserId: "portal" in uploader ? uploader.portal.id : null,
       sha256,
+      encrypted: !!opts.encrypt,
     },
   };
 }
@@ -345,7 +354,7 @@ export async function scanQuarantined(limit = 25) {
   let clean = 0;
   let infected = 0;
   for (const d of docs) {
-    const bytes = await storage.get(d.file.storageKey);
+    const bytes = await readDocumentBytes(d.file);
     if (!bytes) continue;
     const result = await scanBytes(bytes, d.file.originalName);
     if (result === "CLEAN") {

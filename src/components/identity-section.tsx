@@ -14,7 +14,7 @@ const TONE: Record<string, "green" | "amber" | "red" | "gray"> = { VERIFIED: "gr
 
 function detail(r: Rec) {
   if (r.type === "DRIVERS_LICENSE") return r.expiresOn ? `Expires ${fmtIso(r.expiresOn, { month: "short", day: "numeric", year: "numeric" })}` : "";
-  if (r.type === "SOCIAL_SECURITY_CARD") return maskedSsn(r.last4);
+  if (r.type === "SOCIAL_SECURITY_CARD") return `${maskedSsn(r.last4)} · image contains the full number`;
   return "No expiration";
 }
 
@@ -41,6 +41,34 @@ function UploadForm({ mode, clientId, personId, type, replacing }: { mode: "port
   );
 }
 
+/**
+ * Social Security card images show the full number (only the last four are
+ * stored as text). They open view-only after a confirmation; staff also
+ * choose a reason, which is written to the audit log.
+ */
+function ViewLink({ href, type, mode }: { href: string; type: IdType; mode: "portal" | "staff" }) {
+  if (type !== "SOCIAL_SECURITY_CARD") return <a className="text-sm font-semibold underline" href={href} target="_blank" rel="noopener">View</a>;
+  return (
+    <details className="text-sm" data-ss-view>
+      <summary className="cursor-pointer font-semibold underline">View card</summary>
+      <form method="get" action={href} target="_blank" className="mt-1 space-y-1 rounded-lg border border-red-200 bg-red-50 p-2">
+        <p className="text-xs text-red-900">This image shows the <strong>full Social Security number</strong>. It opens view-only (no download) and the view is logged.</p>
+        <input type="hidden" name="confirm" value="1" />
+        {mode === "staff" && (
+          <select className="input text-xs" name="purpose" required defaultValue="">
+            <option value="" disabled>Reason for viewing…</option>
+            <option>Preparing a tax return</option>
+            <option>Verifying the card</option>
+            <option>Client request</option>
+            <option>Agency correspondence</option>
+          </select>
+        )}
+        <button type="submit" className="rounded-md bg-navy-900 px-3 py-1 text-xs font-semibold text-white">Open card</button>
+      </form>
+    </details>
+  );
+}
+
 function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean }) {
   const t = ID_TYPES[slot.type];
   const { current, pending } = slot;
@@ -63,17 +91,17 @@ function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly }: { slot: 
         </div>
         <span className="flex flex-wrap items-center gap-2">
           {status && <Badge tone={TONE[status]}>{status === "VERIFIED" ? "✓ Verified" : ID_STATUS[status as keyof typeof ID_STATUS]}</Badge>}
-          {current && !readOnly && <a className="text-sm font-semibold underline" href={linkFor(current.documentId)} target="_blank" rel="noopener">View</a>}
+          {current && !readOnly && <ViewLink href={linkFor(current.documentId)} type={slot.type} mode={mode} />}
         </span>
       </div>
 
       {pending.map((p) => (
         <div key={p.id} className="mt-2 rounded-xl border border-amber-200 bg-amber-50/60 p-3 text-sm" data-pending={p.id}>
-          <p className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Clock className="size-4 text-amber-700" aria-hidden />
             <strong>Pending verification</strong> · uploaded {fmtDateTime(p.createdAt)}{p.replacementReason && ` · ${p.replacementReason}`}{p.type === "DRIVERS_LICENSE" && p.expiresOn && ` · expires ${fmtIso(p.expiresOn, { month: "short", day: "numeric", year: "numeric" })}`}
-            {!readOnly && <a className="underline" href={linkFor(p.documentId)} target="_blank" rel="noopener">View</a>}
-          </p>
+            {!readOnly && <ViewLink href={linkFor(p.documentId)} type={p.type as IdType} mode={mode} />}
+          </div>
           {mode === "staff" && !readOnly && (
             <div className="mt-2 grid gap-2 lg:grid-cols-2">
               <ActionForm action={verifyIdentityAction.bind(null, clientId, p.id)} className="flex flex-wrap items-end gap-2">
@@ -124,7 +152,7 @@ export function IdentitySection({ overview, mode, clientId, linkFor, readOnly }:
     <div className="space-y-4" data-testid="identity-section">
       <p className="flex items-start gap-2 rounded-xl border border-ivory-200 bg-white p-3 text-sm text-slate-700">
         <ShieldCheck className="mt-0.5 size-5 shrink-0 text-gold-600" aria-hidden />
-        Permanent records, kept separate from yearly tax folders and reused every tax year — no need to upload them again each year. Every file is malware-scanned, stored privately, and each view is logged.
+        Permanent records, kept separate from yearly tax folders and reused every tax year — no need to upload them again each year. Every file is malware-scanned, encrypted before storage, and each view is logged. Social Security card images show the full number, so they open view-only after a confirmation.
       </p>
       {overview.map(({ person, slots }) => (
         <section key={person.id} className="rounded-2xl border border-ivory-200 bg-white p-4 shadow-sm sm:p-5" data-person={person.role}>

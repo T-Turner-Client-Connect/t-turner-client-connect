@@ -1,6 +1,6 @@
 import type { Actor } from "@/lib/auth/actor";
 import { ActionForm } from "@/components/action-form";
-import { canStaffViewIdentity, CHECKLIST_LABEL, identityChecklist } from "@/lib/services/identity";
+import { canStaffViewIdentity, checklistText, identityChecklist } from "@/lib/services/identity";
 import { Badge, Button, Card, Field } from "@/components/ui";
 import { linkSubmissionAction, previewSubmissionAction, taxProfileAction, taxYearProgressAction } from "@/app/actions/tax-center";
 import { prisma } from "@/lib/prisma";
@@ -103,7 +103,7 @@ export async function TaxCenterStaff({ clientId, user }: { clientId: string; use
             {idList.map(({ person, items }) => (
               <li key={person.id} className="rounded-lg bg-ivory-50 p-2">
                 <strong>{person.name}</strong>
-                {items.map((i) => <span key={i.type} className="block">{i.label}: {CHECKLIST_LABEL[i.state as keyof typeof CHECKLIST_LABEL]}</span>)}
+                {items.map((i) => <span key={i.type} className="block">{i.label}: {checklistText(i)}</span>)}
               </li>
             ))}
           </ul>

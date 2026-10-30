@@ -5,7 +5,7 @@ import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { loadPortalHome } from "@/lib/portal/views";
 import { fmtChicago } from "@/lib/tz";
-import { CHECKLIST_LABEL, identityChecklist } from "@/lib/services/identity";
+import { checklistText, identityChecklist } from "@/lib/services/identity";
 
 export const metadata = { title: "My Tax Center" };
 
@@ -51,7 +51,7 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
                   {items.map((i) => (
                     <li key={i.type} className="flex justify-between gap-2">
                       <span>{i.label}</span>
-                      <span className={i.state === "ON_FILE" ? "text-emerald-800" : i.state === "EXPIRED" ? "text-red-800" : "text-slate-600"}>{CHECKLIST_LABEL[i.state as keyof typeof CHECKLIST_LABEL]}</span>
+                      <span className={i.state === "ON_FILE" ? "text-emerald-800" : i.state === "EXPIRED" ? "text-red-800" : "text-slate-600"}>{checklistText(i)}</span>
                     </li>
                   ))}
                 </ul>

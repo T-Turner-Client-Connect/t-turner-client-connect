@@ -10,6 +10,10 @@ import {
 } from "@/lib/services/identity";
 import { addDays, officeToday } from "@/lib/tax/deadlines";
 import { updateStaffAlertSettings } from "@/lib/services/staff-alerts";
+import { readDocumentBytes } from "@/lib/services/documents";
+import { storage } from "@/lib/storage";
+import { assertOwner } from "@/lib/auth/owner";
+import { checklistText, setIdentityAccessAll } from "@/lib/services/identity";
 
 let seq = 0;
 const img = () => new TextEncoder().encode(`%PDF-1.4\n% fictional id ${seq++}\n`);
@@ -141,5 +145,66 @@ describe("identity documents", () => {
     // Staff without identity rights can't verify, and only an Admin can grant identity access.
     await prisma.client.update({ where: { id: client.id }, data: { assignedToId: null } });
     await expect(verifyIdentityDocument(daria, ss.id, {})).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("are encrypted before storage and still open for authorized viewers", async () => {
+    const { client, user, me } = await setup();
+    const bytes = img();
+    const ss = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes, originalName: "ss.pdf" });
+    const doc = await prisma.document.findUniqueOrThrow({ where: { id: ss.documentId }, include: { file: true } });
+    expect(doc.file.encrypted).toBe(true);
+    const raw = await storage.get(doc.file.storageKey);
+    expect(Buffer.from(raw!).subarray(0, 4).toString()).toBe("TCE1");
+    expect(Buffer.from(raw!).includes(Buffer.from("fictional id"))).toBe(false);
+    expect(Buffer.from((await readDocumentBytes(doc.file))!).equals(Buffer.from(bytes))).toBe(true);
+  });
+
+  it("each upload opens a staff verification task that closes on verify or decline", async () => {
+    const { tab, client, user, me } = await setup();
+    const daria = await makeUser("STAFF");
+    await prisma.client.update({ where: { id: client.id }, data: { assignedToId: daria.id } });
+    const l = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "DRIVERS_LICENSE", expiresOn: inDays(300), bytes: img(), originalName: "dl.pdf" });
+    await verifyIdentityDocument(tab, l.id, {});
+    const r = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "DRIVERS_LICENSE", expiresOn: inDays(1500), replacementReason: "Renewed license", bytes: img(), originalName: "dl2.pdf" });
+    const task = await prisma.task.findUniqueOrThrow({ where: { id: (await prisma.identityDocument.findUniqueOrThrow({ where: { id: r.id } })).verificationTaskId! } });
+    expect(task).toMatchObject({ status: "OPEN", assigneeId: daria.id, clientId: client.id, priority: "HIGH" });
+    expect(task.title).toBe("Verify replacement driver's license — Ana Diaz");
+    await rejectIdentityDocument(tab, r.id, "Blurry");
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: task.id } })).status).toBe("DONE");
+  });
+
+  it("a pending or declined replacement never hides that the license on file expired", async () => {
+    vi.stubEnv("NOTIFICATIONS_ENABLED", "false");
+    const { tab, client, user, me } = await setup();
+    const l = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "DRIVERS_LICENSE", expiresOn: inDays(3), bytes: img(), originalName: "dl.pdf" });
+    await verifyIdentityDocument(tab, l.id, {});
+    const r = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "DRIVERS_LICENSE", expiresOn: inDays(1500), replacementReason: "Renewed license", bytes: img(), originalName: "dl2.pdf" });
+    expect((await runIdentityReminders(new Date(Date.now() + 5 * 86400_000))).expired).toBe(1);
+    let ov = await portalIdentityOverview(user, client.id);
+    expect(ov[0].slots.find((s) => s.type === "DRIVERS_LICENSE")!.current!.status).toBe("EXPIRED");
+    expect(identityAlerts(ov).some((a) => /has expired\. Your renewed license was received/.test(a.text))).toBe(true);
+    let item = (await identityChecklist(client.id))[0].items.find((i) => i.type === "DRIVERS_LICENSE")!;
+    expect(checklistText(item)).toBe("Expired — replacement awaiting verification");
+    await rejectIdentityDocument(tab, r.id, "Wrong document");
+    ov = await portalIdentityOverview(user, client.id);
+    expect(identityAlerts(ov).some((a) => /has expired\. Please upload the renewed license/.test(a.text))).toBe(true);
+    item = (await identityChecklist(client.id))[0].items.find((i) => i.type === "DRIVERS_LICENSE")!;
+    expect(item.state).toBe("EXPIRED");
+  });
+
+  it("an Admin can grant a staff member identity access for all clients without opening the Owner's Office", async () => {
+    const { tab, client, user, me } = await setup();
+    const ss = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes: img(), originalName: "ss.pdf" });
+    const daria = await makeUser("STAFF");
+    const other = await makeUser("STAFF", "Other");
+    await expect(setIdentityAccessAll(other, daria.id, true)).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: daria.id }), { staffId: daria.id })).toBeNull();
+    await setIdentityAccessAll(tab, daria.id, true);
+    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: daria.id }), { staffId: daria.id })).not.toBeNull();
+    expect((await staffIdentityOverview(daria, client.id)).length).toBeGreaterThan(0);
+    await expect(assertOwner(daria)).rejects.toThrow();
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: daria.id } })).role).toBe("STAFF");
+    await setIdentityAccessAll(tab, daria.id, false);
+    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: daria.id }), { staffId: daria.id })).toBeNull();
   });
 });
