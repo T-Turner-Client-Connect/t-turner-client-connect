@@ -25,7 +25,7 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
         <section className="lux-tile rounded-2xl border border-ivory-200 bg-white p-5" data-testid="tile-questionnaire">
           <h2 className="font-serif text-xl font-bold">1. Complete Tax Questionnaire</h2>
           <p className="mb-3 text-sm text-slate-600">Tell us about your year so we can prepare your return.</p>
-          <QuestionnairePicker options={data.questionnaires} />
+          <QuestionnairePicker options={data.questionnaires} uploadHref={`/client/documents?account=${current.clientId}&upload=`} />
         </section>
         <section className="lux-tile flex flex-col rounded-2xl border border-ivory-200 bg-white p-5" data-testid="tile-upload">
           <h2 className="font-serif text-xl font-bold">2. Upload Documents</h2>

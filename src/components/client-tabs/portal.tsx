@@ -19,7 +19,7 @@ import { prisma } from "@/lib/prisma";
 import { contractFormUrl, jotformStatus } from "@/lib/services/contracts";
 import { SIGNATURE_LABELS, signingProviderStatus } from "@/lib/services/signatures";
 import { fmtDate, fmtDateTime } from "@/lib/format";
-import { adminActivationAction, resetActivationLimitAction } from "@/app/actions/signup";
+import { adminActivationAction, privateActivationLinkAction, resetActivationLimitAction } from "@/app/actions/signup";
 import { senderWarning } from "@/lib/services/client-signup";
 
 const PERMS = [
@@ -116,16 +116,19 @@ export async function PortalTab({ clientId, contacts, isAdmin = false }: { clien
             ))}
             {activationEmails.length === 0 && <li className="text-slate-600">No activation emails yet.</li>}
           </ul>
-          {onFile.some((e) => staffSet.has(e)) && <Notice tone="warn">An email on this client&apos;s record belongs to a staff login. Activation links are never sent to staff addresses — correct the client&apos;s email first.</Notice>}
+          {onFile.some((e) => staffSet.has(e)) && (
+            <p className="mb-2 text-xs text-slate-700">An address on this record is also a staff login. That&apos;s fine when the person is both staff and this client — their client portal stays separate from their staff account, and sending needs your confirmation.</p>
+          )}
           {isAdmin && (
             <div className="grid gap-2 sm:grid-cols-2">
               <ActionForm action={adminActivationAction.bind(null, clientId)} confirm="Email a new activation link to this address? Any earlier unused link stops working." className="flex flex-wrap items-end gap-2">
                 <Field label="Send a new activation link to">
                   <select className="input" name="to" defaultValue="">
                     <option value="">Choose an address on file…</option>
-                    {onFile.map((e) => <option key={e} value={e} disabled={staffSet.has(e)}>{e}{staffSet.has(e) ? " (staff address — not allowed)" : ""}</option>)}
+                    {onFile.map((e) => <option key={e} value={e}>{e}{staffSet.has(e) ? " (also a staff login)" : ""}</option>)}
                   </select>
                 </Field>
+                <label className="flex items-center gap-2 text-xs"><input type="checkbox" name="dualRole" /> This person is both staff and this client</label>
                 <Button type="submit" variant="secondary">Send activation link</Button>
               </ActionForm>
               <ActionForm action={resetActivationLimitAction.bind(null, clientId)} className="flex flex-wrap items-end gap-2">
@@ -134,6 +137,22 @@ export async function PortalTab({ clientId, contacts, isAdmin = false }: { clien
                 </Field>
                 <Button type="submit" variant="ghost">Reset limit for this address</Button>
               </ActionForm>
+              <details className="sm:col-span-2">
+                <summary className="cursor-pointer text-sm underline">Email not reaching them? Create a private activation link</summary>
+                <ActionForm action={privateActivationLinkAction.bind(null, clientId)} className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <Field label="For">
+                    <select className="input" name="to" defaultValue="">
+                      <option value="">Choose an address on file…</option>
+                      {onFile.map((e) => <option key={e} value={e}>{e}{staffSet.has(e) ? " (also a staff login)" : ""}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="How you verified their identity"><input className="input" name="how" placeholder="e.g. In person with photo ID" /></Field>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" name="verified" /> I verified this person&apos;s identity directly (not by email or text)</label>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" name="dualRole" /> This person is both staff and this client</label>
+                  <p className="text-xs text-slate-600 sm:col-span-2">Single use, expires in 24 hours, logged. Give it in person or read it by phone. They choose their own password — never ask for passwords or codes.</p>
+                  <div><Button type="submit" variant="secondary">Create private link</Button></div>
+                </ActionForm>
+              </details>
             </div>
           )}
         </div>

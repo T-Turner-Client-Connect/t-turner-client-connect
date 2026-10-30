@@ -21,6 +21,7 @@ import {
   startSignup,
   submitOnboarding,
   uploadOnboardingFile,
+  adminPrivateActivationLink,
   adminSendActivation,
   resetActivationLimit,
 } from "@/lib/services/client-signup";
@@ -149,7 +150,7 @@ export async function activationStepAction(requestId: string, step: "send" | "di
 export async function adminActivationAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    const msg = await adminSendActivation(actor, clientId, str(fd, "to"));
+    const msg = await adminSendActivation(actor, clientId, str(fd, "to"), { confirmDualRole: fd.get("dualRole") === "on" });
     revalidatePath(`/clients/${clientId}`);
     return msg;
   });
@@ -162,4 +163,16 @@ export async function resetActivationLimitAction(clientId: string, _prev: Action
     revalidatePath(`/clients/${clientId}`);
     return n ? `Cleared ${n} recent attempt${n === 1 ? "" : "s"} for this address only. Other limits are unchanged.` : "No recent attempts to clear for this address.";
   });
+}
+
+export async function privateActivationLinkAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  let link: string | null = null;
+  const state = await run(async () => {
+    const r = await adminPrivateActivationLink(actor, clientId, str(fd, "to"), { verified: fd.get("verified") === "on", how: str(fd, "how"), confirmDualRole: fd.get("dualRole") === "on" });
+    link = r.link;
+    revalidatePath(`/clients/${clientId}`);
+    return r.message;
+  });
+  return link && state?.ok ? { ...state, link } : state;
 }
