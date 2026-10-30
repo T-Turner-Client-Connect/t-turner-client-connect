@@ -23,6 +23,7 @@ import {
   Share2,
   Users,
   X,
+  MailWarning,
 } from "lucide-react";
 
 const LINKS = [
@@ -34,6 +35,7 @@ const LINKS = [
   { href: "/social", label: "Social media", icon: Share2, also: [] },
   { href: "/workflows", label: "Workflows", icon: GitBranch, also: [] },
   { href: "/documents", label: "Documents", icon: FolderLock, also: [] },
+  { href: "/notices", label: "Audits & Notices", icon: MailWarning, also: [] },
   { href: "/resources", label: "Resource Center", icon: Landmark, also: [] },
   { href: "/news", label: "News & Countdowns", icon: Newspaper, also: [] },
   { href: "/tasks", label: "Tasks & Calendar", icon: CalendarCheck, also: [] },

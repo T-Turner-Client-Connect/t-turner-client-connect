@@ -1,5 +1,7 @@
 import Link from "next/link";
-import { Notice, PageHeader } from "@/components/ui";
+import { Button, Field, Notice, PageHeader } from "@/components/ui";
+import { ActionForm } from "@/components/action-form";
+import { requestTaxYearAction } from "@/app/actions/notices";
 import { QuestionnairePicker } from "@/components/portal/questionnaire-picker";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
@@ -21,21 +23,34 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
   return (
     <>
       <PageHeader title="My Tax Center" subtitle="Your questionnaire, documents and filings — one step at a time." />
-      <div className="grid gap-4 lg:grid-cols-3" data-testid="tax-center">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4" data-testid="tax-center">
         <section className="lux-tile rounded-2xl border border-ivory-200 bg-white p-5" data-testid="tile-questionnaire">
           <h2 className="font-serif text-xl font-bold">1. Complete Tax Questionnaire</h2>
           <p className="mb-3 text-sm text-slate-600">Tell us about your year so we can prepare your return.</p>
-          <QuestionnairePicker options={data.questionnaires} uploadHref={`/client/documents?account=${current.clientId}&upload=`} />
+          <QuestionnairePicker options={data.questionnaires} uploadHref={`/client/tax-center/upload?account=${current.clientId}&year=`} />
+          <details className="mt-3 text-sm" data-testid="request-year">
+            <summary className="cursor-pointer font-semibold underline">Request Another Tax Year</summary>
+            <ActionForm action={requestTaxYearAction.bind(null, current.clientId)} className="mt-2 space-y-2" resetOnSuccess>
+              <Field label="Tax year"><input className="input" name="year" inputMode="numeric" placeholder="e.g. 2021" /></Field>
+              <Field label="What do you need? (optional)"><input className="input" name="note" placeholder="e.g. I need to file a late return" /></Field>
+              <Button type="submit" variant="secondary">Send request</Button>
+            </ActionForm>
+          </details>
         </section>
         <section className="lux-tile flex flex-col rounded-2xl border border-ivory-200 bg-white p-5" data-testid="tile-upload">
           <h2 className="font-serif text-xl font-bold">2. Upload Documents</h2>
           <p className="flex-1 text-sm text-slate-600">W-2s, 1099s, receipts and letters go into your secure Document Vault for the right tax year.</p>
-          <Link href={`/client/documents${q}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-navy-900 px-4 py-2.5 font-semibold text-white hover:bg-navy-800" data-testid="upload-button">Upload documents →</Link>
+          <Link href={`/client/tax-center/upload${q}${sp.year ? `&year=${sp.year}` : ""}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-navy-900 px-4 py-2.5 font-semibold text-white hover:bg-navy-800" data-testid="upload-button">Upload documents →</Link>
         </section>
         <section className="lux-tile flex flex-col rounded-2xl border border-gold-500 bg-navy-900 p-5 text-white" data-testid="tile-retrieve">
           <h2 className="font-serif text-xl font-bold text-white">3. Retrieve Tax Filings</h2>
           <p className="flex-1 text-sm text-navy-100">Preview, download or print returns our office has saved to your account, 2020 onward.</p>
-          <Link href={`/client/taxes/filings${q}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-gold-500 px-4 py-2.5 font-semibold text-navy-950 hover:bg-gold-300" data-testid="retrieve-button">Retrieve Tax Filings →</Link>
+          <Link href={`/client/taxes/filings${q}${sp.year ? `&year=${sp.year}` : ""}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-gold-500 px-4 py-2.5 font-semibold text-navy-950 hover:bg-gold-300" data-testid="retrieve-button">Retrieve Tax Filings →</Link>
+        </section>
+        <section className="lux-tile flex flex-col rounded-2xl border border-ivory-200 bg-white p-5" data-testid="tile-notice">
+          <h2 className="font-serif text-xl font-bold">4. Upload Audit or Tax Notice</h2>
+          <p className="flex-1 text-sm text-slate-600">Got a letter from the IRS, your state or a city? Send it so we can track it and any response deadline.</p>
+          <Link href={`/client/tax-center/notice${q}${sp.year ? `&year=${sp.year}` : ""}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-navy-900 px-4 py-2.5 font-semibold text-white hover:bg-navy-800" data-testid="notice-button">Upload a notice →</Link>
         </section>
       </div>
 
