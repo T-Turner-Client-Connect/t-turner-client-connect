@@ -11,7 +11,6 @@ import {
   invitePortalAction,
   offlineSignedAction,
   portalAccessAction,
-  resetPortalMfaAction,
   sendSignatureAction,
   verifyContractAction,
 } from "@/app/actions/workspace";
@@ -19,6 +18,8 @@ import { prisma } from "@/lib/prisma";
 import { contractFormUrl, jotformStatus } from "@/lib/services/contracts";
 import { SIGNATURE_LABELS, signingProviderStatus } from "@/lib/services/signatures";
 import { fmtDate, fmtDateTime } from "@/lib/format";
+import type { Actor } from "@/lib/auth/actor";
+import { AccountRecoveryPanel } from "./account-recovery";
 import { adminActivationAction, privateActivationLinkAction, resetActivationLimitAction } from "@/app/actions/signup";
 import { senderWarning } from "@/lib/services/client-signup";
 
@@ -33,7 +34,7 @@ const PERMS = [
 
 const EMAIL_TONE: Record<string, "green" | "gold" | "red" | "gray"> = { DELIVERED: "green", SENT: "gold", FAILED: "red" };
 
-export async function PortalTab({ clientId, contacts, isAdmin = false }: { clientId: string; contacts: Contact[]; isAdmin?: boolean }) {
+export async function PortalTab({ clientId, contacts, isAdmin = false, actor }: { clientId: string; contacts: Contact[]; isAdmin?: boolean; actor?: Actor }) {
   const [activationEmails, clientRow, staffEmails] = await Promise.all([
     prisma.portalInvite.findMany({ where: { clientId, sentByEmail: true }, orderBy: { createdAt: "desc" }, take: 10 }),
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { emailNormalized: true } }),
@@ -90,17 +91,14 @@ export async function PortalTab({ clientId, contacts, isAdmin = false }: { clien
                   </ActionForm>
                 </details>
               )}
-              {g.portalUser.mfaEnabledAt && (
-                <ActionForm action={resetPortalMfaAction.bind(null, clientId, g.portalUserId)} confirm="Reset their two-step verification? Only do this after confirming their identity by phone." className="mt-1">
-                  <Button type="submit" variant="ghost">Reset 2-step (lost phone)</Button>
-                </ActionForm>
-              )}
             </li>
           ))}
         </ul>
         {invites.length > 0 && (
           <ul className="mb-3 text-sm">{invites.map((i) => <li key={i.id}>Invitation pending: {i.name} ({i.email}) · expires {fmtDate(i.expiresAt)}</li>)}</ul>
         )}
+        {isAdmin ? <AccountRecoveryPanel clientId={clientId} actor={actor!} /> : <p className="mb-3 text-xs text-slate-600">Account access and recovery for this client is handled by an Admin.</p>}
+        {isAdmin && (
         <div className="mb-4 rounded-xl border border-ivory-200 p-3" data-testid="activation-emails">
           <h3 className="mb-1 font-semibold">Activation emails</h3>
           <p className="mb-2 text-xs text-slate-600">Sent by email only (never by text). “Sent” means Resend accepted it; “Delivered” appears only when Resend confirms delivery.</p>
@@ -156,6 +154,7 @@ export async function PortalTab({ clientId, contacts, isAdmin = false }: { clien
             </div>
           )}
         </div>
+        )}
         <h3 className="mb-2 font-semibold">Invite to the portal</h3>
         <ActionForm action={invitePortalAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-2" resetOnSuccess>
           <Field label="Name"><input className="input" name="name" required /></Field>
