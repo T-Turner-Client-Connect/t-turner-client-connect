@@ -7,6 +7,7 @@ import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { bookkeepingClients, FREQUENCIES, isReportApprover, PAYROLL_FREQUENCIES, periodLabel, REVIEW_LABELS, reportsAwaitingReview, STAGES, workMonth } from "@/lib/services/bookkeeping-clients";
 import { REPORT_LABELS } from "@/lib/services/documents";
+import { canManageBilling } from "@/lib/services/bookkeeping-profile";
 import { fmtDateTime } from "@/lib/format";
 
 export const metadata = { title: "Bookkeeping Clients" };
@@ -19,7 +20,7 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
   const sp = await searchParams;
   const filters = { assignedTo: sp.staff || null, frequency: sp.schedule || null, missing: sp.missing === "1", overdue: sp.overdue === "1", review: sp.review === "1" };
   const anyFilter = !!(filters.assignedTo || filters.frequency || filters.missing || filters.overdue || filters.review);
-  const [rows, approver, awaiting, staff, suggested] = await Promise.all([
+  const [rows, approver, awaiting, staff, suggested, billingAccess] = await Promise.all([
     bookkeepingClients(filters),
     isReportApprover(user),
     reportsAwaitingReview(),
@@ -28,6 +29,7 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
     prisma.client
       .findMany({ where: { archivedAt: null, OR: [{ bookkeepingProfile: null }, { bookkeepingProfile: { active: false } }] }, select: { id: true, displayName: true, services: true }, orderBy: { displayName: "asc" } })
       .then((cs) => cs.filter((c) => c.services.some((x) => /bookkeep/i.test(x)))),
+    canManageBilling(user),
   ]);
   const shown = rows;
   const monthly = workMonth("MONTHLY");
@@ -40,6 +42,7 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
         actions={
           <div className="flex flex-wrap items-start gap-2">
             <LinkButton href="/bookkeeping/new" data-testid="add-bk-client">+ Add Bookkeeping Client</LinkButton>
+            {billingAccess && <LinkButton href="/bookkeeping/square-billing" variant="secondary" data-testid="square-billing-link">Square billing</LinkButton>}
             <ActionForm action={openAllPeriodsAction} showSuccess>
               <Button type="submit" variant="secondary">Open this month for all clients</Button>
             </ActionForm>

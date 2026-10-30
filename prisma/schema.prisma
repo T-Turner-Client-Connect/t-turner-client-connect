@@ -258,6 +258,7 @@ model Client {
   bookkeepingProfile   BookkeepingProfile?
   bookkeepingAccounts  BookkeepingAccount[]
   bookkeepingBilling   BookkeepingBilling?
+  squareBilling        SquareBillingMember?
   chargeAuthorizations RecurringChargeAuthorization[]
   businessOnboarding   BusinessOnboarding?
   // A person (Personal record) linked to the businesses they own, and back.
@@ -2409,26 +2410,30 @@ model IdentityDocument {
 
 // A client on the monthly/quarterly bookkeeping service.
 model BookkeepingProfile {
-  clientId         String   @id
-  client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  active           Boolean  @default(true)
+  clientId              String   @id
+  client                Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  active                Boolean  @default(true)
   // MONTHLY | QUARTERLY
-  frequency        String   @default("MONTHLY")
-  payroll          Boolean  @default(false)
+  frequency             String   @default("MONTHLY")
+  payroll               Boolean  @default(false)
+  // The client already pays through recurring billing set up in Square
+  // (true for every client on the list when Square linking arrived). While
+  // set, Client Connect never asks them to authorize or save a card again.
+  squareBillingExpected Boolean  @default(false)
   // WEEKLY | BIWEEKLY | SEMIMONTHLY | MONTHLY
-  payrollFrequency String?
-  payrollProvider  String?
+  payrollFrequency      String?
+  payrollProvider       String?
   // Deadlines, set per client by staff (no default): day of the month after
   // the work month when the client's documents are due / reports are due.
   // 31 means the last day of that month. Null = no deadline, never overdue.
-  documentsDueDay  Int?
-  reportsDueDay    Int?
+  documentsDueDay       Int?
+  reportsDueDay         Int?
   // Accounts to collect statements for (e.g. "Regions checking, Amex").
-  accounts         String?
-  notes            String?
-  updatedById      String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  accounts              String?
+  notes                 String?
+  updatedById           String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   // Business information. Entity type and fiscal year end live on Client.
   legalName           String?
@@ -2661,4 +2666,65 @@ model ClientRelationship {
 
   @@unique([personClientId, businessClientId])
   @@index([businessClientId])
+}
+
+/// An existing recurring billing arrangement in Square (a recurring invoice
+/// series), linked read-only. Client Connect never creates, changes or charges
+/// it: amounts, schedules and saved cards stay exactly as set up in Square.
+/// One arrangement can cover several businesses (one combined bill).
+model SquareBillingArrangement {
+  id                        String                @id @default(cuid())
+  squareCustomerId          String
+  squareLocationId          String
+  // The series part of Square's invoice numbers ("54499" in "54499-R-0005").
+  seriesKey                 String
+  customerName              String?
+  companyName               String?
+  title                     String?
+  // From Square's latest invoice in the series.
+  amountCents               Int?
+  // MONTHLY | QUARTERLY | YEARLY | WEEKLY | UNKNOWN (worked out from the due dates)
+  cadence                   String?
+  dueDay                    Int?
+  nextDueDate               DateTime?
+  nextInvoiceStatus         String?
+  lastDueDate               DateTime?
+  lastInvoiceStatus         String?
+  lastPaidDueDate           DateTime?
+  // Square charges the card on file automatically (CARD_ON_FILE) vs. the client pays each invoice.
+  autopay                   Boolean               @default(false)
+  // Card display details exactly as Square returns them. Never the number or CVV.
+  squareCardId              String?
+  cardBrand                 String?
+  cardLast4                 String?
+  cardExpMonth              Int?
+  cardExpYear               Int?
+  invoiceCount              Int                   @default(0)
+  syncedAt                  DateTime?
+  syncError                 String?
+  // Tabitha confirms the authorization already on file in Square; nothing new is asked of the client.
+  authorizationVerifiedAt   DateTime?
+  authorizationVerifiedById String?
+  authorizationNote         String?
+  linkedById                String
+  createdAt                 DateTime              @default(now())
+  updatedAt                 DateTime              @updatedAt
+  members                   SquareBillingMember[]
+
+  @@unique([squareLocationId, seriesKey])
+  @@index([squareCustomerId])
+}
+
+/// A business (or person) covered by a Square billing arrangement. A client
+/// can be on only one arrangement, so the same client is never billed twice.
+model SquareBillingMember {
+  id            String                   @id @default(cuid())
+  arrangementId String
+  arrangement   SquareBillingArrangement @relation(fields: [arrangementId], references: [id], onDelete: Cascade)
+  clientId      String                   @unique
+  client        Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  addedById     String
+  createdAt     DateTime                 @default(now())
+
+  @@index([arrangementId])
 }

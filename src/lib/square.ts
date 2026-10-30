@@ -17,9 +17,15 @@ export function squareSettings() {
     env,
     applicationId: process.env.SQUARE_APPLICATION_ID ?? "",
     locationId: process.env.SQUARE_LOCATION_ID ?? "",
-    apiBase: env === "production" ? "https://connect.squareup.com" : "https://connect.squareupsandbox.com",
+    apiBase: localMock() ?? (env === "production" ? "https://connect.squareup.com" : "https://connect.squareupsandbox.com"),
     sdkUrl: env === "production" ? "https://web.squarecdn.com/v1/square.js" : "https://sandbox.web.squarecdn.com/v1/square.js",
   };
+}
+
+/** SQUARE_API_BASE exists only to point automated tests at a local mock; any other host is ignored so the token can't be sent elsewhere. */
+function localMock() {
+  const base = (process.env.SQUARE_API_BASE ?? "").replace(/\/$/, "");
+  return /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(base) ? base : null;
 }
 
 export class SquareError extends Error {}
