@@ -23,19 +23,20 @@ A permanent section of each client's vault, kept separate from the yearly tax fo
   - Upload once and reuse every year, with no expiration and no reminders.
   - Replacements need a reason (correction, update, name change, unreadable copy) and staff verification.
 - **Social Security cards:**
-  - **The card image itself shows the full Social Security number.** Only the separate text field is limited to the last four digits; screens show `•••-••-1234 · image contains the full number`.
-  - The image opens **view-only (no download)** after a confirmation. Staff must also choose a reason (preparing a return, verifying the card, client request, agency correspondence).
-  - Each opening is written to the audit log (`identity.ss_card_viewed`) along with the access log.
-  - It is never attached to or described in an email or text.
+  - **The card image itself shows the full Social Security number.** Only the separate text field is limited to the last four digits.
+  - Staff screens show `•••-••-1234`; the client portal shows no digits at all.
+  - The card is never attached to or described in an email or text.
 - **Tax checklists** point at the stored document (no copy and no new upload).
   - Shows: "On file — verified", "Received — pending verification", "Expired", or "Not on file".
 
 ## Who can open them
-- **Staff:** Admins, the staff member assigned to the client, and any staff member an Admin has explicitly allowed for all clients.
-  - To allow it: **Settings → Staff accounts → Manage → Identity documents: Allow for all clients**.
-  - This changes nothing else: the person stays Staff, and it never opens the Owner's Office, which is bound to the owner's own account.
-- **Portal account holders:** those with **Identity documents** access. Account owners have it; other authorized contacts don't unless an Admin turns it on in the Portal tab.
-- **Enforcement:** checked on the server for every page, action and download link.
+- **Social Security cards (their images show the full number) and birth certificates: Admins only.**
+  - Only an active user with the Admin role can view, download or print them. Each opening needs a confirmation and a reason, and is written to the audit log (`identity.admin_only_opened`) and the document access log.
+  - Assigned staff can't open them, staff with the license grant can't, and no portal user can (account owners, spouses, dependents, bookkeepers, authorized contacts).
+  - Clients can upload or replace them and see verification status only. They get no preview, link, download or digits; the portal shows "On file with our office".
+  - Enforced on the server for pages, actions and the file route: a direct file link is refused for everyone but an Admin.
+- **Driver's licenses:** Admins, the client's assigned staff member, and staff an Admin allowed for all clients (**Settings → Staff accounts → Manage → Driver's licenses: Allow for all clients**). Portal account holders with the "View own driver's license" permission (owners by default) can view their own.
+- **The Owner's Office is separate.** It stays bound to the owner's own account; no identity setting grants it.
 
 ## Protection
 - **Encrypted before storage.** Identity files are encrypted by the app (AES-256-GCM, key derived from `APP_ENCRYPTION_KEY`) before they reach private storage, and decrypted only for an authorized view or a malware re-scan. Never change `APP_ENCRYPTION_KEY`, or these files can't be opened.

@@ -1,6 +1,7 @@
 import { getCurrentUser, clientIp } from "@/lib/auth/session";
 import { getPortalUser } from "@/lib/portal/session";
 import { authorizeDownload, readDocumentBytes } from "@/lib/services/documents";
+import { isAdminOnlyType } from "@/lib/services/identity";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -18,21 +19,23 @@ export async function GET(req: Request, ctx: { params: Promise<{ token: string }
     null;
   if (!doc) return Response.json({ error: "This link has expired or you don't have access." }, { status: 403 });
   const params = new URL(req.url).searchParams;
-  // Social Security card images show the full number: view only (no download),
-  // and only after the viewer confirms; staff also give a reason, which is audited.
-  const ssCard = doc.category === "IDENTITY" && doc.docType === "SOCIAL_SECURITY_CARD";
-  if (ssCard) {
+  // Admin-only identity documents (Social Security cards — whose images show the
+  // full number — and birth certificates): authorizeDownload already refused
+  // everyone but Admins. Each opening needs a confirmation and a reason, and
+  // is written to the audit log.
+  const adminOnly = doc.category === "IDENTITY" && isAdminOnlyType(doc.docType);
+  if (adminOnly) {
     const purpose = (params.get("purpose") ?? "").trim().slice(0, 120);
-    if (params.get("confirm") !== "1" || (staff && !purpose)) {
-      return Response.json({ error: "Social Security card images open only from the Identity Documents page after you confirm (staff: with a reason)." }, { status: 400 });
+    if (!staff || params.get("confirm") !== "1" || !purpose) {
+      return Response.json({ error: "This document opens only for an Admin, from the Identity Documents page, with a reason." }, { status: 400 });
     }
     await prisma.auditLog.create({
-      data: { actorId: staff?.id ?? null, action: "identity.ss_card_viewed", entityType: "Document", entityId: doc.id, clientId: doc.clientId, details: { purpose: purpose || "client viewed own record", portalUserId: staff ? null : portal?.id ?? null } },
+      data: { actorId: staff.id, action: "identity.admin_only_opened", entityType: "Document", entityId: doc.id, clientId: doc.clientId, details: { type: doc.docType, purpose, download: params.get("download") === "1" } },
     });
   }
   const bytes = await readDocumentBytes(doc.file);
   if (!bytes) return Response.json({ error: "File unavailable" }, { status: 404 });
-  const download = params.get("download") === "1" && !ssCard;
+  const download = params.get("download") === "1";
   await prisma.documentAccessLog.create({
     data: { documentId: doc.id, action: download ? "DOWNLOAD" : "VIEW", staffUserId: staff?.id ?? null, portalUserId: staff ? null : portal?.id ?? null, ip: await clientIp() },
   });

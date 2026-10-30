@@ -42,6 +42,30 @@ export const ID_STATUS = {
 
 export const REMINDER_DAYS = [60, 30, 7] as const;
 
+/**
+ * Social Security cards (whose images show the full number) and birth
+ * certificates are Admin-only: no client, no portal user and no non-Admin
+ * staff member can view, download, print or export them. Clients may upload
+ * or replace them and see verification status only.
+ */
+export const ADMIN_ONLY_TYPES = ["SOCIAL_SECURITY_CARD", "BIRTH_CERTIFICATE"] as const;
+export const isAdminOnlyType = (t: string | null | undefined) => !!t && (ADMIN_ONLY_TYPES as readonly string[]).includes(t);
+
+/** Whether a staff member may open (view/download/print) one identity file. */
+export async function canStaffOpenIdentityFile(actor: { id: string; role: string }, clientId: string, type: string | null) {
+  if (isAdminOnlyType(type)) {
+    const u = await prisma.user.findUnique({ where: { id: actor.id }, select: { role: true, active: true } });
+    return !!u?.active && u.role === "ADMIN";
+  }
+  return canStaffViewIdentity(actor, clientId);
+}
+
+/** Portal users may open only non-restricted identity files (driver's licenses), with identity access. */
+export async function portalMayOpenIdentityFile(portalUserId: string, clientId: string, type: string | null) {
+  if (isAdminOnlyType(type)) return false;
+  return portalMayOpenIdentity(portalUserId, clientId);
+}
+
 /** Masked display for a Social Security card; the full number is never stored. */
 export const maskedSsn = (last4: string | null) => `•••-••-${last4 ?? "••••"}`;
 
@@ -190,6 +214,8 @@ export async function uploadIdentityDocument(who: { staff: Actor } | { portal: P
 export async function verifyIdentityDocument(actor: Actor, id: string, input: { expiresOn?: string | null; last4?: string | null }) {
   const rec = await prisma.identityDocument.findUniqueOrThrow({ where: { id }, include: { person: true } });
   await requireStaff(actor, rec.clientId);
+  // Reviewing means looking at the image, so Admin-only documents need an Admin.
+  if (isAdminOnlyType(rec.type)) assertAdmin(actor);
   if (rec.status !== "PENDING_VERIFICATION") throw new ValidationError("Only documents pending verification can be verified.");
   const doc = await prisma.document.findUniqueOrThrow({ where: { id: rec.documentId } });
   if (doc.scanStatus !== "CLEAN") throw new ValidationError("This file hasn't passed the malware scan yet, so it can't be reviewed.");
@@ -214,6 +240,7 @@ export async function verifyIdentityDocument(actor: Actor, id: string, input: { 
 export async function rejectIdentityDocument(actor: Actor, id: string, reason: string) {
   const rec = await prisma.identityDocument.findUniqueOrThrow({ where: { id } });
   await requireStaff(actor, rec.clientId);
+  if (isAdminOnlyType(rec.type)) assertAdmin(actor);
   if (rec.status !== "PENDING_VERIFICATION") throw new ValidationError("Only documents pending verification can be declined.");
   if (!reason.trim()) throw new ValidationError("Tell the client why (e.g. unreadable, cut off, wrong document).");
   const now = new Date();

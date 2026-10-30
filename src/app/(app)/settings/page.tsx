@@ -85,7 +85,7 @@ export default async function SettingsPage() {
                   </div>
                   <div className="flex gap-1">
                     <Badge tone={s.role === "ADMIN" ? "gold" : "navy"}>{s.role === "ADMIN" ? "Admin" : "Staff"}</Badge>
-                    {s.role !== "ADMIN" && s.identityAccessAll && <Badge tone="amber">Identity docs: all clients</Badge>}
+                    {s.role !== "ADMIN" && s.identityAccessAll && <Badge tone="amber">Licenses: all clients</Badge>}
                     {!s.active && <Badge tone="red">Deactivated</Badge>}
                   </div>
                 </div>
@@ -105,12 +105,12 @@ export default async function SettingsPage() {
                       {s.role !== "ADMIN" && (
                         <ActionForm
                           action={identityAccessAction.bind(null, s.id, !s.identityAccessAll)}
-                          confirm={s.identityAccessAll ? undefined : `Let ${s.name} open identity documents (licenses, birth certificates, Social Security cards) for every client? This does not open your Owner's Office.`}
+                          confirm={s.identityAccessAll ? undefined : `Let ${s.name} open driver's licenses for every client? Social Security cards and birth certificates stay Admin-only, and this does not open your Owner's Office.`}
                           className="rounded-lg bg-ivory-50 p-2 text-sm"
                         >
                           <p className="mb-1">
-                            Identity documents: {s.identityAccessAll ? <strong>all clients</strong> : <>only clients assigned to {s.name.split(" ")[0]}</>}
-                            <span className="block text-xs text-slate-600">Never includes the Owner&apos;s Office.</span>
+                            Driver&apos;s licenses: {s.identityAccessAll ? <strong>all clients</strong> : <>only clients assigned to {s.name.split(" ")[0]}</>}
+                            <span className="block text-xs text-slate-600">Social Security cards and birth certificates are Admin-only. Never includes the Owner&apos;s Office.</span>
                           </p>
                           <Button type="submit" variant="ghost">{s.identityAccessAll ? "Limit to assigned clients" : "Allow for all clients"}</Button>
                         </ActionForm>

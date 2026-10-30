@@ -265,14 +265,15 @@ export async function authorizeDownload(token: string, viewer: { staffId?: strin
   if (!doc || doc.deletedAt) return null;
   // Quarantine: nobody — staff or client — downloads a file until it has scanned clean.
   if (doc.scanStatus !== "CLEAN") return null;
-  // Identity documents: Admins, the assigned staff member, and account holders granted identity access.
+  // Identity documents: SS cards and birth certificates are Admin-only; licenses also open for assigned/granted staff and account holders with identity access.
   if (doc.category === "IDENTITY") {
-    const { canStaffViewIdentity, portalMayOpenIdentity } = await import("./identity");
+    const { canStaffOpenIdentityFile, portalMayOpenIdentityFile } = await import("./identity");
     if (viewer.staffId) {
       const staff = await prisma.user.findUnique({ where: { id: viewer.staffId }, select: { id: true, role: true, active: true } });
-      return staff?.active && (await canStaffViewIdentity(staff, doc.clientId)) ? doc : null;
+      return staff?.active && (await canStaffOpenIdentityFile(staff, doc.clientId, doc.docType)) ? doc : null;
     }
-    return viewer.portalUserId && (await portalMayOpenIdentity(viewer.portalUserId, doc.clientId)) ? doc : null;
+    // Social Security cards and birth certificates never open for portal users.
+    return viewer.portalUserId && (await portalMayOpenIdentityFile(viewer.portalUserId, doc.clientId, doc.docType)) ? doc : null;
   }
   if (viewer.portalUserId) {
     if (doc.visibility !== "PUBLISHED") return null;

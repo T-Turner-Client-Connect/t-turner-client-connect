@@ -9,7 +9,7 @@ export async function IdentityStaff({ clientId, user }: { clientId: string; user
   if (!(await canStaffViewIdentity(user, clientId))) {
     return (
       <div id="identity" className="scroll-mt-6">
-        <Notice title="Identity Documents">Only an Admin or this client&apos;s assigned staff member can open identity documents.</Notice>
+        <Notice title="Identity Documents">Only an Admin or this client&apos;s assigned staff member can open this section. Social Security cards and birth certificates are Admin-only.</Notice>
       </div>
     );
   }
@@ -18,7 +18,7 @@ export async function IdentityStaff({ clientId, user }: { clientId: string; user
   return (
     <div id="identity" className="scroll-mt-6">
       <Card title={<>Identity Documents{pending > 0 && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">{pending} pending verification</span>}</>}>
-        <IdentitySection overview={overview} mode="staff" clientId={clientId} linkFor={(id) => `/api/documents/${downloadToken(id, { staffId: user.id })}`} />
+        <IdentitySection overview={overview} mode="staff" clientId={clientId} viewerIsAdmin={user.role === "ADMIN"} linkFor={(id) => `/api/documents/${downloadToken(id, { staffId: user.id })}`} />
       </Card>
     </div>
   );

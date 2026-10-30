@@ -26,7 +26,7 @@ const PERMS = [
   ["canViewBookkeeping", "Bookkeeping"],
   ["canViewTax", "Tax documents"],
   ["canViewContracts", "Contracts"],
-  ["canViewIdentity", "Identity documents (Admin)"],
+  ["canViewIdentity", "View own driver's license (Admin)"],
 ] as const;
 
 export async function PortalTab({ clientId, contacts }: { clientId: string; contacts: Contact[] }) {

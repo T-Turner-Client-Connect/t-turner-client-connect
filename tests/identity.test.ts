@@ -123,28 +123,51 @@ describe("identity documents", () => {
     expect((await runIdentityReminders(new Date(Date.now() + 15 * 86400_000))).reminded).toBe(0);
   });
 
-  it("only Admins, the assigned staff member and account holders with identity access can open them", async () => {
+  it("Social Security cards and birth certificates open only for Admins — never assigned staff or any portal user", async () => {
     const { tab, client, user, me } = await setup();
+    const kid = await addPerson({ portal: user }, client.id, { role: "DEPENDENT", name: "Leo Diaz" });
     const ss = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes: img(), originalName: "ss.pdf" });
-    const daria = await makeUser("STAFF");
-    await expect(staffIdentityOverview(daria, client.id)).rejects.toBeInstanceOf(ForbiddenError);
-    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: daria.id }), { staffId: daria.id })).toBeNull();
-    await prisma.client.update({ where: { id: client.id }, data: { assignedToId: daria.id } });
-    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: daria.id }), { staffId: daria.id })).not.toBeNull();
-    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: tab.id }), { staffId: tab.id })).not.toBeNull();
-    expect(await authorizeDownload(downloadToken(ss.documentId, { portalUserId: user.id }), { portalUserId: user.id })).not.toBeNull();
+    const bc = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: kid.id, type: "BIRTH_CERTIFICATE", bytes: img(), originalName: "bc.pdf" });
+    const dl = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "DRIVERS_LICENSE", expiresOn: inDays(400), bytes: img(), originalName: "dl.pdf" });
+    const open = (docId: string, v: { staffId?: string; portalUserId?: string }) => authorizeDownload(downloadToken(docId, v), v);
 
-    // An authorized contact without identity access (the default) can't, and another client never can.
+    // The uploading client (account owner with identity access) can't retrieve them with a direct link.
+    expect(await open(ss.documentId, { portalUserId: user.id })).toBeNull();
+    expect(await open(bc.documentId, { portalUserId: user.id })).toBeNull();
+    expect(await open(dl.documentId, { portalUserId: user.id })).not.toBeNull(); // licenses unchanged
+    // Neither can a bookkeeper/authorized contact, even when given identity access.
     const { token } = await invitePortalUser(tab, client.id, { email: "bookkeeper@example.com", name: "Bo", role: "AUTHORIZED_CONTACT" });
     const bo = await acceptPortalInvite(token!, "Client-Pass-5678");
-    expect(await authorizeDownload(downloadToken(ss.documentId, { portalUserId: bo.id }), { portalUserId: bo.id })).toBeNull();
-    await expect(portalIdentityOverview({ id: bo.id, name: bo.name, email: bo.email }, client.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await prisma.portalAccess.updateMany({ where: { portalUserId: bo.id }, data: { canViewIdentity: true } });
+    expect(await open(ss.documentId, { portalUserId: bo.id })).toBeNull();
+    expect(await open(bc.documentId, { portalUserId: bo.id })).toBeNull();
+
+    // Assigned staff — and staff granted identity access for all clients — are refused; only Admins open them.
+    const daria = await makeUser("STAFF");
+    await prisma.client.update({ where: { id: client.id }, data: { assignedToId: daria.id } });
+    await setIdentityAccessAll(tab, daria.id, true);
+    expect(await open(ss.documentId, { staffId: daria.id })).toBeNull();
+    expect(await open(bc.documentId, { staffId: daria.id })).toBeNull();
+    expect(await open(dl.documentId, { staffId: daria.id })).not.toBeNull();
+    await expect(verifyIdentityDocument(daria, ss.id, {})).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(rejectIdentityDocument(daria, bc.id, "x")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await open(ss.documentId, { staffId: tab.id })).not.toBeNull();
+    expect(await open(bc.documentId, { staffId: tab.id })).not.toBeNull();
+    // A deactivated Admin can't.
+    await prisma.user.update({ where: { id: tab.id }, data: { active: false } });
+    expect(await open(ss.documentId, { staffId: tab.id })).toBeNull();
+    await prisma.user.update({ where: { id: tab.id }, data: { active: true } });
+
+    // Clients still upload replacements and see status — and never another client's records.
     const other = await createClient(tab, { firstName: "Zed", lastName: "Z", clientType: "INDIVIDUAL", status: "ACTIVE" });
     const zedPerson = await ensureClientPerson(other.id);
     await expect(uploadIdentityDocument({ portal: user }, { clientId: other.id, personId: zedPerson.id, type: "BIRTH_CERTIFICATE", bytes: img(), originalName: "x.pdf" })).rejects.toBeInstanceOf(ForbiddenError);
-    // Staff without identity rights can't verify, and only an Admin can grant identity access.
-    await prisma.client.update({ where: { id: client.id }, data: { assignedToId: null } });
-    await expect(verifyIdentityDocument(daria, ss.id, {})).rejects.toBeInstanceOf(ForbiddenError);
+    await verifyIdentityDocument(tab, ss.id, { last4: "6789" });
+    const slot = (await portalIdentityOverview(user, client.id))[0].slots.find((x) => x.type === "SOCIAL_SECURITY_CARD")!;
+    expect(slot.current!.status).toBe("VERIFIED");
+    await expect(uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", replacementReason: "Name change", bytes: img(), originalName: "ss2.pdf" })).resolves.toBeTruthy();
+    // Kept out of yearly lists and message attachments.
+    expect((await portalDocuments(user, client.id)).some((d) => d.category === "IDENTITY")).toBe(false);
   });
 
   it("are encrypted before storage and still open for authorized viewers", async () => {
@@ -192,19 +215,19 @@ describe("identity documents", () => {
     expect(item.state).toBe("EXPIRED");
   });
 
-  it("an Admin can grant a staff member identity access for all clients without opening the Owner's Office", async () => {
+  it("an Admin can grant a staff member license access for all clients without opening the Owner's Office", async () => {
     const { tab, client, user, me } = await setup();
-    const ss = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes: img(), originalName: "ss.pdf" });
+    const dl = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "DRIVERS_LICENSE", expiresOn: inDays(400), bytes: img(), originalName: "dl.pdf" });
     const daria = await makeUser("STAFF");
     const other = await makeUser("STAFF", "Other");
     await expect(setIdentityAccessAll(other, daria.id, true)).rejects.toBeInstanceOf(ForbiddenError);
-    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: daria.id }), { staffId: daria.id })).toBeNull();
+    expect(await authorizeDownload(downloadToken(dl.documentId, { staffId: daria.id }), { staffId: daria.id })).toBeNull();
     await setIdentityAccessAll(tab, daria.id, true);
-    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: daria.id }), { staffId: daria.id })).not.toBeNull();
+    expect(await authorizeDownload(downloadToken(dl.documentId, { staffId: daria.id }), { staffId: daria.id })).not.toBeNull();
     expect((await staffIdentityOverview(daria, client.id)).length).toBeGreaterThan(0);
     await expect(assertOwner(daria)).rejects.toThrow();
     expect((await prisma.user.findUniqueOrThrow({ where: { id: daria.id } })).role).toBe("STAFF");
     await setIdentityAccessAll(tab, daria.id, false);
-    expect(await authorizeDownload(downloadToken(ss.documentId, { staffId: daria.id }), { staffId: daria.id })).toBeNull();
+    expect(await authorizeDownload(downloadToken(dl.documentId, { staffId: daria.id }), { staffId: daria.id })).toBeNull();
   });
 });

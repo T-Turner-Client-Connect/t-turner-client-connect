@@ -11,7 +11,7 @@ export default async function IdentityPage({ searchParams }: { searchParams: Pro
   const user = await requirePortalUser();
   const { current } = await resolveAccount(user.id, (await searchParams).account);
   if (!current) return null;
-  const header = <PageHeader title="Identity Documents" subtitle="Driver's licenses, birth certificates and Social Security cards for you, your spouse and dependents." />;
+  const header = <PageHeader title="Identity Documents" subtitle="Upload or replace driver's licenses, birth certificates and Social Security cards for you, your spouse and dependents. For your protection, Social Security cards and birth certificates can't be viewed or downloaded in the portal after upload — you'll see their verification status." />;
   if (!current.canViewIdentity) return <>{header}<Notice>Identity documents aren&apos;t included in your access to this account. The account owner can ask our office to add it.</Notice></>;
   const overview = await portalIdentityOverview(user, current.clientId);
   const alerts = identityAlerts(overview);
