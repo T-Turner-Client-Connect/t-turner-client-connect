@@ -63,7 +63,10 @@ export const isReport = (d: { category: string; reportType: string | null }) => 
 
 // --- Profiles --------------------------------------------------------------------
 
-export async function saveProfile(actor: Actor, clientId: string, input: { active: boolean; frequency: string; payroll: boolean; payrollFrequency?: string | null; payrollProvider?: string | null; accounts?: string | null; notes?: string | null; assignedToId?: string | null }) {
+export async function saveProfile(actor: Actor, clientId: string, input: { active: boolean; frequency: string; payroll: boolean; payrollFrequency?: string | null; payrollProvider?: string | null; accounts?: string | null; notes?: string | null; assignedToId?: string | null } & Deadlines) {
+  for (const d of [input.documentsDueDay, input.reportsDueDay]) {
+    if (d != null && (!Number.isInteger(d) || d < 1 || d > 31)) throw new ValidationError("Due days must be 1–31 (31 = last day of the month).");
+  }
   if (!(input.frequency in FREQUENCIES)) throw new ValidationError("Choose monthly or quarterly.");
   if (input.payroll && input.payrollFrequency && !(input.payrollFrequency in PAYROLL_FREQUENCIES)) throw new ValidationError("Choose how often payroll runs.");
   const client = await prisma.client.findUnique({ where: { id: clientId } });
@@ -76,6 +79,8 @@ export async function saveProfile(actor: Actor, clientId: string, input: { activ
     payrollProvider: input.payroll ? input.payrollProvider?.trim().slice(0, 80) || null : null,
     accounts: input.accounts?.trim().slice(0, 300) || null,
     notes: input.notes?.trim().slice(0, 1000) || null,
+    ...(input.documentsDueDay !== undefined ? { documentsDueDay: input.documentsDueDay } : {}),
+    ...(input.reportsDueDay !== undefined ? { reportsDueDay: input.reportsDueDay } : {}),
     updatedById: actor.id,
   };
   await prisma.bookkeepingProfile.upsert({ where: { clientId }, create: { clientId, ...data }, update: data });
@@ -101,12 +106,17 @@ export const isQuarterEnd = (month: number) => month % 3 === 0;
 export const reportsDue = (frequency: string, month: number) => frequency !== "QUARTERLY" || isQuarterEnd(month);
 
 /**
- * Due dates used for "overdue": client documents by the 10th of the
- * following month; reports delivered by the end of the following month.
+ * Due dates come from each client's settings (day of the month after the
+ * work month; 31 = last day). There is no built-in default: a client with no
+ * day set has no deadline and is never shown as overdue for it.
  */
-export function periodDeadlines(year: number, month: number) {
-  return { documents: new Date(year, month, 10, 23, 59), reports: new Date(year, month + 1, 0, 23, 59) };
+export function dueOn(year: number, month: number, day: number | null | undefined) {
+  if (!day) return null;
+  const last = new Date(year, month + 1, 0).getDate(); // last day of the following month
+  return new Date(year, month, Math.min(day, last), 23, 59);
 }
+
+export type Deadlines = { documentsDueDay?: number | null; reportsDueDay?: number | null };
 
 export const periodLabel = (frequency: string, year: number, month: number) => `${MONTHS[month - 1]} ${year}${frequency === "QUARTERLY" && isQuarterEnd(month) ? ` (Q${month / 3} close)` : ""}`;
 
@@ -239,7 +249,7 @@ export function checklistView(p: PeriodFull) {
   });
 }
 
-export function periodSummary(p: PeriodFull, frequency = "MONTHLY", now = new Date()) {
+export function periodSummary(p: PeriodFull, frequency = "MONTHLY", now = new Date(), deadlines: Deadlines = {}) {
   const items = checklistView(p);
   const reports = p.documents.filter(isReport);
   const missing = items.filter((i) => i.state === "WAITING_CLIENT").length + p.requests.filter((r) => r.status === "OPEN").length;
@@ -251,11 +261,11 @@ export function periodSummary(p: PeriodFull, frequency = "MONTHLY", now = new Da
   else if (!reports.length && !items.some((i) => i.state === "RECEIVED") && items.some((i) => i.state === "WAITING_CLIENT")) stage = "CLIENT_DOCUMENTS";
   else if (!reportsDue(frequency, p.month) && items.every((i) => i.state !== "WAITING_CLIENT" && i.state !== "STAFF_TODO")) stage = "COLLECTED";
   else stage = "STAFF_WORK";
-  const due = periodDeadlines(p.year, p.month);
+  const due = { documents: dueOn(p.year, p.month, deadlines.documentsDueDay), reports: reportsDue(frequency, p.month) ? dueOn(p.year, p.month, deadlines.reportsDueDay) : null };
   const overdue: string[] = [];
-  if (items.some((i) => i.state === "WAITING_CLIENT") && now > due.documents) overdue.push("Client documents overdue");
+  if (due.documents && items.some((i) => i.state === "WAITING_CLIENT") && now > due.documents) overdue.push("Client documents overdue");
   if (p.requests.some((r) => r.status === "OPEN" && r.dueAt && r.dueAt < now)) overdue.push("Requested item past due");
-  if (reportsDue(frequency, p.month) && stage !== "DELIVERED" && now > due.reports) overdue.push("Reports overdue");
+  if (due.reports && stage !== "DELIVERED" && now > due.reports) overdue.push("Reports overdue");
   return { items, reports, missing, done, total: items.length, stage, overdue, due };
 }
 
@@ -274,7 +284,7 @@ export async function bookkeepingClients(f: ListFilters = {}) {
   for (const p of profiles) {
     const { year, month } = workMonth(p.frequency, now);
     const recent = await prisma.bookkeepingPeriod.findMany({ where: { clientId: p.clientId }, orderBy: [{ year: "desc" }, { month: "desc" }], take: 6, select: { id: true, year: true, month: true } });
-    const summaries = await Promise.all(recent.map(async (r) => ({ ...r, summary: periodSummary(await loadPeriod(r.id), p.frequency, now) })));
+    const summaries = await Promise.all(recent.map(async (r) => ({ ...r, summary: periodSummary(await loadPeriod(r.id), p.frequency, now, p) })));
     const current = summaries.find((r) => r.year === year && r.month === month) ?? null;
     const summary = current?.summary ?? null;
     // Earlier months still not finished also count as overdue.
@@ -298,8 +308,9 @@ export async function bookkeepingWorkspace(clientId: string, periodId?: string |
   const chosen = periods.find((p) => p.id === periodId) ?? periods[0] ?? null;
   const period = chosen ? await loadPeriod(chosen.id) : null;
   const freq = profile?.frequency ?? "MONTHLY";
-  const prior = await Promise.all(periods.map(async (p) => ({ ...p, summary: periodSummary(await loadPeriod(p.id), freq) })));
-  return { client, profile, periods: prior, period, summary: period ? periodSummary(period, freq) : null };
+  const dl = { documentsDueDay: profile?.documentsDueDay ?? null, reportsDueDay: profile?.reportsDueDay ?? null };
+  const prior = await Promise.all(periods.map(async (p) => ({ ...p, summary: periodSummary(await loadPeriod(p.id), freq, new Date(), dl) })));
+  return { client, profile, periods: prior, period, summary: period ? periodSummary(period, freq, new Date(), dl) : null };
 }
 
 /** Reports waiting for the owner, across all clients. */

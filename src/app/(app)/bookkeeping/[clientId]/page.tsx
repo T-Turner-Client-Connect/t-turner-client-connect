@@ -104,6 +104,12 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
               <Field label="Payroll frequency"><select className="input" name="payrollFrequency" defaultValue={profile?.payrollFrequency ?? ""}><option value="">—</option>{Object.entries(PAYROLL_FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
               <Field label="Payroll provider"><input className="input" name="payrollProvider" defaultValue={profile?.payrollProvider ?? ""} /></Field>
               <Field label="Accounts to collect"><input className="input" name="accounts" defaultValue={profile?.accounts ?? ""} /></Field>
+              <Field label="Documents due (month after)" hint="Leave blank for no deadline.">
+                <select className="input" name="documentsDueDay" defaultValue={profile?.documentsDueDay ?? ""}><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
+              </Field>
+              <Field label="Reports due (month after)" hint="Quarterly clients: applies to quarter-end months.">
+                <select className="input" name="reportsDueDay" defaultValue={profile?.reportsDueDay ?? ""}><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
+              </Field>
               <Field label="Notes"><textarea className="input" name="notes" rows={2} defaultValue={profile?.notes ?? ""} /></Field>
               <Field label="Status"><select className="input" name="active" defaultValue={String(profile?.active ?? true)}><option value="true">Active</option><option value="false">Paused</option></select></Field>
               <Button type="submit" variant="secondary">Save</Button>
@@ -121,7 +127,10 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                   <p className="text-xs uppercase tracking-[0.2em] text-gold-300">{label}</p>
                   <p className="font-serif text-2xl font-bold text-white">{STAGES[summary.stage].label}</p>
                   <p className="text-sm text-navy-100">{summary.done} of {summary.total} checklist items · {summary.missing} missing from the client · client status: {PERIOD_LABELS[period.status]}</p>
-                  <p className="text-xs text-navy-100">Documents due {fmtDate(summary.due.documents)}{reportsDue(freq, period.month) ? ` · reports due ${fmtDate(summary.due.reports)}` : " · reports at quarter end"}</p>
+                  <p className="text-xs text-navy-100">
+                    {summary.due.documents ? `Documents due ${fmtDate(summary.due.documents)}` : "No document deadline set"}
+                    {reportsDue(freq, period.month) ? (summary.due.reports ? ` · reports due ${fmtDate(summary.due.reports)}` : " · no report deadline set") : " · reports at quarter end"}
+                  </p>
                   {summary.overdue.length > 0 && <p className="mt-1 inline-block rounded-full bg-red-600 px-3 py-0.5 text-xs font-semibold text-white" data-testid="overdue">{summary.overdue.join(" · ")}</p>}
                 </div>
                 <ActionForm action={periodStatusAction.bind(null, clientId, period.id)} className="flex flex-wrap items-end gap-2 text-navy-900">

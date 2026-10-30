@@ -13,7 +13,10 @@
   - Delivered
   - Collected (quarterly, report at quarter end)
   - Month not opened
-- **Overdue:** client documents still missing after the 10th of the following month, a requested item past its due date, or reports not delivered by the end of the following month. Earlier unfinished months count too.
+- **Overdue:** uses each client's own deadlines, set in their **Service details**: "Documents due" and "Reports due", each a day of the month after the work month (Day 1–30, or Last day).
+  - **There is no default.** A client with no due day set is never marked overdue for it.
+  - A requested item is overdue after its own due date.
+  - Earlier unfinished months count too.
 - **Open this month for all clients** creates last month's workspace and checklist for every active client.
 - Tabitha sees **Awaiting your review** at the top.
 - **Add a client:** use **Add a bookkeeping client** (schedule, payroll, accounts; only an Admin changes the assigned staff member), or use **Suggested** for clients whose Services already include bookkeeping.

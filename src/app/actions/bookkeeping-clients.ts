@@ -25,6 +25,8 @@ function profileInput(fd: FormData) {
     payrollProvider: str(fd, "payrollProvider") || null,
     accounts: str(fd, "accounts") || null,
     notes: str(fd, "notes") || null,
+    ...(fd.has("documentsDueDay") ? { documentsDueDay: str(fd, "documentsDueDay") ? Number(str(fd, "documentsDueDay")) : null } : {}),
+    ...(fd.has("reportsDueDay") ? { reportsDueDay: str(fd, "reportsDueDay") ? Number(str(fd, "reportsDueDay")) : null } : {}),
     ...(fd.has("assignedToId") ? { assignedToId: str(fd, "assignedToId") || null } : {}),
   };
 }
