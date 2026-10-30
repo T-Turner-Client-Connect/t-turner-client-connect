@@ -47,15 +47,24 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
   const doneCount = status?.steps.filter((s) => s.done).length ?? 0;
   const pill = status ? (status.steps.find((s) => !s.done)?.value ?? "Complete") : "Not started";
   const q12 = data.questionnaires.find((x) => x.year === selected);
-  const firstQYear = years[0];
   const next = nextDeadline(data);
   const req = data.requests[0];
 
-  const questionnaireHref = readOnly ? "#" : q12?.url && !q12.completed ? q12.url : href("/client/tax-center", `year=${selected}`);
+  // A year without a questionnaire link is "Coming soon" — never another year's form.
+  const qAvailable = !!q12?.url && !q12.completed;
   const actions = [
-    { title: "Complete Tax Questionnaire", sub: q12?.completed ? `Completed for ${selected}` : `Secure Jotform intake · ${firstQYear} – ${thisYear}`, icon: ClipboardList, href: questionnaireHref, external: !!(q12?.url && !q12.completed && !readOnly), tone: "gold", testId: "action-questionnaire" },
-    { title: "Upload Documents", sub: "Send your tax documents securely", icon: CloudUpload, href: href("/client/documents", `upload=${selected}`), tone: "navy", testId: "upload-button" },
-    { title: "Retrieve Tax Filings", sub: `Available filings · 2020 – ${thisYear}`, icon: FileText, href: href("/client/taxes/filings", `year=${selected}`), tone: "gold", testId: "retrieve-button" },
+    {
+      title: "Complete Tax Questionnaire",
+      sub: q12?.completed ? `Completed for ${selected}` : qAvailable ? `${selected} questionnaire · secure Jotform` : `${selected} questionnaire coming soon`,
+      icon: ClipboardList,
+      href: q12?.completed ? href("/client/tax-center", `year=${selected}`) : qAvailable ? q12!.url! : null,
+      external: qAvailable,
+      tone: "gold",
+      testId: "action-questionnaire",
+    },
+    { title: "Upload Documents", sub: `Send ${selected} tax documents securely`, icon: CloudUpload, href: href("/client/tax-center/upload", `year=${selected}`), external: false, tone: "navy", testId: "upload-button" },
+    { title: "Retrieve Tax Filings", sub: `Available filings · 2020 – ${thisYear}`, icon: FileText, href: href("/client/taxes/filings", `year=${selected}`), external: false, tone: "gold", testId: "retrieve-button" },
+    { title: "Upload Audit or Tax Notice", sub: "IRS, state or local letters", icon: Mail, href: href("/client/tax-center/notice", `year=${selected}`), external: false, tone: "navy", testId: "notice-button" },
   ];
 
   const slides: Slide[] = [
@@ -111,8 +120,29 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
-            {actions.map((a) => (
+          {readOnly && (
+            <p className="mb-3 rounded-lg border border-gold-500 bg-gold-100 px-3 py-2 text-sm text-navy-950" data-testid="preview-note">
+              Staff preview is read-only: these buttons are shown as the client sees them but don&apos;t open here. To upload for the client, use their record&apos;s Documents tab.
+            </p>
+          )}
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {actions.map((a) =>
+              readOnly || !a.href ? (
+                <div
+                  key={a.title}
+                  aria-disabled="true"
+                  title={readOnly ? "Read-only staff preview" : undefined}
+                  className={`flex cursor-not-allowed items-center gap-4 rounded-xl px-5 py-4 text-white opacity-60 shadow-md ${a.tone === "navy" ? "bg-gradient-to-br from-navy-900 to-navy-950" : "bg-gradient-to-br from-gold-500 to-gold-600"}`}
+                  data-testid={a.testId}
+                  data-disabled="true"
+                >
+                  <a.icon className="size-9 shrink-0 opacity-95" aria-hidden />
+                  <span className="flex-1">
+                    <span className="block font-serif text-[17px] font-bold leading-snug">{a.title}</span>
+                    <span className="block text-xs text-white/90">{readOnly ? "Disabled in staff preview" : a.sub}</span>
+                  </span>
+                </div>
+              ) : (
               <Link
                 key={a.title}
                 href={a.href}
@@ -127,7 +157,8 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
                 </span>
                 <ChevronRight className="size-5 transition group-hover:translate-x-0.5" aria-hidden />
               </Link>
-            ))}
+              ),
+            )}
           </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">

@@ -260,6 +260,7 @@ model Client {
   bookkeepingBilling   BookkeepingBilling?
   chargeAuthorizations RecurringChargeAuthorization[]
   businessOnboarding   BusinessOnboarding?
+  noticeCases          NoticeCase[]
   businessInfoChanges  BusinessInfoChange[]
   taxYearProgress      TaxYearProgress[]
 
@@ -1023,6 +1024,9 @@ model Document {
   reportAsOf             DateTime?
   // A statement or reconciliation for one bank/card account.
   bookkeepingAccountId   String?
+  // An audit or tax notice case this document belongs to.
+  noticeCaseId           String?
+  noticeCase             NoticeCase?          @relation(fields: [noticeCaseId], references: [id], onDelete: SetNull)
   // Malware-scan attempts: when the file was last checked, how many tries,
   // and why the last try didn't finish (scanner missing, no answer, rejected).
   scanAttempts           Int                  @default(0)
@@ -2601,4 +2605,33 @@ model BusinessInfoChange {
   reviewNote           String?
 
   @@index([clientId, status])
+}
+
+/// An audit or tax notice a client received (IRS, state or local), with its
+/// documents in the client's yearly vault. RECEIVED means only that our office
+/// has it — not that it has been reviewed or answered.
+model NoticeCase {
+  id                String     @id @default(cuid())
+  clientId          String
+  client            Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Null = the client wasn't sure of the tax year.
+  taxYear           Int?
+  // IRS | STATE | LOCAL | NOT_SURE
+  agency            String
+  agencyDetail      String?
+  receivedOn        DateTime?
+  // Null = not known yet.
+  responseDueOn     DateTime?
+  clientMessage     String?
+  // RECEIVED | UNDER_REVIEW | RESPONDED | CLOSED
+  status            String     @default("RECEIVED")
+  createdByPortalId String?
+  createdByStaffId  String?
+  updatedById       String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  documents         Document[]
+
+  @@index([clientId, taxYear])
+  @@index([status, responseDueOn])
 }
