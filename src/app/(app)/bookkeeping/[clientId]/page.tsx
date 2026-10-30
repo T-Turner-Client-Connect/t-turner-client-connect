@@ -4,14 +4,14 @@ import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader } from "@/components/ui";
 import {
-  checklistItemAction, classifyDocumentAction, deliverApprovedAction, openPeriodForClientAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
+  checklistItemAction, classifyDocumentAction, coethaLinkAction, deliverApprovedAction, openPeriodForClientAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
 } from "@/app/actions/bookkeeping-clients";
 import { periodStatusAction, requestDocumentAction, staffMessageAction } from "@/app/actions/workspace";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { BK_DOC_TYPES, bookkeepingWorkspace, FREQUENCIES, HISTORY_LABELS, isReportApprover, PAYROLL_FREQUENCIES, periodLabel, reportCaption, reportHistory, reportsDue, REVIEW_LABELS, STAGES, workMonth } from "@/lib/services/bookkeeping-clients";
 import { BASIS, PERIOD_TYPES, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
-import { accountLabel } from "@/lib/services/bookkeeping-profile";
+import { accountLabel, canOpenCoetha } from "@/lib/services/bookkeeping-profile";
 import { packetsInPeriod } from "@/lib/services/financial-packet";
 import { MONTHS, PERIOD_LABELS } from "@/lib/services/bookkeeping";
 import { downloadToken, REPORT_LABELS } from "@/lib/services/documents";
@@ -76,6 +76,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
   const packets = period ? await packetsInPeriod(period.id, { staff: true }) : [];
   const histories = new Map(await Promise.all((summary?.reports ?? []).map(async (d) => [d.id, await reportHistory(d.id)] as const)));
   const isAdminUser = user.role === "ADMIN";
+  const canCoetha = await canOpenCoetha(user, clientId);
   const health = await scanHealth();
   const otherThreads = await prisma.conversation.findMany({ where: { clientId, periodId: null }, orderBy: { lastMessageAt: "desc" }, take: 5, select: { id: true, subject: true, awaitingStaff: true, lastMessageAt: true } });
 
@@ -118,6 +119,36 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
 
       <div className="grid gap-4 lg:grid-cols-4">
         <aside className="space-y-4 lg:col-span-1">
+          <Card title="Work with Coetha">
+            <div className="space-y-2 text-sm" data-testid="coetha">
+              <p className="text-xs text-slate-600">This business&apos;s own Claude Project or conversation. Opens Claude in a new tab, using <strong>your own</strong> Claude access. Nothing syncs automatically — documents and answers stay in Claude unless you upload or copy them here.</p>
+              {profile?.coethaUrl ? (
+                canCoetha ? (
+                  <a href={profile.coethaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center rounded-xl bg-navy-900 px-4 py-2.5 font-semibold text-white hover:bg-navy-800" data-testid="coetha-open">Open in Claude ↗</a>
+                ) : (
+                  <p className="text-slate-600">Available to Admins and this client&apos;s assigned staff member.</p>
+                )
+              ) : (
+                <p className="text-slate-600" data-testid="coetha-none">No Coetha link saved for {client.displayName} yet.</p>
+              )}
+              {profile?.coethaUpdatedAt && <p className="text-xs text-slate-500">Link updated {fmtDateTime(profile.coethaUpdatedAt)}</p>}
+              {approver && profile && (
+                <details>
+                  <summary className="cursor-pointer text-xs underline">{profile.coethaUrl ? "Change or remove link (Tabitha)" : "Add link (Tabitha)"}</summary>
+                  <ActionForm action={coethaLinkAction.bind(null, clientId, false)} className="mt-2 space-y-2">
+                    <Field label="Claude Project or conversation link"><input className="input" name="url" type="url" placeholder="https://claude.ai/project/…" defaultValue={profile.coethaUrl ?? ""} /></Field>
+                    <Button type="submit" variant="secondary">Save link</Button>
+                  </ActionForm>
+                  {profile.coethaUrl && (
+                    <ActionForm action={coethaLinkAction.bind(null, clientId, true)} confirm="Remove this client's Coetha link?" className="mt-2">
+                      <Button type="submit" variant="ghost">Remove link</Button>
+                    </ActionForm>
+                  )}
+                  <p className="mt-1 text-xs text-slate-500">Save only the link. Never a Claude password or anything from your own login.</p>
+                </details>
+              )}
+            </div>
+          </Card>
           <Card title="Year and month">
             <form method="get" className="mb-3 flex flex-wrap items-end gap-2" data-testid="month-picker">
               <Field label="Year"><select className="input w-24" name="year" defaultValue={target.year}>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>

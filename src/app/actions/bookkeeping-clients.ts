@@ -10,7 +10,7 @@ import {
 } from "@/lib/services/bookkeeping-clients";
 import { prisma } from "@/lib/prisma";
 import {
-  recordChargeAuthorization, revealEin, revokeChargeAuthorization, saveAccount, saveBilling, saveBusinessInfo, setBillingAccess,
+  recordChargeAuthorization, revealEin, setCoethaLink, revokeChargeAuthorization, saveAccount, saveBilling, saveBusinessInfo, setBillingAccess,
 } from "@/lib/services/bookkeeping-profile";
 
 const refresh = (clientId?: string) => {
@@ -346,5 +346,14 @@ export async function billingAccessAction(userId: string, allowed: boolean, _pre
     await setBillingAccess(actor, userId, allowed);
     revalidatePath("/settings");
     return allowed ? "Billing access granted." : "Billing access removed.";
+  });
+}
+
+export async function coethaLinkAction(clientId: string, remove: boolean, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await setCoethaLink(actor, clientId, remove ? null : str(fd, "url"));
+    refresh(clientId);
+    return remove ? "Coetha link removed." : "Coetha link saved.";
   });
 }
