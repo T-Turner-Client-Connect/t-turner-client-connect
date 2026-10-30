@@ -21,6 +21,8 @@ import {
   startSignup,
   submitOnboarding,
   uploadOnboardingFile,
+  adminSendActivation,
+  resetActivationLimit,
 } from "@/lib/services/client-signup";
 
 const SECURE = process.env.NODE_ENV === "production";
@@ -141,5 +143,23 @@ export async function activationStepAction(requestId: string, step: "send" | "di
     else await dismissActivation(actor, requestId);
     revalidatePath("/clients/onboarding");
     return step === "send" ? "Activation link emailed to the address on file." : "Dismissed.";
+  });
+}
+
+export async function adminActivationAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const msg = await adminSendActivation(actor, clientId, str(fd, "to"));
+    revalidatePath(`/clients/${clientId}`);
+    return msg;
+  });
+}
+
+export async function resetActivationLimitAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const n = await resetActivationLimit(actor, str(fd, "email"));
+    revalidatePath(`/clients/${clientId}`);
+    return n ? `Cleared ${n} recent attempt${n === 1 ? "" : "s"} for this address only. Other limits are unchanged.` : "No recent attempts to clear for this address.";
   });
 }

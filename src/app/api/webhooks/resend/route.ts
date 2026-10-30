@@ -1,5 +1,6 @@
 import { verifyResendSignature } from "@/lib/resend-webhook";
 import { applyInviteEmailEvent } from "@/lib/services/staff-invitations";
+import { applyActivationEmailEvent } from "@/lib/services/client-signup";
 
 // Resend delivery events, signed with the endpoint's secret (RESEND_WEBHOOK_SECRET).
 // Staff invitations move to Delivered / Delivery failed only from these events.
@@ -21,7 +22,9 @@ export async function POST(req: Request) {
   }
   const emailId = event.data?.email_id;
   if (event.type && emailId) {
-    await applyInviteEmailEvent(event.type, emailId, event.data?.bounce?.message ?? event.data?.failed?.reason);
+    const reason = event.data?.bounce?.message ?? event.data?.failed?.reason;
+    // Staff invitations and client activation emails each match their own provider ids.
+    if (!(await applyInviteEmailEvent(event.type, emailId, reason))) await applyActivationEmailEvent(event.type, emailId, reason);
   }
   return new Response(null, { status: 204 });
 }

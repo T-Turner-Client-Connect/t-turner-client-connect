@@ -19,6 +19,8 @@ import { prisma } from "@/lib/prisma";
 import { contractFormUrl, jotformStatus } from "@/lib/services/contracts";
 import { SIGNATURE_LABELS, signingProviderStatus } from "@/lib/services/signatures";
 import { fmtDate, fmtDateTime } from "@/lib/format";
+import { adminActivationAction, resetActivationLimitAction } from "@/app/actions/signup";
+import { senderWarning } from "@/lib/services/client-signup";
 
 const PERMS = [
   ["canMessage", "Messages"],
@@ -29,7 +31,17 @@ const PERMS = [
   ["canViewIdentity", "View own driver's license (Admin)"],
 ] as const;
 
-export async function PortalTab({ clientId, contacts }: { clientId: string; contacts: Contact[] }) {
+const EMAIL_TONE: Record<string, "green" | "gold" | "red" | "gray"> = { DELIVERED: "green", SENT: "gold", FAILED: "red" };
+
+export async function PortalTab({ clientId, contacts, isAdmin = false }: { clientId: string; contacts: Contact[]; isAdmin?: boolean }) {
+  const [activationEmails, clientRow, staffEmails] = await Promise.all([
+    prisma.portalInvite.findMany({ where: { clientId, sentByEmail: true }, orderBy: { createdAt: "desc" }, take: 10 }),
+    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { emailNormalized: true } }),
+    prisma.user.findMany({ select: { email: true } }),
+  ]);
+  const staffSet = new Set(staffEmails.map((u) => u.email));
+  const onFile = [...new Set([clientRow.emailNormalized, ...contacts.map((c) => c.emailNormalized)].filter((e): e is string => !!e))];
+  const warning = senderWarning();
   const [grants, invites, updates, deadlines, contracts, signatures, taxDocs] = await Promise.all([
     prisma.portalAccess.findMany({ where: { clientId }, include: { portalUser: true }, orderBy: { createdAt: "asc" } }),
     prisma.portalInvite.findMany({ where: { clientId, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } }),
@@ -89,6 +101,42 @@ export async function PortalTab({ clientId, contacts }: { clientId: string; cont
         {invites.length > 0 && (
           <ul className="mb-3 text-sm">{invites.map((i) => <li key={i.id}>Invitation pending: {i.name} ({i.email}) · expires {fmtDate(i.expiresAt)}</li>)}</ul>
         )}
+        <div className="mb-4 rounded-xl border border-ivory-200 p-3" data-testid="activation-emails">
+          <h3 className="mb-1 font-semibold">Activation emails</h3>
+          <p className="mb-2 text-xs text-slate-600">Sent by email only (never by text). “Sent” means Resend accepted it; “Delivered” appears only when Resend confirms delivery.</p>
+          {warning && <Notice tone="warn">{warning}</Notice>}
+          <ul className="mb-2 space-y-1 text-sm">
+            {activationEmails.map((i) => (
+              <li key={i.id}>
+                To <strong>{i.emailTo ?? i.email}</strong> · {fmtDateTime(i.emailSentAt ?? i.createdAt)}{" "}
+                <Badge tone={EMAIL_TONE[i.emailStatus ?? ""] ?? "gray"}>{i.acceptedAt ? "Activated" : i.revokedAt ? "Replaced" : i.emailStatus === "SENT" ? "Sent (awaiting delivery report)" : i.emailStatus === "DELIVERED" ? "Delivered" : i.emailStatus === "FAILED" ? "Failed" : "Not sent"}</Badge>
+                {i.emailError && <span className="block text-xs text-red-800">{i.emailError}</span>}
+                {i.emailProviderId && <span className="block text-xs text-slate-500">Resend message ID: {i.emailProviderId}</span>}
+              </li>
+            ))}
+            {activationEmails.length === 0 && <li className="text-slate-600">No activation emails yet.</li>}
+          </ul>
+          {onFile.some((e) => staffSet.has(e)) && <Notice tone="warn">An email on this client&apos;s record belongs to a staff login. Activation links are never sent to staff addresses — correct the client&apos;s email first.</Notice>}
+          {isAdmin && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <ActionForm action={adminActivationAction.bind(null, clientId)} confirm="Email a new activation link to this address? Any earlier unused link stops working." className="flex flex-wrap items-end gap-2">
+                <Field label="Send a new activation link to">
+                  <select className="input" name="to" defaultValue="">
+                    <option value="">Choose an address on file…</option>
+                    {onFile.map((e) => <option key={e} value={e} disabled={staffSet.has(e)}>{e}{staffSet.has(e) ? " (staff address — not allowed)" : ""}</option>)}
+                  </select>
+                </Field>
+                <Button type="submit" variant="secondary">Send activation link</Button>
+              </ActionForm>
+              <ActionForm action={resetActivationLimitAction.bind(null, clientId)} className="flex flex-wrap items-end gap-2">
+                <Field label="Too many attempts? Reset the limit for">
+                  <select className="input" name="email" defaultValue="">{onFile.map((e) => <option key={e} value={e}>{e}</option>)}</select>
+                </Field>
+                <Button type="submit" variant="ghost">Reset limit for this address</Button>
+              </ActionForm>
+            </div>
+          )}
+        </div>
         <h3 className="mb-2 font-semibold">Invite to the portal</h3>
         <ActionForm action={invitePortalAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-2" resetOnSuccess>
           <Field label="Name"><input className="input" name="name" required /></Field>
