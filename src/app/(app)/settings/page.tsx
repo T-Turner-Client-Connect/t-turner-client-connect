@@ -1,8 +1,10 @@
 import { ActionForm } from "@/components/action-form";
-import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
+import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader } from "@/components/ui";
 import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clients";
 import { inviteAction, privateInviteLinkAction, resendInviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
 import { identityAccessAction } from "@/app/actions/identity";
+import { billingAccessAction } from "@/app/actions/bookkeeping-clients";
+import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { IdentityReminderPanel } from "@/components/identity-reminder-panel";
 import { inviteState, recentInvites, type InviteState } from "@/lib/services/staff-invitations";
 import { VerifyEmailCard } from "@/components/verification";
@@ -52,6 +54,7 @@ function Status({ ok, label, detail }: { ok: boolean; label: string; detail: str
 
 export default async function SettingsPage() {
   const user = await requireUser();
+  const isTabitha = await isReportApprover(user);
   const isAdmin = user.role === "ADMIN";
   const [staff, invites, suppressions, logs] = await Promise.all([
     prisma.user.findMany({ orderBy: [{ active: "desc" }, { name: "asc" }] }),
@@ -72,9 +75,9 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" />
+      <PageHeader title="Settings" actions={isAdmin ? <LinkButton href="#invite-staff" data-testid="add-staff-button">+ Add Staff / Invite Employee</LinkButton> : undefined} />
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="Staff accounts">
+        <Card title="Staff accounts" actions={isAdmin ? <LinkButton href="#invite-staff" variant="secondary">+ Invite Employee</LinkButton> : undefined}>
           <ul className="divide-y divide-navy-100">
             {staff.map((s) => (
               <li key={s.id} className="py-3">
@@ -115,6 +118,19 @@ export default async function SettingsPage() {
                           <Button type="submit" variant="ghost">{s.identityAccessAll ? "Limit to assigned clients" : "Allow for all clients"}</Button>
                         </ActionForm>
                       )}
+                      {isTabitha && s.id !== user.id && (
+                        <ActionForm
+                          action={billingAccessAction.bind(null, s.id, !s.bookkeepingBillingAccess)}
+                          confirm={s.bookkeepingBillingAccess ? undefined : `Let ${s.name} view and change bookkeeping billing (charges, Square references, recurring-charge authorizations)? This does not open your Owner's Office.`}
+                          className="rounded-lg bg-ivory-50 p-2 text-sm"
+                        >
+                          <p className="mb-1">
+                            Bookkeeping billing: {s.bookkeepingBillingAccess ? <strong>allowed</strong> : <>Tabitha only</>}
+                            <span className="block text-xs text-slate-600">Payment methods stay in Square. Never includes the Owner&apos;s Office.</span>
+                          </p>
+                          <Button type="submit" variant="ghost">{s.bookkeepingBillingAccess ? "Remove billing access" : "Allow billing access"}</Button>
+                        </ActionForm>
+                      )}
                       <ActionForm action={resetLinkAction.bind(null, s.id)}>
                         <Button type="submit" variant="ghost">Create password reset link</Button>
                       </ActionForm>
@@ -131,13 +147,20 @@ export default async function SettingsPage() {
           </ul>
           {isAdmin && (
             <>
-              <h3 className="mt-4 mb-2 font-semibold">Invite a staff member</h3>
+              <h3 id="invite-staff" className="mt-4 mb-2 scroll-mt-6 font-semibold">Add Staff / Invite Employee</h3>
+              <p className="mb-2 text-xs text-slate-600">Staff accounts are invitation-only. They choose their own password from the emailed link and must set up two-step verification before they can sign in.</p>
               <ActionForm action={inviteAction} className="grid gap-3 sm:grid-cols-2" resetOnSuccess idempotent>
                 <Field label="Name"><input className="input" name="name" required /></Field>
                 <Field label="Email"><input className="input" type="email" name="email" required /></Field>
                 <Field label="Role">
                   <select className="input" name="role" defaultValue="STAFF"><option value="STAFF">Staff</option><option value="ADMIN">Admin</option></select>
                 </Field>
+                <fieldset className="rounded-lg border border-ivory-200 p-2 text-sm sm:col-span-2">
+                  <legend className="px-1 text-xs font-semibold">Permissions (Staff role; applied when they accept)</legend>
+                  <label className="flex items-center gap-2"><input type="checkbox" name="grantIdentityAccessAll" /> Driver&apos;s licenses for all clients (otherwise only clients assigned to them). Social Security cards and birth certificates stay Admin-only.</label>
+                  {isTabitha && <label className="flex items-center gap-2"><input type="checkbox" name="grantBillingAccess" /> Bookkeeping billing (charges, Square references, recurring-charge authorizations)</label>}
+                  <span className="block text-xs text-slate-600">Never includes the Owner&apos;s Office. Bookkeeping client assignment stays Admin-only.</span>
+                </fieldset>
                 <div className="flex items-end"><Button type="submit">Send invitation</Button></div>
               </ActionForm>
               <p className="mt-2 text-xs text-slate-600">
@@ -157,7 +180,7 @@ export default async function SettingsPage() {
                         <li key={inv.revokedAt || inv.acceptedAt ? inv.id : `current:${inv.email}`} className="rounded-lg bg-navy-50 px-3 py-2" data-invite-email={inv.email}>
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="font-medium">
-                              {inv.name} ({inv.email}) · {inv.role === "ADMIN" ? "Admin" : "Staff"}
+                              {inv.name} ({inv.email}) · {inv.role === "ADMIN" ? "Admin" : "Staff"}{inv.grantIdentityAccessAll ? " · licenses: all clients" : ""}{inv.grantBillingAccess ? " · billing" : ""}
                             </span>
                             <Badge tone={meta.tone}>{meta.label}</Badge>
                           </div>
@@ -222,6 +245,19 @@ export default async function SettingsPage() {
                           confirmAction={confirmVerifyEmailAction.bind(null, "staff")}
                         />
                       </div>
+                    </li>
+                    <li data-testid="signup-status">
+                      Online client sign-up (Create Client Account page):{" "}
+                      {emailProviderConfigured() && auth.emailDeliveryVerifiedAt ? (
+                        <Badge tone="green">Open</Badge>
+                      ) : (
+                        <>
+                          <Badge tone="amber">Closed — clients see “Online sign-up opens soon”</Badge>
+                          <span className="block text-xs text-slate-600">
+                            Opens automatically when {!emailProviderConfigured() ? "RESEND_API_KEY and EMAIL_FROM_ADDRESS are set in Netlify (then redeploy) and " : ""}email delivery is proven in step 2. Verification codes are never skipped.
+                          </span>
+                        </>
+                      )}
                     </li>
                     <li>
                       Switch clients to emailed codes:{" "}

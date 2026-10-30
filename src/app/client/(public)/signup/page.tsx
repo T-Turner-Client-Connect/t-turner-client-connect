@@ -15,7 +15,7 @@ export default async function SignupPage() {
   return (
     <>
       <h1 className="mb-1 text-2xl font-bold">Create Client Account</h1>
-      <p className="mb-4 text-sm text-slate-600">New to {BUSINESS.shortName}? Create your secure portal login. We&apos;ll email you a code to confirm your address.</p>
+      <p className="mb-4 text-sm text-slate-600">New to {BUSINESS.displayName}? Create your secure portal login. We&apos;ll email you a code to confirm your address.</p>
       <Notice>
         <strong>Already a client?</strong> <Link className="underline" href="/client/activate">Activate your portal</Link> instead so it connects to your existing file.
       </Notice>

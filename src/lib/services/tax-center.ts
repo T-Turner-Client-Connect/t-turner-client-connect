@@ -218,6 +218,7 @@ async function importFiles(urls: string[], ctx: { clientId: string; taxYear: num
             docType: "QUESTIONNAIRE_UPLOAD",
             fileId: file.id,
             scanStatus: stored.scan,
+            ...stored.scanMeta,
             uploadedByStaffId: ctx.staff?.id ?? null,
             needsReview: true,
             retainUntil: await retentionDate("TAXES"),

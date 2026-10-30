@@ -8,7 +8,7 @@ import { staffSendMessage } from "@/lib/services/messaging";
 import { setPeriodStatus } from "@/lib/services/bookkeeping";
 import { assertOwner } from "@/lib/auth/owner";
 import {
-  approveReport, bookkeepingClients, bookkeepingWorkspace, deliverReport, isReportApprover, openWorkPeriod, requestReportChanges, saveProfile, setChecklistItem, submitReportForReview, workMonth,
+  approveReport, bookkeepingClients, bookkeepingWorkspace, deliverReport, enrollExistingClient, enrollNewClient, isReportApprover, openWorkPeriod, PossibleDuplicateError, reportsAwaitingReview, reportVersions, requestReportChanges, saveProfile, setChecklistItem, submitReportForReview, uploadMonthlyReport, workMonth,
 } from "@/lib/services/bookkeeping-clients";
 
 let seq = 0;
@@ -115,5 +115,94 @@ describe("Bookkeeping Clients list and checklists", () => {
     expect(review[0].stage).toBe("AWAITING_REVIEW");
     ws = await bookkeepingWorkspace(bakery.id, bk.id);
     expect(ws.summary!.reports.map((r) => r.reviewStatus)).toEqual(["AWAITING_REVIEW"]);
+  });
+});
+
+describe("Add Bookkeeping Client and Upload Monthly Financials", () => {
+  it("adds existing clients without duplicates, creates new ones only after a duplicate check — for Tabitha and Daria", async () => {
+    const { tabitha, daria, bakery } = await setup();
+    const florist = await createClient(tabitha, { businessName: "Fictional Florist LLC", email: "hello@florist.example", phone: "205-555-0142", clientType: "BUSINESS", status: "ACTIVE" });
+    const before = await prisma.client.count();
+
+    // Daria (staff) enrolls an existing CRM client (quarterly + payroll); assigning staff is Admin-only.
+    await expect(enrollExistingClient(daria, florist.id, { active: true, frequency: "QUARTERLY", payroll: true, assignedToId: daria.id })).rejects.toBeInstanceOf(ForbiddenError);
+    await enrollExistingClient(daria, florist.id, { active: true, frequency: "QUARTERLY", payroll: true, payrollFrequency: "WEEKLY", payrollProvider: "ADP" });
+    await saveProfile(tabitha, florist.id, { active: true, frequency: "QUARTERLY", payroll: true, payrollFrequency: "WEEKLY", payrollProvider: "ADP", assignedToId: daria.id });
+    const prof = await prisma.bookkeepingProfile.findUniqueOrThrow({ where: { clientId: florist.id } });
+    expect([prof.frequency, prof.payroll, prof.payrollFrequency]).toEqual(["QUARTERLY", true, "WEEKLY"]);
+    expect((await prisma.client.findUniqueOrThrow({ where: { id: florist.id } })).assignedToId).toBe(daria.id);
+    await expect(enrollExistingClient(tabitha, florist.id, { active: true, frequency: "MONTHLY", payroll: false })).rejects.toThrow(/already a Bookkeeping Client/);
+    // "Keep as is" (assignedToId undefined) never unassigns.
+    await saveProfile(tabitha, florist.id, { active: true, frequency: "QUARTERLY", payroll: true });
+    expect((await prisma.client.findUniqueOrThrow({ where: { id: florist.id } })).assignedToId).toBe(daria.id);
+    // A paused client is reactivated, not duplicated.
+    await saveProfile(tabitha, bakery.id, { active: false, frequency: "MONTHLY", payroll: true });
+    expect((await enrollExistingClient(daria, bakery.id, { active: true, frequency: "MONTHLY", payroll: true })).reactivated).toBe(true);
+    expect(await prisma.client.count()).toBe(before);
+
+    // New client: a matching email or phone (any formatting) refuses and points at the existing record.
+    const dupEmail = enrollNewClient(daria, { businessName: "Florist Two", email: "HELLO@florist.example", clientType: "BUSINESS", status: "ACTIVE" }, { active: true, frequency: "MONTHLY", payroll: false });
+    await expect(dupEmail).rejects.toBeInstanceOf(PossibleDuplicateError);
+    await expect(enrollNewClient(tabitha, { businessName: "Other", phone: "(205) 555-0142", clientType: "BUSINESS", status: "ACTIVE" }, { active: true, frequency: "MONTHLY", payroll: false }, { differentClient: true })).rejects.toThrow(/already belongs to Fictional Florist LLC/);
+    // Same name only: needs an explicit "different client".
+    await expect(enrollNewClient(daria, { businessName: "fictional florist llc", clientType: "BUSINESS", status: "ACTIVE" }, { active: true, frequency: "MONTHLY", payroll: false })).rejects.toThrow(/different client/);
+    expect(await prisma.client.count()).toBe(before);
+    const fresh = await enrollNewClient(tabitha, { businessName: "Fictional Car Wash", firstName: "Sam", lastName: "Example", email: "owner@carwash.example", clientType: "BUSINESS", status: "ACTIVE" }, { active: true, frequency: "MONTHLY", payroll: false, assignedToId: daria.id, documentsDueDay: 15 });
+    expect(await prisma.client.count()).toBe(before + 1);
+    expect((await prisma.client.findUniqueOrThrow({ where: { id: fresh.id } })).displayName).toBe("Fictional Car Wash");
+    expect((await prisma.contact.findFirstOrThrow({ where: { clientId: fresh.id } })).name).toBe("Sam Example");
+    expect((await prisma.client.findUniqueOrThrow({ where: { id: fresh.id } })).assignedToId).toBe(daria.id);
+    expect((await prisma.bookkeepingProfile.findUniqueOrThrow({ where: { clientId: fresh.id } })).documentsDueDay).toBe(15);
+    // Nothing is sent to anyone while adding clients.
+    expect(await prisma.portalInvite.count({ where: { clientId: fresh.id } })).toBe(0);
+    expect((await bookkeepingClients()).map((r) => r.client.displayName)).toEqual(["Bakery LLC", "Fictional Car Wash", "Fictional Florist LLC"]);
+  });
+
+  it("files reports under client → year → month as drafts, keeps version history, and only Tabitha's approval lets staff deliver", async () => {
+    const { tabitha, daria, bakery, owner } = await setup();
+    await prisma.bookkeepingProfile.update({ where: { clientId: bakery.id }, data: { accountingBasis: "CASH" } });
+    // Daria uploads a P&L for a month that isn't open yet: the month is opened.
+    const v1 = await uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 8, reportType: "PROFIT_AND_LOSS", bytes: pdf(), originalName: "pl-aug.pdf" });
+    expect(v1.version).toBe(1);
+    const doc1 = await prisma.document.findUniqueOrThrow({ where: { id: v1.document.id } });
+    expect([doc1.category, doc1.year, doc1.month, doc1.periodId, doc1.visibility, doc1.reviewStatus]).toEqual(["BOOKKEEPING", 2026, 8, v1.period.id, "STAFF_ONLY", "DRAFT"]);
+    expect(doc1.title).toBe("Profit & Loss Statement — August 2026");
+    const bs = await uploadMonthlyReport(tabitha, { clientId: bakery.id, year: 2026, month: 8, reportType: "BALANCE_SHEET", bytes: pdf(), originalName: "bs-aug.pdf" });
+    expect(bs.version).toBe(1);
+    await expect(uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 13, reportType: "PROFIT_AND_LOSS", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/month/);
+    await expect(uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 8, reportType: "", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/kind of report/);
+
+    // Approve and deliver v1; the client gets one notification.
+    await submitReportForReview(daria, v1.document.id);
+    await expect(approveReport(daria, v1.document.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await approveReport(tabitha, v1.document.id);
+    await deliverReport(daria, v1.document.id);
+    expect((await portalDocuments(owner, bakery.id)).map((d) => d.id)).toEqual([v1.document.id]);
+    const notices = await prisma.notification.count();
+
+    // Revised P&L: v2 is a draft; the client still has v1 until v2 is approved and delivered.
+    const v2 = await uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 8, reportType: "PROFIT_AND_LOSS", replacesId: v1.document.id, bytes: pdf(), originalName: "pl-aug-rev.pdf" });
+    expect(v2.version).toBe(2);
+    expect((await portalDocuments(owner, bakery.id)).map((d) => d.id)).toEqual([v1.document.id]);
+    await expect(submitReportForReview(daria, v1.document.id)).rejects.toThrow(/newer version/);
+    await expect(setVisibility(daria, v2.document.id, "PUBLISHED")).rejects.toThrow(/approve/);
+    await expect(uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 8, reportType: "PROFIT_AND_LOSS", replacesId: v1.document.id, bytes: pdf(), originalName: "again.pdf" })).rejects.toThrow(/already replaced/);
+    await expect(uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 9, reportType: "PROFIT_AND_LOSS", replacesId: v2.document.id, bytes: pdf(), originalName: "wrong-month.pdf" })).rejects.toThrow(/same month/);
+    // Uploading another P&L for the month without choosing "replaces" also becomes the next version.
+    const v3 = await uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 8, reportType: "PROFIT_AND_LOSS", bytes: pdf(), originalName: "pl-aug-rev2.pdf" });
+    expect(v3.version).toBe(3);
+    expect((await reportVersions(v3.document.id)).map((d) => d.version)).toEqual([3, 2, 1]);
+    const ws = await bookkeepingWorkspace(bakery.id, v1.period.id);
+    expect(ws.summary!.reports.map((r) => [r.reportType, r.version]).sort()).toEqual([["BALANCE_SHEET", 1], ["PROFIT_AND_LOSS", 3]]);
+
+    await submitReportForReview(daria, v3.document.id);
+    expect((await reportsAwaitingReview()).map((d) => d.id)).toEqual([v3.document.id]);
+    await approveReport(tabitha, v3.document.id);
+    await deliverReport(daria, v3.document.id);
+    // The client now sees only the newest delivered version; staff keep all three.
+    expect((await portalDocuments(owner, bakery.id)).map((d) => d.id)).toEqual([v3.document.id]);
+    expect(await prisma.document.count({ where: { clientId: bakery.id, reportType: "PROFIT_AND_LOSS", deletedAt: null } })).toBe(3);
+    expect(await prisma.notification.count()).toBeGreaterThan(notices);
+    await expect(setVisibility(tabitha, v1.document.id, "PUBLISHED")).rejects.toThrow(/newer version/);
   });
 });

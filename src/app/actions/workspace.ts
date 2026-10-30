@@ -98,7 +98,9 @@ export async function uploadDocumentAction(fixedClientId: string | null, _prev: 
     revalidatePath("/documents");
     return doc.scanStatus === "CLEAN"
       ? `Uploaded and scanned clean${doc.visibility === "PUBLISHED" ? " — now visible in the client's portal" : ""}.`
-      : "Uploaded. The file is quarantined until the malware scan passes — no one can download it and clients won't see it until then.";
+      : doc.scanStatus === "NOT_SCANNED"
+        ? "Uploaded, but quarantined: malware scanning isn't set up on this site yet, so no one can download it and clients won't see it until a scanner is connected and the file passes."
+        : "Uploaded. The file is quarantined until the malware scan finishes (re-checked automatically every 10 minutes) — no one can download it and clients won't see it until it passes.";
   });
 }
 

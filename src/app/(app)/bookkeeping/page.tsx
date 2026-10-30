@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { connection } from "next/server";
 import { ActionForm } from "@/components/action-form";
-import { Badge, Button, Card, EmptyState, Field, PageHeader } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, Field, LinkButton, PageHeader } from "@/components/ui";
 import { openAllPeriodsAction, saveBookkeepingProfileAction } from "@/app/actions/bookkeeping-clients";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
@@ -19,15 +19,17 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
   const sp = await searchParams;
   const filters = { assignedTo: sp.staff || null, frequency: sp.schedule || null, missing: sp.missing === "1", overdue: sp.overdue === "1", review: sp.review === "1" };
   const anyFilter = !!(filters.assignedTo || filters.frequency || filters.missing || filters.overdue || filters.review);
-  const [rows, approver, awaiting, staff, candidates] = await Promise.all([
+  const [rows, approver, awaiting, staff, suggested] = await Promise.all([
     bookkeepingClients(filters),
     isReportApprover(user),
     reportsAwaitingReview(),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
-    prisma.client.findMany({ where: { archivedAt: null, OR: [{ bookkeepingProfile: null }, { bookkeepingProfile: { active: false } }] }, select: { id: true, displayName: true, services: true }, orderBy: { displayName: "asc" } }),
+    // Clients whose services mention bookkeeping but who aren't enrolled yet.
+    prisma.client
+      .findMany({ where: { archivedAt: null, OR: [{ bookkeepingProfile: null }, { bookkeepingProfile: { active: false } }] }, select: { id: true, displayName: true, services: true }, orderBy: { displayName: "asc" } })
+      .then((cs) => cs.filter((c) => c.services.some((x) => /bookkeep/i.test(x)))),
   ]);
   const shown = rows;
-  const suggested = candidates.filter((c) => c.services.some((x) => /bookkeep/i.test(x)));
   const monthly = workMonth("MONTHLY");
 
   return (
@@ -36,9 +38,12 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
         title="Bookkeeping Clients"
         subtitle={`Monthly and quarterly bookkeeping. Current work month: ${periodLabel("MONTHLY", monthly.year, monthly.month)}.`}
         actions={
-          <ActionForm action={openAllPeriodsAction} showSuccess>
-            <Button type="submit">Open this month for all clients</Button>
-          </ActionForm>
+          <div className="flex flex-wrap items-start gap-2">
+            <LinkButton href="/bookkeeping/new" data-testid="add-bk-client">+ Add Bookkeeping Client</LinkButton>
+            <ActionForm action={openAllPeriodsAction} showSuccess>
+              <Button type="submit" variant="secondary">Open this month for all clients</Button>
+            </ActionForm>
+          </div>
         }
       />
 
@@ -79,7 +84,9 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
       </form>
 
       {shown.length === 0 ? (
-        <EmptyState title="No bookkeeping clients here">Add a client below, or change the filters.</EmptyState>
+        <EmptyState title={anyFilter ? "No bookkeeping clients match these filters" : "No bookkeeping clients yet"}>
+          {anyFilter ? "Change or clear the filters." : <>Use <Link className="font-semibold underline" href="/bookkeeping/new">Add Bookkeeping Client</Link> to enroll an existing CRM client or create a new one.</>}
+        </EmptyState>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-ivory-200 bg-white shadow-sm">
           <table className="w-full min-w-[960px] text-sm" data-testid="bk-table">
@@ -143,45 +150,10 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-xs text-slate-600">Adds them as monthly with no payroll; open a client to change the schedule or payroll.</p>
+          <p className="mt-2 text-xs text-slate-600">Adds them as monthly with no payroll; open a client to change the schedule, assigned staff or payroll. For anyone else, use <Link className="underline" href="/bookkeeping/new">Add Bookkeeping Client</Link>.</p>
         </Card>
       )}
 
-      <Card title="Add a bookkeeping client" className="mt-4">
-        <ActionForm action={saveBookkeepingProfileAction.bind(null, null)} className="grid gap-2 sm:grid-cols-3" resetOnSuccess>
-          <Field label="Client">
-            <select className="input" name="clientId" required defaultValue="">
-              <option value="" disabled>Choose…</option>
-              {candidates.map((c) => <option key={c.id} value={c.id}>{c.displayName}</option>)}
-            </select>
-          </Field>
-          <Field label="Schedule">
-            <select className="input" name="frequency" defaultValue="MONTHLY">{Object.entries(FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-          </Field>
-          {user.role === "ADMIN" && (
-            <Field label="Assigned staff">
-              <select className="input" name="assignedToId" defaultValue="">
-                <option value="">Keep current</option>
-                {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </Field>
-          )}
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="payroll" /> Runs payroll</label>
-          <Field label="Payroll frequency">
-            <select className="input" name="payrollFrequency" defaultValue=""><option value="">—</option>{Object.entries(PAYROLL_FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-          </Field>
-          <Field label="Payroll provider"><input className="input" name="payrollProvider" placeholder="e.g. Gusto, ADP" /></Field>
-          <Field label="Documents due (month after)" hint="Optional">
-            <select className="input" name="documentsDueDay" defaultValue=""><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
-          </Field>
-          <Field label="Reports due (month after)" hint="Optional">
-            <select className="input" name="reportsDueDay" defaultValue=""><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
-          </Field>
-          <Field label="Accounts to collect" className="sm:col-span-2"><input className="input" name="accounts" placeholder="e.g. Regions business checking, Amex" /></Field>
-          <div className="flex items-end"><Button type="submit">Add client</Button></div>
-        </ActionForm>
-        <p className="mt-2 text-xs text-slate-600">Only an Admin can change who a client is assigned to.</p>
-      </Card>
       <p className="mt-3 text-xs text-slate-600">
         Every client collects documents monthly; quarterly clients get reports at quarter end. Overdue uses each client&apos;s own document and report due days (set in the client&apos;s Service details); a client with no due day set is never marked overdue for it. Requested items use their own due dates.
         Reports go draft → {REVIEW_LABELS.AWAITING_REVIEW} → approved by Tabitha → delivered by staff. This workspace is separate from the Owner&apos;s Office.
