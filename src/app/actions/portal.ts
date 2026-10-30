@@ -1,6 +1,7 @@
 "use server";
 
 import { isClientDocType } from "@/lib/document-types";
+import { isBkDocType } from "@/lib/services/bookkeeping-clients";
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -134,7 +135,8 @@ export async function portalUploadAction(clientId: string, _prev: ActionState, f
     if (!y && !contextual) throw new ValidationError("Choose the tax year this document is for, or “Not sure”.");
     const docType = str(fd, "docType");
     if (!contextual && !isClientDocType(docType)) throw new ValidationError("Choose what kind of document this is.");
-    await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), year: y === "unsure" ? "unsure" : y ? Number(y) : null, docType: isClientDocType(docType) ? docType : null, ...file });
+    const known = isClientDocType(docType) || (str(fd, "periodId") && isBkDocType(docType));
+    await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), year: y === "unsure" ? "unsure" : y ? Number(y) : null, docType: known ? docType : null, ...file });
     revalidatePath("/client", "layout");
     return "Uploaded securely. It's being checked for viruses, then our team will review it. Thank you!";
   });

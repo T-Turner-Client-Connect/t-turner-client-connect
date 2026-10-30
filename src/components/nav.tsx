@@ -7,6 +7,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import {
   BarChart3,
+  Calculator,
   CalendarCheck,
   FolderLock,
   GitBranch,
@@ -27,6 +28,7 @@ import {
 const LINKS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, also: [] as string[] },
   { href: "/clients", label: "Clients", icon: Users, also: ["/groups", "/imports"] },
+  { href: "/bookkeeping", label: "Bookkeeping Clients", icon: Calculator, also: [] },
   { href: "/conversations", label: "Conversations", icon: MessagesSquare, also: [] },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone, also: ["/media"] },
   { href: "/social", label: "Social media", icon: Share2, also: [] },

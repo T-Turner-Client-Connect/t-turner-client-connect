@@ -111,6 +111,9 @@ export type StaffUploadInput = {
 
 export async function staffUploadDocument(actor: Actor, input: StaffUploadInput) {
   if (input.category === "IDENTITY") throw new ValidationError("Identity documents are uploaded in the Identity Documents section.");
+  // Financial reports go to Tabitha for approval before any client sees them.
+  const isFinancialReport = input.category === "BOOKKEEPING" && !!input.reportType;
+  if (isFinancialReport && input.visibility === "PUBLISHED") throw new ValidationError("Financial reports are saved as drafts and need Tabitha's approval before they're delivered.");
   const client = await prisma.client.findUnique({ where: { id: input.clientId } });
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
@@ -132,6 +135,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
           reportType: input.reportType ?? null,
           periodId: input.periodId ?? null,
           docType: input.docType ?? null,
+          reviewStatus: isFinancialReport ? "DRAFT" : null,
           fileId: file.id,
           scanStatus: stored.scan,
           uploadedByStaffId: actor.id,
@@ -155,6 +159,8 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
   const doc = await prisma.document.findUnique({ where: { id: documentId } });
   if (!doc || doc.deletedAt) throw new ValidationError("Document not found.");
   if (visibility === "PUBLISHED" && doc.scanStatus === "INFECTED") throw new ValidationError("Infected files can't be published.");
+  if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && doc.reportType && doc.reviewStatus !== "APPROVED") throw new ValidationError("Tabitha must approve this financial report before it's published.");
+  if (visibility === "PUBLISHED" && doc.category === "IDENTITY") throw new ValidationError("Identity documents aren't published.");
   await prisma.$transaction([
     prisma.document.update({ where: { id: documentId }, data: { visibility, publishedAt: visibility === "PUBLISHED" ? doc.publishedAt ?? new Date() : null } }),
     prisma.documentAccessLog.create({ data: { documentId, action: visibility === "PUBLISHED" ? "PUBLISH" : "UNPUBLISH", staffUserId: actor.id } }),

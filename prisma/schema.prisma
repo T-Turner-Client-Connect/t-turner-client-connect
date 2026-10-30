@@ -245,6 +245,7 @@ model Client {
   questionnaires     QuestionnaireSubmission[]
   identityPeople     IdentityPerson[]
   identityDocs       IdentityDocument[]
+  bookkeepingProfile BookkeepingProfile?
   taxYearProgress    TaxYearProgress[]
 
   @@index([emailNormalized])
@@ -946,25 +947,34 @@ model Document {
   deletionReason     String?
   createdAt          DateTime           @default(now())
 
-  messages          Message[]            @relation("MessageAttachments")
-  accessLogs        DocumentAccessLog[]
-  signaturePackages SignatureRequest[]   @relation("SignaturePackage")
-  signatureSigned   SignatureRequest[]   @relation("SignatureCompleted")
-  signatureAudit    SignatureRequest[]   @relation("SignatureAuditTrail")
-  contractPdfs      ContractAssignment[]
+  messages               Message[]            @relation("MessageAttachments")
+  accessLogs             DocumentAccessLog[]
+  signaturePackages      SignatureRequest[]   @relation("SignaturePackage")
+  signatureSigned        SignatureRequest[]   @relation("SignatureCompleted")
+  signatureAudit         SignatureRequest[]   @relation("SignatureAuditTrail")
+  contractPdfs           ContractAssignment[]
   // Acknowledgments, agency notices and correspondence for one filing.
-  filingId          String?
-  filing            FilingRecord?        @relation(fields: [filingId], references: [id], onDelete: SetNull)
+  filingId               String?
+  filing                 FilingRecord?        @relation(fields: [filingId], references: [id], onDelete: SetNull)
   // "OFFICIAL_ACK" | "AGENCY_NOTICE" | "CORRESPONDENCE" | "FIRM_SUMMARY"
-  filingDocType     String?
+  filingDocType          String?
   // Client uploads stay "Needs Review" until a staff member acknowledges them.
-  needsReview       Boolean              @default(false)
-  reviewedAt        DateTime?
-  reviewedById      String?
+  needsReview            Boolean              @default(false)
+  reviewedAt             DateTime?
+  reviewedById           String?
   // Staff-chosen type for tax documents (return, TaxAct export, acceptance
   // notice, extension, amendment…). Informational only: it never changes a
   // filing's status or marks work complete.
-  docType           String?
+  docType                String?
+  // Bookkeeping reports (P&L, Balance Sheet…): DRAFT | AWAITING_REVIEW |
+  // CHANGES_REQUESTED | APPROVED. Only the owner approves; a report reaches
+  // the client (publish or message) only after approval.
+  reviewStatus           String?
+  reviewNote             String?
+  submittedForReviewAt   DateTime?
+  submittedForReviewById String?
+  approvedAt             DateTime?
+  approvedById           String?
 
   @@index([clientId, category, year, month])
   @@index([visibility])
@@ -1019,6 +1029,7 @@ model BookkeepingPeriod {
   documents     Document[]
   requests      DocumentRequest[]
   conversations Conversation[]
+  checklist     BookkeepingChecklistItem[]
 
   @@unique([clientId, year, month])
 }
@@ -2333,4 +2344,41 @@ model IdentityDocument {
 
   @@index([clientId, personId, type])
   @@index([status, type])
+}
+
+// A client on the monthly/quarterly bookkeeping service.
+model BookkeepingProfile {
+  clientId         String   @id
+  client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  active           Boolean  @default(true)
+  // MONTHLY | QUARTERLY
+  frequency        String   @default("MONTHLY")
+  payroll          Boolean  @default(false)
+  // WEEKLY | BIWEEKLY | SEMIMONTHLY | MONTHLY
+  payrollFrequency String?
+  payrollProvider  String?
+  // Accounts to collect statements for (e.g. "Regions checking, Amex").
+  accounts         String?
+  notes            String?
+  updatedById      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// One line of a month's checklist: something the client sends
+// (CLIENT_DOCUMENT) or something staff do (STAFF_TASK).
+model BookkeepingChecklistItem {
+  id        String            @id @default(cuid())
+  periodId  String
+  period    BookkeepingPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  key       String
+  label     String
+  kind      String
+  // OPEN | DONE | NOT_NEEDED
+  status    String            @default("OPEN")
+  doneById  String?
+  doneAt    DateTime?
+  sortOrder Int               @default(0)
+
+  @@unique([periodId, key])
 }

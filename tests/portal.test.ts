@@ -55,7 +55,9 @@ describe("portal access control", () => {
     vi.stubEnv("MALWARE_SCAN_URL", "https://scanner.test/scan");
     vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ clean: true }), { status: 200 }));
     const { staff, bakery, owner, assistant, stranger } = await setup();
-    const published = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "PUBLISHED", bytes: pdfBytes(), originalName: "pl.pdf", year: 2026, month: 9, reportType: "PROFIT_AND_LOSS" });
+    // Financial reports start as drafts; this one is treated as approved and delivered.
+    const draft = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "STAFF_ONLY", bytes: pdfBytes(), originalName: "pl.pdf", year: 2026, month: 9, reportType: "PROFIT_AND_LOSS" });
+    const published = await prisma.document.update({ where: { id: draft.id }, data: { reviewStatus: "APPROVED", visibility: "PUBLISHED", publishedAt: new Date() } });
     const internal = await staffUploadDocument(staff, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "STAFF_ONLY", bytes: pdfBytes(), originalName: "workpaper.pdf" });
     const tax = await staffUploadDocument(staff, { clientId: bakery.id, category: "TAXES", visibility: "PUBLISHED", bytes: pdfBytes(), originalName: "return.pdf" });
 

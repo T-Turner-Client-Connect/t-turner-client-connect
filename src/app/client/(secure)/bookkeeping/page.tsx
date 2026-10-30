@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Notice, PageHeader } from "@/components/ui";
 import { portalUploadAction } from "@/app/actions/portal";
+import { BK_DOC_TYPES } from "@/lib/services/bookkeeping-clients";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { prisma } from "@/lib/prisma";
@@ -32,11 +33,18 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
     prisma.documentRequest.findMany({ where: { clientId: current.clientId, periodId: null, status: { in: ["OPEN", "SUBMITTED"] } }, orderBy: { createdAt: "desc" } }),
   ]);
   const link = (id: string) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`;
+  const payroll = !!(await prisma.bookkeepingProfile.findUnique({ where: { clientId: current.clientId }, select: { payroll: true } }))?.payroll;
   const upload = (requestId: string | null, periodId: string | null, label: string) =>
     current.canUpload ? (
       <ActionForm action={portalUploadAction.bind(null, current.clientId)} className="mt-1 flex flex-wrap items-center gap-2" resetOnSuccess>
         {requestId && <input type="hidden" name="requestId" value={requestId} />}
         {periodId && <input type="hidden" name="periodId" value={periodId} />}
+        {periodId && !requestId && (
+          <select className="input w-auto" name="docType" defaultValue="" aria-label="What is it?">
+            <option value="">What is it? (optional)</option>
+            {Object.entries(BK_DOC_TYPES).filter(([k]) => k !== "PAYROLL_REPORT" || payroll).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        )}
         <input className="input max-w-xs" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label={label} />
         <Button type="submit" variant="secondary">Upload</Button>
       </ActionForm>
