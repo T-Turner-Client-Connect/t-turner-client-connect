@@ -1,12 +1,13 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { OWNER_EMAIL } from "@/lib/business";
-import { normalizeEmail } from "@/lib/normalize";
-import { ValidationError } from "./clients";
+import type { ReportType } from "@prisma/client";
+import { buildDisplayName, normalizeEmail, normalizePhone } from "@/lib/normalize";
+import { createClient, saveContact, ValidationError, type ClientInput } from "./clients";
 import { MONTHS, openPeriod } from "./bookkeeping";
-import { notifyClientUsers } from "./documents";
+import { notifyClientUsers, REPORT_LABELS, staffUploadDocument } from "./documents";
 
 /**
  * Bookkeeping Clients: the staff list of monthly/quarterly bookkeeping
@@ -63,7 +64,10 @@ export const isReport = (d: { category: string; reportType: string | null }) => 
 
 // --- Profiles --------------------------------------------------------------------
 
-export async function saveProfile(actor: Actor, clientId: string, input: { active: boolean; frequency: string; payroll: boolean; payrollFrequency?: string | null; payrollProvider?: string | null; accounts?: string | null; notes?: string | null; assignedToId?: string | null } & Deadlines) {
+export type ProfileInput = { active: boolean; frequency: string; payroll: boolean; payrollFrequency?: string | null; payrollProvider?: string | null; accounts?: string | null; notes?: string | null; assignedToId?: string | null } & Deadlines;
+
+/** Saves a client's bookkeeping settings. assignedToId: undefined keeps the current assignee, null unassigns. */
+export async function saveProfile(actor: Actor, clientId: string, input: ProfileInput) {
   for (const d of [input.documentsDueDay, input.reportsDueDay]) {
     if (d != null && (!Number.isInteger(d) || d < 1 || d > 31)) throw new ValidationError("Due days must be 1–31 (31 = last day of the month).");
   }
@@ -71,6 +75,8 @@ export async function saveProfile(actor: Actor, clientId: string, input: { activ
   if (input.payroll && input.payrollFrequency && !(input.payrollFrequency in PAYROLL_FREQUENCIES)) throw new ValidationError("Choose how often payroll runs.");
   const client = await prisma.client.findUnique({ where: { id: clientId } });
   if (!client) throw new ValidationError("Client not found.");
+  if (client.archivedAt) throw new ValidationError(`${client.displayName} is archived. Restore the client in Clients first.`);
+  if (input.assignedToId && !(await prisma.user.count({ where: { id: input.assignedToId, active: true } }))) throw new ValidationError("Choose an active staff member.");
   const data = {
     active: input.active,
     frequency: input.frequency,
@@ -84,11 +90,83 @@ export async function saveProfile(actor: Actor, clientId: string, input: { activ
     updatedById: actor.id,
   };
   await prisma.bookkeepingProfile.upsert({ where: { clientId }, create: { clientId, ...data }, update: data });
-  if (input.assignedToId !== undefined && (input.assignedToId || null) !== client.assignedToId) {
-    assertAdmin(actor); // only an Admin reassigns clients
-    await prisma.client.update({ where: { id: clientId }, data: { assignedToId: input.assignedToId || null } });
+  // Staff can assign bookkeeping clients, as they can on the client record.
+  if (input.assignedToId !== undefined && input.assignedToId !== client.assignedToId) {
+    await prisma.client.update({ where: { id: clientId }, data: { assignedToId: input.assignedToId } });
+    await audit(prisma, { actorId: actor.id, action: "client.updated", entityType: "Client", entityId: clientId, clientId, details: { fields: ["assignedToId"] } });
   }
   await audit(prisma, { actorId: actor.id, action: "bookkeeping.profile_saved", entityType: "Client", entityId: clientId, clientId, details: { frequency: data.frequency, payroll: data.payroll } });
+}
+
+// --- Adding clients -------------------------------------------------------------------
+
+export class AlreadyEnrolledError extends ValidationError {}
+
+/** Adds an existing CRM client (or reactivates a paused one). Never creates a client. */
+export async function enrollExistingClient(actor: Actor, clientId: string, input: ProfileInput) {
+  const client = await prisma.client.findUnique({ where: { id: clientId }, include: { bookkeepingProfile: true } });
+  if (!client) throw new ValidationError("Client not found. Choose a client from the list.");
+  if (client.bookkeepingProfile?.active) throw new AlreadyEnrolledError(`${client.displayName} is already a Bookkeeping Client.`);
+  await saveProfile(actor, clientId, { ...input, active: true });
+  return { client, reactivated: !!client.bookkeepingProfile };
+}
+
+export type ClientMatch = { id: string; displayName: string; email: string | null; phone: string | null; archived: boolean; enrolled: boolean; by: ("email" | "phone" | "name")[] };
+
+/** CRM records that may be the same person or business: same email, same phone, or the same name. */
+export async function findClientMatches(input: Pick<ClientInput, "firstName" | "lastName" | "businessName" | "email" | "phone">): Promise<ClientMatch[]> {
+  const email = normalizeEmail(input.email);
+  const phone = normalizePhone(input.phone);
+  const name = input.firstName || input.lastName || input.businessName ? buildDisplayName({ firstName: input.firstName ?? null, lastName: input.lastName ?? null, businessName: input.businessName ?? null }).trim() : "";
+  const or = [
+    ...(email ? [{ emailNormalized: email }, { contacts: { some: { emailNormalized: email } } }] : []),
+    ...(phone ? [{ phoneNormalized: phone }, { contacts: { some: { phoneNormalized: phone } } }] : []),
+    ...(name ? [{ displayName: { equals: name, mode: "insensitive" as const } }, ...(input.businessName ? [{ businessName: { equals: input.businessName.trim(), mode: "insensitive" as const } }] : [])] : []),
+  ];
+  if (!or.length) return [];
+  const found = await prisma.client.findMany({ where: { OR: or }, include: { bookkeepingProfile: { select: { active: true } }, contacts: { select: { emailNormalized: true, phoneNormalized: true } } }, take: 10 });
+  return found.map((c) => ({
+    id: c.id,
+    displayName: c.displayName,
+    email: c.email,
+    phone: c.phone,
+    archived: !!c.archivedAt,
+    enrolled: !!c.bookkeepingProfile?.active,
+    by: [
+      ...(email && (c.emailNormalized === email || c.contacts.some((x) => x.emailNormalized === email)) ? ["email" as const] : []),
+      ...(phone && (c.phoneNormalized === phone || c.contacts.some((x) => x.phoneNormalized === phone)) ? ["phone" as const] : []),
+      ...(name && (c.displayName.toLowerCase() === name.toLowerCase() || (!!input.businessName && c.businessName?.toLowerCase() === input.businessName.trim().toLowerCase())) ? ["name" as const] : []),
+    ],
+  }));
+}
+
+export class PossibleDuplicateError extends ValidationError {
+  constructor(public matches: ClientMatch[], public nameOnly: boolean) {
+    super(
+      nameOnly
+        ? `A client with this name is already in the CRM (${matches.map((m) => m.displayName).join(", ")}). Enroll the existing record, or tick "This is a different client" to create a new one.`
+        : `This email or phone number already belongs to ${matches.map((m) => m.displayName).join(", ")} in the CRM. Enroll the existing record instead of creating a duplicate.`,
+    );
+  }
+}
+
+/**
+ * Creates a new CRM client and enrolls them. Refuses when the email or phone
+ * already belongs to a client; a name-only match needs differentClient=true.
+ */
+export async function enrollNewClient(actor: Actor, clientInput: ClientInput, input: ProfileInput, opts: { differentClient?: boolean } = {}) {
+  if (!input.frequency || !(input.frequency in FREQUENCIES)) throw new ValidationError("Choose monthly or quarterly.");
+  const matches = await findClientMatches(clientInput);
+  const strong = matches.filter((m) => m.by.includes("email") || m.by.includes("phone"));
+  if (strong.length) throw new PossibleDuplicateError(strong, false);
+  if (matches.length && !opts.differentClient) throw new PossibleDuplicateError(matches, true);
+  // A business is named for the business; the person typed in becomes its contact.
+  const isOrg = clientInput.clientType !== "INDIVIDUAL" && !!clientInput.businessName?.trim();
+  const person = [clientInput.firstName, clientInput.lastName].map((x) => x?.trim()).filter(Boolean).join(" ");
+  const client = await createClient(actor, { ...clientInput, ...(isOrg ? { firstName: null, lastName: null } : {}), assignedToId: input.assignedToId ?? null, services: "Bookkeeping" });
+  if (isOrg && person) await saveContact(actor, client.id, null, { name: person, title: "Primary contact", email: clientInput.email, phone: clientInput.phone });
+  await saveProfile(actor, client.id, { ...input, active: true, assignedToId: undefined });
+  return client;
 }
 
 /**
@@ -166,7 +244,73 @@ export async function classifyDocument(actor: Actor, documentId: string, docType
 async function loadReport(documentId: string) {
   const doc = await prisma.document.findUnique({ where: { id: documentId } });
   if (!doc || doc.deletedAt || !isReport(doc)) throw new ValidationError("Report not found.");
+  if (doc.supersededAt) throw new ValidationError("A newer version of this report was uploaded. Work on the newest version.");
   return doc;
+}
+
+/**
+ * Uploads a finished financial report into a client's year → month file (the
+ * month is opened if needed). It's a staff-only draft until Tabitha approves
+ * it. Uploading a P&L or Balance Sheet where that month already has one, or
+ * choosing "replaces", makes it the next version: the earlier version is kept
+ * as history and, if it was delivered, stays with the client until the new
+ * version is approved and delivered.
+ */
+export async function uploadMonthlyReport(actor: Actor, input: { clientId: string; year: number; month: number; reportType: string; title?: string; replacesId?: string | null; bytes: Uint8Array; originalName: string }) {
+  if (!(input.reportType in REPORT_LABELS)) throw new ValidationError("Choose the kind of report (Profit & loss, Balance sheet or Other report).");
+  const reportType = input.reportType as ReportType;
+  const thisYear = new Date().getFullYear();
+  if (!Number.isInteger(input.year) || input.year < 2000 || input.year > thisYear + 1) throw new ValidationError("Choose the year.");
+  if (!Number.isInteger(input.month) || input.month < 1 || input.month > 12) throw new ValidationError("Choose the month.");
+  const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { id: true, archivedAt: true } });
+  if (!client) throw new ValidationError("Client not found.");
+  let previous = null;
+  if (input.replacesId) {
+    previous = await prisma.document.findFirst({ where: { id: input.replacesId, clientId: input.clientId, deletedAt: null, category: "BOOKKEEPING", reportType: { not: null } }, include: { period: true } });
+    if (!previous) throw new ValidationError("The report you're replacing wasn't found for this client.");
+    if (previous.supersededAt) throw new ValidationError("That version was already replaced. Upload a revision of the newest version.");
+    if (previous.period && (previous.period.year !== input.year || previous.period.month !== input.month)) throw new ValidationError("A revised report must be for the same month as the version it replaces.");
+  }
+  const period = await openWorkPeriod(actor, input.clientId, input.year, input.month);
+  if (!previous && reportType !== "OTHER_REPORT") {
+    previous = await prisma.document.findFirst({ where: { periodId: period.id, deletedAt: null, reportType, supersededAt: null }, orderBy: { createdAt: "desc" }, include: { period: true } });
+  }
+  const doc = await staffUploadDocument(actor, {
+    clientId: input.clientId,
+    category: "BOOKKEEPING",
+    title: input.title?.trim() || `${REPORT_LABELS[previous?.reportType ?? reportType]} — ${MONTHS[input.month - 1]} ${input.year}`,
+    year: input.year,
+    month: input.month,
+    periodId: period.id,
+    visibility: "STAFF_ONLY",
+    reportType: previous?.reportType ?? reportType,
+    bytes: input.bytes,
+    originalName: input.originalName,
+  });
+  const version = previous ? (previous.version ?? 1) + 1 : 1;
+  await prisma.$transaction([
+    ...(previous ? [prisma.document.update({ where: { id: previous.id }, data: { supersededAt: new Date() } })] : []),
+    prisma.document.update({ where: { id: doc.id }, data: { version, replacesId: previous?.id ?? null } }),
+    prisma.auditLog.create({ data: { actorId: actor.id, action: "bookkeeping.report_uploaded", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { reportType: previous?.reportType ?? reportType, year: input.year, month: input.month, version, replaces: previous?.id ?? null } } }),
+  ]);
+  return { document: { ...doc, version }, period, version, replaced: previous };
+}
+
+/** All versions of a report, newest first. */
+export async function reportVersions(documentId: string) {
+  const out = [];
+  let cur = await prisma.document.findUnique({ where: { id: documentId } });
+  // Walk forward to the newest version first.
+  while (cur) {
+    const next = await prisma.document.findUnique({ where: { replacesId: cur.id } });
+    if (!next) break;
+    cur = next;
+  }
+  for (let i = 0; cur && i < 50; i++) {
+    out.push(cur);
+    cur = cur.replacesId ? await prisma.document.findUnique({ where: { id: cur.replacesId } }) : null;
+  }
+  return out;
 }
 
 export async function submitReportForReview(actor: Actor, documentId: string) {
@@ -201,10 +345,16 @@ export async function deliverReport(actor: Actor, documentId: string) {
   const doc = await loadReport(documentId);
   if (doc.reviewStatus !== "APPROVED") throw new ValidationError("Tabitha must approve this report before it's delivered.");
   if (doc.visibility === "PUBLISHED") return;
+  // A delivered revision takes the place of earlier delivered versions in the client's portal; staff keep them as history.
+  const older = (await reportVersions(documentId)).filter((d) => d.id !== documentId && d.visibility === "PUBLISHED");
   await prisma.$transaction([
     prisma.document.update({ where: { id: documentId }, data: { visibility: "PUBLISHED", publishedAt: new Date() } }),
     prisma.documentAccessLog.create({ data: { documentId, action: "PUBLISH", staffUserId: actor.id } }),
-    prisma.auditLog.create({ data: { actorId: actor.id, action: "bookkeeping.report_delivered", entityType: "Document", entityId: documentId, clientId: doc.clientId } }),
+    ...older.flatMap((o) => [
+      prisma.document.update({ where: { id: o.id }, data: { visibility: "STAFF_ONLY" } }),
+      prisma.documentAccessLog.create({ data: { documentId: o.id, action: "UNPUBLISH", staffUserId: actor.id } }),
+    ]),
+    prisma.auditLog.create({ data: { actorId: actor.id, action: "bookkeeping.report_delivered", entityType: "Document", entityId: documentId, clientId: doc.clientId, details: older.length ? { replacedDelivered: older.map((o) => o.id) } : undefined } }),
   ]);
   if (doc.scanStatus === "CLEAN") await notifyClientUsers(doc.clientId, "NEW_DOCUMENT", doc.id, doc.category);
 }
@@ -251,7 +401,7 @@ export function checklistView(p: PeriodFull) {
 
 export function periodSummary(p: PeriodFull, frequency = "MONTHLY", now = new Date(), deadlines: Deadlines = {}) {
   const items = checklistView(p);
-  const reports = p.documents.filter(isReport);
+  const reports = p.documents.filter((d) => isReport(d) && !d.supersededAt);
   const missing = items.filter((i) => i.state === "WAITING_CLIENT").length + p.requests.filter((r) => r.status === "OPEN").length;
   const done = items.filter((i) => i.state === "DONE" || i.state === "NOT_NEEDED" || i.state === "RECEIVED").length;
   let stage: Stage;
@@ -316,7 +466,7 @@ export async function bookkeepingWorkspace(clientId: string, periodId?: string |
 /** Reports waiting for the owner, across all clients. */
 export function reportsAwaitingReview() {
   return prisma.document.findMany({
-    where: { deletedAt: null, category: "BOOKKEEPING", reportType: { not: null }, reviewStatus: "AWAITING_REVIEW" },
+    where: { deletedAt: null, supersededAt: null, category: "BOOKKEEPING", reportType: { not: null }, reviewStatus: "AWAITING_REVIEW" },
     include: { client: { select: { id: true, displayName: true } }, period: { select: { id: true, year: true, month: true } } },
     orderBy: { submittedForReviewAt: "asc" },
   });

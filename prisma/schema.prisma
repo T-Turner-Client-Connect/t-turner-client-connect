@@ -975,6 +975,14 @@ model Document {
   submittedForReviewById String?
   approvedAt             DateTime?
   approvedById           String?
+  // Report versions: a revised report points at the version it replaces.
+  // The old version is kept (history) and marked superseded; the client sees
+  // the newest delivered version only.
+  version                Int?
+  replacesId             String?              @unique
+  replaces               Document?            @relation("ReportVersions", fields: [replacesId], references: [id], onDelete: SetNull)
+  replacedBy             Document?            @relation("ReportVersions")
+  supersededAt           DateTime?
 
   @@index([clientId, category, year, month])
   @@index([visibility])

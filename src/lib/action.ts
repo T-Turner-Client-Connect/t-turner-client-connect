@@ -5,23 +5,32 @@ import { ForbiddenError } from "@/lib/auth/actor";
 import { ValidationError } from "@/lib/services/clients";
 import { ImportError } from "@/lib/services/imports";
 
-export type ActionState = { error?: string; ok?: string; at?: number; codes?: string[]; link?: string } | null;
+export type ActionState = { error?: string; ok?: string; at?: number; codes?: string[]; link?: string; next?: { href: string; label: string } } | null;
 
 /**
  * Runs a Server Action body and turns expected failures into a message for
  * the form. Unexpected errors are logged without their payload.
  */
-export async function run(fn: () => Promise<string | void>): Promise<ActionState> {
+export async function run(fn: () => Promise<string | void | { ok: string; next?: { href: string; label: string } }>): Promise<ActionState> {
   try {
-    const ok = await fn();
-    return { ok: ok || "Saved.", at: Date.now() };
+    const r = await fn();
+    if (r && typeof r === "object") return { ok: r.ok, next: r.next, at: Date.now() };
+    return { ok: r || "Saved.", at: Date.now() };
   } catch (err) {
     unstable_rethrow(err);
     if (err instanceof ValidationError || err instanceof ForbiddenError || err instanceof ImportError) {
-      return { error: err.message, at: Date.now() };
+      const next = (err as { next?: { href: string; label: string } }).next;
+      return { error: err.message, at: Date.now(), ...(next ? { next } : {}) };
     }
-    console.error("Action failed:", err instanceof Error ? err.name : "unknown error");
-    return { error: "Something went wrong. Please try again.", at: Date.now() };
+    // Say what happened without exposing details; the reference ties the message to the server log.
+    const ref = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const code = typeof err === "object" && err && "code" in err ? String((err as { code: unknown }).code) : "";
+    console.error(`Action failed [${ref}]:`, err instanceof Error ? err.name : "unknown error", code);
+    if (code === "P2021" || code === "P2022") {
+      return { error: `Nothing was saved: the database is missing a recent update for this feature (the latest migration hasn't been applied). Please let your administrator know. Reference ${ref}.`, at: Date.now() };
+    }
+    if (code === "P2002") return { error: `Nothing was saved: this would create a duplicate record. Reference ${ref}.`, at: Date.now() };
+    return { error: `Something went wrong and nothing was saved. Please try again; if it keeps happening, share reference ${ref} with your administrator.`, at: Date.now() };
   }
 }
 

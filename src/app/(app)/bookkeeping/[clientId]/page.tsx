@@ -2,9 +2,9 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
-import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
+import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader } from "@/components/ui";
 import {
-  checklistItemAction, classifyDocumentAction, openPeriodForClientAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction,
+  checklistItemAction, classifyDocumentAction, openPeriodForClientAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
 } from "@/app/actions/bookkeeping-clients";
 import { periodStatusAction, requestDocumentAction, staffMessageAction } from "@/app/actions/workspace";
 import { requireUser } from "@/lib/auth/session";
@@ -26,14 +26,18 @@ const WAITING = {
 } as const;
 const REVIEW_TONE: Record<string, "gray" | "gold" | "red" | "green"> = { DRAFT: "gray", AWAITING_REVIEW: "gold", CHANGES_REQUESTED: "red", APPROVED: "green" };
 
-export default async function BookkeepingWorkspace({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ period?: string }> }) {
+export default async function BookkeepingWorkspace({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ period?: string; year?: string; month?: string }> }) {
   await connection();
   const user = await requireUser();
   const { clientId } = await params;
   const sp = await searchParams;
   if (!(await prisma.client.count({ where: { id: clientId } }))) notFound();
+  // Year + month picker: go to that month if it's open, otherwise offer to open it.
+  const picked = sp.year && sp.month ? { year: Number(sp.year), month: Number(sp.month) } : null;
+  const pickedPeriod = picked ? await prisma.bookkeepingPeriod.findUnique({ where: { clientId_year_month: { clientId, year: picked.year, month: picked.month } }, select: { id: true } }).catch(() => null) : null;
+  const notOpened = picked && !pickedPeriod && picked.month >= 1 && picked.month <= 12 ? picked : null;
   const [ws, approver, staff] = await Promise.all([
-    bookkeepingWorkspace(clientId, sp.period),
+    bookkeepingWorkspace(clientId, pickedPeriod?.id ?? sp.period),
     isReportApprover(user),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
   ]);
@@ -42,6 +46,21 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
   const label = period ? periodLabel(freq, period.year, period.month) : null;
   const link = (id: string) => `/api/documents/${downloadToken(id, { staffId: user.id })}`;
   const work = workMonth(freq);
+  const target = notOpened ?? (period ? { year: period.year, month: period.month } : work);
+  const thisYear = new Date().getFullYear();
+  const years = Array.from({ length: 8 }, (_, i) => thisYear + 1 - i);
+  // Earlier versions of each report (kept as history), newest first.
+  const history = (d: { replacesId: string | null }) => {
+    const out = [];
+    let id = d.replacesId;
+    while (id && out.length < 50) {
+      const prev = period?.documents.find((x) => x.id === id);
+      if (!prev) break;
+      out.push(prev);
+      id = prev.replacesId;
+    }
+    return out;
+  };
   const statements = period?.documents.filter((d) => !(d.category === "BOOKKEEPING" && d.reportType)) ?? [];
   const byKind = (k: string) => statements.filter((d) => d.docType === k);
   const unlabeled = statements.filter((d) => !d.docType || !(d.docType in BK_DOC_TYPES));
@@ -70,11 +89,25 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
             {" · "}<Link className="underline" href={`/clients/${clientId}`}>Client record</Link>
           </>
         }
+        actions={<LinkButton href="#upload-financials" data-testid="upload-financials-button">Upload Monthly Financials</LinkButton>}
       />
+      {(!profile || !profile.active) && (
+        <div className="mb-4">
+          <Notice tone="warn" title={profile ? "Bookkeeping is paused for this client" : "Not a Bookkeeping Client yet"}>
+            {profile ? "Set Status to Active in Service details to show them on the list again." : <>Save the Service details on the left, or use <Link className="underline" href={`/bookkeeping/new?client=${clientId}`}>Add Bookkeeping Client</Link>, to put them on the list.</>}
+          </Notice>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-4">
         <aside className="space-y-4 lg:col-span-1">
-          <Card title="Months">
+          <Card title="Year and month">
+            <form method="get" className="mb-3 flex flex-wrap items-end gap-2" data-testid="month-picker">
+              <Field label="Year"><select className="input w-24" name="year" defaultValue={target.year}>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>
+              <Field label="Month"><select className="input w-32" name="month" defaultValue={target.month}>{MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select></Field>
+              <Button type="submit" variant="secondary">Go</Button>
+            </form>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Opened months</p>
             <ul className="space-y-1 text-sm" data-testid="prior-months">
               {ws.periods.map((p) => (
                 <li key={p.id}>
@@ -84,22 +117,15 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                   </Link>
                 </li>
               ))}
-              {ws.periods.length === 0 && <li className="text-slate-600">No months yet.</li>}
+              {ws.periods.length === 0 && <li className="text-slate-600">No months yet. Choose a year and month above.</li>}
             </ul>
-            <ActionForm action={openPeriodForClientAction.bind(null, clientId)} className="mt-3 flex flex-wrap items-end gap-2">
-              <Field label="Month"><select className="input" name="month" defaultValue={work.month}>{MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select></Field>
-              <Field label="Year"><input className="input w-20" name="year" inputMode="numeric" defaultValue={work.year} /></Field>
-              <Button type="submit" variant="secondary">Open</Button>
-            </ActionForm>
           </Card>
           <Card title="Service details">
             <ActionForm action={saveBookkeepingProfileAction.bind(null, clientId)} className="space-y-2 text-sm">
               <Field label="Schedule"><select className="input" name="frequency" defaultValue={freq}>{Object.entries(FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
-              {user.role === "ADMIN" && (
-                <Field label="Assigned staff">
-                  <select className="input" name="assignedToId" defaultValue={client.assignedToId ?? ""}><option value="">Unassigned</option>{staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
-                </Field>
-              )}
+              <Field label="Assigned staff">
+                <select className="input" name="assignedToId" defaultValue={client.assignedToId ?? "none"}><option value="none">Unassigned</option>{staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+              </Field>
               <label className="flex items-center gap-2"><input type="checkbox" name="payroll" defaultChecked={profile?.payroll} /> Runs payroll</label>
               <Field label="Payroll frequency"><select className="input" name="payrollFrequency" defaultValue={profile?.payrollFrequency ?? ""}><option value="">—</option>{Object.entries(PAYROLL_FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
               <Field label="Payroll provider"><input className="input" name="payrollProvider" defaultValue={profile?.payrollProvider ?? ""} /></Field>
@@ -118,8 +144,19 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
         </aside>
 
         <div className="space-y-4 lg:col-span-3">
+          {notOpened && (
+            <section className="rounded-2xl border border-gold-300 bg-ivory-50 p-5" data-testid="not-opened">
+              <p className="font-semibold">{MONTHS[notOpened.month - 1]} {notOpened.year} isn&apos;t opened yet.</p>
+              <p className="text-sm text-slate-600">Opening it creates the month&apos;s checklist. Uploading a report for this month (below) also opens it.</p>
+              <ActionForm action={openPeriodForClientAction.bind(null, clientId)} className="mt-2">
+                <input type="hidden" name="year" value={notOpened.year} />
+                <input type="hidden" name="month" value={notOpened.month} />
+                <Button type="submit">Open {MONTHS[notOpened.month - 1]} {notOpened.year}</Button>
+              </ActionForm>
+            </section>
+          )}
           {!period || !summary ? (
-            <Notice title="No month open yet">Open a month on the left to create its checklist.</Notice>
+            !notOpened && <Notice title="No month open yet">Choose a year and month on the left, or upload a report below — that opens the month too.</Notice>
           ) : (
             <>
               <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-navy-900 px-5 py-4 text-white" data-testid="period-header">
@@ -215,10 +252,11 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                   {summary.reports.map((d) => {
                     const status = d.visibility === "PUBLISHED" ? "DELIVERED" : d.reviewStatus ?? "DRAFT";
                     return (
-                      <li key={d.id} className="py-3" data-report={d.reportType}>
+                      <li key={(history(d).at(-1) ?? d).id} className="py-3" data-report={d.reportType}>
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span>
-                            <strong>{d.reportType ? REPORT_LABELS[d.reportType] : "Report"}</strong> · {d.scanStatus === "CLEAN" ? <a className="underline" href={link(d.id)} target="_blank" rel="noopener">{d.title}</a> : d.title}
+                            <strong>{d.reportType ? REPORT_LABELS[d.reportType] : "Report"}</strong> <Badge tone="gray">v{d.version ?? 1}</Badge> · {d.scanStatus === "CLEAN" ? <a className="underline" href={link(d.id)} target="_blank" rel="noopener">{d.title}</a> : d.title}
+                            {d.scanStatus !== "CLEAN" && <Badge tone={SCAN_LABELS[d.scanStatus].tone} className="ml-1">{SCAN_LABELS[d.scanStatus].text}</Badge>}
                             {d.submittedForReviewAt && <span className="block text-xs text-slate-500">Submitted {fmtDateTime(d.submittedForReviewAt)}{d.approvedAt && ` · approved ${fmtDateTime(d.approvedAt)}`}{d.publishedAt && d.visibility === "PUBLISHED" && ` · delivered ${fmtDateTime(d.publishedAt)}`}</span>}
                           </span>
                           <Badge tone={status === "DELIVERED" ? "green" : REVIEW_TONE[status]}>{status === "DELIVERED" ? "Delivered to client" : REVIEW_LABELS[status]}</Badge>
@@ -242,6 +280,32 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                             <ActionForm action={reportStepAction.bind(null, clientId, d.id, "deliver")} confirm="Publish this approved report to the client's portal and notify them?"><Button type="submit">Deliver to client</Button></ActionForm>
                           )}
                         </div>
+                        <details className="mt-2" data-testid="revise">
+                          <summary className="cursor-pointer text-sm underline">Upload a revised version</summary>
+                          <ActionForm action={uploadMonthlyFinancialsAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-end gap-2" resetOnSuccess idempotent>
+                            <input type="hidden" name="replacesId" value={d.id} />
+                            <input type="hidden" name="year" value={period.year} />
+                            <input type="hidden" name="month" value={period.month} />
+                            <input type="hidden" name="reportType" value={d.reportType ?? "OTHER_REPORT"} />
+                            <Field label={`Revised file (becomes v${(d.version ?? 1) + 1})`}><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" /></Field>
+                            <Button type="submit" variant="secondary">Upload revision</Button>
+                          </ActionForm>
+                          <p className="mt-1 text-xs text-slate-600">The revision starts as a staff-only draft and needs Tabitha&apos;s approval.{status === "DELIVERED" && " The client keeps this delivered version until the revision is approved and delivered."}</p>
+                        </details>
+                        {history(d).length > 0 && (
+                          <details className="mt-1" data-testid="version-history">
+                            <summary className="cursor-pointer text-xs text-slate-600 underline">Version history ({history(d).length} earlier)</summary>
+                            <ul className="mt-1 space-y-0.5 text-xs text-slate-600">
+                              {history(d).map((h) => (
+                                <li key={h.id}>
+                                  v{h.version ?? 1} · {h.scanStatus === "CLEAN" ? <a className="underline" href={link(h.id)} target="_blank" rel="noopener">{h.title}</a> : h.title} · uploaded {fmtDateTime(h.createdAt)}{h.uploadedByStaff ? ` by ${h.uploadedByStaff.name}` : ""}
+                                  {h.approvedAt && ` · approved ${fmtDate(h.approvedAt)}`}{h.publishedAt && ` · delivered ${fmtDate(h.publishedAt)}`}
+                                  {h.visibility === "PUBLISHED" ? " · still shown to client until the new version is delivered" : " · replaced"}
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        )}
                       </li>
                     );
                   })}
@@ -249,19 +313,19 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                 <p className="mt-2 text-xs text-slate-600">Reports are always saved as drafts. Only Tabitha can approve them, and nothing reaches the client (portal or message) until she does.</p>
               </Card>
 
-              <Card title="Add a file to this month">
+              <Card title={`Add a client document to ${label}`}>
                 <ActionForm action={uploadBookkeepingFileAction.bind(null, clientId, period.id)} className="grid gap-2 sm:grid-cols-3" resetOnSuccess idempotent>
                   <Field label="File" className="sm:col-span-3"><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required /></Field>
                   <Field label="What is it?">
                     <select className="input" name="kind" required defaultValue="">
                       <option value="" disabled>Choose…</option>
-                      <optgroup label="Reports (draft → Tabitha's review)">{Object.entries(REPORT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</optgroup>
-                      <optgroup label="Client records">{Object.entries(BK_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</optgroup>
+                      {Object.entries(BK_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </select>
                   </Field>
-                  <Field label="Title (optional)"><input className="input" name="title" placeholder={`${label} Profit & Loss`} /></Field>
-                  <div className="flex items-end"><Button type="submit">Upload</Button></div>
+                  <Field label="Title (optional)"><input className="input" name="title" placeholder={`${label} bank statement`} /></Field>
+                  <div className="flex items-end"><Button type="submit" variant="secondary">Upload</Button></div>
                 </ActionForm>
+                <p className="mt-2 text-xs text-slate-600">Statements, payroll reports and receipts (staff only). For a P&amp;L or Balance Sheet, use Upload Monthly Financials.</p>
               </Card>
 
               <Card title="Messages">
@@ -284,6 +348,26 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
               </Card>
             </>
           )}
+
+          <section id="upload-financials" className="scroll-mt-6">
+            <Card title="Upload Monthly Financials">
+              <p className="mb-3 text-sm text-slate-600">Completed P&amp;L, Balance Sheet or other financial report. It&apos;s filed under {client.displayName} → year → month, saved as a <strong>staff-only draft</strong>, and reaches the client only after Tabitha approves it and staff deliver it.</p>
+              <ActionForm action={uploadMonthlyFinancialsAction.bind(null, clientId)} className="grid gap-3 sm:grid-cols-4" resetOnSuccess idempotent>
+                <Field label="Year"><select className="input" name="year" defaultValue={target.year}>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>
+                <Field label="Month"><select className="input" name="month" defaultValue={target.month}>{MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select></Field>
+                <Field label="Report">
+                  <select className="input" name="reportType" defaultValue="">
+                    <option value="">Choose…</option>
+                    {Object.entries(REPORT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label="Title (optional)"><input className="input" name="title" placeholder="e.g. September 2026 P&L" /></Field>
+                <Field label="File (PDF, PNG or JPG, up to 5 MB)" className="sm:col-span-3"><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" /></Field>
+                <div className="flex items-end"><Button type="submit">Upload report</Button></div>
+              </ActionForm>
+              <p className="mt-2 text-xs text-slate-600">Uploading a P&amp;L or Balance Sheet for a month that already has one saves it as the next version; earlier versions stay in the history.</p>
+            </Card>
+          </section>
         </div>
       </div>
     </>

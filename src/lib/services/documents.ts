@@ -161,6 +161,7 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
   if (visibility === "PUBLISHED" && doc.scanStatus === "INFECTED") throw new ValidationError("Infected files can't be published.");
   if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && doc.reportType && doc.reviewStatus !== "APPROVED") throw new ValidationError("Tabitha must approve this financial report before it's published.");
   if (visibility === "PUBLISHED" && doc.category === "IDENTITY") throw new ValidationError("Identity documents aren't published.");
+  if (visibility === "PUBLISHED" && doc.supersededAt) throw new ValidationError("A newer version of this report exists. Deliver the newest version instead.");
   await prisma.$transaction([
     prisma.document.update({ where: { id: documentId }, data: { visibility, publishedAt: visibility === "PUBLISHED" ? doc.publishedAt ?? new Date() : null } }),
     prisma.documentAccessLog.create({ data: { documentId, action: visibility === "PUBLISHED" ? "PUBLISH" : "UNPUBLISH", staffUserId: actor.id } }),
