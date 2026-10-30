@@ -80,6 +80,51 @@ describe("one owner, several businesses (fictional Steven Cox example)", () => {
     expect(Object.fromEntries(bills.map((b) => [b.clientId, b.monthlyFeeCents]))).toEqual({ [energy.id]: 30000, [drive.id]: 45000 });
   });
 
+  it("adds Drive Time from Steven's existing BUSINESS record without re-entering or retyping him; files stay separate", async () => {
+    const tabitha = await makeUser("ADMIN", "Tabitha");
+    await prisma.ownerAccess.create({ data: { userId: tabitha.id, isPrimary: true } });
+    // Starting point: one Business record (as in the office's CRM) with Steven as its contact and login.
+    const energy = await createClient(tabitha, { firstName: "Steven", lastName: "Cox", businessName: "Energy Solutions Insulation, LLC", email: "steven@fictional.example", clientType: "BUSINESS", status: "ACTIVE" });
+    await saveContact(tabitha, energy.id, null, { name: "Steven Cox", email: "steven@fictional.example", phone: "205-555-0100" });
+    const { token } = await invitePortalUser(tabitha, energy.id, { email: "steven@fictional.example", name: "Steven Cox", role: "OWNER" });
+    const login = await acceptPortalInvite(token!, "Steven-Pass-12345");
+    const actor = { id: login.id, name: login.name, email: login.email };
+    const eDoc = await staffUploadDocument(tabitha, { clientId: energy.id, category: "BOOKKEEPING", visibility: "PUBLISHED", year: 2026, bytes: pdf(), originalName: "energy-history.pdf" });
+    await saveProfile(tabitha, energy.id, { active: true, frequency: "MONTHLY", payroll: true });
+    await setCoethaLink(tabitha, energy.id, "https://claude.ai/project/energy-1");
+    const before = await prisma.client.findUniqueOrThrow({ where: { id: energy.id }, include: { contacts: true } });
+
+    // + Add / Link Another Business, from his current page.
+    const drive = await createAndLinkBusiness(tabitha, energy.id, { businessName: "Drive Time (fictional)", clientType: "BUSINESS" });
+    const after = await prisma.client.findUniqueOrThrow({ where: { id: energy.id }, include: { contacts: true } });
+    expect([after.clientType, after.displayName, after.businessName, after.contacts.length]).toEqual([before.clientType, before.displayName, before.businessName, before.contacts.length]);
+    expect(await prisma.client.count({ where: { clientType: "INDIVIDUAL" } })).toBe(0); // Steven isn't entered again
+    expect(await prisma.contact.count({ where: { clientId: drive.id } })).toBe(0); // nothing copied over
+    const fam = await businessFamily(drive.id);
+    expect([fam!.anchor.id, fam!.person, fam!.businesses.map((b) => b.id)]).toEqual([energy.id, null, [energy.id, drive.id]]);
+
+    // His existing login gets Drive Time only when granted; still one login.
+    await expect(requireClientAccess(login.id, drive.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await grantOwnerPortalAccess(tabitha, energy.id, drive.id, login.id);
+    expect((await accessibleClients(login.id)).map((a) => a.clientId).sort()).toEqual([energy.id, drive.id].sort());
+    expect(await prisma.portalUser.count()).toBe(1);
+
+    // Separate files, bookkeeping and Coetha links; Energy's history stays on Energy.
+    expect((await portalDocuments(actor, energy.id)).map((d) => d.id)).toEqual([eDoc.id]);
+    expect(await portalDocuments(actor, drive.id)).toEqual([]);
+    await saveProfile(tabitha, drive.id, { active: true, frequency: "MONTHLY", payroll: false });
+    await setCoethaLink(tabitha, drive.id, "https://claude.ai/project/drive-2");
+    const profiles = await prisma.bookkeepingProfile.findMany({ where: { clientId: { in: [energy.id, drive.id] } } });
+    expect(Object.fromEntries(profiles.map((p) => [p.clientId, [p.coethaUrl, p.payroll]]))).toEqual({ [energy.id]: ["https://claude.ai/project/energy-1", true], [drive.id]: ["https://claude.ai/project/drive-2", false] });
+
+    // One group: no adding from Drive Time, no duplicate, no nesting.
+    await expect(createAndLinkBusiness(tabitha, drive.id, { businessName: "Third Co (fictional)", clientType: "BUSINESS" })).rejects.toThrow(/main record/);
+    await expect(createAndLinkBusiness(tabitha, energy.id, { businessName: "Drive Time (fictional)", clientType: "BUSINESS" })).rejects.toThrow(/Already in the CRM/);
+    const other = await createClient(tabitha, { businessName: "Other Owner Co (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
+    await expect(linkBusiness(tabitha, other.id, energy.id)).rejects.toThrow(/main record of its own group/);
+    await expect(linkBusiness(tabitha, other.id, drive.id)).rejects.toThrow(/already linked to/);
+  });
+
   it("proposes links for an Admin to confirm; nothing is linked or merged automatically", async () => {
     const tabitha = await makeUser("ADMIN", "Tabitha");
     const daria = await makeUser("STAFF", "Daria");

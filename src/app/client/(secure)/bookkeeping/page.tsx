@@ -68,7 +68,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
 
   return (
     <>
-      <PageHeader title="Bookkeeping & requests" />
+      <PageHeader title="Bookkeeping & requests" subtitle={<span data-testid="bk-business">Checklist, reports and questions for <strong>{current.client.businessName || current.client.displayName}</strong> only.</span>} />
       {looseRequests.length > 0 && (
         <Card title="Documents we need" className="mb-4"><ul className="divide-y divide-navy-100">{looseRequests.map((r) => requestItem(r, null))}</ul></Card>
       )}

@@ -106,7 +106,10 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
               {shown.map((r) => (
                 <tr key={r.client.id} className="hover:bg-ivory-50" data-client={r.client.displayName}>
                   <td className="px-4 py-3">
-                    <Link href={`/bookkeeping/${r.client.id}`} className="font-semibold text-navy-900 underline decoration-gold-500 underline-offset-4">{r.client.displayName}</Link>
+                    <Link href={`/bookkeeping/${r.client.id}`} className="inline-block min-w-40 text-navy-900" data-testid="bk-row-name">
+                      <span className="block font-semibold underline decoration-gold-500 underline-offset-4">{r.owner ?? r.business ?? r.client.displayName}</span>
+                      {r.owner && r.business && <span className="block text-sm text-slate-700">{r.business}</span>}
+                    </Link>
                     {r.unread > 0 && <Badge tone="gold" className="ml-2">{r.unread} message{r.unread === 1 ? "" : "s"}</Badge>}
                   </td>
                   <td className="px-3 py-3">{r.client.assignedTo?.name ?? <span className="text-red-700">Unassigned</span>}</td>

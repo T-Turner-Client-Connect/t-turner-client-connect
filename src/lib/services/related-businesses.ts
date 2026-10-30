@@ -8,8 +8,10 @@ import { findClientMatches } from "./bookkeeping-clients";
 
 /**
  * Owners with several businesses (e.g. one person who owns two companies):
- * one Personal client record for the person, linked to each business's own
- * client record. Every business keeps its own EIN, accounts, billing,
+ * the owner's main record — their Personal client record, or the Business
+ * record they were first set up under (with their contact, login and billing
+ * already on it) — linked to each other business's own client record. The
+ * main record is never changed, retyped or copied when a business is added. Every business keeps its own EIN, accounts, billing,
  * documents, staff and Coetha link. A link never grants portal access by
  * itself — staff grant each business explicitly.
  */
@@ -18,24 +20,60 @@ export const REL_ROLES = { OWNER: "Owner", PARTNER: "Partner", OFFICER: "Officer
 
 const pick = { id: true, displayName: true, businessName: true, clientType: true, archivedAt: true } as const;
 
-/** The person and their businesses, for the tabs on any record in the group. */
+/**
+ * The owner's group, for the tabs on any record in it: the main record (their
+ * Personal record, or the Business record they were set up under) and every
+ * business linked to it. `person` is set only when the main record is Personal.
+ */
 export async function businessFamily(clientId: string) {
   const c = await prisma.client.findUnique({ where: { id: clientId }, select: pick });
   if (!c) return null;
-  let people = c.clientType === "INDIVIDUAL" ? [c] : (await prisma.clientRelationship.findMany({ where: { businessClientId: clientId }, include: { person: { select: pick } }, orderBy: { createdAt: "asc" } })).map((r) => r.person);
-  people = people.filter((p) => !p.archivedAt);
-  const person = people[0] ?? null;
-  const businesses = person
-    ? (await prisma.clientRelationship.findMany({ where: { personClientId: person.id }, include: { business: { select: pick } }, orderBy: { createdAt: "asc" } })).map((r) => ({ ...r.business, role: r.role })).filter((b) => !b.archivedAt)
-    : [];
-  return { current: c, person, otherOwners: people.slice(1), businesses };
+  let anchor = c;
+  let otherOwners: (typeof c)[] = [];
+  if (c.clientType !== "INDIVIDUAL") {
+    const owners = (await prisma.clientRelationship.findMany({ where: { businessClientId: clientId }, include: { person: { select: pick } }, orderBy: { createdAt: "asc" } })).map((r) => r.person).filter((p) => !p.archivedAt);
+    if (owners.length) [anchor, ...otherOwners] = owners;
+  }
+  const linked = (await prisma.clientRelationship.findMany({ where: { personClientId: anchor.id }, include: { business: { select: pick } }, orderBy: { createdAt: "asc" } }))
+    .map((r) => ({ ...r.business, role: r.role }))
+    .filter((b) => !b.archivedAt);
+  const person = anchor.clientType === "INDIVIDUAL" ? anchor : null;
+  // A Business main record is itself one of the owner's businesses (first tab).
+  const businesses = person ? linked : [{ ...anchor, role: "OWNER" }, ...linked];
+  return { current: c, anchor, person, otherOwners, businesses, ownerName: person?.displayName ?? (await ownerOfRecord(anchor.id)) };
+}
+
+/** The owner's name already on a Business main record: its first contact, else the name fields on the record. Never asked for again. */
+async function ownerOfRecord(clientId: string) {
+  const r = await prisma.client.findUnique({ where: { id: clientId }, select: { firstName: true, lastName: true, contacts: { select: { name: true }, orderBy: { createdAt: "asc" }, take: 1 } } });
+  return r?.contacts[0]?.name?.trim() || [r?.firstName, r?.lastName].filter(Boolean).join(" ").trim() || null;
+}
+
+/** Heading for a record: a business shows its business name, with "Owner: …" when it's part of an owner's group. */
+export async function recordHeading(clientId: string) {
+  const fam = await businessFamily(clientId);
+  if (!fam) return null;
+  const c = fam.current;
+  const title = c.clientType === "INDIVIDUAL" ? c.displayName : c.businessName || c.displayName;
+  const grouped = !!fam.person || fam.businesses.length > 1;
+  return { title, owner: c.clientType !== "INDIVIDUAL" && grouped ? fam.ownerName : null };
+}
+
+/** The record more businesses are added from: a Personal record, or a Business record that isn't itself linked under another owner. */
+async function assertMainRecord(anchorId: string) {
+  const a = await prisma.client.findUnique({ where: { id: anchorId }, include: { ownedBy: { include: { person: { select: { displayName: true } } }, take: 1 } } });
+  if (!a || a.archivedAt) throw new ValidationError("Client not found.");
+  if (a.clientType !== "INDIVIDUAL" && a.ownedBy.length) throw new ValidationError(`Add businesses from ${a.ownedBy[0].person.displayName}'s main record, so they stay in one group.`);
+  return a;
 }
 
 async function assertPair(personClientId: string, businessClientId: string) {
   if (personClientId === businessClientId) throw new ValidationError("Choose a different business.");
-  const [p, b] = await Promise.all([prisma.client.findUnique({ where: { id: personClientId } }), prisma.client.findUnique({ where: { id: businessClientId } })]);
-  if (!p || p.archivedAt || p.clientType !== "INDIVIDUAL") throw new ValidationError("Link businesses to the owner's Personal (individual) record.");
+  const p = await assertMainRecord(personClientId);
+  const b = await prisma.client.findUnique({ where: { id: businessClientId }, include: { _count: { select: { ownsBusinesses: true } }, ownedBy: { include: { person: { select: { displayName: true, clientType: true } } } } } });
   if (!b || b.archivedAt || b.clientType === "INDIVIDUAL") throw new ValidationError("Choose a business or nonprofit record to link.");
+  if (b._count.ownsBusinesses) throw new ValidationError(`${b.displayName} is the main record of its own group. Add businesses from one main record instead.`);
+  if (p.clientType !== "INDIVIDUAL" && b.ownedBy.some((o) => o.personClientId !== personClientId)) throw new ValidationError(`${b.displayName} is already linked to ${b.ownedBy[0].person.displayName}.`);
   return { p, b };
 }
 
@@ -52,8 +90,7 @@ export async function linkBusiness(actor: Actor, personClientId: string, busines
 
 /** Creates a new business record (after a duplicate check) and links it to the owner. */
 export async function createAndLinkBusiness(actor: Actor, personClientId: string, input: { businessName: string; clientType: "BUSINESS" | "NONPROFIT"; email?: string; phone?: string; role?: string }) {
-  const person = await prisma.client.findUnique({ where: { id: personClientId } });
-  if (!person || person.clientType !== "INDIVIDUAL") throw new ValidationError("Open the owner's Personal record to add a business.");
+  await assertMainRecord(personClientId);
   if (!input.businessName.trim()) throw new ValidationError("Enter the business name.");
   const matches = (await findClientMatches({ businessName: input.businessName, email: input.email, phone: input.phone })).filter((m) => m.id !== personClientId);
   if (matches.length) throw new ValidationError(`Already in the CRM: ${matches.map((m) => m.displayName).join(", ")}. Use “Link an existing business” instead of creating a duplicate.`);
@@ -127,4 +164,14 @@ export async function possibleDuplicatePeople() {
 export async function confirmProposedLink(actor: Actor, personClientId: string, businessClientId: string) {
   assertAdmin(actor);
   return linkBusiness(actor, personClientId, businessClientId, "OWNER");
+}
+
+/** For lists: the owner's name over the business name (an individual shows just their name). */
+export async function ownerAndBusiness(clientId: string) {
+  const fam = await businessFamily(clientId);
+  if (!fam) return null;
+  const c = fam.current;
+  if (c.clientType === "INDIVIDUAL") return { owner: c.displayName, business: null, order: 0 };
+  // order: the owner's main record first, then businesses in the order they were added.
+  return { owner: fam.ownerName, business: c.businessName || c.displayName, order: Math.max(0, fam.businesses.findIndex((b) => b.id === c.id)) };
 }

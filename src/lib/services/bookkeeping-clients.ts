@@ -9,6 +9,7 @@ import { buildDisplayName, normalizeEmail, normalizePhone } from "@/lib/normaliz
 import { createClient, saveContact, ValidationError, type ClientInput } from "./clients";
 import { MONTHS, openPeriod } from "./bookkeeping";
 import { notifyClientUsers, REPORT_LABELS, staffUploadDocument } from "./documents";
+import { ownerAndBusiness } from "./related-businesses";
 
 /**
  * Bookkeeping Clients: the staff list of monthly/quarterly bookkeeping
@@ -526,8 +527,12 @@ export async function bookkeepingClients(f: ListFilters = {}) {
     const missing = summaries.reduce((n, r) => n + (r.summary.stage === "DELIVERED" ? 0 : r.summary.missing), 0);
     const awaitingReview = summaries.some((r) => r.summary.stage === "AWAITING_REVIEW");
     const unread = await prisma.conversation.count({ where: { clientId: p.clientId, awaitingStaff: true } });
-    rows.push({ profile: p, client: p.client, workLabel: periodLabel(p.frequency, year, month), reportMonth: reportsDue(p.frequency, month), periodId: current?.id ?? null, summary, stage: (summary?.stage ?? "NOT_OPENED") as Stage, overdue, missing, awaitingReview, unread });
+    const names = await ownerAndBusiness(p.clientId);
+    rows.push({ profile: p, client: p.client, owner: names?.owner ?? null, business: names?.business ?? null, order: names?.order ?? 0, workLabel: periodLabel(p.frequency, year, month), reportMonth: reportsDue(p.frequency, month), periodId: current?.id ?? null, summary, stage: (summary?.stage ?? "NOT_OPENED") as Stage, overdue, missing, awaitingReview, unread });
   }
+  // One row per business, grouped by owner (e.g. Steven Cox · Energy Solutions, then Steven Cox · Drive Time).
+  const who = (r: { owner: string | null; business: string | null; client: { displayName: string } }) => (r.owner ?? r.business ?? r.client.displayName).toLowerCase();
+  rows.sort((a, b) => who(a).localeCompare(who(b)) || a.order - b.order || (a.business ?? "").localeCompare(b.business ?? ""));
   return rows.filter((r) => (!f.missing || r.missing > 0) && (!f.overdue || r.overdue.length > 0) && (!f.review || r.awaitingReview));
 }
 
