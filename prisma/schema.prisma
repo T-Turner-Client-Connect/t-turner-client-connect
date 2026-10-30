@@ -260,6 +260,9 @@ model Client {
   bookkeepingBilling   BookkeepingBilling?
   chargeAuthorizations RecurringChargeAuthorization[]
   businessOnboarding   BusinessOnboarding?
+  // A person (Personal record) linked to the businesses they own, and back.
+  ownsBusinesses       ClientRelationship[]           @relation("RelPerson")
+  ownedBy              ClientRelationship[]           @relation("RelBusiness")
   noticeCases          NoticeCase[]
   businessInfoChanges  BusinessInfoChange[]
   taxYearProgress      TaxYearProgress[]
@@ -2640,4 +2643,22 @@ model NoticeCase {
 
   @@index([clientId, taxYear])
   @@index([status, responseDueOn])
+}
+
+/// Links a person's Personal client record to a business they own or run.
+/// Each business stays its own client record (EIN, accounts, billing,
+/// documents, staff). Linking never grants portal access by itself.
+model ClientRelationship {
+  id               String   @id @default(cuid())
+  personClientId   String
+  person           Client   @relation("RelPerson", fields: [personClientId], references: [id], onDelete: Cascade)
+  businessClientId String
+  business         Client   @relation("RelBusiness", fields: [businessClientId], references: [id], onDelete: Cascade)
+  // OWNER | PARTNER | OFFICER | OTHER
+  role             String   @default("OWNER")
+  createdById      String
+  createdAt        DateTime @default(now())
+
+  @@unique([personClientId, businessClientId])
+  @@index([businessClientId])
 }

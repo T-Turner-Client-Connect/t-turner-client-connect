@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BusinessTabs } from "@/components/business-tabs";
 import { notFound } from "next/navigation";
 import type { ConsentKind } from "@prisma/client";
 import { ActionForm } from "@/components/action-form";
@@ -72,6 +73,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
 
   return (
     <>
+      <BusinessTabs clientId={id} base="/clients" />
       <PageHeader
         title={client.displayName}
         subtitle={

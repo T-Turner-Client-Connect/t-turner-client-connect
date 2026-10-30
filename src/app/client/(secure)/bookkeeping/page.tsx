@@ -49,6 +49,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
             {Object.entries(BK_DOC_TYPES).filter(([k]) => k !== "PAYROLL_REPORT" || payroll).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
         )}
+        <span className="w-full text-xs text-slate-600">Saving to <strong>{current.client.businessName || current.client.displayName}</strong>{label.includes(" for ") ? ` — ${label.split(" for ").pop()}` : ""}</span>
         <input className="input max-w-xs" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label={label} />
         <Button type="submit" variant="secondary">Upload</Button>
       </ActionForm>

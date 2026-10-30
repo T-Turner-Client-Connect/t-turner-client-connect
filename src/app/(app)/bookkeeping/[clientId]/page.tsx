@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BusinessTabs } from "@/components/business-tabs";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
@@ -93,6 +94,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
   return (
     <>
       <p className="mb-2 text-sm"><Link className="underline" href="/bookkeeping">← Bookkeeping Clients</Link></p>
+      <BusinessTabs clientId={clientId} base="/bookkeeping" />
       <PageHeader
         title={client.displayName}
         subtitle={
