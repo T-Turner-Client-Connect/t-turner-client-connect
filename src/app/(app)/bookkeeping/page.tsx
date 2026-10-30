@@ -123,7 +123,7 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
                     )}
                   </td>
                   <td className="px-3 py-3"><Badge tone={STAGES[r.stage].tone}>{STAGES[r.stage].label}</Badge>{r.awaitingReview && r.stage !== "AWAITING_REVIEW" && <Badge tone="gold" className="ml-1">Earlier month in review</Badge>}</td>
-                  <td className="px-3 py-3">{r.overdue.length ? <span className="text-red-800">{r.overdue.join("; ")}</span> : <span className="text-slate-500">—</span>}</td>
+                  <td className="px-3 py-3">{r.overdue.length ? <span className="text-red-800">{r.overdue.join("; ")}</span> : !r.profile.documentsDueDay && !r.profile.reportsDueDay ? <span className="text-xs text-slate-500">No deadlines set</span> : <span className="text-slate-500">—</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -171,13 +171,19 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
             <select className="input" name="payrollFrequency" defaultValue=""><option value="">—</option>{Object.entries(PAYROLL_FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
           </Field>
           <Field label="Payroll provider"><input className="input" name="payrollProvider" placeholder="e.g. Gusto, ADP" /></Field>
+          <Field label="Documents due (month after)" hint="Optional">
+            <select className="input" name="documentsDueDay" defaultValue=""><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
+          </Field>
+          <Field label="Reports due (month after)" hint="Optional">
+            <select className="input" name="reportsDueDay" defaultValue=""><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
+          </Field>
           <Field label="Accounts to collect" className="sm:col-span-2"><input className="input" name="accounts" placeholder="e.g. Regions business checking, Amex" /></Field>
           <div className="flex items-end"><Button type="submit">Add client</Button></div>
         </ActionForm>
         <p className="mt-2 text-xs text-slate-600">Only an Admin can change who a client is assigned to.</p>
       </Card>
       <p className="mt-3 text-xs text-slate-600">
-        Every client collects documents monthly; quarterly clients get reports at quarter end. Overdue: client documents after the 10th of the following month; reports not delivered by the end of the following month.
+        Every client collects documents monthly; quarterly clients get reports at quarter end. Overdue uses each client&apos;s own document and report due days (set in the client&apos;s Service details); a client with no due day set is never marked overdue for it. Requested items use their own due dates.
         Reports go draft → {REVIEW_LABELS.AWAITING_REVIEW} → approved by Tabitha → delivered by staff. This workspace is separate from the Owner&apos;s Office.
       </p>
     </>

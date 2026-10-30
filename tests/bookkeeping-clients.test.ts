@@ -98,7 +98,15 @@ describe("Bookkeeping Clients list and checklists", () => {
     expect((await bookkeepingClients({ assignedTo: "unassigned", now })).map((r) => r.client.displayName)).toEqual(["Quarterly Shop"]);
     expect((await bookkeepingClients({ frequency: "QUARTERLY", now })).map((r) => r.client.displayName)).toEqual(["Quarterly Shop"]);
     expect((await bookkeepingClients({ missing: true, now })).length).toBe(2);
-    expect((await bookkeepingClients({ overdue: true, now })).map((r) => r.client.displayName)).toContain("Bakery LLC"); // documents due Oct 10
+    // No due days set yet: nothing is overdue (no built-in deadline).
+    expect((await bookkeepingClients({ overdue: true, now })).length).toBe(0);
+    await saveProfile(tabitha, bakery.id, { active: true, frequency: "MONTHLY", payroll: true, payrollFrequency: "BIWEEKLY", documentsDueDay: 12, reportsDueDay: 25 });
+    expect((await bookkeepingClients({ overdue: true, now: new Date(2026, 9, 11) })).length).toBe(0); // Oct 11: before the 12th
+    const late = await bookkeepingClients({ overdue: true, now });
+    expect(late.map((r) => r.client.displayName)).toEqual(["Bakery LLC"]); // Oct 15: documents past due, reports not yet
+    expect(late[0].overdue).toEqual(["Client documents overdue"]);
+    expect((await bookkeepingClients({ overdue: true, now: new Date(2026, 9, 26) }))[0].overdue).toContain("Reports overdue");
+    await expect(saveProfile(tabitha, bakery.id, { active: true, frequency: "MONTHLY", payroll: true, documentsDueDay: 40 })).rejects.toThrow(/1–31/);
     expect((await bookkeepingClients({ review: true, now })).length).toBe(0);
     const pl = await staffUploadDocument(daria, { clientId: bakery.id, category: "BOOKKEEPING", visibility: "STAFF_ONLY", reportType: "PROFIT_AND_LOSS", periodId: bk.id, bytes: pdf(), originalName: "pl.pdf" });
     await submitReportForReview(daria, pl.id);

@@ -2357,6 +2357,11 @@ model BookkeepingProfile {
   // WEEKLY | BIWEEKLY | SEMIMONTHLY | MONTHLY
   payrollFrequency String?
   payrollProvider  String?
+  // Deadlines, set per client by staff (no default): day of the month after
+  // the work month when the client's documents are due / reports are due.
+  // 31 means the last day of that month. Null = no deadline, never overdue.
+  documentsDueDay  Int?
+  reportsDueDay    Int?
   // Accounts to collect statements for (e.g. "Regions checking, Amex").
   accounts         String?
   notes            String?
