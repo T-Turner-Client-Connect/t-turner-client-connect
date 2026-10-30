@@ -30,6 +30,14 @@ const prisma = new PrismaClient({ datasourceUrl: url });
 const applied = new Set((await prisma.$queryRawUnsafe(`SELECT name FROM "_local_migrations"`)).map((r) => r.name));
 await prisma.$disconnect();
 
+// Mirror Netlify's rule: a pending migration must be newer than every applied one.
+// (Netlify rejects an older one instead of skipping it, which blocks the deploy.)
+const newestApplied = [...applied].sort().at(-1);
+const outOfOrder = migrations.filter((n) => !applied.has(n) && newestApplied && n < newestApplied);
+if (outOfOrder.length) {
+  throw new Error(`Out-of-order migration(s): ${outOfOrder.join(", ")} — older than the newest applied (${newestApplied}). Netlify would reject this deploy. Give it a newer version prefix (never rename one that has already been applied).`);
+}
+
 let count = 0;
 for (const name of migrations) {
   if (applied.has(name)) continue;

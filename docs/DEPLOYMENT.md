@@ -11,6 +11,12 @@ This project uses **Netlify Database** (`@netlify/database`), Netlify's built-in
   applied in name order). **Netlify applies them itself**: to each deploy preview's database branch
   before the preview is published, and to production just before publish. A failing migration blocks
   the deploy instead of breaking the live site.
+- **Migration order matters.** Netlify refuses any migration whose version is not newer than the newest
+  migration already applied (it blocks the deploy instead of skipping it), and it also refuses edits to,
+  or removal of, a migration that has run. When two branches add migrations, the one merged second must
+  carry the newer version: before merging, check that every new migration folder sorts after the newest
+  one on `main`. `npm run db:migrate:local` enforces the same rule locally. To fix a blocked deploy, give
+  the never-applied migration a newer version (never rename or edit one that has already run).
 - The build (`node scripts/check-deploy-env.mjs && npx next build`) never connects to the database and
   never runs migrations — that's why the old `P1012: DATABASE_URL not found` error can't recur.
 - Do **not** add a `DATABASE_URL` variable in Netlify; it's ignored there (the build prints a warning).
