@@ -33,5 +33,15 @@ export async function loadGreetingName(clientId: string, portalUserId: string | 
     });
     contact = owner?.portalUser.contact ?? null;
   }
+  if (!contact?.preferredName && portalUserId) {
+    // An owner of several businesses: greet them by their own name, from the Personal record
+    // this same login can open and that's linked to this business.
+    const owner = await prisma.clientRelationship.findFirst({
+      where: { businessClientId: clientId, person: { archivedAt: null, portalAccess: { some: { portalUserId, revokedAt: null } } } },
+      select: { person: { select: { preferredName: true, firstName: true } } },
+    });
+    const name = owner?.person.preferredName?.trim() || owner?.person.firstName?.trim();
+    if (name) return name;
+  }
   return greetingName(client, contact);
 }

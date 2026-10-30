@@ -69,6 +69,7 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
         <div className="lg:col-span-2"><PortalDocumentsView docs={docs} linkFor={(id) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`} /></div>
         {current.canUpload && (
           <Card title="Send us a document">
+            <p className="mb-2 rounded-lg bg-ivory-50 px-3 py-2 text-sm" data-testid="upload-target">Saving to: <strong>{current.client.businessName || current.client.displayName}</strong> — choose the tax year below. Switch accounts at the top if this isn&apos;t the right one.</p>
             <ActionForm action={portalUploadAction.bind(null, current.clientId)} className="space-y-3" resetOnSuccess>
               <Field label="File" hint="PDF, JPG or PNG up to 5 MB."><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required /></Field>
               <Field label="Kind of document">

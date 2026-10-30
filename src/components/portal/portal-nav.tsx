@@ -81,7 +81,28 @@ function NavLinks({ q, pathname, unread, onNavigate }: { q: string; pathname: st
 }
 
 /** Client portal frame: navy sidebar on large screens, top bar with a menu drawer on phones. */
-export function PortalNav({ accounts, name, unread, signOut }: { accounts: { id: string; name: string }[]; name: string; unread: number; signOut: () => Promise<void> }) {
+type Account = { id: string; name: string; personal?: boolean };
+
+/** Business tabs: Personal first, then each business this login may open. The selected one is always named. */
+function AccountTabs({ accounts, current, pathname }: { accounts: Account[]; current: string; pathname: string }) {
+  if (accounts.length < 2) return null;
+  const sorted = [...accounts.filter((a) => a.personal), ...accounts.filter((a) => !a.personal)];
+  const selected = accounts.find((a) => a.id === current);
+  return (
+    <div className="border-b border-ivory-200 bg-white/90 px-4 py-2 sm:px-8" data-testid="account-tabs">
+      <nav aria-label="Your accounts" className="flex gap-2 overflow-x-auto pb-1">
+        {sorted.map((a) => (
+          <Link key={a.id} href={`${pathname}?account=${a.id}`} aria-current={a.id === current ? "page" : undefined} className={clsx("shrink-0 rounded-full px-3 py-1.5 text-sm font-semibold", a.id === current ? "bg-navy-900 text-gold-300 ring-2 ring-gold-500" : "bg-ivory-50 text-navy-900 ring-1 ring-ivory-200 hover:bg-gold-100")}>
+            {a.personal ? `Personal — ${a.name}` : a.name}
+          </Link>
+        ))}
+      </nav>
+      {selected && <p className="text-xs text-slate-600" data-testid="viewing-account">Viewing: <strong className="text-navy-900">{selected.personal ? `Personal — ${selected.name}` : selected.name}</strong></p>}
+    </div>
+  );
+}
+
+export function PortalNav({ accounts, name, unread, signOut }: { accounts: Account[]; name: string; unread: number; signOut: () => Promise<void> }) {
   const pathname = usePathname();
   const router = useRouter();
   const sp = useSearchParams();
@@ -160,6 +181,7 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: { id:
           <span className="hidden lg:block" />
           {topRight}
         </div>
+        <AccountTabs accounts={accounts} current={account} pathname={pathname} />
       </header>
       {open && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Menu">
