@@ -295,3 +295,39 @@ export async function billingView(actor: Actor, clientId: string) {
     chargeAuthorized: !!active && active.amountCents === billing?.monthlyFeeCents,
   };
 }
+
+// --- Work with Coetha (Claude link) -------------------------------------------------
+
+/**
+ * Accepts only a claude.ai Project or conversation link. It's a bookmark: the
+ * app never logs in to Claude, stores no Claude password, and nothing syncs.
+ */
+export function parseCoethaUrl(input: string) {
+  let u: URL;
+  try {
+    u = new URL(input.trim());
+  } catch {
+    throw new ValidationError("Paste the Claude link, starting with https://claude.ai/");
+  }
+  if (u.protocol !== "https:" || (u.hostname !== "claude.ai" && !u.hostname.endsWith(".claude.ai"))) throw new ValidationError("Only claude.ai links can be saved here.");
+  if (u.username || u.password) throw new ValidationError("Save only the link — never a username or password.");
+  if (!/^\/(project|chat)\/[A-Za-z0-9-]+\/?$/.test(u.pathname)) throw new ValidationError("Use the link to the client's Claude Project (claude.ai/project/…) or conversation (claude.ai/chat/…).");
+  return `${u.origin}${u.pathname}`;
+}
+
+/** Only Tabitha sets, changes or removes a client's Coetha link. */
+export async function setCoethaLink(actor: Actor, clientId: string, url: string | null) {
+  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can set or change a client's Coetha link.");
+  const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId } });
+  if (!profile) throw new ValidationError("Add this client to Bookkeeping Clients first.");
+  const coethaUrl = url?.trim() ? parseCoethaUrl(url) : null;
+  await prisma.bookkeepingProfile.update({ where: { clientId }, data: { coethaUrl, coethaUpdatedById: actor.id, coethaUpdatedAt: new Date() } });
+  await audit(prisma, { actorId: actor.id, action: coethaUrl ? "bookkeeping.coetha_link_set" : "bookkeeping.coetha_link_removed", entityType: "Client", entityId: clientId, clientId, details: { url: coethaUrl } });
+}
+
+/** Who may open the link here: Admins and the client's assigned staff member. They still need their own Claude access to the Project. */
+export async function canOpenCoetha(actor: Actor, clientId: string) {
+  if (actor.role === "ADMIN") return true;
+  const c = await prisma.client.findUnique({ where: { id: clientId }, select: { assignedToId: true } });
+  return c?.assignedToId === actor.id;
+}

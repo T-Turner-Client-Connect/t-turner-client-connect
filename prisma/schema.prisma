@@ -2454,6 +2454,12 @@ model BookkeepingProfile {
   // When an Admin last verified the business information (client onboarding).
   verifiedAt          DateTime?
   verifiedById        String?
+  // "Work with Coetha": this client's own Claude Project or conversation link
+  // (https://claude.ai/...). Set by Tabitha; opened by authorized staff with
+  // their own Claude access. Never a password; nothing syncs automatically.
+  coethaUrl           String?
+  coethaUpdatedById   String?
+  coethaUpdatedAt     DateTime?
 }
 
 /// A client's bank or credit-card account for bookkeeping. Never holds
