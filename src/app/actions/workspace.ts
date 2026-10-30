@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import type { DocumentCategory, DocumentVisibility, MessageChannel, PeriodStatus, PortalRole, ReportType, RequestStatus } from "@prisma/client";
 import { requireUser } from "@/lib/auth/session";
+import { assertAdmin } from "@/lib/auth/actor";
 import { dateOrNull, run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
 import { acknowledgeDocuments, deleteDocument, scanQuarantined, setRetention, setVisibility, staffUploadDocument } from "@/lib/services/documents";
@@ -212,6 +213,8 @@ export async function portalAccessAction(clientId: string, accessId: string, _pr
 export async function resetPortalMfaAction(clientId: string, portalUserId: string, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
+    // Client account recovery is Admin-only (Portal tab → Account Access & Recovery).
+    assertAdmin(actor);
     const allowed = await prisma.portalAccess.count({ where: { portalUserId, clientId } });
     if (!allowed) throw new ValidationError("Not a portal user for this client.");
     await resetMfa(actor, { kind: "portal", id: portalUserId });

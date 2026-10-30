@@ -123,7 +123,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       {tab === "documents" && <DocumentsTab clientId={id} user={user} />}
       {tab === "bookkeeping" && <BookkeepingTab clientId={id} />}
       {tab === "taxes" && <TaxesTab clientId={id} user={user} />}
-      {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} />}
+      {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} actor={user} />}
 
       {tab === "overview" && (
       <div className="grid gap-4 lg:grid-cols-3">
