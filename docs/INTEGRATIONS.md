@@ -11,12 +11,64 @@
 | Portal notifications (email/text) | Recorded; delivered only when enabled | `NOTIFICATIONS_ENABLED=true` + Resend/Twilio |
 | Campaign email/text sending | **Locked.** Drafts, audiences, previews and test sends (simulated without a provider) work | Resend + Twilio + `LIVE_SENDING_ENABLED=true` + the messaging stage |
 | SMS consent, STOP/HELP, delivery receipts | Built: public consent page, per-phone consent ledger, signed Twilio webhooks | Twilio console webhook + Advanced Opt-Out — see SMS-PROGRAM.md |
-| Malware scanning | Setup required (files are type-checked; marked "Not scanned") | `MALWARE_SCAN_URL` |
+| Malware scanning | **Quarantine enforced.** Every client document is blocked (no download, not shown to clients) until a scanner returns clean | `MALWARE_SCAN_PROVIDER` + scanner settings — see below |
 | Jotform contracts | Links and in-portal embed work; completion confirmed by staff | `JOTFORM_API_KEY` + `JOTFORM_WEBHOOK_SECRET`, webhook `https://<site>/api/webhooks/jotform?secret=…`, hidden field `assignment_ref` on each form |
+| Jotform tax questionnaires | Year picker opens each saved form; staff can link an existing submission (with a confirmed match) | Same `JOTFORM_API_KEY` + webhook as contracts; form IDs saved in **News & Countdowns → Tax questionnaires**; each questionnaire needs the hidden field `assignment_ref`. See `docs/TAX-CENTER.md` |
 | Tax e-signatures | **Setup required.** Requests can be prepared; signed-outside-the-app copies can be recorded (clearly labelled) | A provider verified for the exact tax forms, IRS identity requirements, joint signers and record retention |
 | TaxAct | **Staff-controlled CSV import** of e-file statuses (Clients → Imports → TaxAct) and of contact exports | See below |
 | Social publishing | **Manual publishing.** Suggested drafts from approved topics (built-in, no AI cost), approval with flagged-claim verification, one in-site reminder per platform when due, Download / Copy caption & hashtags / Open platform, mark posted per platform (link optional) | Direct publishing needs Meta App Review / TikTok audit; analytics-based times need connected accounts; an AI writer (optional) needs an AI provider API key |
 | Automations | Engine works; rules paused by default | `CRON_SECRET`, enable rules in Workflows → Automations |
+
+## Malware scanning (quarantine)
+
+Every uploaded client document (staff or client upload, onboarding files) is quarantined until a
+configured scanner returns **clean**: nobody can download it, it doesn't appear in the client's portal,
+and "publish" waits for the scan (the client is notified only then). Infected files are refused at upload,
+or destroyed if a later scan finds them, keeping only the record. Quarantined files are re-scanned every
+10 minutes and from Documents → "Scan quarantined files now". Documents → "Run scanner self-test" proves
+the setup: the harmless EICAR test string must be caught and a clean file must pass.
+
+Choose one (Netlify → Environment variables, Production):
+
+| Option | Variables | Notes |
+|---|---|---|
+| **Self-hosted ClamAV (recommended)** | `MALWARE_SCAN_PROVIDER=clamav-rest`, `MALWARE_SCAN_URL=https://<your scanner>/api/v1/scan`, `MALWARE_SCAN_FIELD=FILES` (default), optional `MALWARE_SCAN_TOKEN` (secret) | Files never leave infrastructure you control. Run a ClamAV REST container (for example `benzino77/clamav-rest-api`) on a small always-on host with HTTPS and a token/IP restriction. |
+| Cloudmersive Virus Scan API | `MALWARE_SCAN_PROVIDER=cloudmersive`, `CLOUDMERSIVE_API_KEY` (secret) | Hosted service; client files are sent to Cloudmersive for scanning — review their data-processing terms first. |
+| Any service answering `{"clean": true/false}` | `MALWARE_SCAN_URL`, optional `MALWARE_SCAN_TOKEN` | Raw bytes in the request body. |
+
+Never use VirusTotal or any service that shares uploaded files publicly.
+
+**After deploying with quarantine:** documents uploaded before this change were never scanned, so they are
+quarantined too until the scanner is connected and the 10-minute job (or "Scan now") passes them.
+
+## Twilio texting
+
+Netlify environment variables (Site configuration → Environment variables; scopes Functions + Builds; Production):
+
+| Variable | Value | Secret |
+|---|---|---|
+| `TWILIO_ACCOUNT_SID` | Your Account SID (starts with AC) | yes |
+| `TWILIO_AUTH_TOKEN` | Your Auth Token | yes |
+| `TWILIO_MESSAGING_SERVICE_SID` | The Messaging Service SID (starts with MG) | no |
+| `APP_URL` | The live site address, exactly as Twilio calls it, no trailing slash | no |
+| `CRON_SECRET` | 32+ random characters (scheduled sends) | yes |
+| `NOTIFICATIONS_ENABLED` | `true` to send client portal notices by email/text | no |
+| `LIVE_SENDING_ENABLED` | leave `false` — bulk campaigns stay off | no |
+
+`TWILIO_FROM_NUMBER` is not needed when the Messaging Service SID is set. Leave `SMS_KEYWORD_REPLIES`
+unset so Twilio's Advanced Opt-Out sends the STOP/HELP replies (set HELP text in the Messaging Service).
+
+Webhooks (Twilio Console → Messaging → Services → your service → Integration):
+- Incoming messages: "Send a webhook", Request URL `<APP_URL>/api/webhooks/twilio/inbound`, HTTP **POST**.
+- Delivery status: every text this app sends includes `StatusCallback=<APP_URL>/api/webhooks/twilio/status`
+  automatically (HTTP POST). Optionally also enter it as the service's Delivery Status Callback.
+- Both verify Twilio's X-Twilio-Signature against `APP_URL`; a mismatch is refused (403).
+
+Staff alerts: Settings → Text messages: off by default; office phone (default +1 205-659-5448), Monday–Friday
+8:00–17:00 Central. After-hours alerts wait for the next window, are combined, and are skipped if the
+conversation was read or resolved. Client texts are held 8 p.m.–8 a.m. Central, require service-text
+consent, and stop after STOP. **Controlled test**: Settings → Send test text → Twilio's delivery result and
+the office phone's reply appear in the same panel.
 
 ## Sign-in verification
 

@@ -5,13 +5,16 @@ import type { DocumentCategory, DocumentVisibility, MessageChannel, PeriodStatus
 import { requireUser } from "@/lib/auth/session";
 import { dateOrNull, run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
-import { deleteDocument, setRetention, setVisibility, staffUploadDocument } from "@/lib/services/documents";
+import { acknowledgeDocuments, deleteDocument, scanQuarantined, setRetention, setVisibility, staffUploadDocument } from "@/lib/services/documents";
+import { scanConfigured, scannerSelfTest } from "@/lib/scan";
 import { markStaffRead, setConversationState, staffSendMessage } from "@/lib/services/messaging";
 import { addDeadline, createDocumentRequest, openPeriod, postClientUpdate, publishAnnouncement, setPeriodStatus, setRequestStatus } from "@/lib/services/bookkeeping";
 import { invitePortalUser, updatePortalAccess } from "@/lib/services/portal-accounts";
 import { assignContract, attachContractPdf, staffVerifyContract } from "@/lib/services/contracts";
 import { createSignatureRequest, recordOfflineSigned, sendSignatureRequest } from "@/lib/services/signatures";
 import { resetMfa } from "@/lib/services/mfa";
+import { sendTestText, updateStaffAlertSettings } from "@/lib/services/staff-alerts";
+import { isTaxDocType } from "@/lib/document-types";
 import { appUrl } from "@/lib/integrations";
 import { prisma } from "@/lib/prisma";
 
@@ -64,12 +67,24 @@ export async function conversationStateAction(clientId: string, conversationId: 
 
 // --- Documents -------------------------------------------------------------
 
-export async function uploadDocumentAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+export async function uploadDocumentAction(fixedClientId: string | null, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
+    const clientId = fixedClientId ?? str(fd, "clientId");
+    if (!clientId) throw new ValidationError("Choose a client.");
+    const docType = str(fd, "docType");
+    if (docType && !isTaxDocType(docType)) throw new ValidationError("Choose a valid document type.");
+    if (str(fd, "category") === "IDENTITY") throw new ValidationError("Upload identity documents in the client's Identity Documents section.");
+    // Tax records go into the client's yearly vault: year and type are required.
+    if (str(fd, "category") === "TAXES") {
+      const y = intOrNull(str(fd, "year"));
+      if (!y || y < 2000 || y > new Date().getFullYear() + 1) throw new ValidationError("Enter the tax year for this tax record.");
+      if (!docType) throw new ValidationError("Choose the tax document type (federal return, state return, amended return…).");
+    }
     const file = await fileFrom(fd);
-    await staffUploadDocument(actor, {
+    const doc = await staffUploadDocument(actor, {
       clientId,
+      docType: docType || null,
       category: str(fd, "category") as DocumentCategory,
       title: str(fd, "title"),
       year: intOrNull(str(fd, "year")),
@@ -80,7 +95,10 @@ export async function uploadDocumentAction(clientId: string, _prev: ActionState,
       ...file,
     });
     refresh(clientId);
-    return "Document saved.";
+    revalidatePath("/documents");
+    return doc.scanStatus === "CLEAN"
+      ? `Uploaded and scanned clean${doc.visibility === "PUBLISHED" ? " — now visible in the client's portal" : ""}.`
+      : "Uploaded. The file is quarantined until the malware scan passes — no one can download it and clients won't see it until then.";
   });
 }
 
@@ -181,6 +199,7 @@ export async function portalAccessAction(clientId: string, accessId: string, _pr
       canViewBookkeeping: on("canViewBookkeeping"),
       canViewTax: on("canViewTax"),
       canViewContracts: on("canViewContracts"),
+      canViewIdentity: on("canViewIdentity"),
       ...(revoke ? { revoke: revoke === "true" } : {}),
     });
     refresh(clientId);
@@ -290,5 +309,62 @@ export async function offlineSignedAction(clientId: string, requestId: string, _
     await recordOfflineSigned(actor, requestId, await fileFrom(fd), fd.get("publish") === "on");
     refresh(clientId);
     return "Signed copy recorded (signed outside the app).";
+  });
+}
+
+export async function staffAlertSettingsAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await updateStaffAlertSettings(actor, {
+      smsEnabled: fd.get("smsEnabled") === "on",
+      phone: str(fd, "phone"),
+      windowStart: str(fd, "windowStart"),
+      windowEnd: str(fd, "windowEnd"),
+      emailEnabled: fd.get("emailEnabled") === "on",
+      email: str(fd, "email"),
+    });
+    revalidatePath("/settings");
+    return "Staff alert settings saved.";
+  });
+}
+
+export async function sendTestTextAction(_prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await sendTestText(actor);
+    revalidatePath("/settings");
+    return "Twilio accepted the test text. Its delivery result and your reply will appear below — refresh in a minute.";
+  });
+}
+
+export async function acknowledgeDocumentsAction(clientId: string, documentId: string | null, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const n = await acknowledgeDocuments(actor, clientId, documentId ? [documentId] : undefined);
+    refresh(clientId);
+    revalidatePath("/documents");
+    return n ? `Marked ${n} document${n === 1 ? "" : "s"} reviewed.` : "Nothing waiting for review.";
+  });
+}
+
+export async function scanNowAction(_prev: ActionState): Promise<ActionState> {
+  await requireUser();
+  return run(async () => {
+    if (!scanConfigured()) throw new ValidationError("No malware scanner is configured yet, so quarantined files can't be released.");
+    const r = await scanQuarantined(50);
+    revalidatePath("/documents");
+    return `Scanned ${r.scanned}: ${r.clean} passed and were released, ${r.infected} infected and destroyed${r.scanned - r.clean - r.infected ? `, ${r.scanned - r.clean - r.infected} still pending (scanner didn't answer)` : ""}.`;
+  });
+}
+
+export async function scannerSelfTestAction(_prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    if (actor.role !== "ADMIN") throw new ValidationError("Only an Admin can run the scanner self-test.");
+    const r = await scannerSelfTest();
+    await prisma.scannerCheck.create({ data: { provider: r.provider, eicarResult: r.eicar, cleanResult: r.clean, ok: r.ok, runById: actor.id } });
+    revalidatePath("/documents");
+    if (!r.ok) throw new ValidationError(`Self-test failed: the EICAR test file came back ${r.eicar} (should be INFECTED) and the clean file came back ${r.clean} (should be CLEAN). Files stay quarantined.`);
+    return "Self-test passed: the scanner caught the EICAR test file and passed the clean file.";
   });
 }

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { normalizePhone } from "@/lib/normalize";
 import { SMS_HELP_REPLY, SMS_STOP_REPLY } from "@/lib/business";
 import { detectKeyword, recordStop } from "./sms-consent";
+import { queueStaffAlert } from "./staff-alerts";
 
 /**
  * Handles one incoming text from Twilio (signature already verified).
@@ -48,7 +49,7 @@ export async function handleInboundSms(params: Record<string, string>): Promise<
   const ids = Array.from(new Set([...clients.map((c) => c.id), ...contacts.map((c) => c.clientId)]));
   if (ids.length === 1) {
     const clientId = ids[0];
-    await prisma.$transaction(async (tx) => {
+    const convoId = await prisma.$transaction(async (tx) => {
       const convo =
         (await tx.conversation.findFirst({ where: { clientId, closedAt: null, messages: { some: { channel: "SMS" } } }, orderBy: { lastMessageAt: "desc" } })) ??
         (await tx.conversation.create({ data: { clientId, subject: "Text messages" } }));
@@ -56,7 +57,9 @@ export async function handleInboundSms(params: Record<string, string>): Promise<
       await tx.conversation.update({ where: { id: convo.id }, data: { lastMessageAt: new Date(), awaitingStaff: true, unreadByStaff: true, closedAt: null } });
       await tx.inboundSms.update({ where: { id: inbound.id }, data: { matchedClientId: clientId, conversationId: convo.id } });
       await tx.auditLog.create({ data: { action: "message.received", entityType: "InboundSms", entityId: inbound.id, clientId, details: { channel: "SMS" } } });
+      return convo.id;
     });
+    await queueStaffAlert({ conversationId: convoId });
   }
   return { reply: null };
 }
@@ -70,6 +73,10 @@ export async function handleStatusCallback(params: Record<string, string>) {
   if (!sid || !status) return;
   const detail = params.ErrorCode ? `Twilio ${status} (error ${params.ErrorCode})` : `Twilio ${status}`;
   await prisma.notification.updateMany({
+    where: { providerSid: sid },
+    data: { deliveryStatus: status, statusDetail: detail, ...(FAILED.has(status) ? { status: "FAILED" } : {}) },
+  });
+  await prisma.staffAlert.updateMany({
     where: { providerSid: sid },
     data: { deliveryStatus: status, statusDetail: detail, ...(FAILED.has(status) ? { status: "FAILED" } : {}) },
   });

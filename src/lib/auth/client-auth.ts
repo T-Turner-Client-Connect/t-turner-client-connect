@@ -25,6 +25,19 @@ export async function clientEmailCodesActive() {
   return s.clientEmailCodes && !!s.emailDeliveryVerifiedAt && emailProviderConfigured();
 }
 
+/**
+ * Whether this client signs in with emailed codes: everyone once the switch is
+ * on, and self-signup accounts (which only exist after delivery was proven and
+ * have no authenticator app) as soon as delivery is proven.
+ */
+export async function emailCodesFor(portalUserId: string) {
+  if (await clientEmailCodesActive()) return true;
+  const s = await authSettings();
+  if (!s.emailDeliveryVerifiedAt || !emailProviderConfigured()) return false;
+  const u = await prisma.portalUser.findUnique({ where: { id: portalUserId }, select: { origin: true, mfaEnabledAt: true } });
+  return u?.origin === "SELF_SIGNUP" && !u.mfaEnabledAt;
+}
+
 export async function setClientEmailCodes(actor: Actor, on: boolean) {
   assertAdmin(actor);
   const s = await authSettings();

@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { chicagoLocalToUtc } from "@/lib/tz";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
 import { createClient, recordConsent } from "@/lib/services/clients";
 import { currentSmsConsent, smsSendAllowed, submitSmsConsent } from "@/lib/services/sms-consent";
@@ -14,6 +15,7 @@ beforeEach(resetDb);
 afterEach(() => {
   delete process.env.TWILIO_AUTH_TOKEN;
   delete process.env.NOTIFICATIONS_ENABLED;
+  vi.useRealTimers();
 });
 
 const PHONE = "+15550100101";
@@ -131,6 +133,9 @@ describe("STOP / HELP / START and Twilio webhooks", () => {
 
 describe("text notifications require service consent", () => {
   it("skips SMS without consent and never reports a send without a provider", async () => {
+    // Midday Central, outside client text quiet hours, so the result doesn't depend on when tests run.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(chicagoLocalToUtc("2026-11-03T12:00")!);
     process.env.NOTIFICATIONS_ENABLED = "true";
     const staff = await makeUser("ADMIN");
     const c = await createClient(staff, { businessName: "Notify LLC", clientType: "BUSINESS", status: "ACTIVE" });

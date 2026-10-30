@@ -49,9 +49,10 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
     },
   });
   if (!client) notFound();
-  const [timeline, staff] = await Promise.all([
+  const [timeline, staff, newDocs] = await Promise.all([
     clientTimeline(id),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.document.count({ where: { clientId: id, needsReview: true, deletedAt: null } }),
   ]);
   const addresses = [
     ...(client.emailNormalized ? [{ channel: "EMAIL" as const, addressNormalized: client.emailNormalized }] : []),
@@ -108,9 +109,12 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
             className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold ${tab === t.key ? "bg-navy-900 text-white" : "text-navy-900 hover:bg-navy-50"}`}
           >
             {t.label}
+            {t.key === "documents" && newDocs > 0 && (
+              <span className="ml-1.5 rounded-full bg-gold-500 px-2 text-xs font-bold text-navy-950" aria-label={`${newDocs} new documents`} data-testid="new-docs-badge">{newDocs} new</span>
+            )}
           </Link>
         ))}
-        <Link href={`/clients/${id}/client-preview`} className="ml-auto whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold text-gold-700 hover:bg-gold-100">
+        <Link href={`/clients/${id}/portal-preview`} className="ml-auto whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold text-gold-700 hover:bg-gold-100">
           Preview portal ↗
         </Link>
       </nav>

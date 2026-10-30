@@ -93,6 +93,11 @@ export async function handleJotformWebhook(secret: string | null, submissionId: 
   if (!res.ok) return { status: 502, result: `Jotform API HTTP ${res.status}` };
   const sub = ((await res.json()) as { content?: JotformSubmission }).content;
   const refAnswer = Object.values(sub?.answers ?? {}).find((a) => a.name === c.refField)?.answer;
+  // Tax questionnaires share this webhook; their references start with "q.".
+  if (typeof refAnswer === "string" && refAnswer.startsWith("q.")) {
+    const { recordQuestionnaireWebhook } = await import("./tax-center");
+    return { status: 200, result: await recordQuestionnaireWebhook({ ...sub, id: submissionId }, refAnswer) };
+  }
   const assignmentId = typeof refAnswer === "string" ? parseAssignmentRef(refAnswer) : null;
   if (!assignmentId) return { status: 200, result: "No valid assignment reference; ignored" };
   const a = await prisma.contractAssignment.findUnique({ where: { id: assignmentId } });

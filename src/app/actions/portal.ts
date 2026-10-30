@@ -1,5 +1,7 @@
 "use server";
 
+import { isClientDocType } from "@/lib/document-types";
+
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
@@ -10,7 +12,7 @@ import { normalizeEmail } from "@/lib/normalize";
 import { createPortalSession, destroyPortalSession, getPortalSessionState, markPortalMfaPassed, requirePortalUser } from "@/lib/portal/session";
 import { acceptPortalInvite, createPortalReset, resetPortalPassword, updateNotificationPrefs } from "@/lib/services/portal-accounts";
 import { confirmEnrollment } from "@/lib/services/mfa";
-import { clientEmailCodesActive, revokeTrustedDevice, trustedDeviceFor } from "@/lib/auth/client-auth";
+import { clientEmailCodesActive, emailCodesFor, revokeTrustedDevice, trustedDeviceFor } from "@/lib/auth/client-auth";
 import { portalUploadDocument } from "@/lib/services/documents";
 import { markClientRead, portalSendMessage } from "@/lib/services/messaging";
 import { ValidationError } from "@/lib/services/clients";
@@ -39,7 +41,7 @@ export async function portalLoginAction(_prev: ActionState, fd: FormData): Promi
   await prisma.loginAttempt.create({ data: { email: key, ip, success: true } });
   await prisma.portalUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   const sessionId = await createPortalSession(user.id);
-  if (await clientEmailCodesActive()) {
+  if (await emailCodesFor(user.id)) {
     // A remembered device skips the emailed code until it expires or is revoked.
     if (await trustedDeviceFor(user.id)) {
       await markPortalMfaPassed(sessionId);
@@ -127,9 +129,14 @@ export async function portalUploadAction(clientId: string, _prev: ActionState, f
   return run(async () => {
     const file = await optionalFile(fd, "file");
     if (!file) throw new ValidationError("Choose a file to upload.");
-    await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), ...file });
+    const y = str(fd, "year");
+    const contextual = str(fd, "periodId") || str(fd, "requestId");
+    if (!y && !contextual) throw new ValidationError("Choose the tax year this document is for, or “Not sure”.");
+    const docType = str(fd, "docType");
+    if (!contextual && !isClientDocType(docType)) throw new ValidationError("Choose what kind of document this is.");
+    await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), year: y === "unsure" ? "unsure" : y ? Number(y) : null, docType: isClientDocType(docType) ? docType : null, ...file });
     revalidatePath("/client", "layout");
-    return "Uploaded securely. Thank you!";
+    return "Uploaded securely. It's being checked for viruses, then our team will review it. Thank you!";
   });
 }
 

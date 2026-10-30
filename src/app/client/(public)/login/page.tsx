@@ -21,7 +21,11 @@ export default async function PortalLogin({ searchParams }: { searchParams: Prom
         <Button type="submit" className="w-full">Sign in</Button>
       </ActionForm>
       <p className="mt-4 text-center text-sm"><Link href="/client/forgot-password" className="underline">Forgot your password?</Link></p>
-      <p className="mt-2 text-center text-xs text-slate-500">Portal accounts are by invitation from TTurner &amp; Associates Group.</p>
+      <div className="mt-6 border-t border-navy-100 pt-5 text-center">
+        <p className="mb-2 text-sm font-semibold text-navy-900">New to TTurner &amp; Associates?</p>
+        <Link href="/client/signup" className="block w-full rounded-lg border-2 border-gold-500 bg-ivory px-4 py-2.5 font-semibold text-navy-900 hover:bg-gold-100">Create Client Account</Link>
+        <p className="mt-3 text-sm"><Link href="/client/activate" className="underline">Already a client? Activate your portal.</Link></p>
+      </div>
     </>
   );
 }

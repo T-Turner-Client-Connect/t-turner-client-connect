@@ -17,7 +17,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
   const filters = { q: sp.q, status: sp.status, type: sp.type, groupId: sp.group, tag: sp.tag, assignedToId: sp.staff, archived: sp.archived === "1" };
   const page = Math.max(1, Number(sp.page) || 1);
   const where = clientWhere(filters);
-  const [clients, count, groups, staff] = await Promise.all([
+  const [clients, count, groups, staff, signupsToReview] = await Promise.all([
     prisma.client.findMany({
       where,
       include: { assignedTo: { select: { name: true } }, groups: { include: { group: { select: { name: true } } } }, _count: { select: { contacts: true } } },
@@ -28,6 +28,10 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
     prisma.client.count({ where }),
     prisma.group.findMany({ orderBy: { name: "asc" } }),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    Promise.all([
+      prisma.onboardingApplication.count({ where: { status: "NEEDS_REVIEW" } }),
+      prisma.activationRequest.count({ where: { status: { in: ["NEEDS_STAFF", "EMAIL_FAILED"] } } }),
+    ]).then(([a, b]) => a + b),
   ]);
   const pages = Math.max(1, Math.ceil(count / PAGE_SIZE));
   const qs = (patch: Record<string, string | undefined>) => {
@@ -45,6 +49,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
             <LinkButton href={filters.archived ? "/clients" : "/clients?archived=1"} variant="secondary">
               {filters.archived ? "Back to current clients" : "View archive"}
             </LinkButton>
+            <LinkButton href="/clients/onboarding" variant={signupsToReview ? "gold" : "secondary"}>Portal sign-ups{signupsToReview ? ` (${signupsToReview})` : ""}</LinkButton>
             <LinkButton href="/groups" variant="secondary">Groups</LinkButton>
             <LinkButton href="/imports" variant="secondary">Import contacts</LinkButton>
             <LinkButton href="/clients/new">Add client</LinkButton>

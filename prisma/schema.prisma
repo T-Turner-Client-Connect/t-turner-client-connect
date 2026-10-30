@@ -35,22 +35,28 @@ enum Role {
 }
 
 model User {
-  id              String    @id @default(cuid())
-  email           String    @unique
-  name            String
-  role            Role      @default(STAFF)
-  passwordHash    String?
-  active          Boolean   @default(true)
+  id                      String    @id @default(cuid())
+  email                   String    @unique
+  name                    String
+  role                    Role      @default(STAFF)
+  passwordHash            String?
+  active                  Boolean   @default(true)
   // TOTP secret (base32), stored encrypted with APP_ENCRYPTION_KEY.
-  mfaSecretEnc    String?
-  mfaEnabledAt    DateTime?
+  mfaSecretEnc            String?
+  mfaEnabledAt            DateTime?
   // Last accepted authenticator time-step: a code can't be replayed.
-  mfaLastStep     Int?
+  mfaLastStep             Int?
   // Proven by entering a code emailed to this address (enables email codes).
-  emailVerifiedAt DateTime?
-  lastLoginAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  emailVerifiedAt         DateTime?
+  lastLoginAt             DateTime?
+  // Admin-granted: open identity documents for every client (not only
+  // assigned ones). Has no effect on the Owner's Office, which is bound to
+  // the owner's own account.
+  identityAccessAll       Boolean   @default(false)
+  identityAccessGrantedBy String?
+  identityAccessGrantedAt DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   sessions        Session[]
   resetTokens     PasswordResetToken[]
@@ -201,6 +207,11 @@ model Client {
   // True when the record (or part of it) came from tax-preparation software
   // such as a TaxAct export. Drives Section 7216 eligibility checks.
   taxReturnDerived Boolean      @default(false)
+  // Tax entity for deadline cards: SOLE_PROPRIETOR | PARTNERSHIP | S_CORP |
+  // C_CORP | NONPROFIT | TRUST_ESTATE. Null = not recorded yet.
+  entityType       String?
+  // Month (1–12) the business's tax year ends. Null = calendar year (December).
+  fiscalYearEnd    Int?
   source           String?
   assignedToId     String?
   assignedTo       User?        @relation("AssignedStaff", fields: [assignedToId], references: [id], onDelete: SetNull)
@@ -231,6 +242,10 @@ model Client {
   appointments       Appointment[]
   pipelineCards      PipelineCard[]
   filings            FilingRecord[]
+  questionnaires     QuestionnaireSubmission[]
+  identityPeople     IdentityPerson[]
+  identityDocs       IdentityDocument[]
+  taxYearProgress    TaxYearProgress[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -435,11 +450,17 @@ model StoredFile {
   uploadedBy             User?       @relation(fields: [uploadedById], references: [id])
   uploadedByPortalUserId String?
   uploadedByPortalUser   PortalUser? @relation(fields: [uploadedByPortalUserId], references: [id])
+  // SHA-256 of the bytes: the same file is stored once per client.
+  sha256                 String?
+  // Bytes encrypted by the app (AES-256-GCM) before storage — identity documents.
+  encrypted              Boolean     @default(false)
   createdAt              DateTime    @default(now())
 
   campaigns      Campaign[]
   consentRecords ConsentRecord[]
   document       Document?
+
+  @@index([sha256])
 }
 
 // ---------------------------------------------------------------------------
@@ -631,37 +652,47 @@ model MfaRecoveryCode {
 // PortalAccess on the server.
 
 model PortalUser {
-  id              String    @id @default(cuid())
-  email           String    @unique
-  name            String
-  phone           String?
-  phoneNormalized String?
-  passwordHash    String?
-  mfaSecretEnc    String?
-  mfaEnabledAt    DateTime?
-  mfaLastStep     Int?
+  id                   String    @id @default(cuid())
+  email                String    @unique
+  name                 String
+  phone                String?
+  phoneNormalized      String?
+  passwordHash         String?
+  mfaSecretEnc         String?
+  mfaEnabledAt         DateTime?
+  mfaLastStep          Int?
   // Proven by entering a code emailed to this address (enables email codes).
-  emailVerifiedAt DateTime?
-  active          Boolean   @default(true)
+  emailVerifiedAt      DateTime?
+  // Resource Center: the state shown first (clients can switch anytime).
+  preferredState       String?
+  // Staff confirmed who this login belongs to (e.g. by phone or ID) when
+  // the invitation link wasn't delivered by email. Either this or a proven
+  // email address unlocks past-year tax records.
+  identityVerifiedAt   DateTime?
+  identityVerifiedById String?
+  active               Boolean   @default(true)
   // Account-service notifications (new message / document / request).
   // Separate from marketing consent.
-  notifyByEmail   Boolean   @default(true)
-  notifyBySms     Boolean   @default(false)
+  notifyByEmail        Boolean   @default(true)
+  notifyBySms          Boolean   @default(false)
   // Optional link to the CRM contact this login belongs to.
-  contactId       String?   @unique
-  contact         Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  lastLoginAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  contactId            String?   @unique
+  contact              Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  // "INVITED" (staff or activation invitation) or "SELF_SIGNUP".
+  origin               String    @default("INVITED")
+  lastLoginAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   access         PortalAccess[]
   sessions       PortalSession[]
   resetTokens    PortalResetToken[]
   recoveryCodes  MfaRecoveryCode[]
-  messages       Message[]           @relation("PortalMessages")
+  messages       Message[]              @relation("PortalMessages")
   trustedDevices TrustedDevice[]
+  onboarding     OnboardingApplication?
   files          StoredFile[]
-  documents      Document[]          @relation("PortalDocuments")
+  documents      Document[]             @relation("PortalDocuments")
   notifications  Notification[]
   accessLogs     DocumentAccessLog[]
 }
@@ -687,6 +718,9 @@ model PortalAccess {
   canViewContracts   Boolean    @default(true)
   // Invoices and payment requests the owner explicitly published to this account.
   canViewBilling     Boolean    @default(true)
+  // Identity documents (license, birth certificate, Social Security card).
+  // On for owners, off for other authorized contacts unless granted.
+  canViewIdentity    Boolean    @default(false)
   grantedById        String?
   createdAt          DateTime   @default(now())
   revokedAt          DateTime?
@@ -707,8 +741,11 @@ model PortalInvite {
   expiresAt   DateTime
   acceptedAt  DateTime?
   revokedAt   DateTime?
-  invitedById String
-  invitedBy   User       @relation(fields: [invitedById], references: [id])
+  // Null when sent by the system in answer to a client's activation request.
+  invitedById String?
+  // True only when the link went out by email (activation); accepting it proves the address.
+  sentByEmail Boolean    @default(false)
+  invitedBy   User?      @relation(fields: [invitedById], references: [id])
   createdAt   DateTime   @default(now())
 
   @@index([email])
@@ -854,6 +891,10 @@ enum DocumentCategory {
   CONTRACTS
   CLIENT_UPLOADS
   OTHER
+  // Permanent identity documents (license, birth certificate, SS card).
+  // Never listed with yearly folders; opened only through the Identity
+  // Documents section by authorized staff and account holders.
+  IDENTITY
 }
 
 enum DocumentVisibility {
@@ -916,6 +957,14 @@ model Document {
   filing            FilingRecord?        @relation(fields: [filingId], references: [id], onDelete: SetNull)
   // "OFFICIAL_ACK" | "AGENCY_NOTICE" | "CORRESPONDENCE" | "FIRM_SUMMARY"
   filingDocType     String?
+  // Client uploads stay "Needs Review" until a staff member acknowledges them.
+  needsReview       Boolean              @default(false)
+  reviewedAt        DateTime?
+  reviewedById      String?
+  // Staff-chosen type for tax documents (return, TaxAct export, acceptance
+  // notice, extension, amendment…). Informational only: it never changes a
+  // filing's status or marks work complete.
+  docType           String?
 
   @@index([clientId, category, year, month])
   @@index([visibility])
@@ -1014,13 +1063,115 @@ model Announcement {
   // Set = client-specific update; null = announcement to the groups below.
   clientId    String?
   client      Client?   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // A future time schedules the announcement.
   publishedAt DateTime?
   expiresAt   DateTime?
+  // "ALL" | "INDIVIDUAL" | "BUSINESS" | "BOOKKEEPING"; null = the groups below.
+  audience    String?
+  // TAX_SEASON | DOCUMENT_TIPS | OFFICE_HOURS | HOLIDAY | SERVICE | DEADLINE | GENERAL
+  topic       String?
+  pinned      Boolean   @default(false)
   createdById String
   createdBy   User      @relation(fields: [createdById], references: [id])
   createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
 
   groups AnnouncementGroup[]
+}
+
+// Official tax dates shown in the client countdowns. Only rows with a
+// source link and a review date are shown to clients.
+model TaxDeadline {
+  id             String    @id @default(cuid())
+  // See src/lib/tax/deadlines.ts (TAX_SEASON_OPENS, INDIVIDUAL, PARTNERSHIP,
+  // S_CORP, C_CORP, and their *_EXTENDED forms).
+  kind           String
+  // The tax year the return covers (2026 returns are due in 2027).
+  taxYear        Int
+  // Whose deadline: "US" (IRS) or a state code.
+  jurisdiction   String    @default("US")
+  // Set on an IRS row that replaces the general date only for clients in
+  // that state (disaster relief). "" = applies everywhere.
+  reliefState    String    @default("")
+  // Calendar date, YYYY-MM-DD (date-only, never shifted by time zone).
+  dueDate        String
+  timeNote       String?
+  notes          String?
+  sourceUrl      String?
+  lastReviewedAt DateTime?
+  reviewedById   String?
+  hidden         Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([kind, taxYear, jurisdiction, reliefState])
+}
+
+// ===========================================================================
+// MY TAX CENTER
+// ===========================================================================
+
+// The Jotform tax questionnaire for one tax year (and audience).
+model TaxQuestionnaire {
+  id            String   @id @default(cuid())
+  taxYear       Int
+  // "ALL" | "INDIVIDUAL" | "BUSINESS"
+  audience      String   @default("ALL")
+  title         String
+  // Numeric Jotform form ID from the owner. Null = not set up yet.
+  jotformFormId String?
+  active        Boolean  @default(true)
+  updatedById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  submissions QuestionnaireSubmission[]
+
+  @@unique([taxYear, audience])
+}
+
+// A completed questionnaire linked to one client and tax year, either
+// reported by Jotform (verified through the API) or imported by staff after
+// they confirmed the client match.
+model QuestionnaireSubmission {
+  id              String            @id @default(cuid())
+  clientId        String
+  client          Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  taxYear         Int
+  questionnaireId String?
+  questionnaire   TaxQuestionnaire? @relation(fields: [questionnaireId], references: [id], onDelete: SetNull)
+  jotformFormId   String
+  submissionId    String            @unique
+  submittedAt     DateTime?
+  // "jotform_webhook" | "staff_import" | "staff_verified"
+  source          String
+  // Encrypted question/answer pairs (staff only).
+  answersEnc      String?
+  // How the client match was confirmed.
+  matchNote       String?
+  linkedById      String?
+  documentIds     String[]
+  createdAt       DateTime          @default(now())
+
+  @@index([clientId, taxYear])
+}
+
+// Staff-entered progress for one client and tax year. Questionnaire,
+// documents, preparation, filing and agency acceptance are separate.
+model TaxYearProgress {
+  id                  String    @id @default(cuid())
+  clientId            String
+  client              Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  taxYear             Int
+  // NOT_STARTED | SOME_RECEIVED | ALL_RECEIVED
+  documentsStatus     String    @default("NOT_STARTED")
+  documentsUpdatedAt  DateTime?
+  estimatedCompletion DateTime?
+  estimateNote        String?
+  updatedById         String?
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([clientId, taxYear])
 }
 
 model AnnouncementGroup {
@@ -1892,4 +2043,294 @@ model UsedRecoveryToken {
   tokenHash String   @id
   userId    String
   usedAt    DateTime @default(now())
+}
+
+// ===========================================================================
+// CLIENT SELF-SIGNUP, ONBOARDING & PORTAL ACTIVATION
+// ===========================================================================
+
+// A signup waiting for its emailed code. No portal login exists until the
+// code is entered in the same browser that started the signup, so someone
+// can't claim another person's email address.
+model PortalSignup {
+  id              String    @id @default(cuid())
+  emailNormalized String
+  name            String
+  passwordHash    String
+  // Hash of the cookie that ties the signup to the browser that started it.
+  browserHash     String    @unique
+  codeHash        String
+  codeExpiresAt   DateTime
+  attempts        Int       @default(0)
+  sendCount       Int       @default(1)
+  lastSentAt      DateTime
+  // False when the address already had a portal login (it got a sign-in reminder instead).
+  available       Boolean   @default(true)
+  ipHash          String?
+  consumedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([emailNormalized])
+}
+
+enum OnboardingStatus {
+  IN_PROGRESS
+  // No possible duplicate found: a new client record was created and linked.
+  APPROVED_NEW
+  // Possible match with an existing record: staff decide.
+  NEEDS_REVIEW
+  LINKED_EXISTING
+  DECLINED
+}
+
+model OnboardingApplication {
+  id                String           @id @default(cuid())
+  portalUserId      String           @unique
+  portalUser        PortalUser       @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  status            OnboardingStatus @default(IN_PROGRESS)
+  clientType        ClientType       @default(INDIVIDUAL)
+  firstName         String?
+  lastName          String?
+  businessName      String?
+  phone             String?
+  phoneNormalized   String?
+  addressLine1      String?
+  city              String?
+  state             String?
+  postalCode        String?
+  servicesRequested String[]
+  notes             String?
+  // Optional, separate communication choices (applied when the account is linked).
+  smsService        Boolean          @default(false)
+  smsMarketing      Boolean          @default(false)
+  emailMarketing    Boolean          @default(false)
+  possibleMatchIds  String[]
+  submittedAt       DateTime?
+  clientId          String?
+  decidedById       String?
+  decidedAt         DateTime?
+  decisionNote      String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  files OnboardingFile[]
+
+  @@index([status])
+}
+
+// Documents uploaded during onboarding, held privately until the account is
+// linked to a client record, then moved into that client's documents.
+model OnboardingFile {
+  id              String                @id @default(cuid())
+  applicationId   String
+  application     OnboardingApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  storageKey      String                @unique
+  originalName    String
+  mimeType        String
+  sizeBytes       Int
+  movedDocumentId String?
+  createdAt       DateTime              @default(now())
+}
+
+enum ActivationStatus {
+  // Exactly one record had this email on file: an invitation went to that address.
+  INVITE_SENT
+  // Already had a portal login: a sign-in reminder was sent instead.
+  ALREADY_ACTIVE
+  // No single on-file match: staff verify identity and decide.
+  NEEDS_STAFF
+  EMAIL_FAILED
+  RESOLVED
+  DISMISSED
+}
+
+model ActivationRequest {
+  id               String           @id @default(cuid())
+  emailNormalized  String
+  name             String?
+  phone            String?
+  ipHash           String?
+  status           ActivationStatus
+  matchedClientIds String[]
+  inviteId         String?
+  resolvedById     String?
+  resolvedAt       DateTime?
+  createdAt        DateTime         @default(now())
+
+  @@index([status])
+}
+
+// ===========================================================================
+// STAFF TEXT ALERTS (Twilio)
+// ===========================================================================
+
+// Brief "you have a new client message" texts to the office phone. Never
+// include message contents. Off until an Admin turns them on.
+model StaffAlertSettings {
+  id           String   @id @default("default")
+  smsEnabled   Boolean  @default(false)
+  // E.164. The receiving phone, not the Twilio sending number.
+  phone        String   @default("+12056595448")
+  // Monday–Friday window in America/Chicago, "HH:MM" 24-hour.
+  windowStart  String   @default("08:00")
+  windowEnd    String   @default("17:00")
+  // Link-only email summary of new client activity (any time of day).
+  emailEnabled Boolean  @default(true)
+  email        String   @default("info@tturnerassociates.com")
+  updatedById  String?
+  updatedAt    DateTime @updatedAt
+}
+
+enum StaffAlertStatus {
+  PENDING
+  SENT
+  SKIPPED
+  FAILED
+}
+
+model StaffAlert {
+  id              String           @id @default(cuid())
+  // "CLIENT_MESSAGE" (messages and/or uploads) or "TEST" (controlled test from Settings).
+  reason          String
+  // "SMS" (office phone, weekday window) or "EMAIL" (office inbox, link only).
+  channel         String           @default("SMS")
+  to              String
+  body            String
+  // Unread conversations this alert covers (several are combined into one text).
+  conversationIds String[]
+  // New client uploads covered by this alert (still "Needs Review").
+  documentIds     String[]
+  status          StaffAlertStatus @default(PENDING)
+  notBefore       DateTime
+  sentAt          DateTime?
+  providerSid     String?          @unique
+  // Twilio's own status from delivery callbacks: queued, sent, delivered, undelivered, failed.
+  deliveryStatus  String?
+  statusDetail    String?
+  createdById     String?
+  createdAt       DateTime         @default(now())
+
+  @@index([status, notBefore])
+}
+
+// Results of the Admin scanner self-test (EICAR test string must be caught,
+// a clean file must pass). Files are released from quarantine only by a
+// "CLEAN" result from a configured scanner.
+model ScannerCheck {
+  id          String   @id @default(cuid())
+  provider    String
+  eicarResult String
+  cleanResult String
+  ok          Boolean
+  detail      String?
+  runById     String
+  createdAt   DateTime @default(now())
+}
+
+// ===========================================================================
+// CLIENT RESOURCE CENTER
+// ===========================================================================
+
+// One official link (or an honest "not applicable" note) for a state, DC,
+// a county/city, or federal ("US"). Shipped verified data lives here and is
+// editable by Admins; nothing is presented as complete when it isn't.
+model Resource {
+  id                 String    @id @default(cuid())
+  // Two-letter state code, "DC", or "US" for federal.
+  jurisdiction       String
+  county             String?
+  city               String?
+  // e.g. TAX_PORTAL, SALES_USE_TAX, ALCOHOL_LICENSING, FEDERAL_SAM …
+  category           String
+  title              String
+  // One plain sentence: what this link actually handles.
+  purpose            String
+  agency             String
+  url                String?
+  phone              String?
+  // VERIFIED | NEEDS_VERIFICATION | NOT_APPLICABLE | UNAVAILABLE
+  status             String    @default("NEEDS_VERIFICATION")
+  // How the link was confirmed: fetched | official-result | in-text | staff
+  verificationMethod String?
+  notes              String?
+  lastVerifiedAt     DateTime?
+  // Live link check from the deployed site (HTTP status), never from guesses.
+  linkCheckedAt      DateTime?
+  linkCheckStatus    Int?
+  linkCheckOk        Boolean?
+  hidden             Boolean   @default(false)
+  sortOrder          Int       @default(0)
+  updatedById        String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([jurisdiction, category])
+}
+
+model ResourceFaq {
+  id          String   @id @default(cuid())
+  question    String
+  answer      String
+  tags        String[]
+  sortOrder   Int      @default(0)
+  hidden      Boolean  @default(false)
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ===========================================================================
+// IDENTITY DOCUMENTS (permanent, separate from yearly tax folders)
+// ===========================================================================
+
+// The client, their spouse, or a dependent on the account.
+model IdentityPerson {
+  id         String    @id @default(cuid())
+  clientId   String
+  client     Client    @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  // CLIENT | SPOUSE | DEPENDENT
+  role       String
+  name       String
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  documents IdentityDocument[]
+
+  @@index([clientId])
+}
+
+// One uploaded identity document. The file is a Document (category
+// IDENTITY), so scanning, protected storage, access logs and retention
+// apply. A new upload stays PENDING_VERIFICATION until staff review it.
+model IdentityDocument {
+  id                 String         @id @default(cuid())
+  clientId           String
+  client             Client         @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  personId           String
+  person             IdentityPerson @relation(fields: [personId], references: [id], onDelete: Restrict)
+  // DRIVERS_LICENSE | BIRTH_CERTIFICATE | SOCIAL_SECURITY_CARD
+  type               String
+  documentId         String         @unique
+  // PENDING_VERIFICATION | VERIFIED | REJECTED | REPLACED | EXPIRED
+  status             String         @default("PENDING_VERIFICATION")
+  // Driver's licenses only (YYYY-MM-DD). Never set for other types.
+  expiresOn          String?
+  // Why a replacement was uploaded (renewal, name change, correction, unreadable…).
+  replacementReason  String?
+  // Social Security cards: only the last four digits, entered by staff, for display.
+  last4              String?
+  verifiedAt         DateTime?
+  verifiedById       String?
+  rejectedReason     String?
+  replacedAt         DateTime?
+  uploadedByPortalId String?
+  uploadedByStaffId  String?
+  // Expiration reminders already sent: "60", "30", "7", "EXPIRED".
+  remindersSent      String[]
+  // Staff task to review this upload; closed when it's verified or declined.
+  verificationTaskId String?
+  createdAt          DateTime       @default(now())
+
+  @@index([clientId, personId, type])
+  @@index([status, type])
 }

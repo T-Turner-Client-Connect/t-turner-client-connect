@@ -1,0 +1,65 @@
+# Identity Documents
+
+A permanent section of each client's vault, kept separate from the yearly tax folders. It holds driver's licenses, birth certificates and Social Security cards for the client, their spouse and each dependent.
+
+## Where it lives
+- **Client portal:**
+  - **Identity Documents** in the sidebar, the card at the top of the Document Vault, and the link on the Overview's vault card.
+  - Reminders appear on the Overview and on the Identity Documents page.
+  - My Tax Center lists what's on file.
+- **Staff:**
+  - **Identity Documents** card at the top of the client's Documents tab (`#identity`).
+  - The Documents hub shows which clients have uploads pending verification.
+  - The Taxes tab shows the on-file checklist.
+
+## Rules
+- **Every new upload is Pending Verification** until a staff member verifies it after checking the image. A pending replacement never replaces the current verified document until it is verified; then the previous one is marked Replaced. Each document's history is kept, and the current verified one is labeled.
+- **Driver's license:**
+  - The expiration date is required. Staff confirm it when verifying, and an expired license can't be verified.
+  - Reminders go out at **60, 30 and 7 days**, each once, only if no replacement is pending; then the license is marked **Expired**.
+  - A late upload gets one reminder, not several.
+  - Replace it with **Upload Updated License** (renewal, name or address change, correction, unreadable copy).
+- **Birth certificate and Social Security card:**
+  - Upload once and reuse every year, with no expiration and no reminders.
+  - Replacements need a reason (correction, update, name change, unreadable copy) and staff verification.
+- **Social Security cards:**
+  - **The card image itself shows the full Social Security number.** Only the separate text field is limited to the last four digits.
+  - Staff screens show `•••-••-1234`; the client portal shows no digits at all.
+  - The card is never attached to or described in an email or text.
+- **Tax checklists** point at the stored document (no copy and no new upload).
+  - Shows: "On file — verified", "Received — pending verification", "Expired", or "Not on file".
+
+## Who can open them
+- **Social Security cards (their images show the full number) and birth certificates: Admins only.**
+  - Only an active user with the Admin role can view, download or print them. Each opening needs a confirmation and a reason, and is written to the audit log (`identity.admin_only_opened`) and the document access log.
+  - Assigned staff can't open them, staff with the license grant can't, and no portal user can (account owners, spouses, dependents, bookkeepers, authorized contacts).
+  - Clients can upload or replace them and see verification status only. They get no preview, link, download or digits; the portal shows "On file with our office".
+  - Enforced on the server for pages, actions and the file route: a direct file link is refused for everyone but an Admin.
+- **Driver's licenses:** Admins, the client's assigned staff member, and staff an Admin allowed for all clients (**Settings → Staff accounts → Manage → Driver's licenses: Allow for all clients**). Portal account holders with the "View own driver's license" permission (owners by default) can view their own.
+- **The Owner's Office is separate.** It stays bound to the owner's own account; no identity setting grants it.
+
+## Protection
+- **Encrypted before storage.** Identity files are encrypted by the app (AES-256-GCM, key derived from `APP_ENCRYPTION_KEY`) before they reach private storage, and decrypted only for an authorized view or a malware re-scan. Never change `APP_ENCRYPTION_KEY`, or these files can't be opened.
+- Files use the same pipeline as other documents: malware scan, with quarantine until clean; private storage; one copy per client; an access log of upload and view/download; and the retention policy for the **Identity document** category (Settings → retention).
+- Identity files never appear in the yearly folders, recent-uploads lists or message attachments.
+
+## Staff verification tasks
+- Every upload (first copy or replacement) opens a staff task titled "Verify … — Client name". It is assigned to the client's staff member; a replacement license gets high priority. The task closes automatically when the document is verified or declined.
+
+## Expired status
+- When a verified license passes its expiration date it is marked **Expired**, even if a replacement is pending or was declined.
+- The portal, the checklist and the reminders keep showing "Expired" (or "Expired — replacement awaiting verification") until a replacement is verified.
+
+## Retention
+- Set it in **Settings → Document retention → "Identity document"** (Admins only; link: `/settings#retention`).
+- The keep-until date is set when a document is uploaded. Nothing is deleted automatically: expired documents are listed for an Admin to review, and every deletion is logged with a reason.
+
+## Notifications
+- Clients get email or text only as their communication preferences allow; texts respect quiet hours and STOP.
+- The text is deliberately generic: "A document on file needs to be updated soon", "…needs to be updated", "A document you sent needs your attention". No names, document types, numbers or images.
+- Staff alert emails say only that a client uploaded an identity document for verification, with a link.
+- Reminders run in the 10-minute notifications cron.
+- **Delivery check (Settings → Identity document reminders — delivery check, Admin):**
+  - Send the real reminder notice to a test portal login, then mark "I received the test email/text".
+  - Reminders are shown as **Active** only when `NOTIFICATIONS_ENABLED=true` and a test has been confirmed received.
+  - "Accepted by the provider" is not counted as delivery.

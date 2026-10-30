@@ -131,7 +131,7 @@ export async function attachFilingDocument(actor: Actor, filingId: string, docum
  */
 export async function publishFilingUpdate(actor: Actor, filingId: string, channels: ("EMAIL" | "SMS")[] | "portal_only") {
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId }, include: { documents: { where: { deletedAt: null } } } });
-  const docIds = f.documents.filter((d) => d.scanStatus !== "INFECTED").map((d) => d.id);
+  const docIds = f.documents.filter((d) => d.scanStatus === "CLEAN").map((d) => d.id);
   await prisma.$transaction([
     prisma.filingRecord.update({ where: { id: filingId }, data: { visibleToClient: true } }),
     prisma.document.updateMany({ where: { id: { in: docIds }, visibility: "STAFF_ONLY" }, data: { visibility: "PUBLISHED", publishedAt: new Date() } }),

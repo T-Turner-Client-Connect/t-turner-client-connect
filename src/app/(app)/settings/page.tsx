@@ -2,12 +2,16 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clients";
 import { inviteAction, privateInviteLinkAction, resendInviteAction, resetLinkAction, revokeInviteAction, updateStaffAction } from "@/app/actions/users";
+import { identityAccessAction } from "@/app/actions/identity";
+import { IdentityReminderPanel } from "@/components/identity-reminder-panel";
 import { inviteState, recentInvites, type InviteState } from "@/lib/services/staff-invitations";
 import { VerifyEmailCard } from "@/components/verification";
 import { clientEmailCodesAction, confirmVerifyEmailAction, sendVerifyEmailAction } from "@/app/actions/verification";
 import { authSettings, clientEmailCodesActive, emailProviderConfigured } from "@/lib/auth/client-auth";
 import { maskEmail } from "@/lib/services/mfa";
-import { resetStaffMfaAction, retentionAction } from "@/app/actions/workspace";
+import { resetStaffMfaAction, retentionAction, sendTestTextAction, staffAlertSettingsAction } from "@/app/actions/workspace";
+import { testResults } from "@/lib/services/staff-alerts";
+import { twilioConfigured } from "@/lib/twilio";
 import { CATEGORY_LABELS } from "@/lib/services/documents";
 import { jotformStatus } from "@/lib/services/contracts";
 import { signingProviderStatus } from "@/lib/services/signatures";
@@ -81,6 +85,7 @@ export default async function SettingsPage() {
                   </div>
                   <div className="flex gap-1">
                     <Badge tone={s.role === "ADMIN" ? "gold" : "navy"}>{s.role === "ADMIN" ? "Admin" : "Staff"}</Badge>
+                    {s.role !== "ADMIN" && s.identityAccessAll && <Badge tone="amber">Licenses: all clients</Badge>}
                     {!s.active && <Badge tone="red">Deactivated</Badge>}
                   </div>
                 </div>
@@ -97,6 +102,19 @@ export default async function SettingsPage() {
                         </Field>
                         <Button type="submit" variant="secondary">Save</Button>
                       </ActionForm>
+                      {s.role !== "ADMIN" && (
+                        <ActionForm
+                          action={identityAccessAction.bind(null, s.id, !s.identityAccessAll)}
+                          confirm={s.identityAccessAll ? undefined : `Let ${s.name} open driver's licenses for every client? Social Security cards and birth certificates stay Admin-only, and this does not open your Owner's Office.`}
+                          className="rounded-lg bg-ivory-50 p-2 text-sm"
+                        >
+                          <p className="mb-1">
+                            Driver&apos;s licenses: {s.identityAccessAll ? <strong>all clients</strong> : <>only clients assigned to {s.name.split(" ")[0]}</>}
+                            <span className="block text-xs text-slate-600">Social Security cards and birth certificates are Admin-only. Never includes the Owner&apos;s Office.</span>
+                          </p>
+                          <Button type="submit" variant="ghost">{s.identityAccessAll ? "Limit to assigned clients" : "Allow for all clients"}</Button>
+                        </ActionForm>
+                      )}
                       <ActionForm action={resetLinkAction.bind(null, s.id)}>
                         <Button type="submit" variant="ghost">Create password reset link</Button>
                       </ActionForm>
@@ -249,8 +267,9 @@ export default async function SettingsPage() {
         </Card>
 
         {isAdmin && (
-          <Card title="Document retention" className="lg:col-span-2">
-            <p className="mb-3 text-sm text-slate-600">Sets a keep-until date on new documents. Nothing is deleted automatically — expired documents are listed on the Documents page for an Admin to review, and every deletion is logged with a reason.</p>
+          <Card title="Document retention" className="scroll-mt-6 lg:col-span-2">
+            <span id="retention" />
+            <p className="mb-3 text-sm text-slate-600">&ldquo;Identity document&rdquo; covers driver&apos;s licenses, birth certificates and Social Security cards. Sets a keep-until date on new documents. Nothing is deleted automatically — expired documents are listed on the Documents page for an Admin to review, and every deletion is logged with a reason.</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               {(Object.keys(CATEGORY_LABELS) as (keyof typeof CATEGORY_LABELS)[]).map((cat) => (
                 <ActionForm key={cat} action={retentionAction} className="space-y-2 rounded-xl border border-ivory-200 p-3">
@@ -263,13 +282,60 @@ export default async function SettingsPage() {
           </Card>
         )}
 
+        {isAdmin && <IdentityReminderPanel />}
+
         <Card title="SMS consent & incoming texts" className="lg:col-span-2">
-          <div className="mb-4 rounded-lg bg-ivory-50 p-3 text-sm">
-            <p className="font-semibold">Twilio webhook addresses (Messaging Service → Integration)</p>
-            <p>Incoming messages: <code className="break-all">{appUrl()}/api/webhooks/twilio/inbound</code> (HTTP POST)</p>
-            <p>Delivery status is sent automatically to <code className="break-all">{appUrl()}/api/webhooks/twilio/status</code>.</p>
-            <p className="mt-1 text-slate-600">Public consent page: <a className="underline" href="/sms-consent" target="_blank">{appUrl()}/sms-consent</a></p>
-          </div>
+          {await (async () => {
+            const t = await testResults();
+            const configured = twilioConfigured();
+            return (
+              <div className="mb-4 space-y-3 rounded-lg bg-ivory-50 p-3 text-sm" data-testid="twilio-card">
+                <p className="font-semibold">
+                  Text messages (Twilio): {configured ? <Badge tone="green">Connected</Badge> : <Badge tone="gray">Not set up</Badge>}{" "}
+                  <span className="font-normal text-slate-600">Bulk campaign texting stays off (LIVE_SENDING_ENABLED).</span>
+                </p>
+                <div>
+                  <p className="font-semibold">Webhook addresses — Twilio Console → Messaging → Services → your service → Integration</p>
+                  <p>Incoming messages (&ldquo;Send a webhook&rdquo;, HTTP POST): <code className="break-all">{appUrl()}/api/webhooks/twilio/inbound</code></p>
+                  <p>Delivery status (HTTP POST): <code className="break-all">{appUrl()}/api/webhooks/twilio/status</code> — included automatically with every text this app sends; you may also enter it as the service&apos;s Delivery Status Callback.</p>
+                  <p className="text-xs text-slate-600">These must match the live site address exactly (APP_URL), or Twilio&apos;s signature check fails and the request is refused.</p>
+                </div>
+                {isAdmin && (
+                  <>
+                    <ActionForm action={staffAlertSettingsAction} className="grid gap-2 sm:grid-cols-4">
+                      <label className="flex items-center gap-2 sm:col-span-4"><input type="checkbox" name="smsEnabled" defaultChecked={t.settings.smsEnabled} /> Text the office when a client sends a message or uploads a document (no contents)</label>
+                      <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" name="emailEnabled" defaultChecked={t.settings.emailEnabled} /> Also email a link-only summary to</label>
+                      <Field label="Office email" className="sm:col-span-2"><input className="input" type="email" name="email" defaultValue={t.settings.email} /></Field>
+                      <Field label="Office phone (receives alerts)"><input className="input" name="phone" defaultValue={formatPhone(t.settings.phone)} /></Field>
+                      <Field label="Mon–Fri from (Central)"><input className="input" type="time" name="windowStart" defaultValue={t.settings.windowStart} /></Field>
+                      <Field label="until"><input className="input" type="time" name="windowEnd" defaultValue={t.settings.windowEnd} /></Field>
+                      <div className="flex items-end"><Button type="submit" variant="secondary">Save</Button></div>
+                      <p className="text-xs text-slate-600 sm:col-span-4">After-hours alerts wait for the next weekday window; several become one text; ones already read or resolved are skipped. In-site notices are not limited by these hours.</p>
+                    </ActionForm>
+                    <div>
+                      <p className="font-semibold">Controlled test</p>
+                      <p className="mb-2 text-slate-700">Sends one text to {formatPhone(t.settings.phone)}: &ldquo;TTurner Client Connect test… Reply YES to confirm two-way texting.&rdquo; Results below come from Twilio, not from this page.</p>
+                      <ActionForm action={sendTestTextAction}><Button type="submit" variant="secondary" disabled={!configured}>Send test text</Button></ActionForm>
+                      {t.tests.length > 0 && (
+                        <ul className="mt-2 space-y-1" data-testid="twilio-tests">
+                          {t.tests.map((x) => (
+                            <li key={x.id}>
+                              {fmtDateTime(x.createdAt)} · {x.status === "FAILED" ? <Badge tone="red">Not accepted</Badge> : <Badge tone={x.deliveryStatus === "delivered" ? "green" : x.deliveryStatus === "undelivered" || x.deliveryStatus === "failed" ? "red" : "gold"}>{x.deliveryStatus === "delivered" ? "Delivered (Twilio confirmed)" : x.deliveryStatus ? `Twilio: ${x.deliveryStatus}` : "Waiting for Twilio"}</Badge>}
+                              {x.statusDetail && <span className="ml-1 text-xs text-slate-600">{x.statusDetail}</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {t.tests.length > 0 && (
+                        <p className="mt-2">Replies from the office phone: {t.replies.length === 0 ? "none yet" : t.replies.map((r) => `“${r.body.slice(0, 40)}” at ${fmtDateTime(r.receivedAt)}`).join("; ")}</p>
+                      )}
+                    </div>
+                  </>
+                )}
+                <p className="text-slate-600">Public consent page: <a className="underline" href="/sms-consent" target="_blank">{appUrl()}/sms-consent</a></p>
+              </div>
+            );
+          })()}
           <h3 className="mb-2 font-semibold">Recent consent form submissions</h3>
           {consentSubs.length === 0 ? (
             <p className="mb-4 text-sm text-slate-600">None yet.</p>

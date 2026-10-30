@@ -7,6 +7,7 @@ import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { ineligibilityReason } from "@/lib/consent";
 import { sendTransactionalEmail } from "@/lib/email";
+import { queueStaffAlert } from "./staff-alerts";
 import { integrationStatus } from "@/lib/integrations";
 import { activeSuppressionsFor, ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
@@ -147,10 +148,10 @@ export async function portalSendMessage(
   const attachmentIds = input.attachmentIds ?? [];
   if (attachmentIds.length) {
     // Only the client's own uploads for this account can be attached.
-    const ok = await prisma.document.count({ where: { id: { in: attachmentIds }, clientId: input.clientId, uploadedByPortalId: user.id } });
+    const ok = await prisma.document.count({ where: { id: { in: attachmentIds }, clientId: input.clientId, uploadedByPortalId: user.id, category: { not: "IDENTITY" } } });
     if (ok !== attachmentIds.length) throw new ValidationError("Attachment not found.");
   }
-  return prisma.$transaction(async (tx) => {
+  const message = await prisma.$transaction(async (tx) => {
     const conversationId =
       input.conversationId ?? (await tx.conversation.create({ data: { clientId: input.clientId, subject: input.subject?.trim().slice(0, 200) || "Question from client" } })).id;
     const m = await tx.message.create({
@@ -170,6 +171,9 @@ export async function portalSendMessage(
     await audit(tx, { actorId: null, action: "message.received", entityType: "Message", entityId: m.id, clientId: input.clientId, details: { channel: "PORTAL", portalUserId: user.id } });
     return m;
   });
+  // Brief text to the office phone (no message contents), within staff alert hours.
+  await queueStaffAlert({ conversationId: message.conversationId });
+  return message;
 }
 
 export async function markStaffRead(conversationId: string) {

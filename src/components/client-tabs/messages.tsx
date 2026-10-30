@@ -37,7 +37,7 @@ export async function MessagesTab({ clientId, conversationId, user }: { clientId
       orderBy: { lastMessageAt: "desc" },
     }),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
-    prisma.document.findMany({ where: { clientId, deletedAt: null, scanStatus: { not: "INFECTED" } }, select: { id: true, title: true, visibility: true }, orderBy: { createdAt: "desc" }, take: 50 }),
+    prisma.document.findMany({ where: { clientId, deletedAt: null, scanStatus: "CLEAN" }, select: { id: true, title: true, visibility: true }, orderBy: { createdAt: "desc" }, take: 50 }),
   ]);
   const selected = conversationId ? conversations.find((c) => c.id === conversationId) : undefined;
   const thread = selected

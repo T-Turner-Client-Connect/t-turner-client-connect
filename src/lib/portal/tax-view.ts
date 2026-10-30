@@ -9,7 +9,7 @@ export async function loadPortalTaxes(clientId: string) {
   const [filings, requests, signatures] = await Promise.all([
     prisma.filingRecord.findMany({
       where: { clientId, visibleToClient: true },
-      include: { documents: { where: { deletedAt: null, visibility: "PUBLISHED", scanStatus: { not: "INFECTED" } }, orderBy: { createdAt: "desc" } } },
+      include: { documents: { where: { deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN" }, orderBy: { createdAt: "desc" } } },
       orderBy: [{ taxYear: "desc" }, { filingType: "asc" }, { jurisdiction: "asc" }],
     }),
     prisma.documentRequest.findMany({ where: { clientId, status: "OPEN", category: { in: ["TAXES", "CLIENT_UPLOADS"] } }, orderBy: { dueAt: "asc" } }),
