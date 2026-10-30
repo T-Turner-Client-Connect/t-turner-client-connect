@@ -61,6 +61,11 @@ export async function staffSendMessage(
   if (attachmentIds.length) {
     const ok = await prisma.document.count({ where: { id: { in: attachmentIds }, clientId: input.clientId, deletedAt: null } });
     if (ok !== attachmentIds.length) throw new ValidationError("Attachments must be documents belonging to this client.");
+    // Identity documents never go out in messages; financial reports only after Tabitha approves them.
+    const blocked = await prisma.document.count({
+      where: { id: { in: attachmentIds }, OR: [{ category: "IDENTITY" }, { category: "BOOKKEEPING", reportType: { not: null }, NOT: { reviewStatus: "APPROVED" } }] },
+    });
+    if (blocked) throw new ValidationError("That attachment can't be sent: identity documents never go in messages, and financial reports need Tabitha's approval first.");
     if (input.channel !== "PORTAL") throw new ValidationError("Attachments can only be sent through the secure portal.");
   }
   const isNote = input.channel === "INTERNAL_NOTE";

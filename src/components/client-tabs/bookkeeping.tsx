@@ -58,6 +58,7 @@ export async function BookkeepingTab({ clientId }: { clientId: string }) {
           <Button type="submit">Open month</Button>
         </ActionForm>
         <p className="mt-2 text-xs text-slate-600">Reports are uploaded by staff. No accounting software (QuickBooks etc.) is connected.</p>
+        <Link href={`/bookkeeping/${clientId}`} className="mt-2 inline-block text-sm font-semibold underline" data-testid="open-bk-workspace">Open the monthly workspace (checklist, statements, payroll, reports and approvals) →</Link>
       </Card>
 
       {periods.length === 0 && <EmptyState title="No bookkeeping months yet">Open a month to start collecting documents and publishing reports.</EmptyState>}
@@ -84,7 +85,7 @@ export async function BookkeepingTab({ clientId }: { clientId: string }) {
                     <ul className="text-sm">
                       {reports.map((d) => (
                         <li key={d.id}>
-                          {d.title} {d.reportType && <Badge tone="navy">{REPORT_LABELS[d.reportType]}</Badge>} <Badge tone={d.visibility === "PUBLISHED" ? "green" : "gray"}>{d.visibility === "PUBLISHED" ? "Published" : "Staff only"}</Badge>
+                          {d.title} {d.reportType && <Badge tone="navy">{REPORT_LABELS[d.reportType]}</Badge>} <Badge tone={d.visibility === "PUBLISHED" ? "green" : "gray"}>{d.visibility === "PUBLISHED" ? "Delivered" : d.reviewStatus === "AWAITING_REVIEW" ? "Awaiting Tabitha's review" : d.reviewStatus === "APPROVED" ? "Approved — ready to deliver" : "Draft"}</Badge>
                         </li>
                       ))}
                     </ul>
@@ -103,10 +104,8 @@ export async function BookkeepingTab({ clientId }: { clientId: string }) {
                         <select className="input" name="reportType" defaultValue="PROFIT_AND_LOSS" aria-label="Report type">
                           {Object.entries(REPORT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                         </select>
-                        <select className="input" name="visibility" defaultValue="STAFF_ONLY" aria-label="Visibility">
-                          <option value="STAFF_ONLY">Staff only (draft)</option>
-                          <option value="PUBLISHED">Publish to client</option>
-                        </select>
+                        <input type="hidden" name="visibility" value="STAFF_ONLY" />
+                        <p className="text-xs text-slate-600">Saved as a draft; Tabitha approves it in Bookkeeping Clients before it reaches the client.</p>
                       </div>
                       <input className="input" name="title" placeholder={`e.g. ${MONTHS[p.month - 1]} ${p.year} Profit & Loss`} aria-label="Report title" />
                       <Button type="submit">Upload report</Button>

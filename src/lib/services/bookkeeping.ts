@@ -27,6 +27,11 @@ export async function openPeriod(actor: Actor, clientId: string, year: number, m
 }
 
 export async function setPeriodStatus(actor: Actor, periodId: string, status: PeriodStatus, staffNote?: string) {
+  // Telling the client a month is ready (or complete) requires every report in it to be approved and delivered.
+  if (status === "READY_FOR_REVIEW" || status === "COMPLETE") {
+    const pending = await prisma.document.count({ where: { periodId, deletedAt: null, category: "BOOKKEEPING", reportType: { not: null }, visibility: "STAFF_ONLY" } });
+    if (pending) throw new ValidationError("Some reports for this month haven't been approved and delivered yet.");
+  }
   const period = await prisma.bookkeepingPeriod.update({ where: { id: periodId }, data: { status, staffNote: staffNote?.trim() || undefined, updatedById: actor.id } });
   await audit(prisma, { actorId: actor.id, action: "bookkeeping.status_changed", entityType: "BookkeepingPeriod", entityId: periodId, clientId: period.clientId, details: { status } });
   if (status === "READY_FOR_REVIEW" || status === "COMPLETE") await notifyClientUsers(period.clientId, "ACCOUNT_UPDATE", `period:${periodId}:${status}`, "BOOKKEEPING");
