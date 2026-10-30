@@ -53,7 +53,7 @@ export async function AccountRecoveryPanel({ clientId, actor }: { clientId: stri
           <li key={l.id} className="rounded-lg bg-ivory-50 p-3 text-sm" data-login={l.email}>
             <p className="flex flex-wrap items-center gap-2">
               <strong>{l.name}</strong> · {l.email} {l.emailVerified ? <Badge tone="green">Email verified</Badge> : <Badge tone="amber">Email not verified</Badge>}
-              <Badge tone={STATUS_LABELS[l.status].tone} data-testid="login-status">{STATUS_LABELS[l.status].label}</Badge>
+              <span data-testid="login-status"><Badge tone={STATUS_LABELS[l.status].tone}>{STATUS_LABELS[l.status].label}</Badge></span>
               {l.alsoStaff && <Badge tone="gold">Also has a separate staff login — not affected here</Badge>}
             </p>
             <p className="text-xs text-slate-600">
