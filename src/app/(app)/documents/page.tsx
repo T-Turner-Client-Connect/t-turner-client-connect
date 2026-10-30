@@ -6,7 +6,8 @@ import { UploadDocumentForm } from "@/components/upload-document-form";
 import { scanNowAction, scannerSelfTestAction } from "@/app/actions/workspace";
 import { quarantinedDocuments } from "@/lib/services/documents";
 import { scanProvider } from "@/lib/scan";
-import { SCAN_LABELS } from "@/lib/scan-labels";
+import { ScanStatus } from "@/components/scan-status";
+import { scanHealth } from "@/lib/services/documents";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { CATEGORY_LABELS } from "@/lib/services/documents";
@@ -34,6 +35,7 @@ export default async function DocumentsHub() {
   const idPending = await prisma.identityDocument.groupBy({ by: ["clientId"], where: { status: "PENDING_VERIFICATION" }, _count: true });
   const clientName = new Map(clients.map((c) => [c.id, c.displayName]));
   const provider = scanProvider();
+  const health = await scanHealth();
   const row = (d: (typeof uploads)[number], extra?: React.ReactNode) => (
     <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
       <span>
@@ -70,6 +72,11 @@ export default async function DocumentsHub() {
               Scanner: {provider ? <Badge tone="green">{provider === "clamav-rest" ? "ClamAV (your server)" : provider === "cloudmersive" ? "Cloudmersive" : "Custom scanner"}</Badge> : <Badge tone="red">Not set up</Badge>}{" "}
               {lastCheck && (lastCheck.ok ? <Badge tone="green">Self-test passed {fmtDateTime(lastCheck.createdAt)}</Badge> : <Badge tone="red">Self-test failed {fmtDateTime(lastCheck.createdAt)}</Badge>)}
             </p>
+            <ul className="space-y-1" data-testid="scan-setup">
+              <li>{health.configured ? "✅" : "❌"} Scanner connected {health.configured ? `(${provider})` : "— set MALWARE_SCAN_PROVIDER and the scanner's settings in Netlify (see docs/INTEGRATIONS.md)"}</li>
+              <li>{health.selfTest?.ok ? "✅" : "❌"} Self-test {health.selfTest ? (health.selfTest.ok ? `passed ${fmtDateTime(health.selfTest.at)}` : `failed ${fmtDateTime(health.selfTest.at)}`) : "not run yet"} — the standard antivirus test file must be blocked and a clean file must pass</li>
+              <li>{health.recheckRunning ? "✅" : "❌"} Automatic re-check every 10 minutes {health.lastRecheckAt ? `(last ran ${fmtDateTime(health.lastRecheckAt)})` : "— hasn't run yet; needs CRON_SECRET in Netlify and the scheduled function deployed"}</li>
+            </ul>
             {!scanConfigured() && (
               <Notice tone="warn">Every new file stays quarantined — no downloads, nothing shown to clients — until a scanner is connected and the file passes.</Notice>
             )}
@@ -83,7 +90,7 @@ export default async function DocumentsHub() {
                 {quarantined.map((d) => (
                   <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
                     <span><Link className="underline" href={`/clients/${d.client.id}?tab=documents`}>{d.title}</Link> · {d.client.displayName}</span>
-                    <Badge tone={SCAN_LABELS[d.scanStatus].tone}>{SCAN_LABELS[d.scanStatus].text}</Badge>
+                    <ScanStatus doc={d} health={health} />
                   </li>
                 ))}
               </ul>
@@ -94,13 +101,13 @@ export default async function DocumentsHub() {
       {needsReview.length > 0 && (
         <div className="mb-4">
           <Card title={`Client uploads waiting for review (${needsReview.length})`}>
-            <ul className="divide-y divide-ivory-200">{needsReview.map((d) => row(d, <><Badge tone="gold">{d.year ?? "Year?"}</Badge><Badge tone={SCAN_LABELS[d.scanStatus].tone}>{SCAN_LABELS[d.scanStatus].text}</Badge></>))}</ul>
+            <ul className="divide-y divide-ivory-200">{needsReview.map((d) => row(d, <><Badge tone="gold">{d.year ?? "Year?"}</Badge><ScanStatus doc={d} health={health} compact /></>))}</ul>
           </Card>
         </div>
       )}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Client uploads (last 30 days)">
-          {uploads.length ? <ul className="divide-y divide-ivory-200">{uploads.map((d) => row(d, <Badge tone={SCAN_LABELS[d.scanStatus].tone}>{SCAN_LABELS[d.scanStatus].text}</Badge>))}</ul> : <p className="text-sm text-slate-600">No recent uploads.</p>}
+          {uploads.length ? <ul className="divide-y divide-ivory-200">{uploads.map((d) => row(d, <ScanStatus doc={d} health={health} compact />))}</ul> : <p className="text-sm text-slate-600">No recent uploads.</p>}
         </Card>
         <Card title="Staff-only drafts (not yet published)">
           {drafts.length ? <ul className="divide-y divide-ivory-200">{drafts.map((d) => row(d))}</ul> : <p className="text-sm text-slate-600">No unpublished reports or tax documents.</p>}

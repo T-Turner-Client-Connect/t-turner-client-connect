@@ -1,7 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { BASIS, longDate, PERIOD_TYPES, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
 import { OWNER_EMAIL } from "@/lib/business";
 import type { ReportType } from "@prisma/client";
 import { buildDisplayName, normalizeEmail, normalizePhone } from "@/lib/normalize";
@@ -77,6 +78,7 @@ export async function saveProfile(actor: Actor, clientId: string, input: Profile
   if (!client) throw new ValidationError("Client not found.");
   if (client.archivedAt) throw new ValidationError(`${client.displayName} is archived. Restore the client in Clients first.`);
   if (input.assignedToId && !(await prisma.user.count({ where: { id: input.assignedToId, active: true } }))) throw new ValidationError("Choose an active staff member.");
+  if (input.assignedToId !== undefined && input.assignedToId !== client.assignedToId) assertAdmin(actor);
   const data = {
     active: input.active,
     frequency: input.frequency,
@@ -90,8 +92,9 @@ export async function saveProfile(actor: Actor, clientId: string, input: Profile
     updatedById: actor.id,
   };
   await prisma.bookkeepingProfile.upsert({ where: { clientId }, create: { clientId, ...data }, update: data });
-  // Staff can assign bookkeeping clients, as they can on the client record.
+  // Only an Admin changes who a bookkeeping client is assigned to.
   if (input.assignedToId !== undefined && input.assignedToId !== client.assignedToId) {
+    assertAdmin(actor);
     await prisma.client.update({ where: { id: clientId }, data: { assignedToId: input.assignedToId } });
     await audit(prisma, { actorId: actor.id, action: "client.updated", entityType: "Client", entityId: clientId, clientId, details: { fields: ["assignedToId"] } });
   }
@@ -156,6 +159,7 @@ export class PossibleDuplicateError extends ValidationError {
  */
 export async function enrollNewClient(actor: Actor, clientInput: ClientInput, input: ProfileInput, opts: { differentClient?: boolean } = {}) {
   if (!input.frequency || !(input.frequency in FREQUENCIES)) throw new ValidationError("Choose monthly or quarterly.");
+  if (input.assignedToId !== undefined) assertAdmin(actor);
   const matches = await findClientMatches(clientInput);
   const strong = matches.filter((m) => m.by.includes("email") || m.by.includes("phone"));
   if (strong.length) throw new PossibleDuplicateError(strong, false);
@@ -256,14 +260,50 @@ async function loadReport(documentId: string) {
  * as history and, if it was delivered, stays with the client until the new
  * version is approved and delivered.
  */
-export async function uploadMonthlyReport(actor: Actor, input: { clientId: string; year: number; month: number; reportType: string; title?: string; replacesId?: string | null; bytes: Uint8Array; originalName: string }) {
-  if (!(input.reportType in REPORT_LABELS)) throw new ValidationError("Choose the kind of report (Profit & loss, Balance sheet or Other report).");
+export type ReportUpload = {
+  clientId: string;
+  year: number;
+  month: number;
+  reportType: string;
+  periodType?: string | null;
+  basis?: string | null;
+  includesYtd?: boolean | null;
+  asOf?: Date | null;
+  accountId?: string | null;
+  title?: string;
+  replacesId?: string | null;
+  bytes: Uint8Array;
+  originalName: string;
+};
+
+// Report kinds where a second upload for the same period is a revision, not a new report.
+const VERSIONED = new Set(["FINANCIAL_PACKET", "PROFIT_AND_LOSS", "GROSS_RECEIPTS", "BALANCE_SHEET", "BANK_RECONCILIATION"]);
+
+export async function uploadMonthlyReport(actor: Actor, input: ReportUpload) {
+  if (!(input.reportType in REPORT_LABELS)) throw new ValidationError("Choose the kind of report (for example Profit & Loss Statement or Balance Sheet).");
   const reportType = input.reportType as ReportType;
   const thisYear = new Date().getFullYear();
   if (!Number.isInteger(input.year) || input.year < 2000 || input.year > thisYear + 1) throw new ValidationError("Choose the year.");
   if (!Number.isInteger(input.month) || input.month < 1 || input.month > 12) throw new ValidationError("Choose the month.");
-  const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { id: true, archivedAt: true } });
+  const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { id: true, archivedAt: true, fiscalYearEnd: true, bookkeepingProfile: { select: { accountingBasis: true } } } });
   if (!client) throw new ValidationError("Client not found.");
+  const periodType = (input.periodType || "MONTH") as PeriodType;
+  if (!(periodType in PERIOD_TYPES)) throw new ValidationError("Choose month, quarter or year to date.");
+  const range = reportPeriod(input.year, input.month, periodType, client.fiscalYearEnd); // validates quarter months
+  const basis = input.basis || client.bookkeepingProfile?.accountingBasis || null;
+  if (!basis && input.reportType !== "SUPPORTING_SCHEDULE" && input.reportType !== "OTHER_REPORT") throw new ValidationError("Choose the accounting basis (cash, accrual or modified cash), or set it in the client's business profile.");
+  if (basis && !(basis in BASIS)) throw new ValidationError("Choose the accounting basis.");
+  let asOf: Date | null = null;
+  if (input.reportType === "BALANCE_SHEET" || input.reportType === "FINANCIAL_PACKET") {
+    asOf = input.asOf ?? range.end;
+    if (asOf > range.end || asOf < range.start) throw new ValidationError(`The Balance Sheet "as of" date must fall within ${range.range}.`);
+  }
+  let accountId: string | null = null;
+  if (input.accountId) {
+    const acct = await prisma.bookkeepingAccount.findFirst({ where: { id: input.accountId, clientId: input.clientId } });
+    if (!acct) throw new ValidationError("That account isn't on this client's profile.");
+    accountId = acct.id;
+  }
   let previous = null;
   if (input.replacesId) {
     previous = await prisma.document.findFirst({ where: { id: input.replacesId, clientId: input.clientId, deletedAt: null, category: "BOOKKEEPING", reportType: { not: null } }, include: { period: true } });
@@ -272,13 +312,18 @@ export async function uploadMonthlyReport(actor: Actor, input: { clientId: strin
     if (previous.period && (previous.period.year !== input.year || previous.period.month !== input.month)) throw new ValidationError("A revised report must be for the same month as the version it replaces.");
   }
   const period = await openWorkPeriod(actor, input.clientId, input.year, input.month);
-  if (!previous && reportType !== "OTHER_REPORT") {
-    previous = await prisma.document.findFirst({ where: { periodId: period.id, deletedAt: null, reportType, supersededAt: null }, orderBy: { createdAt: "desc" }, include: { period: true } });
+  if (previous && (previous.reportPeriodType ?? "MONTH") !== periodType) throw new ValidationError("A revision must cover the same reporting period (month, quarter or year to date) as the version it replaces.");
+  if (!previous && VERSIONED.has(reportType)) {
+    previous = await prisma.document.findFirst({
+      where: { periodId: period.id, deletedAt: null, reportType, supersededAt: null, OR: periodType === "MONTH" ? [{ reportPeriodType: "MONTH" }, { reportPeriodType: null }] : [{ reportPeriodType: periodType }], ...(reportType === "BANK_RECONCILIATION" ? { bookkeepingAccountId: accountId } : {}) },
+      orderBy: { createdAt: "desc" },
+      include: { period: true },
+    });
   }
   const doc = await staffUploadDocument(actor, {
     clientId: input.clientId,
     category: "BOOKKEEPING",
-    title: input.title?.trim() || `${REPORT_LABELS[previous?.reportType ?? reportType]} — ${MONTHS[input.month - 1]} ${input.year}`,
+    title: input.title?.trim() || `${REPORT_LABELS[previous?.reportType ?? reportType]} — ${reportPeriod(input.year, input.month, periodType, client.fiscalYearEnd).short}`,
     year: input.year,
     month: input.month,
     periodId: period.id,
@@ -290,10 +335,13 @@ export async function uploadMonthlyReport(actor: Actor, input: { clientId: strin
   const version = previous ? (previous.version ?? 1) + 1 : 1;
   await prisma.$transaction([
     ...(previous ? [prisma.document.update({ where: { id: previous.id }, data: { supersededAt: new Date() } })] : []),
-    prisma.document.update({ where: { id: doc.id }, data: { version, replacesId: previous?.id ?? null } }),
-    prisma.auditLog.create({ data: { actorId: actor.id, action: "bookkeeping.report_uploaded", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { reportType: previous?.reportType ?? reportType, year: input.year, month: input.month, version, replaces: previous?.id ?? null } } }),
+    prisma.document.update({
+      where: { id: doc.id },
+      data: { version, replacesId: previous?.id ?? null, reportPeriodType: periodType, reportBasis: basis, reportIncludesYtd: input.includesYtd ?? periodType === "YEAR_TO_DATE", reportAsOf: asOf, bookkeepingAccountId: accountId ?? previous?.bookkeepingAccountId ?? null },
+    }),
+    prisma.auditLog.create({ data: { actorId: actor.id, action: "bookkeeping.report_uploaded", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { reportType: previous?.reportType ?? reportType, year: input.year, month: input.month, periodType, basis, version, replaces: previous?.id ?? null } } }),
   ]);
-  return { document: { ...doc, version }, period, version, replaced: previous };
+  return { document: { ...doc, version, reportPeriodType: periodType }, period, version, replaced: previous, range };
 }
 
 /** All versions of a report, newest first. */
@@ -344,6 +392,7 @@ export async function requestReportChanges(actor: Actor, documentId: string, not
 export async function deliverReport(actor: Actor, documentId: string) {
   const doc = await loadReport(documentId);
   if (doc.reviewStatus !== "APPROVED") throw new ValidationError("Tabitha must approve this report before it's delivered.");
+  if (doc.scanStatus !== "CLEAN") throw new ValidationError("This file hasn't passed the malware scan, so it can't be delivered.");
   if (doc.visibility === "PUBLISHED") return;
   // A delivered revision takes the place of earlier delivered versions in the client's portal; staff keep them as history.
   const older = (await reportVersions(documentId)).filter((d) => d.id !== documentId && d.visibility === "PUBLISHED");
@@ -357,6 +406,40 @@ export async function deliverReport(actor: Actor, documentId: string) {
     prisma.auditLog.create({ data: { actorId: actor.id, action: "bookkeeping.report_delivered", entityType: "Document", entityId: documentId, clientId: doc.clientId, details: older.length ? { replacedDelivered: older.map((o) => o.id) } : undefined } }),
   ]);
   if (doc.scanStatus === "CLEAN") await notifyClientUsers(doc.clientId, "NEW_DOCUMENT", doc.id, doc.category);
+}
+
+/** Delivers every approved report in a month (or one reporting period of it) — one notice per report, as usual. */
+export async function deliverApprovedReports(actor: Actor, periodId: string, periodType?: string | null) {
+  const docs = await prisma.document.findMany({
+    where: { periodId, deletedAt: null, supersededAt: null, category: "BOOKKEEPING", reportType: { not: null }, reviewStatus: "APPROVED", visibility: "STAFF_ONLY", ...(periodType ? (periodType === "MONTH" ? { OR: [{ reportPeriodType: "MONTH" }, { reportPeriodType: null }] } : { reportPeriodType: periodType }) : {}) },
+  });
+  if (!docs.length) throw new ValidationError("Nothing approved is waiting to be delivered.");
+  for (const d of docs) await deliverReport(actor, d.id);
+  return docs.length;
+}
+
+/** Revision and approval history for a report (all versions, oldest first). */
+export async function reportHistory(documentId: string) {
+  const versions = await reportVersions(documentId);
+  const ids = versions.map((v) => v.id);
+  const events = await prisma.auditLog.findMany({
+    where: { entityType: "Document", entityId: { in: ids }, action: { in: ["bookkeeping.report_uploaded", "bookkeeping.report_submitted", "bookkeeping.report_approved", "bookkeeping.report_changes_requested", "bookkeeping.report_delivered"] } },
+    include: { actor: { select: { name: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+  const verOf = new Map(versions.map((v) => [v.id, v.version ?? 1]));
+  return events.map((e) => ({ at: e.createdAt, by: e.actor?.name ?? "System", version: verOf.get(e.entityId ?? "") ?? 1, action: e.action.replace("bookkeeping.report_", "") }));
+}
+
+export const HISTORY_LABELS: Record<string, string> = { uploaded: "Uploaded", submitted: "Submitted for review", approved: "Approved by Tabitha", changes_requested: "Changes requested", delivered: "Delivered to client" };
+
+/** How a report describes its period: "As of September 30, 2026 • Cash Basis", etc. */
+export function reportCaption(d: { reportType: string | null; reportPeriodType: string | null; reportBasis: string | null; reportAsOf: Date | null; reportIncludesYtd: boolean | null }, year: number, month: number, fiscalYearEnd?: number | null) {
+  const r = reportPeriod(year, month, (d.reportPeriodType ?? "MONTH") as PeriodType, fiscalYearEnd);
+  const when = d.reportType === "BALANCE_SHEET" ? `As of ${longDate(d.reportAsOf ?? r.end)}` : r.range;
+  const basis = d.reportBasis ? BASIS[d.reportBasis as keyof typeof BASIS] : null;
+  const ytd = d.reportType !== "BALANCE_SHEET" && d.reportIncludesYtd && (d.reportPeriodType ?? "MONTH") !== "YEAR_TO_DATE" ? "with year-to-date totals" : null;
+  return [when, basis, ytd].filter(Boolean).join(" • ");
 }
 
 // --- Stages ------------------------------------------------------------------------------
@@ -378,7 +461,7 @@ async function loadPeriod(periodId: string) {
     where: { id: periodId },
     include: {
       checklist: { orderBy: { sortOrder: "asc" } },
-      documents: { where: { deletedAt: null }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, uploadedByStaff: { select: { name: true } } } },
+      documents: { where: { deletedAt: null }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, uploadedByStaff: { select: { name: true } }, bookkeepingAccount: true } },
       requests: { orderBy: { createdAt: "asc" } },
       conversations: { orderBy: { lastMessageAt: "desc" }, select: { id: true, subject: true, awaitingStaff: true, lastMessageAt: true } },
     },

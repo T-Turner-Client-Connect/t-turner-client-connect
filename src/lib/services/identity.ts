@@ -172,6 +172,7 @@ export async function uploadIdentityDocument(who: { staff: Actor } | { portal: P
           publishedAt: new Date(),
           fileId: file.id,
           scanStatus: stored.scan,
+          ...stored.scanMeta,
           uploadedByStaffId: "staff" in who ? who.staff.id : null,
           uploadedByPortalId: "portal" in who ? who.portal.id : null,
           needsReview: true,

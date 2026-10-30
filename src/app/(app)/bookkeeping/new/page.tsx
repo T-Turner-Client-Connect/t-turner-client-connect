@@ -13,7 +13,7 @@ type SP = { mode?: string; q?: string; client?: string };
 
 export default async function AddBookkeepingClientPage({ searchParams }: { searchParams: Promise<SP> }) {
   await connection();
-  await requireUser();
+  const user = await requireUser();
   const sp = await searchParams;
   const mode = sp.mode === "new" ? "new" : "existing";
   const q = sp.q?.trim() ?? "";
@@ -82,7 +82,7 @@ export default async function AddBookkeepingClientPage({ searchParams }: { searc
                   </select>
                 </Field>
                 <h3 className="text-sm font-semibold sm:col-span-3">2. Service details</h3>
-                <BookkeepingServiceFields staff={staff} />
+                <BookkeepingServiceFields staff={staff} canAssign={user.role === "ADMIN"} />
                 <div className="sm:col-span-3"><Button type="submit">Add Bookkeeping Client</Button></div>
               </>
             )}
@@ -104,7 +104,7 @@ export default async function AddBookkeepingClientPage({ searchParams }: { searc
             <Field label="Phone" hint="Used to check for duplicates"><input className="input" type="tel" name="phone" /></Field>
             <div />
             <h3 className="text-sm font-semibold sm:col-span-3">Service details</h3>
-            <BookkeepingServiceFields staff={staff} />
+            <BookkeepingServiceFields staff={staff} canAssign={user.role === "ADMIN"} />
             <label className="flex items-start gap-2 text-sm sm:col-span-3"><input type="checkbox" name="differentClient" className="mt-1" /> If a client with the same <em>name</em> already exists, this is a different client — create a new record anyway. (A matching email or phone number always stops here.)</label>
             <div className="sm:col-span-3"><Button type="submit">Create client &amp; add to Bookkeeping</Button></div>
           </ActionForm>

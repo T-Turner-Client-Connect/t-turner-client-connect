@@ -35,28 +35,32 @@ enum Role {
 }
 
 model User {
-  id                      String    @id @default(cuid())
-  email                   String    @unique
-  name                    String
-  role                    Role      @default(STAFF)
-  passwordHash            String?
-  active                  Boolean   @default(true)
+  id                          String    @id @default(cuid())
+  email                       String    @unique
+  name                        String
+  role                        Role      @default(STAFF)
+  passwordHash                String?
+  active                      Boolean   @default(true)
   // TOTP secret (base32), stored encrypted with APP_ENCRYPTION_KEY.
-  mfaSecretEnc            String?
-  mfaEnabledAt            DateTime?
+  mfaSecretEnc                String?
+  mfaEnabledAt                DateTime?
   // Last accepted authenticator time-step: a code can't be replayed.
-  mfaLastStep             Int?
+  mfaLastStep                 Int?
   // Proven by entering a code emailed to this address (enables email codes).
-  emailVerifiedAt         DateTime?
-  lastLoginAt             DateTime?
+  emailVerifiedAt             DateTime?
+  lastLoginAt                 DateTime?
   // Admin-granted: open identity documents for every client (not only
   // assigned ones). Has no effect on the Owner's Office, which is bound to
   // the owner's own account.
-  identityAccessAll       Boolean   @default(false)
-  identityAccessGrantedBy String?
-  identityAccessGrantedAt DateTime?
-  createdAt               DateTime  @default(now())
-  updatedAt               DateTime  @updatedAt
+  identityAccessAll           Boolean   @default(false)
+  identityAccessGrantedBy     String?
+  identityAccessGrantedAt     DateTime?
+  // Tabitha can let a staff member manage bookkeeping billing.
+  bookkeepingBillingAccess    Boolean   @default(false)
+  bookkeepingBillingGrantedBy String?
+  bookkeepingBillingGrantedAt DateTime?
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
 
   sessions        Session[]
   resetTokens     PasswordResetToken[]
@@ -100,17 +104,21 @@ model Session {
 }
 
 model Invite {
-  id          String    @id @default(cuid())
-  email       String
-  name        String
-  role        Role      @default(STAFF)
-  tokenHash   String    @unique
-  expiresAt   DateTime
-  acceptedAt  DateTime?
-  revokedAt   DateTime?
-  invitedById String
-  invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id])
-  createdAt   DateTime  @default(now())
+  id                     String    @id @default(cuid())
+  email                  String
+  name                   String
+  role                   Role      @default(STAFF)
+  tokenHash              String    @unique
+  expiresAt              DateTime
+  acceptedAt             DateTime?
+  revokedAt              DateTime?
+  invitedById            String
+  invitedBy              User      @relation("InvitedBy", fields: [invitedById], references: [id])
+  createdAt              DateTime  @default(now())
+  // Permissions applied when the invitation is accepted (Staff role only).
+  grantIdentityAccessAll Boolean   @default(false)
+  // Bookkeeping billing access — only Tabitha can include it.
+  grantBillingAccess     Boolean   @default(false)
 
   // Staff invitation email (transactional; never part of campaigns or client mail).
   // DELIVERED is set only from a signed Resend delivery event.
@@ -219,34 +227,37 @@ model Client {
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
-  contacts           Contact[]
-  groups             ClientGroup[]
-  clientNotes        ClientNote[]
-  tasks              Task[]
-  consentRecords     ConsentRecord[]
-  auditLogs          AuditLog[]
-  campaignInclusions CampaignInclusion[]
-  campaignExclusions CampaignExclusion[]
-  portalAccess       PortalAccess[]
-  portalInvites      PortalInvite[]
-  conversations      Conversation[]
-  documents          Document[]
-  periods            BookkeepingPeriod[]
-  docRequests        DocumentRequest[]
-  announcements      Announcement[]
-  deadlines          ClientDeadline[]
-  signatureReqs      SignatureRequest[]
-  contracts          ContractAssignment[]
-  invoices           Invoice[]
-  payments           Payment[]
-  appointments       Appointment[]
-  pipelineCards      PipelineCard[]
-  filings            FilingRecord[]
-  questionnaires     QuestionnaireSubmission[]
-  identityPeople     IdentityPerson[]
-  identityDocs       IdentityDocument[]
-  bookkeepingProfile BookkeepingProfile?
-  taxYearProgress    TaxYearProgress[]
+  contacts             Contact[]
+  groups               ClientGroup[]
+  clientNotes          ClientNote[]
+  tasks                Task[]
+  consentRecords       ConsentRecord[]
+  auditLogs            AuditLog[]
+  campaignInclusions   CampaignInclusion[]
+  campaignExclusions   CampaignExclusion[]
+  portalAccess         PortalAccess[]
+  portalInvites        PortalInvite[]
+  conversations        Conversation[]
+  documents            Document[]
+  periods              BookkeepingPeriod[]
+  docRequests          DocumentRequest[]
+  announcements        Announcement[]
+  deadlines            ClientDeadline[]
+  signatureReqs        SignatureRequest[]
+  contracts            ContractAssignment[]
+  invoices             Invoice[]
+  payments             Payment[]
+  appointments         Appointment[]
+  pipelineCards        PipelineCard[]
+  filings              FilingRecord[]
+  questionnaires       QuestionnaireSubmission[]
+  identityPeople       IdentityPerson[]
+  identityDocs         IdentityDocument[]
+  bookkeepingProfile   BookkeepingProfile?
+  bookkeepingAccounts  BookkeepingAccount[]
+  bookkeepingBilling   BookkeepingBilling?
+  chargeAuthorizations RecurringChargeAuthorization[]
+  taxYearProgress      TaxYearProgress[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -915,6 +926,11 @@ enum ReportType {
   PROFIT_AND_LOSS
   BALANCE_SHEET
   OTHER_REPORT
+  GROSS_RECEIPTS
+  BANK_RECONCILIATION
+  SUPPORTING_SCHEDULE
+  // A complete packet uploaded as one file (cover, statements, schedules).
+  FINANCIAL_PACKET
 }
 
 model Document {
@@ -983,6 +999,22 @@ model Document {
   replaces               Document?            @relation("ReportVersions", fields: [replacesId], references: [id], onDelete: SetNull)
   replacedBy             Document?            @relation("ReportVersions")
   supersededAt           DateTime?
+  // Financial report details (bookkeeping): MONTH | QUARTER | YEAR_TO_DATE
+  // (fiscal year start through the period month), the accounting basis
+  // (CASH | ACCRUAL | MODIFIED_CASH), whether it shows year-to-date columns,
+  // and the Balance Sheet "as of" date.
+  reportPeriodType       String?
+  reportBasis            String?
+  reportIncludesYtd      Boolean?
+  reportAsOf             DateTime?
+  // A statement or reconciliation for one bank/card account.
+  bookkeepingAccountId   String?
+  // Malware-scan attempts: when the file was last checked, how many tries,
+  // and why the last try didn't finish (scanner missing, no answer, rejected).
+  scanAttempts           Int                  @default(0)
+  lastScanAt             DateTime?
+  lastScanError          String?
+  bookkeepingAccount     BookkeepingAccount?  @relation(fields: [bookkeepingAccountId], references: [id], onDelete: SetNull)
 
   @@index([clientId, category, year, month])
   @@index([visibility])
@@ -2376,6 +2408,101 @@ model BookkeepingProfile {
   updatedById      String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+
+  // Business information. Entity type and fiscal year end live on Client.
+  legalName           String?
+  dba                 String?
+  // EIN: encrypted (encryptSecret); only the last four are shown by default.
+  // The full number opens for Admins only, and each view is audited.
+  einEncrypted        String?
+  einLast4            String?
+  businessAddress1    String?
+  businessAddress2    String?
+  businessCity        String?
+  businessState       String?
+  businessPostalCode  String?
+  businessEmail       String?
+  contactName         String?
+  contactTitle        String?
+  contactPhone        String?
+  businessStartDate   DateTime?
+  // The tax/accounting year being worked; earlier years stay available.
+  workingYear         Int?
+  // CASH | ACCRUAL | MODIFIED_CASH — shown on every report.
+  accountingBasis     String?
+  // Payroll account access: NOT_REQUESTED | REQUESTED | ACCOUNTANT_ACCESS | REPORTS_EMAILED | CLIENT_UPLOADS
+  payrollAccessStatus String?
+  // Payroll reports required each month (keys of PAYROLL_REPORT_TYPES).
+  payrollReports      String[]  @default([])
+}
+
+/// A client's bank or credit-card account for bookkeeping. Never holds
+/// passwords, security answers or one-time codes: access is by delegated
+/// accountant access, an official connection, or statement uploads.
+model BookkeepingAccount {
+  id           String     @id @default(cuid())
+  clientId     String
+  client       Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  institution  String
+  // CHECKING | SAVINGS | CREDIT_CARD | LINE_OF_CREDIT | LOAN | MERCHANT | OTHER
+  accountType  String
+  last4        String?
+  nickname     String?
+  // The bank's official sign-in page (https only), for delegated access.
+  loginUrl     String?
+  // NOT_REQUESTED | REQUESTED | DELEGATED_ACCESS | OFFICIAL_CONNECTION | STATEMENTS_ONLY | REVOKED
+  accessStatus String     @default("NOT_REQUESTED")
+  accessNote   String?
+  active       Boolean    @default(true)
+  updatedById  String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  documents    Document[]
+
+  @@index([clientId])
+}
+
+/// Monthly bookkeeping billing for a client. Card details are never stored:
+/// Square holds the payment method; only Square's reference ids live here.
+/// Managed by Tabitha, or staff she grants (User.bookkeepingBillingAccess).
+model BookkeepingBilling {
+  clientId         String    @id
+  client           Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  monthlyFeeCents  Int?
+  billingStartDate DateTime?
+  // Day of the month the charge is due (1–28).
+  billingDay       Int?
+  // NOT_SET_UP | CURRENT | DUE | PAST_DUE | PAUSED
+  paymentStatus    String    @default("NOT_SET_UP")
+  squareCustomerId String?
+  squareCardId     String?
+  notes            String?
+  updatedById      String?
+  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime  @default(now())
+}
+
+/// The client's authorization for recurring charges. A card on file alone authorizes nothing.
+model RecurringChargeAuthorization {
+  id                 String    @id @default(cuid())
+  clientId           String
+  client             Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  amountCents        Int
+  // MONTHLY
+  frequency          String    @default("MONTHLY")
+  startDate          DateTime
+  // SIGNED_FORM | SIGNED_CONTRACT | PORTAL_CONSENT
+  method             String
+  authorizedByName   String
+  authorizedAt       DateTime
+  evidenceDocumentId String?
+  recordedById       String
+  createdAt          DateTime  @default(now())
+  revokedAt          DateTime?
+  revokedById        String?
+  revokeReason       String?
+
+  @@index([clientId])
 }
 
 // One line of a month's checklist: something the client sends
@@ -2394,4 +2521,11 @@ model BookkeepingChecklistItem {
   sortOrder Int               @default(0)
 
   @@unique([periodId, key])
+}
+
+/// Background job heartbeats (e.g. the 10-minute quarantine re-scan), so staff can see whether automatic checks are running.
+model SystemHeartbeat {
+  key    String   @id
+  at     DateTime
+  detail Json?
 }

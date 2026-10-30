@@ -2,7 +2,8 @@ import "server-only";
 import type { Invite, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { assertAdmin, type Actor } from "@/lib/auth/actor";
+import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { isReportApprover } from "./bookkeeping-clients";
 import { hashToken, newToken } from "@/lib/auth/tokens";
 import { normalizeEmail } from "@/lib/normalize";
 import { brandedEmailHtml, sendEmail } from "@/lib/email";
@@ -115,7 +116,9 @@ export async function sendInviteEmail(inviteId: string, token: string, invitedBy
   };
 }
 
-async function newInviteRow(tx: Pick<typeof prisma, "invite">, input: { email: string; name: string; role: Role; invitedById: string; createKey?: string }) {
+type Grants = { identityAll?: boolean; billing?: boolean };
+
+async function newInviteRow(tx: Pick<typeof prisma, "invite">, input: { email: string; name: string; role: Role; invitedById: string; createKey?: string; grants?: Grants }) {
   const token = newToken();
   const invite = await tx.invite.create({
     data: {
@@ -126,14 +129,18 @@ async function newInviteRow(tx: Pick<typeof prisma, "invite">, input: { email: s
       expiresAt: new Date(Date.now() + INVITE_TTL_MS),
       invitedById: input.invitedById,
       createKey: input.createKey || null,
+      // Admins already have these; the grants only matter for Staff.
+      grantIdentityAccessAll: input.role === "STAFF" && !!input.grants?.identityAll,
+      grantBillingAccess: input.role === "STAFF" && !!input.grants?.billing,
     },
   });
   return { invite, token };
 }
 
 /** Creates an invitation and emails it. Refuses a second open invitation for the same address. */
-export async function inviteStaff(actor: Actor, input: { email: string; name: string; role: Role; idempotencyKey?: string }): Promise<InviteOutcome> {
+export async function inviteStaff(actor: Actor, input: { email: string; name: string; role: Role; idempotencyKey?: string; grants?: Grants }): Promise<InviteOutcome> {
   assertAdmin(actor);
+  if (input.grants?.billing && !(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can give someone bookkeeping billing access.");
   if (input.idempotencyKey) {
     const repeat = await prisma.invite.findUnique({ where: { createKey: input.idempotencyKey } });
     if (repeat) return { inviteId: repeat.id, email: repeat.email, status: "not_sent", message: "That invitation was already created — see its status in the list below." };
@@ -152,10 +159,10 @@ export async function inviteStaff(actor: Actor, input: { email: string; name: st
       if (input.idempotencyKey && (await tx.invite.findUnique({ where: { createKey: input.idempotencyKey } }))) return null;
       const open = await tx.invite.findFirst({ where: { email, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } } });
       if (open) throw new ValidationError(`${email} already has a pending invitation. Use Resend or Revoke on it below.`);
-      const row = await newInviteRow(tx, { email, name, role: input.role, invitedById: actor.id, createKey: input.idempotencyKey });
+      const row = await newInviteRow(tx, { email, name, role: input.role, invitedById: actor.id, createKey: input.idempotencyKey, grants: input.grants });
       // Any older expired invitation for this address is now superseded.
       await tx.invite.updateMany({ where: { email, acceptedAt: null, revokedAt: null, id: { not: row.invite.id } }, data: { revokedAt: new Date(), replacedById: row.invite.id } });
-      await audit(tx, { actorId: actor.id, action: "user.invited", entityType: "Invite", entityId: row.invite.id, details: { email, role: input.role } });
+      await audit(tx, { actorId: actor.id, action: "user.invited", entityType: "Invite", entityId: row.invite.id, details: { email, role: input.role, identityAll: !!input.grants?.identityAll, billing: !!input.grants?.billing } });
       return row;
     });
   } catch (err) {
@@ -183,7 +190,8 @@ async function replaceInvite(actor: Actor, inviteId: string, action: "resend" | 
     // Claim the old row first so two simultaneous resends can't both create a link.
     const claimed = await tx.invite.updateMany({ where: { id: old.id, acceptedAt: null, revokedAt: null, replacedById: null }, data: { revokedAt: new Date() } });
     if (claimed.count !== 1) throw new ValidationError("This invitation was just changed by someone else. Refresh to see its status.");
-    const row = await newInviteRow(tx, { email: old.email, name: old.name, role: old.role, invitedById: actor.id });
+    // A resent invitation keeps the permissions chosen when it was first created.
+    const row = await newInviteRow(tx, { email: old.email, name: old.name, role: old.role, invitedById: actor.id, grants: { identityAll: old.grantIdentityAccessAll, billing: old.grantBillingAccess } });
     await tx.invite.update({ where: { id: old.id }, data: { replacedById: row.invite.id } });
     if (action === "copy_link") await tx.invite.update({ where: { id: row.invite.id }, data: { linkCopiedAt: new Date() } });
     await audit(tx, { actorId: actor.id, action: action === "resend" ? "user.invite_resent" : "user.invite_link_created", entityType: "Invite", entityId: row.invite.id, details: { replaces: old.id } });

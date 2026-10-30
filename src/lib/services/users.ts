@@ -47,7 +47,18 @@ export async function acceptInvite(token: string, password: string) {
     const claimed = await tx.invite.updateMany({ where: { id: invite.id, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } }, data: { acceptedAt: new Date() } });
     if (claimed.count !== 1) throw new ValidationError("This invitation has already been used.");
     if (await tx.user.findUnique({ where: { email: invite.email } })) throw new ValidationError("That person already has an account.");
-    const user = await tx.user.create({ data: { email: invite.email, name: invite.name, role: invite.role, passwordHash } });
+    const granted = { by: invite.invitedById, at: new Date() };
+    const user = await tx.user.create({
+      data: {
+        email: invite.email,
+        name: invite.name,
+        role: invite.role,
+        passwordHash,
+        // Permissions the Admin chose on the invitation (Staff only).
+        ...(invite.grantIdentityAccessAll ? { identityAccessAll: true, identityAccessGrantedBy: granted.by, identityAccessGrantedAt: granted.at } : {}),
+        ...(invite.grantBillingAccess ? { bookkeepingBillingAccess: true, bookkeepingBillingGrantedBy: granted.by, bookkeepingBillingGrantedAt: granted.at } : {}),
+      },
+    });
     await audit(tx, { actorId: user.id, action: "user.invite_accepted", entityType: "User", entityId: user.id });
     return user;
   });

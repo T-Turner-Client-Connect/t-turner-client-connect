@@ -9,7 +9,7 @@ import { allowedCategories, requireClientAccess } from "@/lib/portal/access";
 import { storage } from "@/lib/storage";
 import { decryptBytes, encryptBytes, sign, verifySignature } from "@/lib/crypto";
 import { imageSize, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
-import { scanBytes, scanConfigured } from "@/lib/scan";
+import { scanBytesDetailed, scanConfigured } from "@/lib/scan";
 import { queueStaffAlert } from "./staff-alerts";
 import { ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
@@ -24,8 +24,12 @@ export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
 };
 
 export const REPORT_LABELS: Record<ReportType, string> = {
-  PROFIT_AND_LOSS: "Profit & loss",
-  BALANCE_SHEET: "Balance sheet",
+  FINANCIAL_PACKET: "Complete financial packet",
+  PROFIT_AND_LOSS: "Profit & Loss Statement",
+  GROSS_RECEIPTS: "Gross Receipts",
+  BALANCE_SHEET: "Balance Sheet",
+  BANK_RECONCILIATION: "Bank Reconciliation",
+  SUPPORTING_SCHEDULE: "Supporting schedule",
   OTHER_REPORT: "Other report",
 };
 
@@ -59,7 +63,8 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
   if (!type) throw new ValidationError("Upload a PDF, JPG, or PNG file.");
   const sha256 = sha256Of(bytes);
   if (clientId) await assertNotDuplicate(clientId, sha256, "portal" in uploader);
-  const scan = await scanBytes(bytes, originalName);
+  const scanned = await scanBytesDetailed(bytes, originalName);
+  const scan = scanned.status;
   if (scan === "INFECTED") throw new ValidationError("This file was flagged by the virus scanner and was not saved.");
   const size = type.mime.startsWith("image/") ? imageSize(bytes, type.mime) : null;
   const storageKey = `client_document/${randomUUID()}`;
@@ -69,6 +74,8 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
   return {
     storageKey,
     scan,
+    // Recorded on the document so the upload shows why it's still quarantined.
+    scanMeta: { scanAttempts: scanned.status === "NOT_SCANNED" ? 0 : 1, lastScanAt: scanned.status === "NOT_SCANNED" ? null : new Date(), lastScanError: scanned.detail },
     fileData: {
       kind: "CLIENT_DOCUMENT" as const,
       storageKey,
@@ -138,6 +145,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
           reviewStatus: isFinancialReport ? "DRAFT" : null,
           fileId: file.id,
           scanStatus: stored.scan,
+          ...stored.scanMeta,
           uploadedByStaffId: actor.id,
           retainUntil: await retentionDate(input.category),
         },
@@ -204,6 +212,7 @@ export async function portalUploadDocument(
           publishedAt: new Date(),
           fileId: file.id,
           scanStatus: stored.scan,
+          ...stored.scanMeta,
           uploadedByPortalId: user.id,
           // Stays "Needs Review" until a staff member acknowledges it.
           needsReview: true,
@@ -352,7 +361,10 @@ export { notifyClientUsers };
  * the stored bytes and keeps only the record. Safe to run repeatedly.
  */
 export async function scanQuarantined(limit = 25) {
-  if (!scanConfigured()) return { scanned: 0, clean: 0, infected: 0 };
+  if (!scanConfigured()) {
+    await heartbeat("quarantine-scan", { configured: false });
+    return { scanned: 0, clean: 0, infected: 0 };
+  }
   const docs = await prisma.document.findMany({
     where: { deletedAt: null, scanStatus: { in: ["NOT_SCANNED", "PENDING"] } },
     include: { file: true },
@@ -364,7 +376,8 @@ export async function scanQuarantined(limit = 25) {
   for (const d of docs) {
     const bytes = await readDocumentBytes(d.file);
     if (!bytes) continue;
-    const result = await scanBytes(bytes, d.file.originalName);
+    const { status: result, detail } = await scanBytesDetailed(bytes, d.file.originalName);
+    await prisma.document.update({ where: { id: d.id }, data: { scanAttempts: { increment: 1 }, lastScanAt: new Date(), lastScanError: detail } });
     if (result === "CLEAN") {
       const res = await prisma.document.updateMany({ where: { id: d.id, scanStatus: { in: ["NOT_SCANNED", "PENDING"] } }, data: { scanStatus: "CLEAN" } });
       if (res.count === 1) {
@@ -381,7 +394,25 @@ export async function scanQuarantined(limit = 25) {
       await prisma.document.update({ where: { id: d.id }, data: { scanStatus: "PENDING" } });
     }
   }
+  await heartbeat("quarantine-scan", { configured: true, scanned: docs.length, clean, infected });
   return { scanned: docs.length, clean, infected };
+}
+
+async function heartbeat(key: string, detail: Record<string, unknown>) {
+  await prisma.systemHeartbeat.upsert({ where: { key }, create: { key, at: new Date(), detail: detail as never }, update: { at: new Date(), detail: detail as never } });
+}
+
+/** Whether scanning is set up and the automatic re-check is running — for the status beside uploads. */
+export async function scanHealth(now = new Date()) {
+  const beat = await prisma.systemHeartbeat.findUnique({ where: { key: "quarantine-scan" } });
+  const lastSelfTest = await prisma.scannerCheck.findFirst({ orderBy: { createdAt: "desc" } });
+  return {
+    configured: scanConfigured(),
+    // Re-checks run every 10 minutes; older than 30 minutes means the schedule isn't running.
+    recheckRunning: !!beat && now.getTime() - beat.at.getTime() < 30 * 60 * 1000,
+    lastRecheckAt: beat?.at ?? null,
+    selfTest: lastSelfTest ? { ok: lastSelfTest.ok, at: lastSelfTest.createdAt } : null,
+  };
 }
 
 export async function quarantinedDocuments() {

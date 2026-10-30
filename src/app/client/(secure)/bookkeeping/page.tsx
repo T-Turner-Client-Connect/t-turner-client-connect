@@ -9,6 +9,8 @@ import { prisma } from "@/lib/prisma";
 import { MONTHS, PERIOD_LABELS } from "@/lib/services/bookkeeping";
 import { downloadToken, REPORT_LABELS } from "@/lib/services/documents";
 import { fmtDate } from "@/lib/format";
+import { PERIOD_TYPES, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
+import { reportCaption } from "@/lib/services/bookkeeping-clients";
 
 export const metadata = { title: "Bookkeeping & requests" };
 
@@ -34,6 +36,8 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
   ]);
   const link = (id: string) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`;
   const payroll = !!(await prisma.bookkeepingProfile.findUnique({ where: { clientId: current.clientId }, select: { payroll: true } }))?.payroll;
+  const fye = (await prisma.client.findUnique({ where: { id: current.clientId }, select: { fiscalYearEnd: true } }))?.fiscalYearEnd ?? null;
+  const ORDER = ["FINANCIAL_PACKET", "PROFIT_AND_LOSS", "GROSS_RECEIPTS", "BALANCE_SHEET", "BANK_RECONCILIATION", "SUPPORTING_SCHEDULE", "OTHER_REPORT"];
   const upload = (requestId: string | null, periodId: string | null, label: string) =>
     current.canUpload ? (
       <ActionForm action={portalUploadAction.bind(null, current.clientId)} className="mt-1 flex flex-wrap items-center gap-2" resetOnSuccess>
@@ -78,16 +82,37 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
               {p.staffNote && <p className="mb-2 text-sm text-slate-700">Note from us: {p.staffNote}</p>}
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
-                  <h3 className="mb-1 text-sm font-semibold">Reports</h3>
-                  {p.documents.filter((d) => d.category === "BOOKKEEPING").length ? (
-                    <ul className="space-y-1 text-sm">
-                      {p.documents.filter((d) => d.category === "BOOKKEEPING").map((d) => (
-                        <li key={d.id}><a className="underline" href={link(d.id)} target="_blank" rel="noopener">{d.title}</a> {d.reportType && <Badge tone="navy">{REPORT_LABELS[d.reportType]}</Badge>}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-sm text-slate-600">Reports will be posted here when ready.</p>
-                  )}
+                  <h3 className="mb-1 text-sm font-semibold">Financial statements</h3>
+                  {(() => {
+                    // Delivered reports only (the query above returns published, scanned-clean files). A revised report replaces
+                    // the delivered one only once the revision itself is delivered, so exactly one version of each is published.
+                    const reports = p.documents.filter((d) => d.category === "BOOKKEEPING" && d.reportType);
+                    if (!reports.length) return <p className="text-sm text-slate-600">Your statements will be posted here once they&apos;re reviewed and ready.</p>;
+                    const types = [...new Set(reports.map((d) => (d.reportPeriodType ?? "MONTH") as PeriodType))];
+                    return types.map((t) => {
+                      const r = reportPeriod(p.year, p.month, t, fye);
+                      const inPacket = reports.filter((d) => (d.reportPeriodType ?? "MONTH") === t).sort((a, b) => ORDER.indexOf(a.reportType!) - ORDER.indexOf(b.reportType!));
+                      const href = `/api/bookkeeping/packet?period=${p.id}&type=${t}`;
+                      return (
+                        <div key={t} className="mb-3 rounded-xl border border-ivory-200 p-3" data-testid="client-packet">
+                          <p className="text-sm font-semibold">{PERIOD_TYPES[t] === "Month" ? "Monthly" : PERIOD_TYPES[t] === "Quarter" ? "Quarterly" : "Year-to-date"} financial statements</p>
+                          <p className="text-xs text-slate-600">{r.cover}</p>
+                          <div className="my-2 flex flex-wrap gap-2">
+                            <a className="rounded-full bg-navy-900 px-3 py-1.5 text-xs font-semibold text-white" href={href} target="_blank" rel="noopener">View &amp; print</a>
+                            <a className="rounded-full border border-navy-900 px-3 py-1.5 text-xs font-semibold text-navy-900" href={`${href}&download=1`}>Download PDF</a>
+                          </div>
+                          <ul className="space-y-1 text-sm">
+                            {inPacket.map((d) => (
+                              <li key={d.id}>
+                                <a className="underline" href={link(d.id)} target="_blank" rel="noopener">{REPORT_LABELS[d.reportType!]}</a>
+                                <span className="block text-xs text-slate-500">{reportCaption(d, p.year, p.month, fye)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      );
+                    });
+                  })()}
                   <h3 className="mb-1 mt-3 text-sm font-semibold">Your uploads</h3>
                   <ul className="text-sm">{p.documents.filter((d) => d.uploadedByPortalId).map((d) => <li key={d.id}>{d.title} <span className="text-slate-500">· {fmtDate(d.createdAt)}</span></li>)}</ul>
                   {upload(null, p.id, `Upload a document for ${MONTHS[p.month - 1]}`)}

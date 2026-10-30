@@ -25,7 +25,8 @@ async function inviteResult(fn: () => Promise<InviteOutcome>): Promise<ActionSta
 export async function inviteAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   const role = str(fd, "role") === "ADMIN" ? "ADMIN" : "STAFF";
-  return inviteResult(() => inviteStaff(actor, { email: str(fd, "email"), name: str(fd, "name"), role, idempotencyKey: str(fd, "idempotencyKey") || undefined }));
+  const grants = { identityAll: fd.get("grantIdentityAccessAll") === "on", billing: fd.get("grantBillingAccess") === "on" };
+  return inviteResult(() => inviteStaff(actor, { email: str(fd, "email"), name: str(fd, "name"), role, grants, idempotencyKey: str(fd, "idempotencyKey") || undefined }));
 }
 
 export async function resendInviteAction(inviteId: string, _prev: ActionState): Promise<ActionState> {

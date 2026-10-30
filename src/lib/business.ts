@@ -10,6 +10,9 @@ export const OWNER_EMAIL = "tabitha@tturnerassociates.com";
 export const BUSINESS = {
   // Legal business name as on the EIN and Secretary of State filing (confirmed by the owner).
   legalName: "TTurner & Associates Group, LLC",
+  // Client-facing business name on statements and packets (the owner's choice).
+  // The registered legal name stays in document metadata and legal pages.
+  displayName: "TTurner & Associates",
   // How messages identify the sender (e.g. "TTurner & Associates Group: …").
   shortName: "TTurner & Associates Group",
   platformName: "TTurner Client Connect",

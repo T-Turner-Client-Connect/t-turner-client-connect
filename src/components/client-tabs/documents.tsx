@@ -1,4 +1,5 @@
-import { SCAN_LABELS } from "@/lib/scan-labels";
+import { ScanStatus } from "@/components/scan-status";
+import { scanHealth } from "@/lib/services/documents";
 import { TAX_DOC_TYPES } from "@/lib/document-types";
 import type { DocumentCategory } from "@prisma/client";
 import type { Actor } from "@/lib/auth/actor";
@@ -15,9 +16,10 @@ import { scanConfigured } from "@/lib/scan";
 import { formatBytes } from "@/lib/files";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 
-const SCAN = SCAN_LABELS;
+
 
 export async function DocumentsTab({ clientId, user }: { clientId: string; user: Actor }) {
+  const health = await scanHealth();
   const docs = await prisma.document.findMany({
     // Identity documents have their own section with stricter access.
     where: { clientId, category: { not: "IDENTITY" } },
@@ -58,7 +60,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
               {live.filter((d) => d.needsReview).map((d) => (
                 <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                   <span>
-                    <strong>{d.title}</strong> · {d.year ?? "year not given"} · {fmtDateTime(d.createdAt)} · <Badge tone={SCAN[d.scanStatus].tone}>{SCAN[d.scanStatus].text}</Badge>
+                    <strong>{d.title}</strong> · {d.year ?? "year not given"} · {fmtDateTime(d.createdAt)} · <ScanStatus doc={d} health={health} compact />
                   </span>
                   <ActionForm action={acknowledgeDocumentsAction.bind(null, clientId, d.id)}><Button variant="ghost">Mark reviewed</Button></ActionForm>
                 </li>
@@ -96,7 +98,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
                               </Badge>
                               {d.docType && <Badge tone="navy">{TAX_DOC_TYPES[d.docType as keyof typeof TAX_DOC_TYPES] ?? d.docType}</Badge>}
                               {d.reportType && <Badge tone="navy">{REPORT_LABELS[d.reportType]}</Badge>}
-                              <Badge tone={SCAN[d.scanStatus].tone}>{SCAN[d.scanStatus].text}</Badge>
+                              <ScanStatus doc={d} health={health} />
                             </div>
                           </div>
                           <div className="flex flex-wrap gap-1">

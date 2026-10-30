@@ -124,8 +124,10 @@ describe("Add Bookkeeping Client and Upload Monthly Financials", () => {
     const florist = await createClient(tabitha, { businessName: "Fictional Florist LLC", email: "hello@florist.example", phone: "205-555-0142", clientType: "BUSINESS", status: "ACTIVE" });
     const before = await prisma.client.count();
 
-    // Daria (staff) enrolls an existing CRM client, sets quarterly + payroll + assigns herself.
-    await enrollExistingClient(daria, florist.id, { active: true, frequency: "QUARTERLY", payroll: true, payrollFrequency: "WEEKLY", payrollProvider: "ADP", assignedToId: daria.id });
+    // Daria (staff) enrolls an existing CRM client (quarterly + payroll); assigning staff is Admin-only.
+    await expect(enrollExistingClient(daria, florist.id, { active: true, frequency: "QUARTERLY", payroll: true, assignedToId: daria.id })).rejects.toBeInstanceOf(ForbiddenError);
+    await enrollExistingClient(daria, florist.id, { active: true, frequency: "QUARTERLY", payroll: true, payrollFrequency: "WEEKLY", payrollProvider: "ADP" });
+    await saveProfile(tabitha, florist.id, { active: true, frequency: "QUARTERLY", payroll: true, payrollFrequency: "WEEKLY", payrollProvider: "ADP", assignedToId: daria.id });
     const prof = await prisma.bookkeepingProfile.findUniqueOrThrow({ where: { clientId: florist.id } });
     expect([prof.frequency, prof.payroll, prof.payrollFrequency]).toEqual(["QUARTERLY", true, "WEEKLY"]);
     expect((await prisma.client.findUniqueOrThrow({ where: { id: florist.id } })).assignedToId).toBe(daria.id);
@@ -145,7 +147,7 @@ describe("Add Bookkeeping Client and Upload Monthly Financials", () => {
     // Same name only: needs an explicit "different client".
     await expect(enrollNewClient(daria, { businessName: "fictional florist llc", clientType: "BUSINESS", status: "ACTIVE" }, { active: true, frequency: "MONTHLY", payroll: false })).rejects.toThrow(/different client/);
     expect(await prisma.client.count()).toBe(before);
-    const fresh = await enrollNewClient(daria, { businessName: "Fictional Car Wash", firstName: "Sam", lastName: "Example", email: "owner@carwash.example", clientType: "BUSINESS", status: "ACTIVE" }, { active: true, frequency: "MONTHLY", payroll: false, assignedToId: daria.id, documentsDueDay: 15 });
+    const fresh = await enrollNewClient(tabitha, { businessName: "Fictional Car Wash", firstName: "Sam", lastName: "Example", email: "owner@carwash.example", clientType: "BUSINESS", status: "ACTIVE" }, { active: true, frequency: "MONTHLY", payroll: false, assignedToId: daria.id, documentsDueDay: 15 });
     expect(await prisma.client.count()).toBe(before + 1);
     expect((await prisma.client.findUniqueOrThrow({ where: { id: fresh.id } })).displayName).toBe("Fictional Car Wash");
     expect((await prisma.contact.findFirstOrThrow({ where: { clientId: fresh.id } })).name).toBe("Sam Example");
@@ -158,12 +160,13 @@ describe("Add Bookkeeping Client and Upload Monthly Financials", () => {
 
   it("files reports under client → year → month as drafts, keeps version history, and only Tabitha's approval lets staff deliver", async () => {
     const { tabitha, daria, bakery, owner } = await setup();
+    await prisma.bookkeepingProfile.update({ where: { clientId: bakery.id }, data: { accountingBasis: "CASH" } });
     // Daria uploads a P&L for a month that isn't open yet: the month is opened.
     const v1 = await uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 8, reportType: "PROFIT_AND_LOSS", bytes: pdf(), originalName: "pl-aug.pdf" });
     expect(v1.version).toBe(1);
     const doc1 = await prisma.document.findUniqueOrThrow({ where: { id: v1.document.id } });
     expect([doc1.category, doc1.year, doc1.month, doc1.periodId, doc1.visibility, doc1.reviewStatus]).toEqual(["BOOKKEEPING", 2026, 8, v1.period.id, "STAFF_ONLY", "DRAFT"]);
-    expect(doc1.title).toBe("Profit & loss — August 2026");
+    expect(doc1.title).toBe("Profit & Loss Statement — August 2026");
     const bs = await uploadMonthlyReport(tabitha, { clientId: bakery.id, year: 2026, month: 8, reportType: "BALANCE_SHEET", bytes: pdf(), originalName: "bs-aug.pdf" });
     expect(bs.version).toBe(1);
     await expect(uploadMonthlyReport(daria, { clientId: bakery.id, year: 2026, month: 13, reportType: "PROFIT_AND_LOSS", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/month/);

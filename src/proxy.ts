@@ -24,7 +24,8 @@ export function proxy(request: NextRequest) {
   const portalCookie = has(request, ["__Host-tcc_portal", "tcc_portal"]);
 
   // Document downloads accept either kind of session; the route decides.
-  if (pathname.startsWith("/api/documents/")) {
+  // Document downloads and the financial-packet PDF serve both staff and clients; each checks access itself.
+  if (pathname.startsWith("/api/documents/") || pathname === "/api/bookkeeping/packet") {
     return staffCookie || portalCookie ? NextResponse.next() : NextResponse.json({ error: "Sign in required" }, { status: 401 });
   }
   if (portalArea) {

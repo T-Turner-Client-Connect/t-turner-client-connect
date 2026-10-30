@@ -4,7 +4,7 @@ import { FREQUENCIES, PAYROLL_FREQUENCIES } from "@/lib/services/bookkeeping-cli
 const DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
 
 /** Schedule, assigned staff, payroll and due-day fields shared by both Add Bookkeeping Client forms. */
-export function BookkeepingServiceFields({ staff, assignedDefault = "" }: { staff: { id: string; name: string }[]; assignedDefault?: string }) {
+export function BookkeepingServiceFields({ staff, assignedDefault = "", canAssign }: { staff: { id: string; name: string }[]; assignedDefault?: string; canAssign: boolean }) {
   return (
     <>
       <Field label="Service schedule">
@@ -12,13 +12,17 @@ export function BookkeepingServiceFields({ staff, assignedDefault = "" }: { staf
           {Object.entries(FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
       </Field>
-      <Field label="Assigned staff">
-        <select className="input" name="assignedToId" defaultValue={assignedDefault}>
-          <option value="">Keep as is</option>
-          <option value="none">Unassigned</option>
-          {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
-      </Field>
+      {canAssign ? (
+        <Field label="Assigned staff">
+          <select className="input" name="assignedToId" defaultValue={assignedDefault}>
+            <option value="">Keep as is</option>
+            <option value="none">Unassigned</option>
+            {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+      ) : (
+        <p className="self-end pb-2 text-xs text-slate-600">Assigned staff is set by an Admin.</p>
+      )}
       <Field label="Accounts to collect" hint="Optional">
         <input className="input" name="accounts" placeholder="e.g. Regions business checking, Amex" />
       </Field>
