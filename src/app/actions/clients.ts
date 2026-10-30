@@ -25,6 +25,7 @@ import { saveUpload } from "@/lib/services/files";
 function clientInput(fd: FormData): ClientInput {
   return {
     firstName: str(fd, "firstName"),
+    preferredName: str(fd, "preferredName"),
     lastName: str(fd, "lastName"),
     businessName: str(fd, "businessName"),
     email: str(fd, "email"),
@@ -72,7 +73,7 @@ export async function setArchivedAction(clientId: string, archived: boolean) {
 export async function saveContactAction(clientId: string, contactId: string | null, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    await saveContact(actor, clientId, contactId, { name: str(fd, "name"), title: str(fd, "title"), email: str(fd, "email"), phone: str(fd, "phone") });
+    await saveContact(actor, clientId, contactId, { name: str(fd, "name"), preferredName: str(fd, "preferredName"), title: str(fd, "title"), email: str(fd, "email"), phone: str(fd, "phone") });
     revalidatePath(`/clients/${clientId}`);
     return contactId ? "Contact updated." : "Contact added.";
   });

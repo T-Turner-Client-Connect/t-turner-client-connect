@@ -191,6 +191,8 @@ model Client {
   id               String       @id @default(cuid())
   firstName        String?
   lastName         String?
+  // What the client likes to be called ("Liz" for Elizabeth). Used in greetings.
+  preferredName    String?
   // Display name: "First Last" for individuals, or the business name.
   displayName      String
   businessName     String?
@@ -271,6 +273,8 @@ model Contact {
   clientId        String
   client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   name            String
+  // What this contact likes to be called; used to greet them in the portal.
+  preferredName   String?
   title           String?
   email           String?
   emailNormalized String?

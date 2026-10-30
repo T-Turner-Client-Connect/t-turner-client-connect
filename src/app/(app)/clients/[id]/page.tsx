@@ -161,6 +161,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
                       </summary>
                       <ActionForm action={saveContactAction.bind(null, id, c.id)} className="mt-3 grid gap-3 sm:grid-cols-2">
                         <Field label="Name"><input className="input" name="name" defaultValue={c.name} required /></Field>
+                        <Field label="Preferred name" hint="Portal greeting for a business"><input className="input" name="preferredName" defaultValue={c.preferredName ?? ""} /></Field>
                         <Field label="Title"><input className="input" name="title" defaultValue={c.title ?? ""} /></Field>
                         <Field label="Email"><input className="input" type="email" name="email" defaultValue={c.email ?? ""} /></Field>
                         <Field label="Mobile phone"><input className="input" type="tel" name="phone" defaultValue={c.phone ?? ""} /></Field>
@@ -178,6 +179,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
               <summary className="cursor-pointer text-sm font-semibold text-navy-800 underline">Add a contact</summary>
               <ActionForm action={saveContactAction.bind(null, id, null)} className="mt-3 grid gap-3 sm:grid-cols-2" resetOnSuccess>
                 <Field label="Name"><input className="input" name="name" required /></Field>
+                <Field label="Preferred name" hint="Portal greeting for a business"><input className="input" name="preferredName" /></Field>
                 <Field label="Title"><input className="input" name="title" placeholder="e.g. Office manager" /></Field>
                 <Field label="Email"><input className="input" type="email" name="email" /></Field>
                 <Field label="Mobile phone"><input className="input" type="tel" name="phone" /></Field>

@@ -23,6 +23,7 @@ export function ClientForm({
     <ActionForm action={action} className="space-y-6" showSuccess={false}>
       <section className="grid gap-4 sm:grid-cols-2">
         <Field label="First name"><input className="input" name="firstName" defaultValue={v("firstName")} autoComplete="off" /></Field>
+        <Field label="Preferred first name" hint="Used to greet them in the portal"><input className="input" name="preferredName" defaultValue={v("preferredName")} autoComplete="off" /></Field>
         <Field label="Last name"><input className="input" name="lastName" defaultValue={v("lastName")} autoComplete="off" /></Field>
         <Field label="Business name" className="sm:col-span-2" hint="For a business, add the people you work with as contacts after saving.">
           <input className="input" name="businessName" defaultValue={v("businessName")} autoComplete="off" />

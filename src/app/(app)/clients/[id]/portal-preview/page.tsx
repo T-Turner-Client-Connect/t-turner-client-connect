@@ -11,6 +11,7 @@ import { loadPortalDocuments, loadPortalHome, OWNER_PREVIEW_PERMS } from "@/lib/
 import { loadPortalTaxes } from "@/lib/portal/tax-view";
 import { downloadToken } from "@/lib/services/documents";
 import { audit } from "@/lib/audit";
+import { loadGreetingName } from "@/lib/portal/greeting";
 
 export const metadata = { title: "Portal preview" };
 
@@ -25,7 +26,8 @@ export default async function PortalPreview({ params }: { params: Promise<{ id: 
   if (!client) notFound();
   await audit(prisma, { actorId: user.id, action: "portal.staff_preview", entityType: "Client", entityId: id, clientId: id });
   const linkFor = (docId: string) => `/api/documents/${downloadToken(docId, { staffId: user.id })}`;
-  const [home, docs, taxes] = await Promise.all([loadPortalHome(id, OWNER_PREVIEW_PERMS, null), loadPortalDocuments(id, OWNER_PREVIEW_PERMS), loadPortalTaxes(id)]);
+  // The greeting uses the selected client's details, never the staff member's.
+  const [home, docs, taxes, greet] = await Promise.all([loadPortalHome(id, OWNER_PREVIEW_PERMS, null), loadPortalDocuments(id, OWNER_PREVIEW_PERMS), loadPortalTaxes(id), loadGreetingName(id, null)]);
   return (
     <div className="space-y-6">
       <div role="status" className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 rounded-xl border-2 border-gold-500 bg-gold-100 px-4 py-3 text-navy-950">
@@ -34,7 +36,7 @@ export default async function PortalPreview({ params }: { params: Promise<{ id: 
       </div>
       <section>
         <h2 className="mb-3 text-xl font-semibold">Home</h2>
-        <PortalHomeView data={home} linkFor={linkFor} q="" readOnly />
+        <PortalHomeView data={home} linkFor={linkFor} q="" readOnly name={greet ?? undefined} />
       </section>
       <section>
         <h2 className="mb-3 text-xl font-semibold">Documents</h2>
