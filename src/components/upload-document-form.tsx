@@ -26,7 +26,7 @@ export function UploadDocumentForm({ clientId, clients }: { clientId?: string; c
       <Field label="Title"><input className="input" name="title" placeholder="e.g. 2025 Form 1040" /></Field>
       <Field label="Category">
         <select className="input" name="category" defaultValue="TAXES">
-          {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          {Object.entries(CATEGORY_LABELS).filter(([k]) => k !== "IDENTITY").map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
       </Field>
       <Field label="Tax year" hint="Required for tax records."><input className="input" name="year" inputMode="numeric" defaultValue={year - 1} /></Field>

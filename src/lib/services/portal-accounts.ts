@@ -2,7 +2,7 @@ import "server-only";
 import type { PortalRole } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import type { Actor } from "@/lib/auth/actor";
+import { assertAdmin, type Actor } from "@/lib/auth/actor";
 import { hashPassword, passwordProblem } from "@/lib/auth/password";
 import { hashToken, newToken } from "@/lib/auth/tokens";
 import { normalizeEmail, normalizePhone } from "@/lib/normalize";
@@ -11,7 +11,7 @@ import { ValidationError } from "./clients";
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TTL_MS = 60 * 60 * 1000;
 
-export type PortalPermissions = { canMessage: boolean; canUpload: boolean; canViewBookkeeping: boolean; canViewTax: boolean; canViewContracts: boolean };
+export type PortalPermissions = { canMessage: boolean; canUpload: boolean; canViewBookkeeping: boolean; canViewTax: boolean; canViewContracts: boolean; canViewIdentity: boolean };
 
 /**
  * Invites someone to a client's portal. If they already have a portal login
@@ -29,7 +29,7 @@ export async function invitePortalUser(
   const client = await prisma.client.findUnique({ where: { id: clientId } });
   if (!client || client.archivedAt) throw new ValidationError("This client is archived or missing.");
   if (input.contactId && !(await prisma.contact.count({ where: { id: input.contactId, clientId } }))) throw new ValidationError("Contact not found.");
-  const perms = { canMessage: true, canUpload: true, canViewBookkeeping: true, canViewTax: input.role === "OWNER", canViewContracts: true, ...input.permissions };
+  const perms = { canMessage: true, canUpload: true, canViewBookkeeping: true, canViewTax: input.role === "OWNER", canViewContracts: true, canViewIdentity: input.role === "OWNER", ...input.permissions };
 
   const existing = await prisma.portalUser.findUnique({ where: { email } });
   if (existing) {
@@ -79,7 +79,7 @@ export async function acceptPortalInvite(token: string, password: string) {
       data: { email: invite.email, name: invite.name, passwordHash, contactId: contactTaken ? null : invite.contactId, emailVerifiedAt: invite.sentByEmail ? new Date() : null, origin: "INVITED" },
     });
     await tx.portalAccess.create({
-      data: { portalUserId: user.id, clientId: invite.clientId, role: invite.role, canViewTax: invite.role === "OWNER", grantedById: invite.invitedById },
+      data: { portalUserId: user.id, clientId: invite.clientId, role: invite.role, canViewTax: invite.role === "OWNER", canViewIdentity: invite.role === "OWNER", grantedById: invite.invitedById },
     });
     await audit(tx, { actorId: null, action: "portal.invite_accepted", entityType: "PortalUser", entityId: user.id, clientId: invite.clientId });
     return user;
@@ -88,6 +88,11 @@ export async function acceptPortalInvite(token: string, password: string) {
 
 export async function updatePortalAccess(actor: Actor, accessId: string, input: Partial<PortalPermissions> & { revoke?: boolean }) {
   const { revoke, ...perms } = input;
+  // Only an Admin can change who sees identity documents.
+  if (perms.canViewIdentity !== undefined) {
+    const current = await prisma.portalAccess.findUniqueOrThrow({ where: { id: accessId }, select: { canViewIdentity: true } });
+    if (current.canViewIdentity !== perms.canViewIdentity) assertAdmin(actor);
+  }
   await prisma.$transaction(async (tx) => {
     const access = await tx.portalAccess.update({ where: { id: accessId }, data: { ...perms, revokedAt: revoke ? new Date() : revoke === false ? null : undefined } });
     await audit(tx, { actorId: actor.id, action: revoke ? "portal.access_revoked" : "portal.access_updated", entityType: "PortalAccess", entityId: accessId, clientId: access.clientId, details: input });

@@ -267,7 +267,7 @@ async function finishLink(applicationId: string, clientId: string, portalUserId:
   await prisma.portalAccess.upsert({
     where: { portalUserId_clientId: { portalUserId, clientId } },
     update: { revokedAt: null },
-    create: { portalUserId, clientId, role: "OWNER", canViewTax: true, grantedById },
+    create: { portalUserId, clientId, role: "OWNER", canViewTax: true, canViewIdentity: true, grantedById },
   });
   for (const f of app.files.filter((f) => !f.movedDocumentId)) {
     const bytes = await storage.get(f.storageKey);

@@ -32,7 +32,7 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
   const q = `?account=${current.clientId}`;
   // The client's own recent uploads, including ones still being checked.
   const mine = await prisma.document.findMany({
-    where: { clientId: current.clientId, uploadedByPortalId: user.id, deletedAt: null },
+    where: { clientId: current.clientId, uploadedByPortalId: user.id, deletedAt: null, category: { not: "IDENTITY" } },
     orderBy: { createdAt: "desc" },
     take: 10,
     select: { id: true, title: true, year: true, scanStatus: true, needsReview: true, createdAt: true },
@@ -49,6 +49,15 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
           </Link>
         ))}
       </nav>
+      {current.canViewIdentity && (
+        <Link href={`/client/identity${q}`} className="mb-4 flex items-center justify-between gap-3 rounded-2xl border border-gold-500 bg-navy-900 px-5 py-4 text-white shadow-sm hover:bg-navy-800" data-testid="identity-card">
+          <span>
+            <span className="block font-serif text-lg font-bold text-white">Identity Documents</span>
+            <span className="block text-sm text-navy-100">Driver&apos;s licenses, birth certificates and Social Security cards — kept permanently, separate from yearly folders.</span>
+          </span>
+          <span aria-hidden className="text-2xl text-gold-300">→</span>
+        </Link>
+      )}
       {!verified && (
         <div className="mb-4">
           <Notice tone="info" title="Past-year records are locked until your account is verified">

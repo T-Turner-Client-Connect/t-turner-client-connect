@@ -1,4 +1,6 @@
+import type { Actor } from "@/lib/auth/actor";
 import { ActionForm } from "@/components/action-form";
+import { canStaffViewIdentity, CHECKLIST_LABEL, identityChecklist } from "@/lib/services/identity";
 import { Badge, Button, Card, Field } from "@/components/ui";
 import { linkSubmissionAction, previewSubmissionAction, taxProfileAction, taxYearProgressAction } from "@/app/actions/tax-center";
 import { prisma } from "@/lib/prisma";
@@ -12,7 +14,7 @@ import { utcToChicagoLocal } from "@/lib/tz";
 const SOURCE = { jotform_webhook: "Client submitted (verified with Jotform)", staff_import: "Imported by staff (read from Jotform)", staff_verified: "Linked by staff (Jotform not connected)" } as Record<string, string>;
 
 /** Staff view of the client's My Tax Center: profile for deadlines, yearly statuses, questionnaire imports. */
-export async function TaxCenterStaff({ clientId }: { clientId: string }) {
+export async function TaxCenterStaff({ clientId, user }: { clientId: string; user: Actor }) {
   const thisYear = new Date().getFullYear();
   const years = [thisYear - 1, thisYear, thisYear - 2];
   const [client, statuses, progress, subs] = await Promise.all([
@@ -23,6 +25,7 @@ export async function TaxCenterStaff({ clientId }: { clientId: string }) {
   ]);
   const names = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const jf = jotformStatus();
+  const idList = (await canStaffViewIdentity(user, clientId)) ? await identityChecklist(clientId) : null;
 
   return (
     <div className="space-y-4" data-testid="staff-tax-center">
@@ -93,6 +96,20 @@ export async function TaxCenterStaff({ clientId }: { clientId: string }) {
           })}
         </div>
       </Card>
+
+      {idList && (
+        <Card title="Identity documents on file (used for every tax year)">
+          <ul className="grid gap-2 text-sm md:grid-cols-2" data-testid="staff-identity-checklist">
+            {idList.map(({ person, items }) => (
+              <li key={person.id} className="rounded-lg bg-ivory-50 p-2">
+                <strong>{person.name}</strong>
+                {items.map((i) => <span key={i.type} className="block">{i.label}: {CHECKLIST_LABEL[i.state as keyof typeof CHECKLIST_LABEL]}</span>)}
+              </li>
+            ))}
+          </ul>
+          <a href={`/clients/${clientId}?tab=documents#identity`} className="mt-2 inline-block text-sm underline">Open Identity Documents</a>
+        </Card>
+      )}
 
       {subs.length > 0 && (
         <Card title="Questionnaires on file">

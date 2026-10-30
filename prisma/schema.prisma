@@ -237,6 +237,8 @@ model Client {
   pipelineCards      PipelineCard[]
   filings            FilingRecord[]
   questionnaires     QuestionnaireSubmission[]
+  identityPeople     IdentityPerson[]
+  identityDocs       IdentityDocument[]
   taxYearProgress    TaxYearProgress[]
 
   @@index([emailNormalized])
@@ -708,6 +710,9 @@ model PortalAccess {
   canViewContracts   Boolean    @default(true)
   // Invoices and payment requests the owner explicitly published to this account.
   canViewBilling     Boolean    @default(true)
+  // Identity documents (license, birth certificate, Social Security card).
+  // On for owners, off for other authorized contacts unless granted.
+  canViewIdentity    Boolean    @default(false)
   grantedById        String?
   createdAt          DateTime   @default(now())
   revokedAt          DateTime?
@@ -878,6 +883,10 @@ enum DocumentCategory {
   CONTRACTS
   CLIENT_UPLOADS
   OTHER
+  // Permanent identity documents (license, birth certificate, SS card).
+  // Never listed with yearly folders; opened only through the Identity
+  // Documents section by authorized staff and account holders.
+  IDENTITY
 }
 
 enum DocumentVisibility {
@@ -2260,4 +2269,58 @@ model ResourceFaq {
   updatedById String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+// ===========================================================================
+// IDENTITY DOCUMENTS (permanent, separate from yearly tax folders)
+// ===========================================================================
+
+// The client, their spouse, or a dependent on the account.
+model IdentityPerson {
+  id         String    @id @default(cuid())
+  clientId   String
+  client     Client    @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  // CLIENT | SPOUSE | DEPENDENT
+  role       String
+  name       String
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  documents IdentityDocument[]
+
+  @@index([clientId])
+}
+
+// One uploaded identity document. The file is a Document (category
+// IDENTITY), so scanning, protected storage, access logs and retention
+// apply. A new upload stays PENDING_VERIFICATION until staff review it.
+model IdentityDocument {
+  id                 String         @id @default(cuid())
+  clientId           String
+  client             Client         @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  personId           String
+  person             IdentityPerson @relation(fields: [personId], references: [id], onDelete: Restrict)
+  // DRIVERS_LICENSE | BIRTH_CERTIFICATE | SOCIAL_SECURITY_CARD
+  type               String
+  documentId         String         @unique
+  // PENDING_VERIFICATION | VERIFIED | REJECTED | REPLACED | EXPIRED
+  status             String         @default("PENDING_VERIFICATION")
+  // Driver's licenses only (YYYY-MM-DD). Never set for other types.
+  expiresOn          String?
+  // Why a replacement was uploaded (renewal, name change, correction, unreadable…).
+  replacementReason  String?
+  // Social Security cards: only the last four digits, entered by staff, for display.
+  last4              String?
+  verifiedAt         DateTime?
+  verifiedById       String?
+  rejectedReason     String?
+  replacedAt         DateTime?
+  uploadedByPortalId String?
+  uploadedByStaffId  String?
+  // Expiration reminders already sent: "60", "30", "7", "EXPIRED".
+  remindersSent      String[]
+  createdAt          DateTime       @default(now())
+
+  @@index([clientId, personId, type])
+  @@index([status, type])
 }

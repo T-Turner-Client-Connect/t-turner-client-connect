@@ -123,6 +123,10 @@ function emailSummary(items: Awaited<ReturnType<typeof openItems>>) {
   const lines: string[] = [];
   for (const c of items.convos) lines.push(`• New message from ${c.client.displayName} (${fmtChicago(c.lastMessageAt)} CT) — ${appUrl()}/clients/${c.client.id}?tab=messages`);
   for (const d of items.docs) {
+    if (d.category === "IDENTITY") {
+      lines.push(`• ${d.client.displayName} uploaded an identity document for verification, ${fmtChicago(d.createdAt)} CT — ${appUrl()}/clients/${d.client.id}?tab=documents#identity`);
+      continue;
+    }
     lines.push(`• ${d.client.displayName} uploaded a document: ${CATEGORY_LABELS[d.category]}, ${d.year ? `tax year ${d.year}` : "tax year not given"}, ${fmtChicago(d.createdAt)} CT — ${appUrl()}/clients/${d.client.id}?tab=documents`);
   }
   return lines;

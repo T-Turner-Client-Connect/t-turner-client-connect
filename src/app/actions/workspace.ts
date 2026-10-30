@@ -74,6 +74,7 @@ export async function uploadDocumentAction(fixedClientId: string | null, _prev: 
     if (!clientId) throw new ValidationError("Choose a client.");
     const docType = str(fd, "docType");
     if (docType && !isTaxDocType(docType)) throw new ValidationError("Choose a valid document type.");
+    if (str(fd, "category") === "IDENTITY") throw new ValidationError("Upload identity documents in the client's Identity Documents section.");
     // Tax records go into the client's yearly vault: year and type are required.
     if (str(fd, "category") === "TAXES") {
       const y = intOrNull(str(fd, "year"));
@@ -198,6 +199,7 @@ export async function portalAccessAction(clientId: string, accessId: string, _pr
       canViewBookkeeping: on("canViewBookkeeping"),
       canViewTax: on("canViewTax"),
       canViewContracts: on("canViewContracts"),
+      canViewIdentity: on("canViewIdentity"),
       ...(revoke ? { revoke: revoke === "true" } : {}),
     });
     refresh(clientId);

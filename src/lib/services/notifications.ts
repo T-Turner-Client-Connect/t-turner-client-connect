@@ -23,6 +23,10 @@ const TEXT: Record<string, string> = {
   FILING_UPDATE: "A tax filing update is available",
   QUOTE_READY: "A quote is ready for your review",
   NEW_INVOICE: "A new invoice is available",
+  // Identity documents: deliberately generic (no document type or details).
+  ID_EXPIRING: "A document on file needs to be updated soon",
+  ID_EXPIRED: "A document on file needs to be updated",
+  ID_NEEDS_ATTENTION: "A document you sent needs your attention",
 };
 
 // Client texts are held outside 8 a.m.–8 p.m. Central and sent when the window opens.

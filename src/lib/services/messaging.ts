@@ -148,7 +148,7 @@ export async function portalSendMessage(
   const attachmentIds = input.attachmentIds ?? [];
   if (attachmentIds.length) {
     // Only the client's own uploads for this account can be attached.
-    const ok = await prisma.document.count({ where: { id: { in: attachmentIds }, clientId: input.clientId, uploadedByPortalId: user.id } });
+    const ok = await prisma.document.count({ where: { id: { in: attachmentIds }, clientId: input.clientId, uploadedByPortalId: user.id, category: { not: "IDENTITY" } } });
     if (ok !== attachmentIds.length) throw new ValidationError("Attachment not found.");
   }
   const message = await prisma.$transaction(async (tx) => {

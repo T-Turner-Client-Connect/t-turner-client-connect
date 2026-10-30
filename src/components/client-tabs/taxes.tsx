@@ -26,7 +26,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
 
   return (
     <div className="space-y-4">
-      <TaxCenterStaff clientId={clientId} />
+      <TaxCenterStaff clientId={clientId} user={user} />
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Add a filing">
           <ActionForm action={createFilingAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-2" resetOnSuccess>

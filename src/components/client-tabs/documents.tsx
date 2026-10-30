@@ -7,6 +7,7 @@ import { ConfirmButton } from "@/components/confirm-button";
 import { Badge, Button, Card, EmptyState, Notice } from "@/components/ui";
 import { acknowledgeDocumentsAction, deleteDocumentAction, setVisibilityAction } from "@/app/actions/workspace";
 import { UploadDocumentForm } from "@/components/upload-document-form";
+import { IdentityStaff } from "./identity-staff";
 import { prisma } from "@/lib/prisma";
 import { CATEGORY_LABELS, downloadToken, REPORT_LABELS } from "@/lib/services/documents";
 import { MONTHS } from "@/lib/services/bookkeeping";
@@ -18,7 +19,8 @@ const SCAN = SCAN_LABELS;
 
 export async function DocumentsTab({ clientId, user }: { clientId: string; user: Actor }) {
   const docs = await prisma.document.findMany({
-    where: { clientId },
+    // Identity documents have their own section with stricter access.
+    where: { clientId, category: { not: "IDENTITY" } },
     include: {
       file: { select: { originalName: true, sizeBytes: true, mimeType: true } },
       uploadedByStaff: { select: { name: true } },
@@ -44,6 +46,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <div className="space-y-4 lg:col-span-2">
+        <IdentityStaff clientId={clientId} user={user} />
         {!scanConfigured() && (
           <Notice tone="warn" title="Malware scanning: setup required">
             New files stay quarantined — no downloads and nothing shown to the client — until a malware scanner is connected and the file passes. See Documents → Malware scanning.

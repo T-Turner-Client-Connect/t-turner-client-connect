@@ -5,6 +5,7 @@ import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { loadPortalHome } from "@/lib/portal/views";
 import { fmtChicago } from "@/lib/tz";
+import { CHECKLIST_LABEL, identityChecklist } from "@/lib/services/identity";
 
 export const metadata = { title: "My Tax Center" };
 
@@ -16,6 +17,7 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
   if (!current.canViewTax) return <Notice>Tax information isn&apos;t included in your access to this account.</Notice>;
   const data = await loadPortalHome(current.clientId, current, user.id);
   const q = `?account=${current.clientId}`;
+  const idList = current.canViewIdentity ? await identityChecklist(current.clientId) : [];
   return (
     <>
       <PageHeader title="My Tax Center" subtitle="Your questionnaire, documents and filings — one step at a time." />
@@ -36,6 +38,29 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
           <Link href={`/client/taxes/filings${q}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-gold-500 px-4 py-2.5 font-semibold text-navy-950 hover:bg-gold-300" data-testid="retrieve-button">Retrieve Tax Filings →</Link>
         </section>
       </div>
+
+      {current.canViewIdentity && (
+        <section className="mt-6 rounded-2xl border border-ivory-200 bg-white p-5" data-testid="identity-checklist">
+          <h2 className="font-serif text-xl font-bold">Identity documents on file</h2>
+          <p className="mb-3 text-sm text-slate-600">Used for every tax year — you don&apos;t need to upload these again each year.</p>
+          <ul className="grid gap-3 md:grid-cols-2">
+            {idList.map(({ person, items }) => (
+              <li key={person.id} className="rounded-xl bg-ivory-50 p-3">
+                <p className="font-semibold text-navy-900">{person.name}</p>
+                <ul className="mt-1 space-y-0.5 text-sm">
+                  {items.map((i) => (
+                    <li key={i.type} className="flex justify-between gap-2">
+                      <span>{i.label}</span>
+                      <span className={i.state === "ON_FILE" ? "text-emerald-800" : i.state === "EXPIRED" ? "text-red-800" : "text-slate-600"}>{CHECKLIST_LABEL[i.state as keyof typeof CHECKLIST_LABEL]}</span>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+          <Link href={`/client/identity${q}`} className="mt-3 inline-block text-sm font-semibold underline">Manage identity documents →</Link>
+        </section>
+      )}
 
       <section className="mt-6 rounded-2xl border border-ivory-200 bg-white p-5" data-testid="service-progress">
         <h2 className="mb-3 font-serif text-xl font-bold">Progress</h2>

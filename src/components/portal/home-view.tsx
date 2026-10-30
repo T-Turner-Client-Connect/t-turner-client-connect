@@ -83,6 +83,14 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
         </p>
       </section>
 
+      {data.identityAlerts.length > 0 && (
+        <Link href={href("/client/identity")} className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 hover:bg-amber-100" data-testid="identity-reminder">
+          <span className="size-2 shrink-0 rounded-full bg-amber-500" aria-hidden />
+          <span className="flex-1">{data.identityAlerts[0].text}{data.identityAlerts.length > 1 && ` (+${data.identityAlerts.length - 1} more)`}</span>
+          <ChevronRight className="size-4" aria-hidden />
+        </Link>
+      )}
+
       {/* My Tax Center */}
       {data.perms.canViewTax && (
         <section className={card} data-testid="tax-center">
@@ -162,7 +170,14 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
               ))}
             </div>
           )}
-          <Link href={href("/client/documents")} className={viewAll}>View all years <ChevronRight className="size-4" aria-hidden /></Link>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Link href={href("/client/documents")} className={viewAll}>View all years <ChevronRight className="size-4" aria-hidden /></Link>
+            {data.perms.canViewIdentity && (
+              <Link href={href("/client/identity")} className={`${viewAll} text-gold-700`} data-testid="identity-link">
+                Identity documents{data.identityAlerts.length > 0 && <span className="ml-1 rounded-full bg-red-600 px-1.5 text-[11px] font-bold text-white">{data.identityAlerts.length}</span>} <ChevronRight className="size-4" aria-hidden />
+              </Link>
+            )}
+          </div>
         </section>
 
         {data.perms.canMessage && (

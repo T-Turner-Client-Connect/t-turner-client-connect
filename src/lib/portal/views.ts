@@ -8,9 +8,10 @@ import { isPortalVerified, questionnaireUrl, questionnaireYears, taxYearStatuses
 import { isStateCode } from "@/lib/resources/catalog";
 import { isHistorical } from "@/lib/services/documents";
 import { portalBilling } from "@/lib/services/owner-billing";
+import { identityAlerts, identityOverview } from "@/lib/services/identity";
 import type { PortalActor } from "./session";
 
-type Perms = Pick<PortalAccess, "canMessage" | "canUpload" | "canViewBookkeeping" | "canViewTax" | "canViewContracts" | "canViewBilling">;
+type Perms = Pick<PortalAccess, "canMessage" | "canUpload" | "canViewBookkeeping" | "canViewTax" | "canViewContracts" | "canViewBilling" | "canViewIdentity">;
 
 /**
  * Everything on a client's portal dashboard. Only staff-entered records
@@ -86,6 +87,7 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
     countdowns,
     progress: progress.length ? progress : statuses.filter((s) => s.year === thisYear - 1),
     statuses,
+    identityAlerts: perms.canViewIdentity ? identityAlerts(await identityOverview(clientId)) : [],
     vault,
     questionnaires,
     verified,
@@ -121,4 +123,4 @@ export async function loadPortalDocuments(clientId: string, perms: Perms, opts: 
   });
 }
 
-export const OWNER_PREVIEW_PERMS: Perms = { canMessage: true, canUpload: true, canViewBookkeeping: true, canViewTax: true, canViewContracts: true, canViewBilling: true };
+export const OWNER_PREVIEW_PERMS: Perms = { canMessage: true, canUpload: true, canViewBookkeeping: true, canViewTax: true, canViewContracts: true, canViewBilling: true, canViewIdentity: true };

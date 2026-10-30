@@ -20,6 +20,7 @@ export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   CONTRACTS: "Contracts",
   CLIENT_UPLOADS: "Client uploads",
   OTHER: "Other",
+  IDENTITY: "Identity document",
 };
 
 export const REPORT_LABELS: Record<ReportType, string> = {
@@ -100,6 +101,7 @@ export type StaffUploadInput = {
 };
 
 export async function staffUploadDocument(actor: Actor, input: StaffUploadInput) {
+  if (input.category === "IDENTITY") throw new ValidationError("Identity documents are uploaded in the Identity Documents section.");
   const client = await prisma.client.findUnique({ where: { id: input.clientId } });
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
@@ -254,6 +256,15 @@ export async function authorizeDownload(token: string, viewer: { staffId?: strin
   if (!doc || doc.deletedAt) return null;
   // Quarantine: nobody — staff or client — downloads a file until it has scanned clean.
   if (doc.scanStatus !== "CLEAN") return null;
+  // Identity documents: Admins, the assigned staff member, and account holders granted identity access.
+  if (doc.category === "IDENTITY") {
+    const { canStaffViewIdentity, portalMayOpenIdentity } = await import("./identity");
+    if (viewer.staffId) {
+      const staff = await prisma.user.findUnique({ where: { id: viewer.staffId }, select: { id: true, role: true, active: true } });
+      return staff?.active && (await canStaffViewIdentity(staff, doc.clientId)) ? doc : null;
+    }
+    return viewer.portalUserId && (await portalMayOpenIdentity(viewer.portalUserId, doc.clientId)) ? doc : null;
+  }
   if (viewer.portalUserId) {
     if (doc.visibility !== "PUBLISHED") return null;
     try {
