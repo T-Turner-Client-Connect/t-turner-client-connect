@@ -424,6 +424,17 @@ export async function scanHealth(now = new Date()) {
     // Re-checks run every 10 minutes; older than 30 minutes means the schedule isn't running.
     recheckRunning: !!beat && now.getTime() - beat.at.getTime() < 30 * 60 * 1000,
     lastRecheckAt: beat?.at ?? null,
+    // What the last automatic run actually did (it runs even without a scanner, but can't scan then).
+    lastRecheck: (beat?.detail ?? null) as { configured?: boolean; scanned?: number; clean?: number; infected?: number } | null,
+    // Only whether it's set — never the value.
+    cronSecretSet: !!process.env.CRON_SECRET,
+    // Which scanner settings this deployment can see — names and set/not set only, never values.
+    settings: {
+      MALWARE_SCAN_PROVIDER: ["cloudmersive", "clamav-rest", "generic"].includes(process.env.MALWARE_SCAN_PROVIDER ?? "") ? process.env.MALWARE_SCAN_PROVIDER! : process.env.MALWARE_SCAN_PROVIDER ? "set (unrecognized value)" : "not set",
+      CLOUDMERSIVE_API_KEY: process.env.CLOUDMERSIVE_API_KEY ? "set" : "not set",
+      MALWARE_SCAN_URL: process.env.MALWARE_SCAN_URL ? "set" : "not set",
+      CRON_SECRET: process.env.CRON_SECRET ? "set" : "not set",
+    },
     selfTest: lastSelfTest ? { ok: lastSelfTest.ok, at: lastSelfTest.createdAt } : null,
   };
 }

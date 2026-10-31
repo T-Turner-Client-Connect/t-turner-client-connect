@@ -3,6 +3,8 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Notice, PageHeader } from "@/components/ui";
 import { portalUploadAction } from "@/app/actions/portal";
 import { BkUploadFields, UploadMeta } from "@/components/bk-upload";
+import { UploadReceipt } from "@/components/portal/upload-receipt";
+import { scanConfigured } from "@/lib/scan";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { prisma } from "@/lib/prisma";
@@ -27,7 +29,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
           where: { clientId: current.clientId },
           include: {
             // Published, scanned-clean files — plus the client's own uploads at any scan stage (listed, not opened, until clean).
-            documents: { where: { deletedAt: null, OR: [{ visibility: "PUBLISHED", scanStatus: "CLEAN" }, { uploadedByPortalId: { not: null } }] }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } } } },
+            documents: { where: { deletedAt: null, OR: [{ visibility: "PUBLISHED", scanStatus: "CLEAN" }, { uploadedByPortalId: { not: null } }] }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, file: { select: { originalName: true } } } },
             requests: { where: { status: { not: "CANCELLED" } }, orderBy: { createdAt: "asc" } },
           },
           orderBy: [{ year: "desc" }, { month: "desc" }],
@@ -113,7 +115,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
                     });
                   })()}
                   <h3 className="mb-1 mt-3 text-sm font-semibold">Your uploads</h3>
-                  <ul className="space-y-1 text-sm">{p.documents.filter((d) => d.uploadedByPortalId).map((d) => <li key={d.id}>{d.title}{d.scanStatus !== "CLEAN" && <span className="ml-1 text-xs text-amber-800">· being checked for viruses</span>}<UploadMeta d={d} /></li>)}</ul>
+                  <ul className="space-y-2 text-sm">{p.documents.filter((d) => d.uploadedByPortalId).map((d) => <li key={d.id}><UploadReceipt d={d} scannerConfigured={scanConfigured()} /><UploadMeta d={d} /></li>)}</ul>
                   {upload(null, p.id, `Upload a document for ${MONTHS[p.month - 1]}`, p.year, p.month)}
                 </div>
                 <div>

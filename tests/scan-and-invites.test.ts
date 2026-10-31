@@ -32,7 +32,7 @@ describe("malware scan status (local scanner stub — not a live check)", () => 
     const r1 = await uploadMonthlyReport(tabitha, { clientId: c.id, year: 2026, month: 9, reportType: "PROFIT_AND_LOSS", bytes: pdf(), originalName: "pl.pdf" });
     let d1 = await prisma.document.findUniqueOrThrow({ where: { id: r1.document.id } });
     expect(d1.scanStatus).toBe("NOT_SCANNED");
-    expect(scanState(d1, { configured: false, recheckRunning: false, lastRecheckAt: null })).toMatchObject({ label: "Pending" });
+    expect(scanState(d1, { configured: false, recheckRunning: false, lastRecheckAt: null })).toMatchObject({ label: "Unavailable" });
     expect(scanState(d1, { configured: false, recheckRunning: false, lastRecheckAt: null }).explain).toMatch(/isn't set up/);
     await expect(submitReportForReview(tabitha, d1.id)).rejects.toThrow(/malware scan/);
 
