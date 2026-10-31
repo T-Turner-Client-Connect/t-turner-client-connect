@@ -5,6 +5,7 @@ import { createFiling, setFilingStatusByStaff } from "@/lib/services/tax";
 import {
   correctNonprofitFiling, latestEndedTaxYear, markNonprofitFiled, nonprofitDashboard, nonprofitDueDate, recordNonprofitOutcome, runNonprofitReminders, saveNonprofitProfile,
 } from "@/lib/services/nonprofits";
+import { setFilingService } from "@/lib/services/nonprofit-links";
 
 beforeEach(async () => {
   await resetDb();
@@ -30,6 +31,7 @@ describe("nonprofit deadlines (IRS: 15th day of the 5th month; next business day
     const daria = await makeUser("STAFF", "Daria");
     const np = await createClient(tabitha, { businessName: "Fictional Food Pantry", clientType: "NONPROFIT", status: "ACTIVE" });
     await prisma.client.update({ where: { id: np.id }, data: { assignedToId: daria.id } });
+    await setFilingService(tabitha, np.id, "YES"); // only organizations we file for are tracked and reminded
     const today = "2026-04-15";
 
     let [row] = await nonprofitDashboard(today);

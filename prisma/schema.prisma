@@ -222,6 +222,8 @@ model Client {
   entityType       String?
   // Month (1–12) the business's tax year ends. Null = calendar year (December).
   fiscalYearEnd    Int?
+  // Does this owner have a nonprofit? YES | NO | NOT_CONFIRMED (null = not asked yet). Kept on the owner's main record.
+  hasNonprofit     String?
   source           String?
   assignedToId     String?
   assignedTo       User?        @relation("AssignedStaff", fields: [assignedToId], references: [id], onDelete: SetNull)
@@ -2772,6 +2774,9 @@ model NonprofitProfile {
   // Days before the deadline to remind staff (and, if enabled, the client's contacts).
   reminderDays Int[]    @default([60, 30, 7])
   notifyClient Boolean  @default(false)
+  // Does TTurner handle this organization's annual filings? YES | NO | PENDING_AGREEMENT (null = not recorded).
+  // Only YES puts it on Nonprofit Filings' tracker and reminders.
+  filingService String?
   updatedById  String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
