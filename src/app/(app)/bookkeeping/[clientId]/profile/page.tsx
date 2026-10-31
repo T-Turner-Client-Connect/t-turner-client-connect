@@ -16,6 +16,10 @@ import {
   ACCESS_STATUSES, ACCOUNT_TYPES, AUTH_METHODS, BILLING_STATUSES, billingView, maskEin, PAYROLL_ACCESS, PAYROLL_REPORT_TYPES,
 } from "@/lib/services/bookkeeping-profile";
 import { fmtDate } from "@/lib/format";
+import { isReportApprover } from "@/lib/services/bookkeeping-clients";
+import { businessFamily } from "@/lib/services/related-businesses";
+import { NOT_SYNCED } from "@/lib/services/square-billing";
+import { SquareBillingPanel } from "@/components/square-billing-panel";
 
 export const metadata = { title: "Business profile" };
 
@@ -34,6 +38,10 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
   const profile = client.bookkeepingProfile;
   const billing = await billingView(user, clientId);
   const evidenceDocs = billing.allowed ? await prisma.document.findMany({ where: { clientId, deletedAt: null, category: { not: "IDENTITY" } }, select: { id: true, title: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 40 }) : [];
+  const [approver, family] = billing.allowed ? await Promise.all([isReportApprover(user), businessFamily(clientId)]) : [false, null];
+  // Businesses (and the owner's Personal record) that could share this client's Square bill.
+  const onBill = new Set(billing.allowed ? billing.squareBilling.arrangement?.members.map((m) => m.clientId) ?? [] : []);
+  const addable = family ? [family.person, ...family.businesses].filter((c): c is NonNullable<typeof c> => !!c && !onBill.has(c.id)) : [];
   const thisYear = new Date().getFullYear();
   const years = Array.from({ length: 8 }, (_, i) => thisYear + 1 - i);
 
@@ -143,6 +151,7 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
               <p className="text-sm text-slate-600" data-testid="billing-restricted">Billing and payment methods are managed by Tabitha.</p>
             ) : (
               <div className="space-y-4" data-testid="billing">
+                <SquareBillingPanel clientId={clientId} sb={billing.squareBilling} approver={approver} addable={addable} />
                 <div className="flex flex-wrap items-center gap-2 rounded-xl bg-ivory-50 p-3 text-sm">
                   <strong>Square:</strong>
                   {billing.square.connected ? <Badge tone="green">Connected</Badge> : <Badge tone="amber">Not connected</Badge>}
@@ -154,7 +163,7 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
                 </div>
                 <div className="grid gap-3 text-sm sm:grid-cols-3">
                   <p><span className="block text-xs uppercase tracking-wide text-slate-500">Card on file (from Square)</span>{billing.square.card ? `${billing.square.card.brand} ****${billing.square.card.last4} · exp ${billing.square.card.expMonth}/${billing.square.card.expYear}` : "Not available — Square not connected"}</p>
-                  <p><span className="block text-xs uppercase tracking-wide text-slate-500">Recurring charges</span>{billing.chargeAuthorized ? <Badge tone="green">Authorized</Badge> : <Badge tone="red">Not authorized</Badge>} <span className="block text-xs text-slate-600">A card on file alone never authorizes a charge.</span></p>
+                  <p><span className="block text-xs uppercase tracking-wide text-slate-500">Recurring charges</span>{billing.squareBilling.state === "VERIFIED" ? <Badge tone="green">Existing Square authorization — verified</Badge> : billing.squareBilling.state !== "NONE" ? <Badge tone="amber">{billing.squareBilling.arrangement?.syncedAt ? "Synced from Square — not yet verified" : NOT_SYNCED}</Badge> : billing.chargeAuthorized ? <Badge tone="green">Authorized</Badge> : <Badge tone="red">Not authorized</Badge>} <span className="block text-xs text-slate-600">A card on file alone never authorizes a charge.</span></p>
                   <p><span className="block text-xs uppercase tracking-wide text-slate-500">Payment status</span>{BILLING_STATUSES[(billing.billing?.paymentStatus ?? "NOT_SET_UP") as keyof typeof BILLING_STATUSES]}</p>
                 </div>
                 <ActionForm action={saveBillingAction.bind(null, clientId)} className="grid gap-3 sm:grid-cols-3">
@@ -183,6 +192,9 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
                     ))}
                     {billing.authorizations.length === 0 && <li className="text-slate-600">None recorded.</li>}
                   </ul>
+                  {billing.squareBilling.state !== "NONE" ? (
+                    <p className="text-sm text-slate-600" data-testid="no-new-authorization">Billed through Square: the existing authorization stays in place, so no new one is recorded here and nothing is charged from Client Connect.</p>
+                  ) : (
                   <details>
                     <summary className="cursor-pointer text-sm underline">Record an authorization</summary>
                     <ActionForm action={recordAuthorizationAction.bind(null, clientId)} className="mt-2 grid gap-3 sm:grid-cols-3" resetOnSuccess>
@@ -197,6 +209,7 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
                       <div className="sm:col-span-3"><Button type="submit" variant="secondary">Record authorization</Button></div>
                     </ActionForm>
                   </details>
+                  )}
                 </div>
               </div>
             )}

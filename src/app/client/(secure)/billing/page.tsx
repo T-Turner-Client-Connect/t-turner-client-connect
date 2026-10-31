@@ -8,6 +8,7 @@ import { money } from "@/lib/billing/pricing";
 import { METHOD_LABELS } from "@/lib/billing/labels";
 import { fmtDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { NOT_SYNCED, portalSquareBilling } from "@/lib/services/square-billing";
 
 export const metadata = { title: "Billing" };
 
@@ -23,12 +24,39 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
       </>
     );
   }
-  const items = await portalBilling(user, current.clientId);
+  const [items, sq] = await Promise.all([portalBilling(user, current.clientId), portalSquareBilling(user, current.clientId)]);
   const client = await prisma.client.findUniqueOrThrow({ where: { id: current.clientId }, select: { displayName: true } });
   return (
     <>
       <PageHeader title="Billing" subtitle="Quotes and invoices from TTurner & Associates Group for this account." />
-      {items.length === 0 && <EmptyState title="Nothing here yet">Quotes and invoices we send you will appear here.</EmptyState>}
+      {sq.state !== "NONE" && (
+        <Card title="Monthly billing" className="mb-4">
+          <div data-testid="portal-square-billing">
+            {!sq.view ? (
+              <>
+                <p><Badge tone="amber">{NOT_SYNCED}</Badge></p>
+                <p className="mt-2 text-sm text-slate-700">Your recurring billing with our office continues in Square exactly as arranged. There&apos;s nothing to authorize or update here, and nothing new will be charged.</p>
+              </>
+            ) : (
+              <>
+                <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">{sq.view.title || "Monthly service"}</dt><dd className="text-lg font-semibold text-navy-900">{sq.view.amountCents == null ? "—" : money(sq.view.amountCents)}</dd></div>
+                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">Schedule</dt><dd>{sq.view.schedule}</dd></div>
+                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">Next invoice</dt><dd>{sq.view.nextDueDate ? fmtDate(sq.view.nextDueDate) : "None scheduled"}</dd></div>
+                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">Status</dt><dd><Badge tone={sq.view.status.tone}>{sq.view.status.label.replace(" in Square", "")}</Badge></dd></div>
+                  {sq.view.card && <div><dt className="text-xs uppercase tracking-wide text-slate-500">Automatic payment</dt><dd>{sq.view.card.brand} ending in {sq.view.card.last4}</dd></div>}
+                  {sq.view.authorizationVerified && <div><dt className="text-xs uppercase tracking-wide text-slate-500">Authorization</dt><dd>On file with Square — nothing new is needed</dd></div>}
+                </dl>
+                {(sq.view.alsoCovers.length > 0 || sq.view.otherAccounts > 0) && (
+                  <p className="mt-3 text-sm" data-testid="portal-square-covers">This one bill also covers {[...sq.view.alsoCovers, ...(sq.view.otherAccounts ? [`${sq.view.otherAccounts} other account${sq.view.otherAccounts === 1 ? "" : "s"}`] : [])].join(", ")} — you&apos;re charged once per cycle.</p>
+                )}
+                <p className="mt-3 text-xs text-slate-600">Shown from Square as of {fmtDate(sq.view.syncedAt)}. Billing runs in Square as arranged; to change your card or schedule, send us a message.</p>
+              </>
+            )}
+          </div>
+        </Card>
+      )}
+      {items.length === 0 && sq.state === "NONE" && <EmptyState title="Nothing here yet">Quotes and invoices we send you will appear here.</EmptyState>}
       <div className="space-y-4">
         {items.map((inv) => (
           <Card
