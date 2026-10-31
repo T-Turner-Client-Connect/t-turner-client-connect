@@ -82,7 +82,7 @@ describe("scanner adapters", () => {
 describe("quarantine", () => {
   it("blocks download and client visibility until the scan passes, then releases and notifies", async () => {
     const { tab, client, user } = await setup();
-    const doc = await staffUploadDocument(tab, { clientId: client.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "TAX_RETURN", bytes: pdfBytes(), originalName: "1040.pdf" });
+    const doc = await staffUploadDocument(tab, { clientId: client.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "SUPPORTING", bytes: pdfBytes(), originalName: "k1-statement.pdf" });
     expect(doc.scanStatus).toBe("NOT_SCANNED");
     expect(await authorizeDownload(downloadToken(doc.id, { staffId: tab.id }), { staffId: tab.id })).toBeNull();
     expect(await authorizeDownload(downloadToken(doc.id, { portalUserId: user.id }), { portalUserId: user.id })).toBeNull();
