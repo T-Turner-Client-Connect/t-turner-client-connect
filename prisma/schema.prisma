@@ -259,6 +259,7 @@ model Client {
   bookkeepingAccounts  BookkeepingAccount[]
   bookkeepingBilling   BookkeepingBilling?
   squareBilling        SquareBillingMember?
+  nonprofitProfile     NonprofitProfile?
   chargeAuthorizations RecurringChargeAuthorization[]
   businessOnboarding   BusinessOnboarding?
   // A person (Personal record) linked to the businesses they own, and back.
@@ -2755,4 +2756,23 @@ model SquareBillingMember {
   createdAt     DateTime                 @default(now())
 
   @@index([arrangementId])
+}
+
+/// Annual federal filing setup for a nonprofit client. Each year's return is a
+/// FilingRecord (returnType 990-N / 990-EZ / 990 / 990-PF / other), so
+/// Submitted and Accepted stay separate and Accepted needs evidence.
+model NonprofitProfile {
+  clientId     String   @id
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // 990-N | 990-EZ | 990 | 990-PF | OTHER (null = not determined yet)
+  formType     String?
+  otherForm    String?
+  // How staff determined the form (e.g. "Gross receipts normally ≤ $50,000 — 2023–2025 average").
+  formBasis    String?
+  // Days before the deadline to remind staff (and, if enabled, the client's contacts).
+  reminderDays Int[]    @default([60, 30, 7])
+  notifyClient Boolean  @default(false)
+  updatedById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }

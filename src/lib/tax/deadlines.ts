@@ -87,7 +87,7 @@ export function nextBusinessDay(s: string) {
 }
 
 /** The 15th day of the nth month after a tax year ending in (year, month), before rollover. */
-function fifteenthAfter(endYear: number, endMonth: number, n: number) {
+export function fifteenthAfter(endYear: number, endMonth: number, n: number) {
   const idx = endYear * 12 + (endMonth - 1) + n;
   return iso(Math.floor(idx / 12), (idx % 12) + 1, 15);
 }
