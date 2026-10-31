@@ -2,6 +2,7 @@
 
 import { isClientDocType } from "@/lib/document-types";
 import { isBkDocType } from "@/lib/services/bookkeeping-clients";
+import { PeriodError, uploadFieldsFromForm } from "@/lib/bk-uploads";
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -130,6 +131,19 @@ export async function portalUploadAction(clientId: string, _prev: ActionState, f
   return run(async () => {
     const file = await optionalFile(fd, "file");
     if (!file) throw new ValidationError("Choose a file to upload.");
+    // Bookkeeping uploads: category, reporting period and "as of" are required as chosen — never guessed.
+    if (str(fd, "bk") === "1") {
+      let f;
+      try {
+        f = uploadFieldsFromForm(fd);
+      } catch (e) {
+        if (e instanceof PeriodError) throw new ValidationError(e.message);
+        throw e;
+      }
+      await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), docType: f.type, coverage: f.coverage, asOf: f.asOf, ...file });
+      revalidatePath("/client", "layout");
+      return "Uploaded securely. It's being checked for viruses, then our team will review it. Thank you!";
+    }
     const y = str(fd, "year");
     const contextual = str(fd, "periodId") || str(fd, "requestId");
     if (!y && !contextual) throw new ValidationError("Choose the tax year this document is for, or “Not sure”.");

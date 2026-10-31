@@ -1026,6 +1026,10 @@ model Document {
   reportBasis            String?
   reportIncludesYtd      Boolean?
   reportAsOf             DateTime?
+  // What the document covers, when it's a date range (or a month/quarter
+  // recorded on upload). Older documents keep whatever they had: nothing is guessed.
+  periodStart            DateTime?
+  periodEnd              DateTime?
   // A statement or reconciliation for one bank/card account.
   bookkeepingAccountId   String?
   // An audit or tax notice case this document belongs to.

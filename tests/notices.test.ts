@@ -1,3 +1,4 @@
+import { chicagoToday } from "@/lib/dates";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
@@ -30,7 +31,7 @@ describe("Upload Audit or Tax Notice", () => {
     await expect(submitNotice(user, other.id, { taxYear: "2024", agency: "IRS" }, [pdf()])).rejects.toBeInstanceOf(ForbiddenError);
     await expect(submitNotice(user, c.id, { taxYear: "2024", agency: "IRS" }, [])).rejects.toThrow(/Choose the notice/);
     const due = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
-    const r = await submitNotice(user, c.id, { taxYear: "2024", agency: "IRS", receivedOn: new Date().toISOString().slice(0, 10), responseDueOn: due, message: "CP2000 letter" }, [pdf(), pdf()]);
+    const r = await submitNotice(user, c.id, { taxYear: "2024", agency: "IRS", receivedOn: chicagoToday(), responseDueOn: due, message: "CP2000 letter" }, [pdf(), pdf()]);
     expect([r.case.status, r.case.taxYear, r.documents.length]).toEqual(["RECEIVED", 2024, 2]);
     const docs = await prisma.document.findMany({ where: { noticeCaseId: r.case.id } });
     expect(docs.map((d) => [d.year, d.clientId, d.docType])).toEqual([[2024, c.id, "AGENCY_LETTER"], [2024, c.id, "AGENCY_LETTER"]]);

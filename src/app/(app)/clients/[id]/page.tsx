@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { chicagoToday } from "@/lib/dates";
 import { BusinessTabs } from "@/components/business-tabs";
 import { recordHeading } from "@/lib/services/related-businesses";
 import { notFound } from "next/navigation";
@@ -267,7 +268,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
                 <Field label="Scope" className="sm:col-span-2" hint="Exactly what they agreed to. Required for Section 7216.">
                   <input className="input" name="scope" />
                 </Field>
-                <Field label="Date given"><input className="input" type="date" name="effectiveAt" max={new Date().toISOString().slice(0, 10)} /></Field>
+                <Field label="Date given"><input className="input" type="date" name="effectiveAt" max={chicagoToday()} /></Field>
                 <Field label="Expires (if any)" hint="7216 consents usually state a duration."><input className="input" type="date" name="expiresAt" /></Field>
                 <Field label="Evidence document" hint="Signed form (PDF/JPG/PNG). Required for a Section 7216 grant.">
                   <input className="input" type="file" name="evidence" accept="application/pdf,image/png,image/jpeg" />

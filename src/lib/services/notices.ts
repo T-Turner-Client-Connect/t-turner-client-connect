@@ -1,4 +1,5 @@
 import "server-only";
+import { isFutureDay } from "@/lib/dates";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
@@ -53,7 +54,8 @@ export async function submitNotice(user: PortalActor, clientId: string, input: N
   if (!(input.agency in AGENCIES)) throw new ValidationError("Choose who sent the notice, or “Not sure”.");
   const receivedOn = day(input.receivedOn);
   if (input.receivedOn && !receivedOn) throw new ValidationError("Enter the date you received it, or leave it blank.");
-  if (receivedOn && receivedOn > new Date()) throw new ValidationError("The date received can't be in the future.");
+  // Calendar days in Chicago: today is fine at any hour.
+  if (receivedOn && isFutureDay(input.receivedOn!)) throw new ValidationError("The date received can't be in the future.");
   const responseDueOn = day(input.responseDueOn);
   if (input.responseDueOn && !responseDueOn) throw new ValidationError("Enter the response deadline, or leave it blank if you're not sure.");
   const kase = await prisma.noticeCase.create({

@@ -1,4 +1,5 @@
 import "server-only";
+import { isFutureDay } from "@/lib/dates";
 import { z } from "zod";
 import type { Channel, ClientStatus, ClientType, ConsentKind, ConsentStatus, Prisma, SuppressionReason } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -264,7 +265,7 @@ export async function recordConsent(actor: Actor, clientId: string, input: Conse
     if (!contact) throw new ValidationError("Contact not found.");
   }
   const now = new Date();
-  if (input.effectiveAt && input.effectiveAt > now) throw new ValidationError("The date can't be in the future.");
+  if (input.effectiveAt && isFutureDay(input.effectiveAt)) throw new ValidationError("The date can't be in the future.");
   const smsCategory = input.kind === "SMS_SERVICE" ? "SERVICE" : input.kind === "SMS_MARKETING" ? "MARKETING" : null;
   let smsPhone: string | null = null;
   if (smsCategory) {

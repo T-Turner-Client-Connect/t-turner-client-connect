@@ -1,4 +1,5 @@
 import "server-only";
+import { BK_UPLOAD_TYPES, isBkUploadType } from "@/lib/bk-uploads";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
@@ -22,14 +23,9 @@ export const FREQUENCIES = { MONTHLY: "Monthly", QUARTERLY: "Quarterly" } as con
 export const PAYROLL_FREQUENCIES = { WEEKLY: "Weekly", BIWEEKLY: "Every two weeks", SEMIMONTHLY: "Twice a month", MONTHLY: "Monthly" } as const;
 
 // Document kinds collected for bookkeeping (stored in Document.docType).
-export const BK_DOC_TYPES = {
-  BANK_STATEMENT: "Bank statement",
-  CARD_STATEMENT: "Credit card statement",
-  PAYROLL_REPORT: "Payroll report",
-  RECEIPTS: "Receipts / bills",
-  BK_OTHER: "Other bookkeeping document",
-} as const;
-export const isBkDocType = (t: string): t is keyof typeof BK_DOC_TYPES => t in BK_DOC_TYPES;
+// "What are you uploading?" — the full list (src/lib/bk-uploads.ts).
+export const BK_DOC_TYPES = BK_UPLOAD_TYPES;
+export const isBkDocType = isBkUploadType;
 
 type ItemDef = { key: string; label: string; kind: "CLIENT_DOCUMENT" | "STAFF_TASK"; docType?: keyof typeof BK_DOC_TYPES; payrollOnly?: boolean; reportMonthsOnly?: boolean };
 export const CHECKLIST: ItemDef[] = [
