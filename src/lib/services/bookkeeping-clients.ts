@@ -1,4 +1,5 @@
 import "server-only";
+import { chicagoToday } from "@/lib/dates";
 import { BK_UPLOAD_TYPES, isBkUploadType } from "@/lib/bk-uploads";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
@@ -66,7 +67,7 @@ export type ProfileInput = { active: boolean; frequency: string; payroll: boolea
 
 /** Saves a client's bookkeeping settings. assignedToId: undefined keeps the current assignee, null unassigns. */
 export async function saveProfile(actor: Actor, clientId: string, input: ProfileInput) {
-  for (const d of [input.documentsDueDay, input.reportsDueDay]) {
+  for (const d of [input.documentsDueDay, input.reportsDueDay, input.reviewDueDay]) {
     if (d != null && (!Number.isInteger(d) || d < 1 || d > 31)) throw new ValidationError("Due days must be 1–31 (31 = last day of the month).");
   }
   if (!(input.frequency in FREQUENCIES)) throw new ValidationError("Choose monthly or quarterly.");
@@ -86,6 +87,7 @@ export async function saveProfile(actor: Actor, clientId: string, input: Profile
     notes: input.notes?.trim().slice(0, 1000) || null,
     ...(input.documentsDueDay !== undefined ? { documentsDueDay: input.documentsDueDay } : {}),
     ...(input.reportsDueDay !== undefined ? { reportsDueDay: input.reportsDueDay } : {}),
+    ...(input.reviewDueDay !== undefined ? { reviewDueDay: input.reviewDueDay } : {}),
     updatedById: actor.id,
   };
   await prisma.bookkeepingProfile.upsert({ where: { clientId }, create: { clientId, ...data }, update: data });
@@ -176,9 +178,10 @@ export async function enrollNewClient(actor: Actor, clientInput: ClientInput, in
  * prepared every month for monthly clients and at quarter end (March, June,
  * September, December) for quarterly clients.
  */
+/** The month being worked: the previous month, by the Chicago calendar (work starts on the 1st). */
 export function workMonth(_frequency: string, now = new Date()) {
-  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  return { year: d.getFullYear(), month: d.getMonth() + 1 };
+  const [y, m] = chicagoToday(now).split("-").map(Number);
+  return m === 1 ? { year: y - 1, month: 12 } : { year: y, month: m - 1 };
 }
 
 export const isQuarterEnd = (month: number) => month % 3 === 0;
@@ -186,16 +189,19 @@ export const reportsDue = (frequency: string, month: number) => frequency !== "Q
 
 /**
  * Due dates come from each client's settings (day of the month after the
- * work month; 31 = last day). There is no built-in default: a client with no
- * day set has no deadline and is never shown as overdue for it.
+ * work month; 31 = last day). Documents have no built-in default. The P&L
+ * target defaults to the office's 15th (OFFICE_TARGET_DAY) unless the
+ * client's agreement sets another day. Tabitha's review date is optional
+ * and set per client (reviewDueDay).
  */
+export const OFFICE_TARGET_DAY = 15;
 export function dueOn(year: number, month: number, day: number | null | undefined) {
   if (!day) return null;
   const last = new Date(year, month + 1, 0).getDate(); // last day of the following month
   return new Date(year, month, Math.min(day, last), 23, 59);
 }
 
-export type Deadlines = { documentsDueDay?: number | null; reportsDueDay?: number | null };
+export type Deadlines = { documentsDueDay?: number | null; reportsDueDay?: number | null; reviewDueDay?: number | null };
 
 export const periodLabel = (frequency: string, year: number, month: number) => `${MONTHS[month - 1]} ${year}${frequency === "QUARTERLY" && isQuarterEnd(month) ? ` (Q${month / 3} close)` : ""}`;
 
@@ -441,11 +447,13 @@ export function reportCaption(d: { reportType: string | null; reportPeriodType: 
 
 // --- Stages ------------------------------------------------------------------------------
 
+// The monthly workflow, in the office's own words.
 export const STAGES = {
-  AWAITING_REVIEW: { label: "Awaiting Tabitha's review", tone: "gold" },
-  READY_TO_DELIVER: { label: "Ready to deliver", tone: "green" },
-  STAFF_WORK: { label: "Awaiting staff work", tone: "navy" },
-  CLIENT_DOCUMENTS: { label: "Waiting on client documents", tone: "amber" },
+  CLIENT_DOCUMENTS: { label: "Collecting Documents", tone: "amber" },
+  STAFF_WORK: { label: "In Progress", tone: "navy" },
+  WAITING_ON_CLIENT: { label: "Waiting on Client", tone: "amber" },
+  AWAITING_REVIEW: { label: "Awaiting Tabitha Review", tone: "gold" },
+  READY_TO_DELIVER: { label: "Ready to Deliver", tone: "green" },
   DELIVERED: { label: "Delivered", tone: "gray" },
   COLLECTED: { label: "Collected — report at quarter end", tone: "gray" },
   NOT_OPENED: { label: "Month not opened", tone: "red" },
@@ -460,7 +468,8 @@ async function loadPeriod(periodId: string) {
       checklist: { orderBy: { sortOrder: "asc" } },
       documents: { where: { deletedAt: null }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, uploadedByStaff: { select: { name: true } }, bookkeepingAccount: true } },
       requests: { orderBy: { createdAt: "asc" } },
-      conversations: { orderBy: { lastMessageAt: "desc" }, select: { id: true, subject: true, awaitingStaff: true, lastMessageAt: true } },
+      conversations: { orderBy: { lastMessageAt: "desc" }, select: { id: true, subject: true, awaitingStaff: true, lastMessageAt: true, questionStatus: true, responseDueAt: true, resolvedAt: true } },
+      targetRevisions: { orderBy: { createdAt: "asc" } },
     },
   });
 }
@@ -484,19 +493,40 @@ export function periodSummary(p: PeriodFull, frequency = "MONTHLY", now = new Da
   const reports = p.documents.filter((d) => isReport(d) && !d.supersededAt);
   const missing = items.filter((i) => i.state === "WAITING_CLIENT").length + p.requests.filter((r) => r.status === "OPEN").length;
   const done = items.filter((i) => i.state === "DONE" || i.state === "NOT_NEEDED" || i.state === "RECEIVED").length;
+  // Questions staff asked and the client hasn't answered, and open requests: the month waits on the client.
+  const questions = p.conversations.filter((c) => c.questionStatus);
+  const unanswered = questions.filter((c) => c.questionStatus === "OPEN");
+  const answeredToReview = questions.filter((c) => c.questionStatus === "ANSWERED");
+  const openRequests = p.requests.filter((r) => r.status === "OPEN");
+  const waitingOnClient = unanswered.length > 0 || openRequests.length > 0;
   let stage: Stage;
   if (reports.some((r) => r.reviewStatus === "AWAITING_REVIEW")) stage = "AWAITING_REVIEW";
   else if (reports.some((r) => r.reviewStatus === "APPROVED" && r.visibility !== "PUBLISHED")) stage = "READY_TO_DELIVER";
   else if (p.status === "COMPLETE" || (reports.length > 0 && reports.every((r) => r.visibility === "PUBLISHED"))) stage = "DELIVERED";
+  else if (waitingOnClient) stage = "WAITING_ON_CLIENT";
   else if (!reports.length && !items.some((i) => i.state === "RECEIVED") && items.some((i) => i.state === "WAITING_CLIENT")) stage = "CLIENT_DOCUMENTS";
   else if (!reportsDue(frequency, p.month) && items.every((i) => i.state !== "WAITING_CLIENT" && i.state !== "STAFF_TODO")) stage = "COLLECTED";
   else stage = "STAFF_WORK";
-  const due = { documents: dueOn(p.year, p.month, deadlines.documentsDueDay), reports: reportsDue(frequency, p.month) ? dueOn(p.year, p.month, deadlines.reportsDueDay) : null };
+  // The original target never changes; revisions are recorded beside it.
+  const target = reportsDue(frequency, p.month) ? dueOn(p.year, p.month, deadlines.reportsDueDay ?? OFFICE_TARGET_DAY) : null;
+  const revisions = p.targetRevisions ?? [];
+  const revised = revisions.at(-1)?.targetOn ?? null;
+  // Tabitha's review appears only when a review day has been chosen for this client.
+  const review = target ? dueOn(p.year, p.month, deadlines.reviewDueDay) : null;
+  const due = { documents: dueOn(p.year, p.month, deadlines.documentsDueDay), reports: target, revised, review };
   const overdue: string[] = [];
+  // Flagged right away (not only when late).
+  const flags: string[] = [];
+  if (unanswered.length) flags.push(`${unanswered.length} question${unanswered.length === 1 ? "" : "s"} waiting on the client`);
+  if (answeredToReview.length) flags.push(`${answeredToReview.length} answer${answeredToReview.length === 1 ? "" : "s"} to review`);
+  if (openRequests.length) flags.push(`${openRequests.length} requested item${openRequests.length === 1 ? "" : "s"} outstanding`);
+  if (unanswered.some((c) => c.responseDueAt && c.responseDueAt < now)) overdue.push("Client question past its response date");
   if (due.documents && items.some((i) => i.state === "WAITING_CLIENT") && now > due.documents) overdue.push("Client documents overdue");
   if (p.requests.some((r) => r.status === "OPEN" && r.dueAt && r.dueAt < now)) overdue.push("Requested item past due");
-  if (due.reports && stage !== "DELIVERED" && now > due.reports) overdue.push("Reports overdue");
-  return { items, reports, missing, done, total: items.length, stage, overdue, due };
+  const effective = revised ?? target;
+  if (effective && stage !== "DELIVERED" && now > effective) overdue.push(waitingOnClient ? "Target passed — waiting on client" : "Reports overdue");
+  else if (effective && stage !== "DELIVERED" && waitingOnClient) flags.push("Target at risk until the client responds");
+  return { items, reports, missing, done, total: items.length, stage, overdue, due, flags, questions, revisions };
 }
 
 export type ListFilters = { assignedTo?: string | null; frequency?: string | null; missing?: boolean; overdue?: boolean; review?: boolean; now?: Date };
@@ -542,7 +572,7 @@ export async function bookkeepingWorkspace(clientId: string, periodId?: string |
   const chosen = periods.find((p) => p.id === periodId) ?? periods[0] ?? null;
   const period = chosen ? await loadPeriod(chosen.id) : null;
   const freq = profile?.frequency ?? "MONTHLY";
-  const dl = { documentsDueDay: profile?.documentsDueDay ?? null, reportsDueDay: profile?.reportsDueDay ?? null };
+  const dl = { documentsDueDay: profile?.documentsDueDay ?? null, reportsDueDay: profile?.reportsDueDay ?? null, reviewDueDay: profile?.reviewDueDay ?? null };
   const prior = await Promise.all(periods.map(async (p) => ({ ...p, summary: periodSummary(await loadPeriod(p.id), freq, new Date(), dl) })));
   return { client, profile, periods: prior, period, summary: period ? periodSummary(period, freq, new Date(), dl) : null };
 }

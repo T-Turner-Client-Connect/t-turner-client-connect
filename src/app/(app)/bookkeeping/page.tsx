@@ -135,7 +135,7 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
                       </>
                     )}
                   </td>
-                  <td className="px-3 py-3"><Badge tone={STAGES[r.stage].tone}>{STAGES[r.stage].label}</Badge>{r.awaitingReview && r.stage !== "AWAITING_REVIEW" && <Badge tone="gold" className="ml-1">Earlier month in review</Badge>}</td>
+                  <td className="px-3 py-3"><Badge tone={STAGES[r.stage].tone}>{STAGES[r.stage].label}</Badge>{r.awaitingReview && r.stage !== "AWAITING_REVIEW" && <Badge tone="gold" className="ml-1">Earlier month in review</Badge>}{r.summary && r.summary.flags.length > 0 && <span className="mt-1 block text-xs text-amber-800" data-testid="row-flags">{r.summary.flags.join(" · ")}</span>}</td>
                   <td className="px-3 py-3">{r.overdue.length ? <span className="text-red-800">{r.overdue.join("; ")}</span> : !r.profile.documentsDueDay && !r.profile.reportsDueDay ? <span className="text-xs text-slate-500">No deadlines set</span> : <span className="text-slate-500">—</span>}</td>
                 </tr>
               ))}

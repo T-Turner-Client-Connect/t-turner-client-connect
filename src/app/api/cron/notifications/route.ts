@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { dispatchPendingNotifications } from "@/lib/services/notifications";
 import { dispatchStaffAlerts } from "@/lib/services/staff-alerts";
 import { scanQuarantined } from "@/lib/services/documents";
+import { autoOpenWorkMonth } from "@/lib/services/bookkeeping-questions";
 import { checkResourceLinks } from "@/lib/services/resources";
 import { runIdentityReminders } from "@/lib/services/identity";
 
@@ -16,11 +17,13 @@ export async function POST(req: Request) {
   }
   // Release files that now scan clean (and send their held notices) before dispatching.
   const scan = await scanQuarantined(50);
+  // Bookkeeping: open the work month for every client on the 1st (once a month, Chicago time).
+  const periods = await autoOpenWorkMonth();
   // License expiration reminders (60/30/7 days) and Expired status; each sent once.
   const identity = await runIdentityReminders();
   await dispatchPendingNotifications();
   const staffAlerts = await dispatchStaffAlerts();
   // A few Resource Center links per run, each re-checked weekly.
   const links = await checkResourceLinks(5, 7);
-  return Response.json({ ok: true, staffAlerts, scan, links, identity });
+  return Response.json({ ok: true, staffAlerts, scan, links, identity, periods });
 }

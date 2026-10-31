@@ -2,12 +2,13 @@ import Link from "next/link";
 import { BusinessTabs } from "@/components/business-tabs";
 import { BkUploadFields, UploadMeta } from "@/components/bk-upload";
 import { recordHeading } from "@/lib/services/related-businesses";
+import { QUESTION_STATUS } from "@/lib/services/bookkeeping-questions";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader } from "@/components/ui";
 import {
-  checklistItemAction, classifyDocumentAction, coethaLinkAction, deliverApprovedAction, openPeriodForClientAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
+  askQuestionAction, checklistItemAction, classifyDocumentAction, resolveQuestionAction, reviseTargetAction, coethaLinkAction, deliverApprovedAction, openPeriodForClientAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
 } from "@/app/actions/bookkeeping-clients";
 import { periodStatusAction, requestDocumentAction, staffMessageAction } from "@/app/actions/workspace";
 import { requireUser } from "@/lib/auth/session";
@@ -196,8 +197,11 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
               <Field label="Documents due (month after)" hint="Leave blank for no deadline.">
                 <select className="input" name="documentsDueDay" defaultValue={profile?.documentsDueDay ?? ""}><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
               </Field>
-              <Field label="Reports due (month after)" hint="Quarterly clients: applies to quarter-end months.">
-                <select className="input" name="reportsDueDay" defaultValue={profile?.reportsDueDay ?? ""}><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
+              <Field label="P&L target (month after)" hint="Quarterly clients: applies to quarter-end months.">
+                <select className="input" name="reportsDueDay" defaultValue={profile?.reportsDueDay ?? ""}><option value="">Office default — the 15th</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
+              </Field>
+              <Field label="Tabitha's review by (month after)" hint="Optional — shown on the schedule only when set.">
+                <select className="input" name="reviewDueDay" defaultValue={profile?.reviewDueDay ?? ""}><option value="">Not scheduled</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
               </Field>
               <Field label="Notes"><textarea className="input" name="notes" rows={2} defaultValue={profile?.notes ?? ""} /></Field>
               <Field label="Status"><select className="input" name="active" defaultValue={String(profile?.active ?? true)}><option value="true">Active</option><option value="false">Paused</option></select></Field>
@@ -229,15 +233,72 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                   <p className="text-sm text-navy-100">{summary.done} of {summary.total} checklist items · {summary.missing} missing from the client · client status: {PERIOD_LABELS[period.status]}</p>
                   <p className="text-xs text-navy-100">
                     {summary.due.documents ? `Documents due ${fmtDate(summary.due.documents)}` : "No document deadline set"}
-                    {reportsDue(freq, period.month) ? (summary.due.reports ? ` · reports due ${fmtDate(summary.due.reports)}` : " · no report deadline set") : " · reports at quarter end"}
+                    {reportsDue(freq, period.month) ? (summary.due.reports ? ` · P&L target ${fmtDate(summary.due.reports)}` : " · no report deadline set") : " · reports at quarter end"}
                   </p>
                   {summary.overdue.length > 0 && <p className="mt-1 inline-block rounded-full bg-red-600 px-3 py-0.5 text-xs font-semibold text-white" data-testid="overdue">{summary.overdue.join(" · ")}</p>}
+                  {summary.flags.length > 0 && <p className="mt-1 inline-block rounded-full bg-amber-400 px-3 py-0.5 text-xs font-semibold text-navy-950" data-testid="flags">{summary.flags.join(" · ")}</p>}
                 </div>
                 <ActionForm action={periodStatusAction.bind(null, clientId, period.id)} className="flex flex-wrap items-end gap-2 text-navy-900">
                   <select className="input w-auto" name="status" defaultValue={period.status} aria-label="Client-facing status">{Object.entries(PERIOD_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
                   <Button type="submit" variant="gold">Update</Button>
                 </ActionForm>
               </section>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <Card title={`Schedule — ${biz}`}>
+                  <dl className="space-y-1 text-sm" data-testid="schedule">
+                    <div className="flex justify-between gap-2"><dt>Work starts</dt><dd>{fmtDate(new Date(period.year, period.month, 1))} (the 1st)</dd></div>
+                    {summary.due.reports ? (
+                      <>
+                        <div className="flex justify-between gap-2"><dt>Original P&amp;L target</dt><dd data-testid="original-target">{fmtDate(summary.due.reports)}</dd></div>
+                        {summary.due.review && <div className="flex justify-between gap-2"><dt>Tabitha&apos;s review by</dt><dd>{fmtDate(summary.due.review)}</dd></div>}
+                        {summary.revisions.map((r) => (
+                          <div key={r.id} className="flex justify-between gap-2 text-amber-900"><dt>Revised estimate ({fmtDate(r.createdAt)})</dt><dd>{fmtDate(r.targetOn)} — {r.reason}</dd></div>
+                        ))}
+                      </>
+                    ) : (
+                      <p className="text-slate-600">Quarterly client: records are collected this month; reports are delivered at quarter end.</p>
+                    )}
+                  </dl>
+                  <p className="mt-1 text-xs text-slate-600">The target assumes all records and answers are in. Revisions are added here; the original target is never changed.</p>
+                  {summary.due.reports && (
+                    <details className="mt-2 text-sm">
+                      <summary className="cursor-pointer underline">Record a revised estimate</summary>
+                      <ActionForm action={reviseTargetAction.bind(null, clientId, period.id)} className="mt-2 flex flex-wrap items-end gap-2" resetOnSuccess>
+                        <Field label="Revised date"><input className="input" type="date" name="targetOn" required /></Field>
+                        <Field label="Why"><input className="input w-64" name="reason" required placeholder="e.g. waiting on the March bank statement" /></Field>
+                        <Button type="submit" variant="secondary">Record</Button>
+                      </ActionForm>
+                    </details>
+                  )}
+                </Card>
+                <Card title={`Questions for the client — ${biz}`}>
+                  <ul className="space-y-2 text-sm" data-testid="questions">
+                    {summary.questions.map((c) => (
+                      <li key={c.id} className="flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                          <Link className="underline" href={`/clients/${clientId}?tab=messages&c=${c.id}`}>{c.subject}</Link>{" "}
+                          <span data-testid="question-status"><Badge tone={QUESTION_STATUS[c.questionStatus as keyof typeof QUESTION_STATUS].tone}>{QUESTION_STATUS[c.questionStatus as keyof typeof QUESTION_STATUS].label}</Badge></span>
+                          {c.responseDueAt && c.questionStatus === "OPEN" && <span className="block text-xs text-slate-600">Answer requested by {fmtDate(c.responseDueAt)}</span>}
+                        </span>
+                        {c.questionStatus !== "RESOLVED" && (
+                          <ActionForm action={resolveQuestionAction.bind(null, clientId, c.id)} showSuccess={false}><Button type="submit" variant="ghost">Mark resolved</Button></ActionForm>
+                        )}
+                      </li>
+                    ))}
+                    {summary.questions.length === 0 && <li className="text-slate-600">No questions this month.</li>}
+                  </ul>
+                  <details className="mt-2 text-sm" open={summary.questions.length === 0}>
+                    <summary className="cursor-pointer underline">Ask the client a question</summary>
+                    <ActionForm action={askQuestionAction.bind(null, clientId, period.id)} className="mt-2 grid gap-2" resetOnSuccess>
+                      <Field label="Subject"><input className="input" name="subject" required placeholder="e.g. $1,240 deposit on March 4" /></Field>
+                      <Field label="Question"><textarea className="input min-h-20" name="body" required /></Field>
+                      <Field label="Answer requested by (optional)"><input className="input" type="date" name="dueOn" /></Field>
+                      <div><Button type="submit" variant="secondary">Send to client portal</Button></div>
+                    </ActionForm>
+                  </details>
+                </Card>
+              </div>
 
               <Card title="Monthly checklist">
                 <ul className="divide-y divide-navy-100 text-sm" data-testid="checklist">

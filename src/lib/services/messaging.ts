@@ -178,6 +178,9 @@ export async function portalSendMessage(
   });
   // Brief text to the office phone (no message contents), within staff alert hours.
   await queueStaffAlert({ conversationId: message.conversationId });
+  // A reply to a bookkeeping question marks it answered and tasks the assigned staff member.
+  const { onClientReply } = await import("./bookkeeping-questions");
+  await onClientReply(message.conversationId);
   return message;
 }
 

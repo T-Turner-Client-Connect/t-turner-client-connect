@@ -31,6 +31,8 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
             // Published, scanned-clean files — plus the client's own uploads at any scan stage (listed, not opened, until clean).
             documents: { where: { deletedAt: null, OR: [{ visibility: "PUBLISHED", scanStatus: "CLEAN" }, { uploadedByPortalId: { not: null } }] }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, file: { select: { originalName: true } } } },
             requests: { where: { status: { not: "CANCELLED" } }, orderBy: { createdAt: "asc" } },
+            // Questions our office asked about this month (answered in Messages).
+            conversations: { where: { questionStatus: { not: null } }, orderBy: { createdAt: "asc" }, select: { id: true, subject: true, questionStatus: true, responseDueAt: true } },
           },
           orderBy: [{ year: "desc" }, { month: "desc" }],
         })
@@ -121,6 +123,22 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
                 <div>
                   <h3 className="text-sm font-semibold">Checklist</h3>
                   {p.requests.length ? <ul className="divide-y divide-navy-100">{p.requests.map((r) => requestItem(r, p.id, p))}</ul> : <p className="text-sm text-slate-600">Nothing needed right now.</p>}
+                  {p.conversations.length > 0 && (
+                    <div className="mt-3" data-testid="client-questions">
+                      <h3 className="mb-1 text-sm font-semibold">Questions from our office</h3>
+                      <ul className="space-y-1 text-sm">
+                        {p.conversations.map((c) => (
+                          <li key={c.id} className="flex flex-wrap items-center justify-between gap-2">
+                            <span>{c.subject}{c.responseDueAt && c.questionStatus === "OPEN" && <span className="block text-xs text-slate-600">Please answer by {fmtDate(c.responseDueAt)}</span>}</span>
+                            <span className="flex items-center gap-2">
+                              <Badge tone={c.questionStatus === "OPEN" ? "amber" : c.questionStatus === "ANSWERED" ? "navy" : "green"}>{c.questionStatus === "OPEN" ? "Needs your answer" : c.questionStatus === "ANSWERED" ? "Answered — we're reviewing" : "Resolved"}</Badge>
+                              {current.canMessage && <Link className="underline" href={`/client/messages${q}&c=${c.id}`}>{c.questionStatus === "OPEN" ? "Answer" : "View"}</Link>}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {current.canMessage && <Link href={`/client/messages${q}`} className="mt-2 inline-block text-sm underline">Ask a question about this month</Link>}
                 </div>
               </div>
