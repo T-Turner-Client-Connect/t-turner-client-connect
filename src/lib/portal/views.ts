@@ -1,4 +1,5 @@
 import "server-only";
+import { clientReceivableWhere } from "@/lib/services/documents";
 import { startOfDay } from "date-fns";
 import type { PortalAccess } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -114,6 +115,8 @@ export async function loadPortalDocuments(clientId: string, perms: Perms, opts: 
       visibility: "PUBLISHED",
       scanStatus: "CLEAN",
       category: { in: allowedCategories(perms as PortalAccess) },
+      // Financial statements only after Tabitha's approval.
+      AND: [clientReceivableWhere],
       ...(opts.year === "none" ? { year: null } : opts.year ? { year: opts.year } : {}),
       // Unverified logins don't see our past-year records (see isHistorical).
       ...(opts.includeHistorical === false ? { NOT: { uploadedByStaffId: { not: null }, year: { lt: lastYear } } } : {}),

@@ -89,7 +89,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
                   {(() => {
                     // Delivered reports only (the query above returns published, scanned-clean files). A revised report replaces
                     // the delivered one only once the revision itself is delivered, so exactly one version of each is published.
-                    const reports = p.documents.filter((d) => d.category === "BOOKKEEPING" && d.reportType);
+                    const reports = p.documents.filter((d) => d.category === "BOOKKEEPING" && d.reportType && d.reviewStatus === "APPROVED" && d.scanStatus === "CLEAN" && d.visibility === "PUBLISHED");
                     if (!reports.length) return <p className="text-sm text-slate-600">Your statements will be posted here once they&apos;re reviewed and ready.</p>;
                     const types = [...new Set(reports.map((d) => (d.reportPeriodType ?? "MONTH") as PeriodType))];
                     return types.map((t) => {
