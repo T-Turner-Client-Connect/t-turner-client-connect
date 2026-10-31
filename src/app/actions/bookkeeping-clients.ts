@@ -1,5 +1,6 @@
 "use server";
 import { PeriodError, uploadFieldsFromForm } from "@/lib/bk-uploads";
+import { askClientQuestion, resolveQuestion, reviseTarget } from "@/lib/services/bookkeeping-questions";
 
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
@@ -30,6 +31,7 @@ function profileInput(fd: FormData) {
     notes: str(fd, "notes") || null,
     ...(fd.has("documentsDueDay") ? { documentsDueDay: str(fd, "documentsDueDay") ? Number(str(fd, "documentsDueDay")) : null } : {}),
     ...(fd.has("reportsDueDay") ? { reportsDueDay: str(fd, "reportsDueDay") ? Number(str(fd, "reportsDueDay")) : null } : {}),
+    ...(fd.has("reviewDueDay") ? { reviewDueDay: str(fd, "reviewDueDay") ? Number(str(fd, "reviewDueDay")) : null } : {}),
     // "" keeps the current assignee; "none" unassigns.
     ...(str(fd, "assignedToId") ? { assignedToId: str(fd, "assignedToId") === "none" ? null : str(fd, "assignedToId") } : {}),
   };
@@ -366,5 +368,32 @@ export async function coethaLinkAction(clientId: string, remove: boolean, _prev:
     await setCoethaLink(actor, clientId, remove ? null : str(fd, "url"));
     refresh(clientId);
     return remove ? "Coetha link removed." : "Coetha link saved.";
+  });
+}
+
+export async function askQuestionAction(clientId: string, periodId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await askClientQuestion(actor, clientId, periodId, { subject: str(fd, "subject"), body: str(fd, "body"), dueOn: str(fd, "dueOn") || undefined });
+    refresh(clientId);
+    return "Question sent to the client's portal. The month shows “Waiting on Client” until they answer.";
+  });
+}
+
+export async function resolveQuestionAction(clientId: string, conversationId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await resolveQuestion(actor, clientId, conversationId);
+    refresh(clientId);
+    return "Marked resolved.";
+  });
+}
+
+export async function reviseTargetAction(clientId: string, periodId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await reviseTarget(actor, clientId, periodId, { targetOn: str(fd, "targetOn"), reason: str(fd, "reason") });
+    refresh(clientId);
+    return "Revised estimate recorded. The original target stays on record.";
   });
 }

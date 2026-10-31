@@ -836,22 +836,29 @@ enum MessageStatus {
 }
 
 model Conversation {
-  id            String             @id @default(cuid())
-  clientId      String
-  client        Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  subject       String
-  assignedToId  String?
-  assignedTo    User?              @relation("ConversationAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  id             String             @id @default(cuid())
+  clientId       String
+  client         Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  subject        String
+  assignedToId   String?
+  assignedTo     User?              @relation("ConversationAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   // Questions about a bookkeeping month attach to that period.
-  periodId      String?
-  period        BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  periodId       String?
+  period         BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
   // True when the newest message is from the client and nobody has replied.
-  awaitingStaff Boolean            @default(false)
+  awaitingStaff  Boolean            @default(false)
   // Shared inbox: cleared when any staff member opens it.
-  unreadByStaff Boolean            @default(false)
-  closedAt      DateTime?
-  lastMessageAt DateTime           @default(now())
-  createdAt     DateTime           @default(now())
+  unreadByStaff  Boolean            @default(false)
+  closedAt       DateTime?
+  lastMessageAt  DateTime           @default(now())
+  createdAt      DateTime           @default(now())
+  // A question staff asked about a bookkeeping month: OPEN (unanswered) →
+  // ANSWERED (client replied; staff to review) → RESOLVED. Null for ordinary threads.
+  questionStatus String?
+  responseDueAt  DateTime?
+  askedById      String?
+  resolvedAt     DateTime?
+  resolvedById   String?
 
   messages Message[]
 
@@ -1079,6 +1086,20 @@ enum PeriodStatus {
   COMPLETE
 }
 
+/// A revised completion estimate for a bookkeeping month. The original target
+/// (the 15th, or the client's agreed day) is never overwritten.
+model PeriodTargetRevision {
+  id          String            @id @default(cuid())
+  periodId    String
+  period      BookkeepingPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  targetOn    DateTime
+  reason      String
+  createdById String
+  createdAt   DateTime          @default(now())
+
+  @@index([periodId])
+}
+
 model BookkeepingPeriod {
   id          String       @id @default(cuid())
   clientId    String
@@ -1092,10 +1113,11 @@ model BookkeepingPeriod {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
-  documents     Document[]
-  requests      DocumentRequest[]
-  conversations Conversation[]
-  checklist     BookkeepingChecklistItem[]
+  documents       Document[]
+  requests        DocumentRequest[]
+  conversations   Conversation[]
+  checklist       BookkeepingChecklistItem[]
+  targetRevisions PeriodTargetRevision[]
 
   @@unique([clientId, year, month])
 }
@@ -2432,6 +2454,8 @@ model BookkeepingProfile {
   // 31 means the last day of that month. Null = no deadline, never overdue.
   documentsDueDay       Int?
   reportsDueDay         Int?
+  // Tabitha's review, day of the month after the work month. No default: shown only when set.
+  reviewDueDay          Int?
   // Accounts to collect statements for (e.g. "Regions checking, Amex").
   accounts              String?
   notes                 String?

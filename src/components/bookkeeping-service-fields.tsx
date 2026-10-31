@@ -39,8 +39,8 @@ export function BookkeepingServiceFields({ staff, assignedDefault = "", canAssig
       <Field label="Documents due (month after)" hint="Optional — no deadline if blank">
         <select className="input" name="documentsDueDay" defaultValue=""><option value="">No deadline</option>{DAYS.map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
       </Field>
-      <Field label="Reports due (month after)" hint="Optional — no deadline if blank">
-        <select className="input" name="reportsDueDay" defaultValue=""><option value="">No deadline</option>{DAYS.map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
+      <Field label="P&L target (month after)" hint="Blank = the office default, the 15th">
+        <select className="input" name="reportsDueDay" defaultValue=""><option value="">Office default — the 15th</option>{DAYS.map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
       </Field>
     </>
   );

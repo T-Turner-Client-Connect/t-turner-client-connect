@@ -13,8 +13,8 @@ import { resolveAccount } from "@/lib/portal/account";
 import { loadPortalDocuments } from "@/lib/portal/views";
 import { downloadToken } from "@/lib/services/documents";
 import { prisma } from "@/lib/prisma";
-import { SCAN_LABELS } from "@/lib/scan-labels";
-import { fmtDateTime } from "@/lib/format";
+import { UploadReceipt } from "@/components/portal/upload-receipt";
+import { scanConfigured } from "@/lib/scan";
 
 export const metadata = { title: "Documents" };
 
@@ -35,7 +35,7 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
     where: { clientId: current.clientId, uploadedByPortalId: user.id, deletedAt: null, category: { not: "IDENTITY" } },
     orderBy: { createdAt: "desc" },
     take: 10,
-    select: { id: true, title: true, year: true, scanStatus: true, needsReview: true, createdAt: true },
+    select: { id: true, docType: true, year: true, month: true, reportPeriodType: true, periodStart: true, periodEnd: true, scanStatus: true, scanAttempts: true, lastScanError: true, needsReview: true, createdAt: true, file: { select: { originalName: true } } },
   });
   const thisYear = new Date().getFullYear();
   return (
@@ -94,12 +94,9 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
           <Card title="Your recent uploads" className="lg:col-span-3">
             <ul className="divide-y divide-navy-100 text-sm" data-testid="my-uploads">
               {mine.map((d) => (
-                <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                  <span>{d.title} · {d.year ?? "year to be confirmed"} · {fmtDateTime(d.createdAt)}</span>
-                  <span className="text-slate-700">
-                    {SCAN_LABELS[d.scanStatus].client}
-                    {d.scanStatus === "CLEAN" && (d.needsReview ? " · waiting for our review" : " · reviewed")}
-                  </span>
+                <li key={d.id} className="py-2">
+                  <UploadReceipt d={d} scannerConfigured={scanConfigured()} />
+                  {d.scanStatus === "CLEAN" && <span className="text-xs text-slate-600">{d.needsReview ? "Waiting for our review" : "Reviewed by our office"}</span>}
                 </li>
               ))}
             </ul>

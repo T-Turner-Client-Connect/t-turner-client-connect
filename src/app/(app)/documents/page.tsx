@@ -75,12 +75,33 @@ export default async function DocumentsHub() {
             <ul className="space-y-1" data-testid="scan-setup">
               <li>{health.configured ? "✅" : "❌"} Scanner connected {health.configured ? `(${provider})` : "— set MALWARE_SCAN_PROVIDER and the scanner's settings in Netlify (see docs/INTEGRATIONS.md)"}</li>
               <li>{health.selfTest?.ok ? "✅" : "❌"} Self-test {health.selfTest ? (health.selfTest.ok ? `passed ${fmtDateTime(health.selfTest.at)}` : `failed ${fmtDateTime(health.selfTest.at)}`) : "not run yet"} — the standard antivirus test file must be blocked and a clean file must pass</li>
-              <li>{health.recheckRunning ? "✅" : "❌"} Automatic re-check every 10 minutes {health.lastRecheckAt ? `(last ran ${fmtDateTime(health.lastRecheckAt)})` : "— hasn't run yet; needs CRON_SECRET in Netlify and the scheduled function deployed"}</li>
+              <li data-testid="recheck-status">
+                {health.recheckRunning && health.configured ? "✅" : "❌"} Automatic re-check every 10 minutes —{" "}
+                {!health.lastRecheckAt
+                  ? `hasn't run yet. ${health.cronSecretSet ? "CRON_SECRET is set; check that the latest deploy finished and the scheduled function “notifications-cron” is listed in Netlify → Functions." : "CRON_SECRET isn't set in Netlify, so the scheduled job can't run."}`
+                  : !health.recheckRunning
+                    ? `stopped: last ran ${fmtDateTime(health.lastRecheckAt)}, more than 30 minutes ago.`
+                    : health.lastRecheck?.configured === false
+                      ? `running (last ${fmtDateTime(health.lastRecheckAt)}), but no scanner is connected, so it couldn't scan anything.`
+                      : `running: last ${fmtDateTime(health.lastRecheckAt)} checked ${health.lastRecheck?.scanned ?? 0} file(s): ${health.lastRecheck?.clean ?? 0} clean, ${health.lastRecheck?.infected ?? 0} blocked.`}
+              </li>
             </ul>
+            {user.role === "ADMIN" && (
+              <details className="text-xs" data-testid="scan-settings" open={!health.configured || !health.cronSecretSet}>
+                <summary className="cursor-pointer font-semibold">Settings this site can see (Netlify)</summary>
+                <ul className="mt-1 font-mono">
+                  {Object.entries(health.settings).map(([k, v]) => <li key={k}>{k}: {v}</li>)}
+                </ul>
+                <p className="mt-1">Values are never shown. After changing Netlify variables, redeploy so the site picks them up.</p>
+              </details>
+            )}
             {!scanConfigured() && (
               <Notice tone="warn">Every new file stays quarantined — no downloads, nothing shown to clients — until a scanner is connected and the file passes.</Notice>
             )}
-            <p>{quarantined.length === 0 ? "No files in quarantine." : `${quarantined.length} file(s) in quarantine.`} Files are re-checked automatically every 10 minutes.</p>
+            <p data-testid="quarantine-summary">
+              {quarantined.length === 0 ? "No files in quarantine." : `${quarantined.length} file(s) in quarantine — not downloadable and not shown to clients until a scan passes.`}{" "}
+              {health.configured && health.recheckRunning ? "They're re-checked automatically every 10 minutes." : "They're re-checked only when the scanner is connected and the automatic re-check is running (see above), or when you press “Scan quarantined files now”."}
+            </p>
             <div className="flex flex-wrap gap-2">
               <ActionForm action={scanNowAction}><Button type="submit" variant="secondary" disabled={!scanConfigured()}>Scan quarantined files now</Button></ActionForm>
               {user.role === "ADMIN" && <ActionForm action={scannerSelfTestAction}><Button type="submit" variant="ghost" disabled={!scanConfigured()}>Run scanner self-test</Button></ActionForm>}

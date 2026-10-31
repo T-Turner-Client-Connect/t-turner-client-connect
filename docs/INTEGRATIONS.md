@@ -38,6 +38,23 @@ Choose one (Netlify → Environment variables, Production):
 
 Never use VirusTotal or any service that shares uploaded files publicly.
 
+### Go-live checklist (releases quarantined files)
+
+1. **Choose a scanner.**
+   - Cloudmersive is fastest to start: create an account, then copy the Virus Scan API key from their portal. Check their current pricing and data-handling terms on cloudmersive.com before sending client files.
+   - Self-hosted ClamAV keeps files on your own server. Plan for a host with about 4 GB of memory.
+2. **Netlify → Site configuration → Environment variables** (scope: Functions and Builds; context: Production). Enter the values directly in Netlify, never in chat or GitHub.
+   - Cloudmersive: `MALWARE_SCAN_PROVIDER` = `cloudmersive` and `CLOUDMERSIVE_API_KEY` = *your key* (mark it secret).
+   - **or** ClamAV: `MALWARE_SCAN_PROVIDER` = `clamav-rest`, `MALWARE_SCAN_URL` = *your scan endpoint*, and optionally `MALWARE_SCAN_TOKEN`.
+   - `CRON_SECRET` = 32+ random characters (secret). The 10-minute re-check needs it. If it already exists for automations, keep it.
+3. **Redeploy:** Deploys → Trigger deploy → Deploy site. Variables apply only to new deploys.
+4. **Netlify → Functions:** confirm `notifications-cron` is listed (schedule every 10 minutes). Its log shows `notifications: HTTP 200` once it runs.
+5. **Client Connect → Documents → Malware scanning** (as an Admin):
+   - *Settings this site can see* lists the scanner settings and `CRON_SECRET` as set.
+   - **Run scanner self-test**: the standard antivirus test file must be **blocked** and a clean file must **pass**. Nothing is released if the self-test fails.
+   - **Scan quarantined files now**: each quarantined file shows *Passed* (released), *Failed* (virus found, file destroyed; ask for a new copy) or *Scanning/Unavailable* with the reason.
+   - Within 30 minutes, *Automatic re-check every 10 minutes* shows the time of the last run and how many files it checked.
+
 **After deploying with quarantine:** documents uploaded before this change were never scanned, so they are
 quarantined too until the scanner is connected and the 10-minute job (or "Scan now") passes them.
 
