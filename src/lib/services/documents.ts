@@ -35,7 +35,9 @@ export const STATEMENT_TYPES = ["PNL", "BALANCE_SHEET", "FINANCIAL_PACKET"];
  * identity files are checked separately (SS cards and birth certificates stay
  * Admin-only). Nothing here relies on file names.
  */
-export function clientMayReceive(doc: { category: string; reportType: string | null; reviewStatus: string | null; docType: string | null; uploadedByPortalId: string | null }) {
+export function clientMayReceive(doc: { category: string; reportType: string | null; reviewStatus: string | null; docType: string | null; uploadedByPortalId: string | null; filingDocType?: string | null }) {
+  // Tax returns filed through Tax Return Delivery reach the client only after Tabitha releases them.
+  if (doc.filingDocType === "RETURN" && doc.reviewStatus !== "APPROVED") return false;
   // The client's own ordinary upload (never a report): theirs to see once its scan passes.
   if (doc.uploadedByPortalId && !doc.reportType) return true;
   const statement = doc.category === "BOOKKEEPING" || (!!doc.docType && STATEMENT_TYPES.includes(doc.docType));
@@ -45,12 +47,22 @@ export function clientMayReceive(doc: { category: string; reportType: string | n
 
 /** The same rule as a database filter, for every client-facing list. */
 export const clientReceivableWhere = {
-  OR: [
-    { uploadedByPortalId: { not: null }, reportType: null },
-    { AND: [{ category: { not: "BOOKKEEPING" as const } }, { OR: [{ docType: null }, { docType: { notIn: STATEMENT_TYPES } }] }] },
-    { reportType: { not: null }, reviewStatus: "APPROVED" },
+  AND: [
+    {
+      OR: [
+        { uploadedByPortalId: { not: null }, reportType: null },
+        { AND: [{ category: { not: "BOOKKEEPING" as const } }, { OR: [{ docType: null }, { docType: { notIn: STATEMENT_TYPES } }] }] },
+        { reportType: { not: null }, reviewStatus: "APPROVED" },
+      ],
+    },
+    // Released returns only. Written with explicit empty-value cases, so ordinary documents (no filingDocType) always pass.
+    { OR: [{ filingDocType: null }, { filingDocType: { not: "RETURN" } }, { reviewStatus: "APPROVED" }] },
   ],
 };
+
+/** Return copies are released by Tabitha (Tax returns), never published directly. */
+export const RETURN_DOC_TYPES = ["FEDERAL_RETURN", "STATE_RETURN", "AMENDED_RETURN", "TAX_RETURN"];
+const RETURN_GATE = "Completed tax returns go through Tax returns: file the return, send it for review, and Tabitha releases it to the client.";
 
 export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   BOOKKEEPING: "Bookkeeping",
@@ -165,6 +177,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   // Any bookkeeping file — with or without a report type — reaches the client only through the
   // Tabitha-approved delivery path, so a financial statement can't be published by accident.
   if (input.category === "BOOKKEEPING" && input.visibility === "PUBLISHED") throw new ValidationError(FINANCIAL_GATE);
+  if (input.visibility === "PUBLISHED" && input.docType && RETURN_DOC_TYPES.includes(input.docType)) throw new ValidationError(RETURN_GATE);
   const client = await prisma.client.findUnique({ where: { id: input.clientId } });
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
@@ -217,6 +230,7 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
   if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && !doc.reportType) throw new ValidationError(FINANCIAL_GATE);
   // Financial statements by category label, wherever they were filed, also need the report workflow.
   if (visibility === "PUBLISHED" && !doc.reportType && doc.docType && STATEMENT_TYPES.includes(doc.docType)) throw new ValidationError(FINANCIAL_GATE);
+  if (visibility === "PUBLISHED" && (doc.filingDocType === "RETURN" || (doc.docType && RETURN_DOC_TYPES.includes(doc.docType) && !doc.publishedAt))) throw new ValidationError(RETURN_GATE);
   if (visibility === "PUBLISHED" && doc.category === "IDENTITY") throw new ValidationError("Identity documents aren't published.");
   if (visibility === "PUBLISHED" && doc.supersededAt) throw new ValidationError("A newer version of this report exists. Deliver the newest version instead.");
   await prisma.$transaction([

@@ -59,21 +59,23 @@ To show whether a return was submitted, accepted or rejected, export the e-file 
 - A row older than what's already recorded never overwrites a newer status.
 - Clients are told nothing automatically; staff publish filing updates separately.
 
-## Part 4 — Upload historical returns to the right client and year
+## Part 4 — Tax Return Delivery: completed and historical returns (separate from the contact import)
 
-1. Open the client: **Clients → search → client**. Check the name and, for a business, that you're on the right business tab.
-2. Go to the **Documents** tab → **Upload document**.
-3. Fill in:
-   - **File:** the PDF of the return (up to 5 MB).
-   - **Title:** e.g. `2023 Form 1040 — as filed`.
-   - **Category:** Taxes.
-   - **Tax year:** the year *of the return* (a 2023 return filed in 2024 is **2023**). Required.
-   - **Tax document type:** *Federal return*, *State return*, *Amended return*, *Acceptance notice (IRS/state)* or *Extension confirmation*. Federal, state and amended returns appear separately for the client. This label never marks a return accepted.
-   - **Visibility:**
-     - *Staff-only draft* keeps it internal.
-     - *Publish to the client's portal* shows it after the malware scan passes, and the client is notified when notifications are on.
-4. **Upload document.** One return per upload, so each has its own year and type.
-5. Clients see published returns under **My Tax Center → Retrieve Tax Filings** for that year. Past-year records open only after the client's login is verified: by email, or by staff confirming identity on the Portal tab.
+Returns reach a client only through **Tax returns** (staff menu), and **Tabitha releases each copy**.
+
+**One return, from the client's file:** Clients → client (on the right business tab) → **Taxes** → *Completed returns*. Choose the tax year, return type (e.g. 1040, 1120-S, 1065, 990, or the state form), **Federal or the state**, original or amended. Attach the PDF and click **File return**. It's saved as a **staff-only draft**.
+
+**Several returns at once:** **Tax returns** → *Upload completed returns* (up to 50 PDFs). Each file waits in the **Review queue**:
+- A client is *suggested* only when exactly one client's name appears in the file name. A suggestion is never applied on its own.
+- For every file, confirm or choose the **client/business, tax year, return type, federal/state, original/amended**, then **Confirm & file**.
+- Unmatched or ambiguous files stay in the queue, staff-only. **Remove from queue** (with a reason) if a file is wrong.
+- The same file is never queued or filed twice. A new copy of the same return becomes **version 2**, and earlier versions are kept.
+
+**Release:**
+1. **Send for review** (after the malware scan passes). The return shows *Ready for Tabitha's review*.
+2. **Tabitha** clicks **Release to client**. Only then does the client see it, under **My Tax Center → Retrieve Tax Filings**, by business and tax year, with **View, Download, Print** and **Email My Copy** (a secure sign-in link to their verified email, never the file).
+
+**Accepted Return** appears only when the filing record is set to *Accepted* with the IRS/state acknowledgment or a described verification (Taxes tab → filing → status). Uploading a PDF never marks a return accepted. Federal and state are tracked separately; amended returns are labeled separately; a rejected return never shows as accepted.
 
 Don't upload Social Security cards or birth certificates here. Those go only through **Identity Documents** and are Admin-only.
 
