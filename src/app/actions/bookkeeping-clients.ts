@@ -1,4 +1,5 @@
 "use server";
+import { PeriodError, uploadFieldsFromForm } from "@/lib/bk-uploads";
 
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
@@ -6,7 +7,7 @@ import { run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
 import { staffUploadDocument, REPORT_LABELS } from "@/lib/services/documents";
 import {
-  AlreadyEnrolledError, approveReport, deliverApprovedReports, classifyDocument, deliverReport, enrollExistingClient, enrollNewClient, isBkDocType, openWorkPeriod, openWorkPeriodsForAll, periodLabel, PossibleDuplicateError, requestReportChanges, saveProfile, setChecklistItem, submitReportForReview, uploadMonthlyReport,
+  AlreadyEnrolledError, approveReport, deliverApprovedReports, classifyDocument, deliverReport, enrollExistingClient, enrollNewClient, openWorkPeriod, openWorkPeriodsForAll, periodLabel, PossibleDuplicateError, requestReportChanges, saveProfile, setChecklistItem, submitReportForReview, uploadMonthlyReport,
 } from "@/lib/services/bookkeeping-clients";
 import { prisma } from "@/lib/prisma";
 import {
@@ -187,7 +188,15 @@ export async function uploadBookkeepingFileAction(clientId: string, periodId: st
     const period = await prisma.bookkeepingPeriod.findFirst({ where: { id: periodId, clientId } });
     if (!period) throw new ValidationError("Month not found.");
     const isReport = kind in REPORT_LABELS;
-    if (!isReport && !isBkDocType(kind)) throw new ValidationError("Choose what this file is.");
+    let fields: ReturnType<typeof uploadFieldsFromForm> | null = null;
+    if (!isReport) {
+      try {
+        fields = uploadFieldsFromForm(fd, "kind");
+      } catch (e) {
+        if (e instanceof PeriodError) throw new ValidationError(e.message);
+        throw e;
+      }
+    }
     const bytes = new Uint8Array(await f.arrayBuffer());
     if (isReport) {
       // Same path as Upload Monthly Financials, so a second P&L for the month becomes a new version.
@@ -206,6 +215,8 @@ export async function uploadBookkeepingFileAction(clientId: string, periodId: st
       periodId,
       visibility: "STAFF_ONLY",
       docType: kind,
+      coverage: fields?.coverage ?? null,
+      asOf: fields?.asOf ?? null,
       bytes,
       originalName: f.name,
     });

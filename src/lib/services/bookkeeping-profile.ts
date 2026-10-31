@@ -1,4 +1,5 @@
 import "server-only";
+import { isFutureDay } from "@/lib/dates";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, isAdmin, type Actor } from "@/lib/auth/actor";
@@ -100,7 +101,7 @@ export async function saveBusinessInfo(actor: Actor, clientId: string, input: Bu
   const thisYear = new Date().getFullYear();
   if (input.workingYear != null && (input.workingYear < 2000 || input.workingYear > thisYear + 1)) throw new ValidationError("Choose a working year.");
   if (input.fiscalYearEnd != null && (input.fiscalYearEnd < 1 || input.fiscalYearEnd > 12)) throw new ValidationError("Choose the month the fiscal year ends.");
-  if (input.businessStartDate && input.businessStartDate > new Date()) throw new ValidationError("The business start date can't be in the future.");
+  if (input.businessStartDate && isFutureDay(input.businessStartDate)) throw new ValidationError("The business start date can't be in the future.");
   const entityType = pick(ENTITY_TYPES, input.entityType, "Choose an entity type.");
   const basis = pick(BASIS, input.accountingBasis, "Choose cash, accrual or modified cash basis.");
   const payrollAccess = pick(PAYROLL_ACCESS, input.payrollAccessStatus, "Choose the payroll access status.");
@@ -250,7 +251,7 @@ export async function recordChargeAuthorization(actor: Actor, clientId: string, 
   if (!(input.method in AUTH_METHODS)) throw new ValidationError("Choose how the client authorized recurring charges.");
   if (!input.authorizedByName.trim()) throw new ValidationError("Enter who authorized the charges.");
   if (!input.authorizedAt || !input.startDate) throw new ValidationError("Enter the authorization date and the first charge date.");
-  if (input.authorizedAt > new Date()) throw new ValidationError("The authorization date can't be in the future.");
+  if (isFutureDay(input.authorizedAt)) throw new ValidationError("The authorization date can't be in the future.");
   if (input.method !== "PORTAL_CONSENT") {
     if (!input.evidenceDocumentId) throw new ValidationError("Attach the signed authorization or agreement (choose it from this client's documents).");
     const doc = await prisma.document.findFirst({ where: { id: input.evidenceDocumentId, clientId, deletedAt: null } });

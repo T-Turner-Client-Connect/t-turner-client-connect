@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BusinessTabs } from "@/components/business-tabs";
+import { BkUploadFields, UploadMeta } from "@/components/bk-upload";
 import { recordHeading } from "@/lib/services/related-businesses";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
@@ -73,6 +74,8 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
   const statements = period?.documents.filter((d) => !(d.category === "BOOKKEEPING" && d.reportType)) ?? [];
   const byKind = (k: string) => statements.filter((d) => d.docType === k);
   const unlabeled = statements.filter((d) => !d.docType || !(d.docType in BK_DOC_TYPES));
+  // Everything else the client provided (P&L, Balance Sheet, packet, receipts, schedules, other).
+  const otherKinds = statements.filter((d) => d.docType && d.docType in BK_DOC_TYPES && !["BANK_STATEMENT", "CARD_STATEMENT", "PAYROLL_REPORT"].includes(d.docType));
   const conversations = period ? period.conversations : [];
   const [accounts, fiscal] = await Promise.all([
     prisma.bookkeepingAccount.findMany({ where: { clientId, active: true }, orderBy: { institution: "asc" } }),
@@ -86,13 +89,14 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
   const otherThreads = await prisma.conversation.findMany({ where: { clientId, periodId: null }, orderBy: { lastMessageAt: "desc" }, take: 5, select: { id: true, subject: true, awaitingStaff: true, lastMessageAt: true } });
 
   const fileRow = (d: (typeof statements)[number]) => (
-    <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
+    <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">{fileBody(d)}</li>
+  );
+  const fileBody = (d: (typeof statements)[number]) => (
       <span>
         {d.scanStatus === "CLEAN" ? <a className="underline" href={link(d.id)} target="_blank" rel="noopener">{d.title}</a> : <span>{d.title}</span>}
-        <span className="text-xs text-slate-500"> · {d.uploadedByPortal ? `client (${d.uploadedByPortal.name})` : d.uploadedByStaff?.name ?? "staff"} · {fmtDate(d.createdAt)}</span>
         <span className="ml-1"><ScanStatus doc={d} health={health} /></span>
+        <UploadMeta d={d} />
       </span>
-    </li>
   );
 
   return (
@@ -286,12 +290,12 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                 </Card>
               </div>
 
-              {(unlabeled.length > 0 || byKind("RECEIPTS").length > 0) && (
+              {(unlabeled.length > 0 || otherKinds.length > 0) && (
                 <Card title="Other files this month">
                   <ul className="divide-y divide-navy-100 text-sm">
-                    {[...byKind("RECEIPTS"), ...unlabeled].map((d) => (
+                    {[...otherKinds, ...unlabeled].map((d) => (
                       <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
-                        {fileRow(d)}
+                        {fileBody(d)}
                         {(!d.docType || !(d.docType in BK_DOC_TYPES)) && (
                           <ActionForm action={classifyDocumentAction.bind(null, clientId, d.id)} className="flex items-center gap-1" showSuccess={false}>
                             <select className="input w-auto text-xs" name="docType" defaultValue="" aria-label="Label as"><option value="" disabled>Label as…</option>{Object.entries(BK_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
@@ -418,22 +422,16 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
               </Card>
 
               <Card title={`Add a client document to ${label}`}>
-                <p className="mb-2 rounded-lg bg-ivory-50 px-3 py-2 text-sm" data-testid="staff-upload-target">Saving to: <strong>{biz}</strong></p>
                 <ActionForm action={uploadBookkeepingFileAction.bind(null, clientId, period.id)} className="grid gap-2 sm:grid-cols-3" resetOnSuccess idempotent>
+                  <div className="sm:col-span-3" data-testid="staff-upload-target"><BkUploadFields business={biz} typeName="kind" year={period.year} month={period.month} /></div>
                   <Field label="File" className="sm:col-span-3"><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required /></Field>
-                  <Field label="What is it?">
-                    <select className="input" name="kind" required defaultValue="">
-                      <option value="" disabled>Choose…</option>
-                      {Object.entries(BK_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                    </select>
-                  </Field>
                   <Field label="Account (optional)">
                     <select className="input" name="accountId" defaultValue=""><option value="">—</option>{accounts.map((a) => <option key={a.id} value={a.id}>{accountLabel(a)}</option>)}</select>
                   </Field>
                   <Field label="Title (optional)"><input className="input" name="title" placeholder={`${label} bank statement`} /></Field>
                   <div className="flex items-end"><Button type="submit" variant="secondary">Upload</Button></div>
                 </ActionForm>
-                <p className="mt-2 text-xs text-slate-600">Statements, payroll reports and receipts (staff only). For a P&amp;L or Balance Sheet, use Upload Monthly Financials.</p>
+                <p className="mt-2 text-xs text-slate-600">Files the client provided, saved staff-only. Financial statements <em>we prepare</em> go through Upload Monthly Financials, so Tabitha approves them before delivery.</p>
               </Card>
 
               <Card title={`Questions & messages — ${biz}`}>

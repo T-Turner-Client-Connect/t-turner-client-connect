@@ -1,4 +1,5 @@
 import "server-only";
+import { isFutureDay } from "@/lib/dates";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -123,7 +124,7 @@ function prepare(form: BusinessForm, opts: { strict: boolean; existingEin?: { la
   if (s.state && !/^[A-Z]{2}$/.test(s.state)) throw new ValidationError("Use the 2-letter state abbreviation.");
   if (s.startDate) {
     const d = new Date(`${s.startDate}T12:00:00`);
-    if (Number.isNaN(d.getTime()) || d > new Date()) throw new ValidationError("Enter the business start date (not in the future).");
+    if (Number.isNaN(d.getTime()) || isFutureDay(s.startDate)) throw new ValidationError("Enter the business start date (not in the future).");
   }
   if (s.payroll === "YES" && s.payrollFrequency && !(s.payrollFrequency in PAYROLL_FREQUENCIES)) throw new ValidationError("Choose how often payroll runs.");
   if (opts.strict) {

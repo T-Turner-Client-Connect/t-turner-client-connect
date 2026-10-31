@@ -1,4 +1,5 @@
 import "server-only";
+import type { Coverage } from "@/lib/bk-uploads";
 import { createHash, randomUUID } from "node:crypto";
 import type { DocumentCategory, DocumentVisibility, ReportType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -13,6 +14,13 @@ import { scanBytesDetailed, scanConfigured } from "@/lib/scan";
 import { queueStaffAlert } from "./staff-alerts";
 import { ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
+
+
+/** The period a bookkeeping upload covers and its "as of" date, exactly as chosen (never guessed). */
+const coverageData = (c?: Coverage | null, asOf?: Date | null) => ({
+  ...(c ? { periodStart: c.start, periodEnd: c.end, reportPeriodType: c.kind } : {}),
+  ...(asOf ? { reportAsOf: asOf } : {}),
+});
 
 export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   BOOKKEEPING: "Bookkeeping",
@@ -107,6 +115,9 @@ export type StaffUploadInput = {
   title?: string;
   year?: number | null;
   month?: number | null;
+  // What the file covers and its "as of" date (bookkeeping uploads).
+  coverage?: Coverage | null;
+  asOf?: Date | null;
   visibility: DocumentVisibility;
   reportType?: ReportType | null;
   periodId?: string | null;
@@ -142,6 +153,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
           reportType: input.reportType ?? null,
           periodId: input.periodId ?? null,
           docType: input.docType ?? null,
+          ...coverageData(input.coverage, input.asOf),
           reviewStatus: isFinancialReport ? "DRAFT" : null,
           fileId: file.id,
           scanStatus: stored.scan,
@@ -181,7 +193,7 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
 /** Client upload, optionally answering a document request. */
 export async function portalUploadDocument(
   user: PortalActor,
-  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; docType?: string | null; bytes: Uint8Array; originalName: string },
+  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; docType?: string | null; coverage?: Coverage | null; asOf?: Date | null; bytes: Uint8Array; originalName: string },
 ) {
   await requireClientAccess(user.id, input.clientId, "upload");
   const thisYear = new Date().getFullYear();
@@ -205,8 +217,9 @@ export async function portalUploadDocument(
           category: "CLIENT_UPLOADS",
           title: input.title?.trim().slice(0, 200) || file.title,
           // The client confirms the year; "Not sure" stays empty for staff to classify.
-          year: period?.year ?? (typeof input.year === "number" ? input.year : null),
-          month: period?.month ?? null,
+          year: period?.year ?? input.coverage?.year ?? (typeof input.year === "number" ? input.year : null),
+          month: period?.month ?? input.coverage?.month ?? null,
+          ...coverageData(input.coverage, input.asOf),
           // Uploads by the client are visible back to the client.
           visibility: "PUBLISHED",
           publishedAt: new Date(),
