@@ -86,4 +86,22 @@ describe("nonprofit deadlines (IRS: 15th day of the 5th month; next business day
     expect(row.filing?.filingStatus).toBe("REJECTED");
     expect(row.bucket).not.toBe("COMPLETED");
   });
+
+  it("flags records an earlier version made with an assumed December year-end, and sends no reminders until the year-end is recorded", async () => {
+    const tabitha = await makeUser("ADMIN", "Tabitha");
+    const np = await createClient(tabitha, { businessName: "Fictional Arts Council", clientType: "NONPROFIT", status: "ACTIVE" });
+    await saveNonprofitProfile(tabitha, np.id, { formType: "990-EZ", formBasis: "Receipts $120k, assets $60k" });
+    // As the earlier version could have: a filing and a reminder based on December.
+    await createFiling(tabitha, { clientId: np.id, taxYear: 2025, returnType: "990-EZ", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    await prisma.auditLog.create({ data: { action: "nonprofit.reminder", entityType: "Reminder", entityId: `nonprofit-reminder:${np.id}:2025:30`, clientId: np.id } });
+    const [row] = await nonprofitDashboard("2026-04-15");
+    expect(row.bucket).toBe("NOT_SET_UP");
+    expect(row.due).toBeNull();
+    expect(row.missing.join(" | ")).toMatch(/Fiscal year-end not recorded/);
+    expect(row.missing.join(" | ")).toMatch(/990-EZ 2025\) may use a tax year based on an assumed December year-end/);
+    expect(row.missing.join(" | ")).toMatch(/1 reminder was sent using an assumed December deadline/);
+    expect(await runNonprofitReminders("2026-04-15")).toEqual({ sent: 0 });
+    // Records are flagged, not changed.
+    expect(await prisma.filingRecord.count({ where: { clientId: np.id } })).toBe(1);
+  });
 });

@@ -74,6 +74,14 @@ export async function nonprofitDashboard(today = officeToday()) {
     if (!c.nonprofitProfile?.formType) missing.push("Required return not chosen");
     else if (!c.nonprofitProfile.formBasis) missing.push("How the form was determined isn't recorded");
     if (!c.fiscalYearEnd) {
+      // An earlier version assumed a December year-end when none was recorded. Anything it
+      // produced (filings, reminders) is flagged until someone confirms the real year-end.
+      const [assumedFilings, assumedReminders] = await Promise.all([
+        prisma.filingRecord.findMany({ where: { clientId: c.id, jurisdiction: "FEDERAL", returnType: { in: ["990-N", "990-EZ", "990", "990-PF", "8868"] } }, select: { taxYear: true, returnType: true } }),
+        prisma.auditLog.count({ where: { action: "nonprofit.reminder", clientId: c.id } }),
+      ]);
+      if (assumedFilings.length) missing.push(`Filing record${assumedFilings.length === 1 ? "" : "s"} (${assumedFilings.map((f) => `${f.returnType} ${f.taxYear}`).join(", ")}) may use a tax year based on an assumed December year-end — verify`);
+      if (assumedReminders) missing.push(`${assumedReminders} reminder${assumedReminders === 1 ? " was" : "s were"} sent using an assumed December deadline — verify`);
       rows.push({ client: c, profile: c.nonprofitProfile, taxYear: null, returnType: null, filing: null, extension: null, extended: false, due: null, days: null, bucket: "NOT_SET_UP" as Bucket, missing });
       continue;
     }
