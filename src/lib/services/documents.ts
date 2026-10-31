@@ -425,10 +425,14 @@ export { notifyClientUsers };
  * Re-scans quarantined client documents. CLEAN releases the file (and sends
  * the client's "new document" notice if it was published); INFECTED destroys
  * the stored bytes and keeps only the record. Safe to run repeatedly.
+ * `source` says who ran it: only the scheduled job (the cron route, which needs
+ * CRON_SECRET) counts as the automatic re-check; the Documents page button is
+ * recorded separately so a click never looks like the schedule is working.
  */
-export async function scanQuarantined(limit = 25) {
+export async function scanQuarantined(limit = 25, source: "scheduled" | "manual" = "manual") {
+  const beatKey = `quarantine-scan:${source}`;
   if (!scanConfigured()) {
-    await heartbeat("quarantine-scan", { configured: false });
+    await heartbeat(beatKey, { configured: false });
     return { scanned: 0, clean: 0, infected: 0 };
   }
   const docs = await prisma.document.findMany({
@@ -460,24 +464,31 @@ export async function scanQuarantined(limit = 25) {
       await prisma.document.update({ where: { id: d.id }, data: { scanStatus: "PENDING" } });
     }
   }
-  await heartbeat("quarantine-scan", { configured: true, scanned: docs.length, clean, infected });
+  await heartbeat(beatKey, { configured: true, scanned: docs.length, clean, infected });
   return { scanned: docs.length, clean, infected };
 }
 
-async function heartbeat(key: string, detail: Record<string, unknown>) {
+export async function heartbeat(key: string, detail: Record<string, unknown>) {
   await prisma.systemHeartbeat.upsert({ where: { key }, create: { key, at: new Date(), detail: detail as never }, update: { at: new Date(), detail: detail as never } });
 }
 
 /** Whether scanning is set up and the automatic re-check is running — for the status beside uploads. */
 export async function scanHealth(now = new Date()) {
-  const beat = await prisma.systemHeartbeat.findUnique({ where: { key: "quarantine-scan" } });
+  // Only scheduled runs count. The older "quarantine-scan" row didn't record who ran it, so it's ignored.
+  const beat = await prisma.systemHeartbeat.findUnique({ where: { key: "quarantine-scan:scheduled" } });
+  const manual = await prisma.systemHeartbeat.findUnique({ where: { key: "quarantine-scan:manual" } });
+  const refused = await prisma.systemHeartbeat.findUnique({ where: { key: "cron:refused" } });
   const lastSelfTest = await prisma.scannerCheck.findFirst({ orderBy: { createdAt: "desc" } });
   return {
     configured: scanConfigured(),
-    // Re-checks run every 10 minutes; older than 30 minutes means the schedule isn't running.
+    // Scheduled re-checks run every 10 minutes; older than 30 minutes means the schedule isn't running.
     recheckRunning: !!beat && now.getTime() - beat.at.getTime() < 30 * 60 * 1000,
+    // "Scan quarantined files now" — shown, but never counted as the automatic re-check.
+    lastManualAt: manual?.at ?? null,
+    // Last request to a cron endpoint refused for a missing or wrong CRON_SECRET (anyone can cause one; it proves nothing ran).
+    lastRefusedAt: refused?.at ?? null,
     lastRecheckAt: beat?.at ?? null,
-    // What the last automatic run actually did (it runs even without a scanner, but can't scan then).
+    // What the last scheduled run actually did (it runs even without a scanner, but can't scan then).
     lastRecheck: (beat?.detail ?? null) as { configured?: boolean; scanned?: number; clean?: number; infected?: number } | null,
     // Only whether it's set — never the value.
     cronSecretSet: !!process.env.CRON_SECRET,
