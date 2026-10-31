@@ -53,7 +53,7 @@ export const BUCKETS: Record<Bucket, { label: string; tone: "green" | "navy" | "
   DUE: { label: "Due within 30 days", tone: "amber" },
   SUBMITTED: { label: "Submitted — awaiting acceptance", tone: "navy" },
   UPCOMING: { label: "Upcoming", tone: "gray" },
-  NOT_SET_UP: { label: "Form not chosen", tone: "amber" },
+  NOT_SET_UP: { label: "Needs information", tone: "amber" },
   COMPLETED: { label: "Accepted", tone: "green" },
 };
 
@@ -68,6 +68,23 @@ export async function nonprofitDashboard(today = officeToday()) {
   });
   const rows = [];
   for (const c of clients) {
+    // Missing facts are flagged for review, never assumed (no default December year-end).
+    const missing: string[] = [];
+    if (!c.fiscalYearEnd) missing.push("Fiscal year-end not recorded");
+    if (!c.nonprofitProfile?.formType) missing.push("Required return not chosen");
+    else if (!c.nonprofitProfile.formBasis) missing.push("How the form was determined isn't recorded");
+    if (!c.fiscalYearEnd) {
+      // An earlier version assumed a December year-end when none was recorded. Anything it
+      // produced (filings, reminders) is flagged until someone confirms the real year-end.
+      const [assumedFilings, assumedReminders] = await Promise.all([
+        prisma.filingRecord.findMany({ where: { clientId: c.id, jurisdiction: "FEDERAL", returnType: { in: ["990-N", "990-EZ", "990", "990-PF", "8868"] } }, select: { taxYear: true, returnType: true } }),
+        prisma.auditLog.count({ where: { action: "nonprofit.reminder", clientId: c.id } }),
+      ]);
+      if (assumedFilings.length) missing.push(`Filing record${assumedFilings.length === 1 ? "" : "s"} (${assumedFilings.map((f) => `${f.returnType} ${f.taxYear}`).join(", ")}) may use a tax year based on an assumed December year-end — verify`);
+      if (assumedReminders) missing.push(`${assumedReminders} reminder${assumedReminders === 1 ? " was" : "s were"} sent using an assumed December deadline — verify`);
+      rows.push({ client: c, profile: c.nonprofitProfile, taxYear: null, returnType: null, filing: null, extension: null, extended: false, due: null, days: null, bucket: "NOT_SET_UP" as Bucket, missing });
+      continue;
+    }
     const taxYear = latestEndedTaxYear(c.fiscalYearEnd, today);
     const p = c.nonprofitProfile;
     const returnType = p ? returnTypeFor(p) : null;
@@ -83,16 +100,16 @@ export async function nonprofitDashboard(today = officeToday()) {
     const due = nonprofitDueDate(taxYear, c.fiscalYearEnd, extended);
     const days = daysBetween(today, due);
     let bucket: Bucket;
-    if (!p?.formType) bucket = "NOT_SET_UP";
+    if (missing.length) bucket = "NOT_SET_UP";
     else if (filing?.filingStatus === "ACCEPTED") bucket = "COMPLETED";
     else if (filing && ["SUBMITTED", "PENDING_ACKNOWLEDGMENT"].includes(filing.filingStatus)) bucket = "SUBMITTED";
     else if (days < 0) bucket = "OVERDUE";
     else if (days <= 30) bucket = "DUE";
     else bucket = "UPCOMING";
-    rows.push({ client: c, profile: p, taxYear, returnType, filing, extension, extended, due, days, bucket });
+    rows.push({ client: c, profile: p, taxYear: taxYear as number | null, returnType, filing, extension, extended, due: due as string | null, days: days as number | null, bucket, missing });
   }
   const order: Bucket[] = ["OVERDUE", "DUE", "NOT_SET_UP", "SUBMITTED", "UPCOMING", "COMPLETED"];
-  return rows.sort((a, b) => order.indexOf(a.bucket) - order.indexOf(b.bucket) || a.days - b.days);
+  return rows.sort((a, b) => order.indexOf(a.bucket) - order.indexOf(b.bucket) || (a.days ?? 0) - (b.days ?? 0));
 }
 
 export async function saveNonprofitProfile(actor: Actor, clientId: string, input: { formType: string; otherForm?: string; formBasis?: string; reminderDays?: string; notifyClient?: boolean }) {
@@ -154,7 +171,7 @@ export async function runNonprofitReminders(today = officeToday()) {
   let sent = 0;
   const owner = await prisma.ownerAccess.findFirst({ where: { isPrimary: true, revokedAt: null }, select: { userId: true } });
   for (const r of rows) {
-    if (!r.profile?.formType || r.bucket === "COMPLETED" || r.bucket === "SUBMITTED") continue;
+    if (!r.profile?.formType || r.days === null || r.taxYear === null || r.bucket === "COMPLETED" || r.bucket === "SUBMITTED") continue;
     if (!r.profile.reminderDays.includes(r.days)) continue;
     const key = `nonprofit-reminder:${r.client.id}:${r.taxYear}:${r.days}`;
     if (await prisma.auditLog.count({ where: { action: "nonprofit.reminder", entityId: key } })) continue;

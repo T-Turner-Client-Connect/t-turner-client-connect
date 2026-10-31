@@ -42,13 +42,15 @@ export default async function NonprofitsPage() {
           const clientDocs = docs.filter((d) => d.clientId === r.client.id);
           const form = r.profile?.formType ? NONPROFIT_FORMS[r.profile.formType as keyof typeof NONPROFIT_FORMS] : null;
           return (
-            <Card key={r.client.id} title={<span data-testid="np-row">{name} <span className="text-sm font-normal text-slate-600">· tax year {r.taxYear}</span></span>} actions={<span data-testid="np-bucket"><Badge tone={BUCKETS[r.bucket].tone}>{BUCKETS[r.bucket].label}</Badge></span>}>
+            <div key={r.client.id} data-testid="np-card" data-client={name}>
+            <Card title={<span data-testid="np-row">{name} <span className="text-sm font-normal text-slate-600">· {r.taxYear ? `tax year ${r.taxYear}` : "tax year unknown"}</span></span>} actions={<span data-testid="np-bucket"><Badge tone={BUCKETS[r.bucket].tone}>{BUCKETS[r.bucket].label}</Badge></span>}>
               <dl className="mb-3 grid gap-2 text-sm sm:grid-cols-4">
-                <div><dt className="text-xs uppercase text-slate-500">Fiscal year ends</dt><dd>{MONTHS[(r.client.fiscalYearEnd ?? 12) - 1]}</dd></div>
+                <div><dt className="text-xs uppercase text-slate-500">Fiscal year ends</dt><dd>{r.client.fiscalYearEnd ? MONTHS[r.client.fiscalYearEnd - 1] : <span className="text-amber-800">Not recorded</span>}</dd></div>
                 <div><dt className="text-xs uppercase text-slate-500">Return</dt><dd>{form ? (r.profile?.formType === "OTHER" ? r.profile.otherForm : form.label) : "Not chosen"}</dd></div>
                 <div><dt className="text-xs uppercase text-slate-500">Assigned</dt><dd>{r.client.assignedTo?.name ?? "Unassigned"}</dd></div>
-                <div><dt className="text-xs uppercase text-slate-500">Due</dt><dd data-testid="np-due">{fmtIso(r.due, { month: "short", day: "numeric", year: "numeric" })}{r.extended ? " (extended — Form 8868 accepted)" : ""} · {r.days < 0 ? `${-r.days} days late` : `${r.days} days`}</dd></div>
+                <div><dt className="text-xs uppercase text-slate-500">Due</dt><dd data-testid="np-due">{r.due && r.days !== null ? <>{fmtIso(r.due, { month: "short", day: "numeric", year: "numeric" })}{r.extended ? " (extended — Form 8868 accepted)" : ""} · {r.days < 0 ? `${-r.days} days late` : `${r.days} days`}</> : "Unknown until the fiscal year-end is recorded"}</dd></div>
               </dl>
+              {r.missing.length > 0 && <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="np-missing">Needs review: {r.missing.join(" · ")}{!r.client.fiscalYearEnd && <> — set it on the client&apos;s <Link className="underline" href={`/clients/${r.client.id}?tab=taxes`}>Taxes tab</Link></>}</p>}
               {r.filing && (
                 <p className="mb-2 text-sm" data-testid="np-status">
                   Filing status: <strong>{FILING_LABELS[r.filing.filingStatus]}</strong>
@@ -75,9 +77,10 @@ export default async function NonprofitsPage() {
                     <Button type="submit" variant="secondary">Save</Button>
                   </ActionForm>
                 </details>
+                {r.taxYear !== null && (<>
                 <details className="rounded-xl bg-ivory-50 p-3 text-sm">
                   <summary className="cursor-pointer font-semibold">Mark filed (submitted)</summary>
-                  <ActionForm action={markFiledAction.bind(null, r.client.id, r.taxYear)} className="mt-2 space-y-2" resetOnSuccess>
+                  <ActionForm action={markFiledAction.bind(null, r.client.id, r.taxYear!)} className="mt-2 space-y-2" resetOnSuccess>
                     <Field label="Filed on (Central time)"><input className="input" type="datetime-local" name="filedAt" required /></Field>
                     <Field label="Confirmation / submission number"><input className="input" name="confirmation" /></Field>
                     <Field label="…or the acknowledgment uploaded to their file"><select className="input" name="ackDocumentId" defaultValue=""><option value="">—</option>{clientDocs.map((d) => <option key={d.id} value={d.id}>{d.title}</option>)}</select></Field>
@@ -87,7 +90,7 @@ export default async function NonprofitsPage() {
                 </details>
                 <details className="rounded-xl bg-ivory-50 p-3 text-sm">
                   <summary className="cursor-pointer font-semibold">Record IRS outcome</summary>
-                  <ActionForm action={outcomeAction.bind(null, r.client.id, r.taxYear)} className="mt-2 space-y-2" resetOnSuccess>
+                  <ActionForm action={outcomeAction.bind(null, r.client.id, r.taxYear!)} className="mt-2 space-y-2" resetOnSuccess>
                     <Field label="Outcome"><select className="input" name="outcome" defaultValue="ACCEPTED"><option value="ACCEPTED">Accepted</option><option value="REJECTED">Rejected</option></select></Field>
                     <Field label="Date and time (Central)"><input className="input" type="datetime-local" name="at" required /></Field>
                     <Field label="IRS acknowledgment in their file"><select className="input" name="evidenceDocumentId" defaultValue=""><option value="">—</option>{clientDocs.map((d) => <option key={d.id} value={d.id}>{d.title}</option>)}</select></Field>
@@ -96,6 +99,7 @@ export default async function NonprofitsPage() {
                     <Button type="submit" variant="secondary">Record</Button>
                   </ActionForm>
                 </details>
+                </>)}
               </div>
               {r.filing && (
                 <details className="mt-3 text-sm" data-testid="np-history">
@@ -113,6 +117,7 @@ export default async function NonprofitsPage() {
               )}
               <p className="mt-2 text-xs"><Link className="underline" href={`/clients/${r.client.id}?tab=taxes`}>Open client&apos;s Taxes tab</Link></p>
             </Card>
+            </div>
           );
         })}
       </div>
