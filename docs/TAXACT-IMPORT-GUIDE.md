@@ -39,7 +39,7 @@ A sample of the layout Client Connect expects is in [`docs/samples/client-import
    - Address, City, State, ZIP → the matching address fields.
    - Client type → *Client type (Individual / Business / Nonprofit)*, if you added it.
    - Services → *Services (comma-separated)*; Groups → *Groups (comma-separated)*.
-6. **3. Preview** → **Check for duplicates**.
+6. **3. Preview** → **Check for errors & duplicates**. Nothing is saved until you confirm on the next screen.
 7. **Review import:** every row gets a decision. Rows that look like an existing client (same email, phone or name) list that client as a candidate:
    - **Create a new client** — only when you're sure this person isn't already in the CRM.
    - **Update _existing client_** — the same person. Choose *Only fill in blank fields (safest)* unless the file is newer and more correct than the CRM.
@@ -54,7 +54,8 @@ Every import records the date, the source and who ran it, under **Imports**.
 ## Part 3 — E-file statuses (optional)
 
 To show whether a return was submitted, accepted or rejected, export the e-file status report from TaxAct as CSV. Import it at **Imports → Import TaxAct e-file statuses**.
-- Rows are matched **only by the TaxAct client ID**, never by name. The first time, tick the option to save each matched client's TaxAct ID.
+- Map the TaxAct client ID column; rows are matched **by that ID, never by name alone**. A row with an unknown ID can be matched to a client by hand. Leave *Save the TaxAct client ID on clients I matched by hand* ticked, so next time they match automatically.
+- Click **Apply statuses** once every row has a decision.
 - A row older than what's already recorded never overwrites a newer status.
 - Clients are told nothing automatically; staff publish filing updates separately.
 
