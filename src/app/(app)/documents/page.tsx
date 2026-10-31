@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { financialStatementAudit } from "@/lib/services/documents";
 import { subDays } from "date-fns";
 import { Badge, Button, Card, Notice, PageHeader } from "@/components/ui";
 import { ActionForm } from "@/components/action-form";
@@ -36,6 +37,8 @@ export default async function DocumentsHub() {
   const clientName = new Map(clients.map((c) => [c.id, c.displayName]));
   const provider = scanProvider();
   const health = await scanHealth();
+  // Admins: files that may be financial statements outside the approval flow (read-only).
+  const audit = user.role === "ADMIN" ? await financialStatementAudit() : [];
   const row = (d: (typeof uploads)[number], extra?: React.ReactNode) => (
     <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
       <span>
@@ -48,6 +51,20 @@ export default async function DocumentsHub() {
   return (
     <>
       <PageHeader title="Documents" subtitle="Private client documents across all accounts." actions={<a href="#upload" className="rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white">Upload Document</a>} />
+      {audit.length > 0 && (
+        <Card title={`Financial statement check — ${audit.length} file${audit.length === 1 ? "" : "s"} to review`} className="mb-4">
+          <p className="mb-2 text-sm text-slate-700">Financial statements reach clients only through <strong>Upload Monthly Financials → Tabitha&apos;s approval → Deliver</strong>. These files may be statements filed another way. Nothing has been changed or deleted; review each one.</p>
+          <ul className="max-h-72 divide-y divide-ivory-200 overflow-y-auto text-sm" data-testid="statement-audit">
+            {audit.map((a) => (
+              <li key={a.doc.id} className="py-2" data-level={a.level}>
+                <Link className="underline" href={`/clients/${a.doc.clientId}?tab=documents`}>{a.doc.title}</Link> · {a.doc.client.businessName || a.doc.client.displayName}{" "}
+                <Badge tone={a.level === "PUBLISHED_OUTSIDE_FLOW" ? "red" : "amber"}>{a.level === "PUBLISHED_OUTSIDE_FLOW" ? "Was published without approval" : a.level === "UNCLASSIFIED_BOOKKEEPING" ? "Needs classification" : "Name suggests a statement"}</Badge>
+                <span className="block text-xs text-slate-600">{a.reason} Uploaded {fmtDateTime(a.doc.createdAt)}.</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
       {idPending.length > 0 && (
         <div className="mb-4">
           <Notice tone="warn" title="Identity documents pending verification">

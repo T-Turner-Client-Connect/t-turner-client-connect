@@ -11,6 +11,7 @@ import { queueStaffAlert } from "./staff-alerts";
 import { integrationStatus } from "@/lib/integrations";
 import { activeSuppressionsFor, ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
+import { clientMayReceive } from "./documents";
 
 const MAX_BODY = 10_000;
 
@@ -59,8 +60,10 @@ export async function staffSendMessage(
   }
   const attachmentIds = input.attachmentIds ?? [];
   if (attachmentIds.length) {
-    const ok = await prisma.document.count({ where: { id: { in: attachmentIds }, clientId: input.clientId, deletedAt: null } });
-    if (ok !== attachmentIds.length) throw new ValidationError("Attachments must be documents belonging to this client.");
+    const docs = await prisma.document.findMany({ where: { id: { in: attachmentIds }, clientId: input.clientId, deletedAt: null } });
+    if (docs.length !== attachmentIds.length) throw new ValidationError("Attachments must be documents belonging to this client.");
+    // A message can't carry a financial statement Tabitha hasn't approved (or an unscanned file) to the client.
+    if (docs.some((d) => !clientMayReceive(d))) throw new ValidationError("Financial statements are sent only through Upload Monthly Financials → Tabitha's approval → Deliver, not as message attachments.");
     // Identity documents never go out in messages; financial reports only after Tabitha approves them.
     const blocked = await prisma.document.count({
       where: { id: { in: attachmentIds }, OR: [{ category: "IDENTITY" }, { category: "BOOKKEEPING", reportType: { not: null }, NOT: { reviewStatus: "APPROVED" } }] },

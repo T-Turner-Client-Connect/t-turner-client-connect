@@ -22,6 +22,36 @@ const coverageData = (c?: Coverage | null, asOf?: Date | null) => ({
   ...(asOf ? { reportAsOf: asOf } : {}),
 });
 
+
+const FINANCIAL_GATE = "Financial statements reach clients only through Upload Monthly Financials → Tabitha's approval → Deliver. Bookkeeping files can't be published from here.";
+// Labels that mean "financial statement" (src/lib/bk-uploads.ts).
+export const STATEMENT_TYPES = ["PNL", "BALANCE_SHEET", "FINANCIAL_PACKET"];
+
+/**
+ * The financial-statement rule, in one place. A bookkeeping file — or any file
+ * labeled P&L, Balance Sheet or financial packet — reaches a client only as a
+ * report Tabitha approved (and that passed the malware scan, checked separately).
+ * The client's own ordinary uploads (never reports) are theirs once scanned clean;
+ * identity files are checked separately (SS cards and birth certificates stay
+ * Admin-only). Nothing here relies on file names.
+ */
+export function clientMayReceive(doc: { category: string; reportType: string | null; reviewStatus: string | null; docType: string | null; uploadedByPortalId: string | null }) {
+  // The client's own ordinary upload (never a report): theirs to see once its scan passes.
+  if (doc.uploadedByPortalId && !doc.reportType) return true;
+  const statement = doc.category === "BOOKKEEPING" || (!!doc.docType && STATEMENT_TYPES.includes(doc.docType));
+  if (!statement) return true;
+  return !!doc.reportType && doc.reviewStatus === "APPROVED";
+}
+
+/** The same rule as a database filter, for every client-facing list. */
+export const clientReceivableWhere = {
+  OR: [
+    { uploadedByPortalId: { not: null }, reportType: null },
+    { AND: [{ category: { not: "BOOKKEEPING" as const } }, { OR: [{ docType: null }, { docType: { notIn: STATEMENT_TYPES } }] }] },
+    { reportType: { not: null }, reviewStatus: "APPROVED" },
+  ],
+};
+
 export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   BOOKKEEPING: "Bookkeeping",
   TAXES: "Taxes",
@@ -132,6 +162,9 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   // Financial reports go to Tabitha for approval before any client sees them.
   const isFinancialReport = input.category === "BOOKKEEPING" && !!input.reportType;
   if (isFinancialReport && input.visibility === "PUBLISHED") throw new ValidationError("Financial reports are saved as drafts and need Tabitha's approval before they're delivered.");
+  // Any bookkeeping file — with or without a report type — reaches the client only through the
+  // Tabitha-approved delivery path, so a financial statement can't be published by accident.
+  if (input.category === "BOOKKEEPING" && input.visibility === "PUBLISHED") throw new ValidationError(FINANCIAL_GATE);
   const client = await prisma.client.findUnique({ where: { id: input.clientId } });
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
@@ -180,6 +213,10 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
   if (!doc || doc.deletedAt) throw new ValidationError("Document not found.");
   if (visibility === "PUBLISHED" && doc.scanStatus === "INFECTED") throw new ValidationError("Infected files can't be published.");
   if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && doc.reportType && doc.reviewStatus !== "APPROVED") throw new ValidationError("Tabitha must approve this financial report before it's published.");
+  // Bookkeeping files without the report workflow (e.g. a P&L saved with no report type) never publish here.
+  if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && !doc.reportType) throw new ValidationError(FINANCIAL_GATE);
+  // Financial statements by category label, wherever they were filed, also need the report workflow.
+  if (visibility === "PUBLISHED" && !doc.reportType && doc.docType && STATEMENT_TYPES.includes(doc.docType)) throw new ValidationError(FINANCIAL_GATE);
   if (visibility === "PUBLISHED" && doc.category === "IDENTITY") throw new ValidationError("Identity documents aren't published.");
   if (visibility === "PUBLISHED" && doc.supersededAt) throw new ValidationError("A newer version of this report exists. Deliver the newest version instead.");
   await prisma.$transaction([
@@ -254,7 +291,7 @@ export async function portalDocuments(user: PortalActor, clientId: string) {
   const access = await requireClientAccess(user.id, clientId);
   return prisma.document.findMany({
     // Quarantined files (not yet scanned clean) never reach the portal.
-    where: { clientId, deletedAt: null, visibility: "PUBLISHED", category: { in: allowedCategories(access) }, scanStatus: "CLEAN" },
+    where: { clientId, deletedAt: null, visibility: "PUBLISHED", category: { in: allowedCategories(access) }, scanStatus: "CLEAN", AND: [clientReceivableWhere] },
     include: { file: { select: { mimeType: true, sizeBytes: true, originalName: true } } },
     orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
   });
@@ -306,6 +343,8 @@ export async function authorizeDownload(token: string, viewer: { staffId?: strin
   }
   if (viewer.portalUserId) {
     if (doc.visibility !== "PUBLISHED") return null;
+    // Financial statements only after Tabitha's approval — even if a file was published another way.
+    if (!clientMayReceive(doc)) return null;
     try {
       const access = await requireClientAccess(viewer.portalUserId, doc.clientId);
       if (!allowedCategories(access).includes(doc.category as never)) return null;
@@ -456,4 +495,33 @@ export async function acknowledgeDocuments(actor: Actor, clientId: string, docum
   });
   if (res.count) await prisma.auditLog.create({ data: { actorId: actor.id, action: "document.reviewed", entityType: "Client", entityId: clientId, clientId, details: { count: res.count } } });
   return res.count;
+}
+
+const NAME_HINT = /\b(p\s*&\s*l|profit\s*(and|&)\s*loss|balance\s*sheet|income\s*statement|financial\s*(statement|packet))\b/i;
+
+/**
+ * Read-only audit for the financial-statement rule. Lists files that may be
+ * financial statements outside the Upload Monthly Financials → approval →
+ * Deliver flow. Changes and deletes nothing; staff decide each one.
+ */
+export async function financialStatementAudit() {
+  const docs = await prisma.document.findMany({
+    where: { deletedAt: null, uploadedByPortalId: null, OR: [{ category: "BOOKKEEPING" }, { docType: { in: STATEMENT_TYPES } }, { category: { in: ["OTHER", "CLIENT_UPLOADS", "TAXES"] } }] },
+    select: { id: true, clientId: true, title: true, category: true, docType: true, reportType: true, reviewStatus: true, visibility: true, publishedAt: true, uploadedByPortalId: true, createdAt: true, client: { select: { displayName: true, businessName: true } }, file: { select: { originalName: true } } },
+    orderBy: { createdAt: "desc" },
+    take: 2000,
+  });
+  const out: { doc: (typeof docs)[number]; level: "PUBLISHED_OUTSIDE_FLOW" | "UNCLASSIFIED_BOOKKEEPING" | "NAME_SUGGESTS_STATEMENT"; reason: string }[] = [];
+  for (const d of docs) {
+    const ok = clientMayReceive(d);
+    if (!ok && d.visibility === "PUBLISHED") {
+      out.push({ doc: d, level: "PUBLISHED_OUTSIDE_FLOW", reason: "Was published without Tabitha's approval. Clients can no longer open it; send it through Upload Monthly Financials if it's a financial statement." });
+    } else if (d.category === "BOOKKEEPING" && !d.reportType && (!d.docType || STATEMENT_TYPES.includes(d.docType))) {
+      out.push({ doc: d, level: "UNCLASSIFIED_BOOKKEEPING", reason: d.docType ? "Labeled as a financial statement but not in the report workflow." : "Bookkeeping file with no category — confirm whether it's a financial statement." });
+    } else if (d.category !== "BOOKKEEPING" && !d.reportType && (NAME_HINT.test(d.title) || NAME_HINT.test(d.file.originalName))) {
+      // A name is only a hint — never the basis for a decision.
+      out.push({ doc: d, level: "NAME_SUGGESTS_STATEMENT", reason: `Filed under ${d.category.toLowerCase().replace("_", " ")}, but its name suggests a financial statement. Confirm its category.` });
+    }
+  }
+  return out;
 }

@@ -4,8 +4,8 @@ import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient, saveContact } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { requireClientAccess, accessibleClients } from "@/lib/portal/access";
-import { portalDocuments, staffUploadDocument } from "@/lib/services/documents";
-import { saveProfile } from "@/lib/services/bookkeeping-clients";
+import { portalDocuments } from "@/lib/services/documents";
+import { approveReport, deliverReport, saveProfile, submitReportForReview, uploadMonthlyReport } from "@/lib/services/bookkeeping-clients";
 import { setCoethaLink, saveBilling } from "@/lib/services/bookkeeping-profile";
 import { staffSendMessage, portalConversations } from "@/lib/services/messaging";
 import { portalBilling } from "@/lib/services/owner-billing";
@@ -13,6 +13,13 @@ import { assignContract } from "@/lib/services/contracts";
 import { businessFamily, confirmProposedLink, createAndLinkBusiness, grantOwnerPortalAccess, linkBusiness, proposedLinks } from "@/lib/services/related-businesses";
 
 let n = 0;
+async function deliveredReport(tabitha: { id: string; role: string; email: string; name: string }, clientId: string, name: string) {
+  const { document } = await uploadMonthlyReport(tabitha as never, { clientId, year: 2026, month: 3, reportType: "PROFIT_AND_LOSS", basis: "CASH", bytes: pdf(), originalName: name });
+  await submitReportForReview(tabitha as never, document.id);
+  await approveReport(tabitha as never, document.id);
+  await deliverReport(tabitha as never, document.id);
+  return document;
+}
 const pdf = () => new TextEncoder().encode(`%PDF-1.4\n% fictional ${n++}\n`);
 beforeEach(async () => {
   await resetDb();
@@ -49,8 +56,9 @@ describe("one owner, several businesses (fictional Steven Cox example)", () => {
     expect(await prisma.portalUser.count({ where: { email: "steven@fictional.example" } })).toBe(1);
 
     // Each business keeps its own records: documents, bookkeeping, billing and Coetha link.
-    const eDoc = await staffUploadDocument(tabitha, { clientId: energy.id, category: "BOOKKEEPING", visibility: "PUBLISHED", year: 2026, bytes: pdf(), originalName: "energy-bank.pdf" });
-    const dDoc = await staffUploadDocument(tabitha, { clientId: drive.id, category: "BOOKKEEPING", visibility: "PUBLISHED", year: 2026, bytes: pdf(), originalName: "drive-bank.pdf" });
+    // Financial statements reach clients only through upload → Tabitha's approval → delivery.
+    const eDoc = await deliveredReport(tabitha, energy.id, "energy-pl.pdf");
+    const dDoc = await deliveredReport(tabitha, drive.id, "drive-pl.pdf");
     expect((await portalDocuments(actor, energy.id)).map((d) => d.id)).toEqual([eDoc.id]);
     expect((await portalDocuments(actor, drive.id)).map((d) => d.id)).toEqual([dDoc.id]);
     expect((await portalDocuments(actor, steven.id)).map((d) => d.id)).toEqual([]); // Personal is separate
@@ -89,7 +97,7 @@ describe("one owner, several businesses (fictional Steven Cox example)", () => {
     const { token } = await invitePortalUser(tabitha, energy.id, { email: "steven@fictional.example", name: "Steven Cox", role: "OWNER" });
     const login = await acceptPortalInvite(token!, "Steven-Pass-12345");
     const actor = { id: login.id, name: login.name, email: login.email };
-    const eDoc = await staffUploadDocument(tabitha, { clientId: energy.id, category: "BOOKKEEPING", visibility: "PUBLISHED", year: 2026, bytes: pdf(), originalName: "energy-history.pdf" });
+    const eDoc = await deliveredReport(tabitha, energy.id, "energy-history.pdf");
     await saveProfile(tabitha, energy.id, { active: true, frequency: "MONTHLY", payroll: true });
     await setCoethaLink(tabitha, energy.id, "https://claude.ai/project/energy-1");
     const before = await prisma.client.findUniqueOrThrow({ where: { id: energy.id }, include: { contacts: true } });
