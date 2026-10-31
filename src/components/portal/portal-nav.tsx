@@ -81,7 +81,7 @@ function NavLinks({ q, pathname, unread, onNavigate }: { q: string; pathname: st
 }
 
 /** Client portal frame: navy sidebar on large screens, top bar with a menu drawer on phones. */
-type Account = { id: string; name: string; personal?: boolean };
+type Account = { id: string; name: string; personal?: boolean; owner?: string | null };
 
 /** Business tabs: Personal first, then each business this login may open. The selected one is always named. */
 function AccountTabs({ accounts, current, pathname }: { accounts: Account[]; current: string; pathname: string }) {
@@ -97,7 +97,12 @@ function AccountTabs({ accounts, current, pathname }: { accounts: Account[]; cur
           </Link>
         ))}
       </nav>
-      {selected && <p className="text-xs text-slate-600" data-testid="viewing-account">Viewing: <strong className="text-navy-900">{selected.personal ? `Personal — ${selected.name}` : selected.name}</strong></p>}
+      {selected && (
+        <div className="pt-1" data-testid="viewing-account">
+          <p className="font-serif text-lg font-bold leading-tight text-navy-900 sm:text-xl">{selected.personal ? `Personal — ${selected.name}` : selected.name}</p>
+          {selected.owner && <p className="text-sm text-slate-600" data-testid="viewing-owner">Owner: {selected.owner}</p>}
+        </div>
+      )}
     </div>
   );
 }

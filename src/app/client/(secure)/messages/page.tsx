@@ -79,6 +79,7 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
                 })}
               </ol>
             )}
+            <p className="mb-2 text-xs text-slate-600" data-testid="message-target">{selected ? "About" : "Sending about"}: <strong className="text-navy-900">{current.client.businessName || current.client.displayName}</strong></p>
             {composer}
           </Card>
         </div>

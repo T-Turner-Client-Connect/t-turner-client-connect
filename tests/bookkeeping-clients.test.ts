@@ -155,7 +155,11 @@ describe("Add Bookkeeping Client and Upload Monthly Financials", () => {
     expect((await prisma.bookkeepingProfile.findUniqueOrThrow({ where: { clientId: fresh.id } })).documentsDueDay).toBe(15);
     // Nothing is sent to anyone while adding clients.
     expect(await prisma.portalInvite.count({ where: { clientId: fresh.id } })).toBe(0);
-    expect((await bookkeepingClients()).map((r) => r.client.displayName)).toEqual(["Bakery LLC", "Fictional Car Wash", "Fictional Florist LLC"]);
+    // One row per business; rows are ordered by owner name, then business.
+    const rows = await bookkeepingClients();
+    expect(rows.map((r) => r.client.displayName).sort()).toEqual(["Bakery LLC", "Fictional Car Wash", "Fictional Florist LLC"]);
+    const who = rows.map((r) => (r.owner ?? r.business ?? r.client.displayName).toLowerCase());
+    expect(who).toEqual([...who].sort());
   });
 
   it("files reports under client → year → month as drafts, keeps version history, and only Tabitha's approval lets staff deliver", async () => {

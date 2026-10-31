@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BusinessTabs } from "@/components/business-tabs";
+import { recordHeading } from "@/lib/services/related-businesses";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
@@ -47,6 +48,9 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
   ]);
   const { client, profile, period, summary } = ws;
+  // The selected business, shown on every card where work is saved.
+  const heading = await recordHeading(clientId);
+  const biz = heading?.title ?? client.displayName;
   const freq = profile?.frequency ?? "MONTHLY";
   const label = period ? periodLabel(freq, period.year, period.month) : null;
   const link = (id: string) => `/api/documents/${downloadToken(id, { staffId: user.id })}`;
@@ -96,9 +100,10 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
       <p className="mb-2 text-sm"><Link className="underline" href="/bookkeeping">← Bookkeeping Clients</Link></p>
       <BusinessTabs clientId={clientId} base="/bookkeeping" />
       <PageHeader
-        title={client.displayName}
+        title={biz}
         subtitle={
           <>
+            {heading?.owner && <span className="block" data-testid="owner-line">Owner: <strong>{heading.owner}</strong></span>}
             {profile ? `${FREQUENCIES[freq as keyof typeof FREQUENCIES]} bookkeeping` : "Not on the bookkeeping list yet"} · Assigned: {client.assignedTo?.name ?? "unassigned"}
             {profile?.payroll && ` · Payroll ${profile.payrollFrequency ? PAYROLL_FREQUENCIES[profile.payrollFrequency as keyof typeof PAYROLL_FREQUENCIES].toLowerCase() : ""}${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`}
             {" · "}<Link className="underline" href={`/clients/${clientId}`}>Client record</Link>
@@ -121,9 +126,9 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
 
       <div className="grid gap-4 lg:grid-cols-4">
         <aside className="space-y-4 lg:col-span-1">
-          <Card title="Work with Coetha">
+          <Card title={`Work with Coetha — ${biz}`}>
             <div className="space-y-2 text-sm" data-testid="coetha">
-              <p className="text-xs text-slate-600">This business&apos;s own Claude Project or conversation. Opens Claude in a new tab, using <strong>your own</strong> Claude access. Nothing syncs automatically — documents and answers stay in Claude unless you upload or copy them here.</p>
+              <p className="text-xs text-slate-600" data-testid="coetha-business">For <strong>{biz}</strong> only — this business&apos;s own Claude Project or conversation. Opens Claude in a new tab, using <strong>your own</strong> Claude access. Nothing syncs automatically — documents and answers stay in Claude unless you upload or copy them here.</p>
               {profile?.coethaUrl ? (
                 canCoetha ? (
                   <a href={profile.coethaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center rounded-xl bg-navy-900 px-4 py-2.5 font-semibold text-white hover:bg-navy-800" data-testid="coetha-open">Open in Claude ↗</a>
@@ -299,7 +304,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                 </Card>
               )}
 
-              <Card title="Financial packets">
+              <Card title={`Financial packets — ${biz}`}>
                 {packets.length === 0 ? (
                   <p className="text-sm text-slate-600">No reports yet for {label}. Use Upload Monthly Financials.</p>
                 ) : (
@@ -330,7 +335,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                 <p className="mt-2 text-xs text-slate-600">The packet PDF has a cover page (period, basis, prepared for / by, contents) followed by your uploaded statements. Drafts are stamped and never reach the client.</p>
               </Card>
 
-              <Card title="Financial reports">
+              <Card title={`Financial reports — ${biz}`}>
                 <div id="reports" className="scroll-mt-6" />
                 {summary.reports.length === 0 && <p className="text-sm text-slate-600">{reportsDue(freq, period.month) ? "No reports yet. Upload a draft below." : "Quarterly client: reports are prepared for the quarter-end month."}</p>}
                 <ul className="divide-y divide-navy-100 text-sm" data-testid="reports">
@@ -413,6 +418,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
               </Card>
 
               <Card title={`Add a client document to ${label}`}>
+                <p className="mb-2 rounded-lg bg-ivory-50 px-3 py-2 text-sm" data-testid="staff-upload-target">Saving to: <strong>{biz}</strong></p>
                 <ActionForm action={uploadBookkeepingFileAction.bind(null, clientId, period.id)} className="grid gap-2 sm:grid-cols-3" resetOnSuccess idempotent>
                   <Field label="File" className="sm:col-span-3"><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required /></Field>
                   <Field label="What is it?">
@@ -430,7 +436,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
                 <p className="mt-2 text-xs text-slate-600">Statements, payroll reports and receipts (staff only). For a P&amp;L or Balance Sheet, use Upload Monthly Financials.</p>
               </Card>
 
-              <Card title="Messages">
+              <Card title={`Questions & messages — ${biz}`}>
                 <ul className="space-y-1 text-sm" data-testid="bk-messages">
                   {[...conversations, ...otherThreads].slice(0, 8).map((c) => (
                     <li key={c.id}><Link className="underline" href={`/clients/${clientId}?tab=messages&c=${c.id}`}>{c.subject ?? "Conversation"}</Link> <span className="text-xs text-slate-500">· {fmtDate(c.lastMessageAt)}</span> {c.awaitingStaff && <Badge tone="gold">Needs reply</Badge>}</li>
@@ -452,8 +458,9 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
           )}
 
           <section id="upload-financials" className="scroll-mt-6">
-            <Card title="Upload Monthly Financials">
-              <p className="mb-3 text-sm text-slate-600">A complete financial packet, or individual reports — Profit &amp; Loss, Gross Receipts, Balance Sheet, Bank Reconciliation, supporting schedules. It&apos;s filed under {client.displayName} → year → month, saved as a <strong>staff-only draft</strong>, and reaches the client only after Tabitha approves it and staff deliver it.</p>
+            <Card title={`Upload Monthly Financials — ${biz}`}>
+              <p className="mb-2 rounded-lg bg-ivory-50 px-3 py-2 text-sm" data-testid="financials-target">Saving to: <strong>{biz}</strong></p>
+              <p className="mb-3 text-sm text-slate-600">A complete financial packet, or individual reports — Profit &amp; Loss, Gross Receipts, Balance Sheet, Bank Reconciliation, supporting schedules. It&apos;s filed under {biz} → year → month, saved as a <strong>staff-only draft</strong>, and reaches the client only after Tabitha approves it and staff deliver it.</p>
               <ActionForm action={uploadMonthlyFinancialsAction.bind(null, clientId)} className="grid gap-3 sm:grid-cols-4" resetOnSuccess idempotent>
                 <Field label="Year"><select className="input" name="year" defaultValue={target.year}>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>
                 <Field label="Month or quarter">

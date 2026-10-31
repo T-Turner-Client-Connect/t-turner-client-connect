@@ -9,6 +9,7 @@ import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { BASIS } from "@/lib/bookkeeping-periods";
 import { squareSettings } from "@/lib/square";
+import { assertNotBilledInSquare, squareBillingFor } from "./square-billing";
 
 /**
  * Bookkeeping client profiles: business information, payroll, bank and card
@@ -242,6 +243,8 @@ export type AuthorizationInput = { amount: string; startDate: Date | null; metho
 /** Records the client's authorization for recurring charges (evidence required). */
 export async function recordChargeAuthorization(actor: Actor, clientId: string, input: AuthorizationInput) {
   await assertBilling(actor);
+  // A client already billed in Square keeps that authorization; recording another could lead to a second charge.
+  await assertNotBilledInSquare(clientId, "staff");
   const n = Number(input.amount.replace(/[$,\s]/g, ""));
   if (!Number.isFinite(n) || n <= 0) throw new ValidationError("Enter the authorized monthly amount.");
   if (!(input.method in AUTH_METHODS)) throw new ValidationError("Choose how the client authorized recurring charges.");
@@ -277,9 +280,10 @@ export async function revokeChargeAuthorization(actor: Actor, clientId: string, 
 /** What the billing card may show. Card brand/last four/expiration come only from Square — never stored here. */
 export async function billingView(actor: Actor, clientId: string) {
   if (!(await canManageBilling(actor))) return { allowed: false as const };
-  const [billing, authorizations] = await Promise.all([
+  const [billing, authorizations, squareBilling] = await Promise.all([
     prisma.bookkeepingBilling.findUnique({ where: { clientId } }),
     prisma.recurringChargeAuthorization.findMany({ where: { clientId }, orderBy: { createdAt: "desc" } }),
+    squareBillingFor(clientId),
   ]);
   const active = authorizations.find((a) => !a.revokedAt) ?? null;
   const connected = squareConnected();
@@ -293,6 +297,8 @@ export async function billingView(actor: Actor, clientId: string) {
     square: { connected, card, cardId: connected ? billing?.squareCardId ?? null : null },
     // A charge may run only with an active authorization for the current amount; a card on file alone is not enough.
     chargeAuthorized: !!active && active.amountCents === billing?.monthlyFeeCents,
+    // Existing recurring billing in Square (read-only link); while present, no new authorization is recorded here.
+    squareBilling,
   };
 }
 

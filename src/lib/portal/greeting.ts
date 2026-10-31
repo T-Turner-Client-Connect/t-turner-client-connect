@@ -33,6 +33,10 @@ export async function loadGreetingName(clientId: string, portalUserId: string | 
     });
     contact = owner?.portalUser.contact ?? null;
   }
+  if (!contact?.preferredName && portalUserId && client.firstName?.trim() && (await prisma.clientRelationship.count({ where: { personClientId: clientId } }))) {
+    // The owner's main record is this Business record: greet them by the first name on it.
+    return client.firstName.trim();
+  }
   if (!contact?.preferredName && portalUserId) {
     // An owner of several businesses: greet them by their own name, from the Personal record
     // this same login can open and that's linked to this business.

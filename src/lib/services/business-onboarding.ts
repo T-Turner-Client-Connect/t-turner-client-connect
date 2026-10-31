@@ -9,6 +9,7 @@ import { isValidEmail, normalizeEmail, normalizePhone } from "@/lib/normalize";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { squareRequest, squareSettings, SquareError, type SquareCard } from "@/lib/square";
+import { assertNotBilledInSquare, squareBillingFor } from "./square-billing";
 import { ValidationError } from "./clients";
 import { PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
 import { ACCOUNT_TYPES, maskEin, normalizeEin } from "./bookkeeping-profile";
@@ -311,7 +312,7 @@ export async function changeForReview(actor: Actor, changeId: string) {
 /** What the client sees: verified details (masked), anything waiting for review, pricing, card and checklist. */
 export async function clientOnboardingView(user: PortalActor, clientId: string) {
   const access = await requireClientAccess(user.id, clientId);
-  const [ob, profile, accounts, pending, lastReturned, billing, auth] = await Promise.all([
+  const [ob, profile, accounts, pending, lastReturned, billing, auth, existingSquare] = await Promise.all([
     prisma.businessOnboarding.findUnique({ where: { clientId } }),
     prisma.bookkeepingProfile.findUnique({ where: { clientId } }),
     prisma.bookkeepingAccount.findMany({ where: { clientId, active: true }, orderBy: { institution: "asc" } }),
@@ -319,7 +320,10 @@ export async function clientOnboardingView(user: PortalActor, clientId: string) 
     prisma.businessInfoChange.findFirst({ where: { clientId, status: "REJECTED" }, orderBy: { reviewedAt: "desc" } }),
     prisma.bookkeepingBilling.findUnique({ where: { clientId } }),
     prisma.recurringChargeAuthorization.findFirst({ where: { clientId, revokedAt: null }, orderBy: { createdAt: "desc" } }),
+    squareBillingFor(clientId),
   ]);
+  // Already billed through recurring invoices in Square: nothing to set up or authorize again.
+  const billedInSquare = existingSquare.state !== "NONE";
   const verified = profile?.verifiedAt
     ? {
         legalName: profile.legalName, dba: profile.dba, ein: maskEin(profile.einLast4), address1: profile.businessAddress1, address2: profile.businessAddress2, city: profile.businessCity, state: profile.businessState, postalCode: profile.businessPostalCode,
@@ -338,9 +342,13 @@ export async function clientOnboardingView(user: PortalActor, clientId: string) 
     { key: "eligibility", label: "Answer the two questions", done: ob?.wantsBookkeeping != null && !!ob.relationship },
     { key: "submitted", label: "Submit your business information", done: ob?.status === "SUBMITTED" },
     { key: "verified", label: "Business information verified by our office", done: !!verified, pending: !!pending },
-    { key: "pricing", label: "Monthly price set by our office", done: !!pricing },
-    { key: "card", label: "Payment method saved with Square", done: !!card },
-    { key: "authorized", label: "Accept the monthly amount and recurring-payment terms", done: authorized },
+    ...(billedInSquare
+      ? [{ key: "square", label: "Billing already set up with our office in Square — nothing to authorize again", done: true }]
+      : [
+          { key: "pricing", label: "Monthly price set by our office", done: !!pricing },
+          { key: "card", label: "Payment method saved with Square", done: !!card },
+          { key: "authorized", label: "Accept the monthly amount and recurring-payment terms", done: authorized },
+        ]),
   ];
   return {
     isOwner: access.role === "OWNER",
@@ -354,6 +362,7 @@ export async function clientOnboardingView(user: PortalActor, clientId: string) 
     card,
     authorization: authorized ? { at: auth!.authorizedAt, name: auth!.authorizedByName, amountCents: auth!.amountCents } : null,
     checklist,
+    billedInSquare,
     complete: ob?.wantsBookkeeping === true && checklist.every((c) => c.done),
   };
 }
@@ -367,6 +376,8 @@ export async function clientOnboardingView(user: PortalActor, clientId: string) 
  */
 export async function savePaymentMethod(user: PortalActor, clientId: string, input: { sourceId: string; cardholderName: string; verificationToken?: string }) {
   await ownerAccess(user, clientId);
+  // Clients already billed through recurring invoices in Square are never asked to authorize or add a card again.
+  await assertNotBilledInSquare(clientId, "client");
   const square = squareSettings();
   if (!square.configured) throw new ValidationError("Secure card setup isn't available yet because Square isn't connected.");
   if (!input.sourceId || input.sourceId.length > 500) throw new ValidationError("The card form didn't finish. Please try again.");
@@ -408,6 +419,8 @@ export const termsText = (p: { amountCents: number; billingDay: number; startDat
 /** The client accepts the actual monthly amount and terms. Requires the Admin-set price and a card saved with Square. */
 export async function acceptRecurringTerms(user: PortalActor, clientId: string, input: { agree: boolean; typedName: string }) {
   await ownerAccess(user, clientId);
+  // Clients already billed through recurring invoices in Square are never asked to authorize or add a card again.
+  await assertNotBilledInSquare(clientId, "client");
   const billing = await prisma.bookkeepingBilling.findUnique({ where: { clientId } });
   if (!billing?.monthlyFeeCents || !billing.billingStartDate || !billing.billingDay) throw new ValidationError("Your monthly price hasn't been set yet. You can accept it once our office posts it.");
   if (!squareSettings().configured || !billing.squareCardId || !billing.cardLast4) throw new ValidationError("Save a payment method first.");

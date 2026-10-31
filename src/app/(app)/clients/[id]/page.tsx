@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BusinessTabs } from "@/components/business-tabs";
+import { recordHeading } from "@/lib/services/related-businesses";
 import { notFound } from "next/navigation";
 import type { ConsentKind } from "@prisma/client";
 import { ActionForm } from "@/components/action-form";
@@ -67,6 +68,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
     ? await prisma.suppression.findMany({ where: { liftedAt: null, OR: addresses } })
     : [];
 
+  const heading = await recordHeading(id);
   const people = [{ id: null as string | null, name: `${client.displayName} (primary)` }, ...client.contacts.map((c) => ({ id: c.id as string | null, name: c.name }))];
   const forPerson = (pid: string | null) => client.consentRecords.filter((r) => r.contactId === pid);
   const clientLevel = forPerson(null);
@@ -75,10 +77,12 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
     <>
       <BusinessTabs clientId={id} base="/clients" />
       <PageHeader
-        title={client.displayName}
+        title={heading?.title ?? client.displayName}
         subtitle={
           <span className="flex flex-wrap items-center gap-2">
-            {client.businessName && client.businessName !== client.displayName && <span>{client.businessName}</span>}
+            {heading?.owner && <span data-testid="owner-line">Owner: <strong>{heading.owner}</strong></span>}
+            {!heading?.owner && client.businessName && client.businessName !== heading?.title && <span>{client.businessName}</span>}
+            {client.clientType !== "INDIVIDUAL" && client.businessName && client.displayName !== client.businessName && client.displayName !== heading?.owner && <span>{client.displayName}</span>}
             <Badge tone={client.status === "ACTIVE" ? "green" : client.status === "PROSPECT" ? "gold" : "gray"}>{CLIENT_STATUS_LABELS[client.status]}</Badge>
             <Badge>{CLIENT_TYPE_LABELS[client.clientType]}</Badge>
             {client.taxReturnDerived && <Badge tone="amber">From tax-prep data</Badge>}
