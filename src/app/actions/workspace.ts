@@ -356,7 +356,7 @@ export async function scanNowAction(_prev: ActionState): Promise<ActionState> {
   await requireUser();
   return run(async () => {
     if (!scanConfigured()) throw new ValidationError("No malware scanner is configured yet, so quarantined files can't be released.");
-    const r = await scanQuarantined(50);
+    const r = await scanQuarantined(50, "manual");
     revalidatePath("/documents");
     return `Scanned ${r.scanned}: ${r.clean} passed and were released, ${r.infected} infected and destroyed${r.scanned - r.clean - r.infected ? `, ${r.scanned - r.clean - r.infected} still pending (scanner didn't answer)` : ""}.`;
   });

@@ -1,11 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
 import { runAutomations } from "@/lib/services/automations";
+import { heartbeat } from "@/lib/services/documents";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {
   const secret = process.env.CRON_SECRET;
   const given = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
   if (!secret || given.length !== secret.length || !timingSafeEqual(Buffer.from(given), Buffer.from(secret))) {
+    // Recorded so the Documents page can show the schedule is reaching the site but being refused.
+    await heartbeat("cron:refused", { route: "automations", secretSet: !!secret }).catch(() => {});
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   const summary = await runAutomations();

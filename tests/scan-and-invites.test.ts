@@ -39,7 +39,7 @@ describe("malware scan status (local scanner stub — not a live check)", () => 
     // 2) Scanner configured but not answering: Scanning, with the reason and attempt count.
     vi.stubEnv("MALWARE_SCAN_URL", "https://scanner.test/scan");
     vi.stubGlobal("fetch", async () => new Response("bad gateway", { status: 502 }));
-    await scanQuarantined();
+    await scanQuarantined(25, "scheduled");
     d1 = await prisma.document.findUniqueOrThrow({ where: { id: d1.id } });
     expect([d1.scanStatus, d1.scanAttempts]).toEqual(["PENDING", 1]);
     expect(d1.lastScanError).toMatch(/HTTP 502/);
@@ -85,5 +85,31 @@ describe("staff invitations", () => {
     const user = await acceptInvite(token!, "New-Staff-Pass-2026!");
     expect([user.role, user.identityAccessAll, user.bookkeepingBillingAccess, user.mfaEnabledAt]).toEqual(["STAFF", true, true, null]);
     await expect(acceptInvite(token!, "New-Staff-Pass-2026!")).rejects.toThrow();
+  });
+});
+
+describe("automatic re-check status counts only scheduled runs", () => {
+  it("a manual scan never shows as the automatic re-check; the cron route refuses without CRON_SECRET and records the refusal", async () => {
+    vi.stubEnv("MALWARE_SCAN_URL", "https://scanner.test/scan");
+    vi.stubEnv("CRON_SECRET", "");
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ clean: true }), { status: 200 }));
+    // An older row from before runs were labeled doesn't count either.
+    await prisma.systemHeartbeat.create({ data: { key: "quarantine-scan", at: new Date(), detail: { configured: true, scanned: 0 } as never } });
+    await scanQuarantined(50, "manual");
+    let h = await scanHealth();
+    expect([h.recheckRunning, h.lastRecheckAt, h.cronSecretSet]).toEqual([false, null, false]);
+    expect(h.lastManualAt).toBeInstanceOf(Date);
+
+    const { POST } = await import("@/app/api/cron/notifications/route");
+    const call = (auth?: string) => POST(new Request("https://site.test/api/cron/notifications", { method: "POST", headers: auth ? { authorization: auth } : {} }));
+    expect((await call("Bearer undefined")).status).toBe(401);
+    h = await scanHealth();
+    expect([h.recheckRunning, h.lastRefusedAt instanceof Date]).toEqual([false, true]);
+
+    vi.stubEnv("CRON_SECRET", "test-secret-0123456789abcdef0123");
+    expect((await call("Bearer wrong-secret-0123456789abcdef01")).status).toBe(401);
+    expect((await call("Bearer test-secret-0123456789abcdef0123")).status).toBe(200);
+    h = await scanHealth();
+    expect([h.recheckRunning, h.cronSecretSet, h.lastRecheck?.configured]).toEqual([true, true, true]);
   });
 });

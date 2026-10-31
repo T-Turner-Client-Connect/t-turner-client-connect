@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { dispatchPendingNotifications } from "@/lib/services/notifications";
 import { dispatchStaffAlerts } from "@/lib/services/staff-alerts";
-import { scanQuarantined } from "@/lib/services/documents";
+import { heartbeat, scanQuarantined } from "@/lib/services/documents";
 import { autoOpenWorkMonth } from "@/lib/services/bookkeeping-questions";
 import { runNonprofitReminders } from "@/lib/services/nonprofits";
 import { checkResourceLinks } from "@/lib/services/resources";
@@ -14,10 +14,12 @@ export async function POST(req: Request) {
   const secret = process.env.CRON_SECRET;
   const given = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
   if (!secret || given.length !== secret.length || !timingSafeEqual(Buffer.from(given), Buffer.from(secret))) {
+    // Recorded so the Documents page can show the schedule is reaching the site but being refused.
+    await heartbeat("cron:refused", { route: "notifications", secretSet: !!secret }).catch(() => {});
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   // Release files that now scan clean (and send their held notices) before dispatching.
-  const scan = await scanQuarantined(50);
+  const scan = await scanQuarantined(50, "scheduled");
   // Bookkeeping: open the work month for every client on the 1st (once a month, Chicago time).
   const periods = await autoOpenWorkMonth();
   // Nonprofit filing reminders (each reminder day sent once).
