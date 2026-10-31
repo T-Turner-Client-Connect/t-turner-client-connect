@@ -95,7 +95,9 @@ describe("identity documents", () => {
     const { tab, client, user, me } = await setup();
     const l = await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: me.id, type: "DRIVERS_LICENSE", expiresOn: inDays(90), bytes: img(), originalName: "dl.pdf" });
     await verifyIdentityDocument(tab, l.id, {});
-    const at = (days: number) => new Date(Date.now() + days * 86400_000);
+    // Noon Chicago time on the office calendar day N days ahead. Adding N × 24 hours to "now"
+    // drifts to the previous calendar day across the November clock change when run just after midnight.
+    const at = (days: number) => new Date(`${inDays(days)}T18:00:00Z`);
     expect(await runIdentityReminders(at(10))).toEqual({ reminded: 0, expired: 0 }); // 80 days left
     expect((await runIdentityReminders(at(31))).reminded).toBe(1); // 59 left → 60-day notice
     expect((await runIdentityReminders(at(32))).reminded).toBe(0); // not repeated
