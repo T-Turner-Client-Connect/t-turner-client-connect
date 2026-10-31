@@ -5,7 +5,7 @@ import { Badge, Button, Card, EmptyState, Field, PageHeader } from "@/components
 import { correctFilingAction, markFiledAction, outcomeAction, saveNonprofitAction } from "@/app/actions/nonprofits";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
-import { BUCKETS, IRS_SOURCES, NONPROFIT_FORMS, nonprofitDashboard } from "@/lib/services/nonprofits";
+import { BUCKETS, FILING_SERVICE, IRS_SOURCES, NONPROFIT_FORMS, nonprofitDashboard } from "@/lib/services/nonprofits";
 import { FILING_LABELS } from "@/lib/tax/normalize";
 import { fmtIso } from "@/lib/tax/deadlines";
 import { MONTHS } from "@/lib/services/bookkeeping";
@@ -13,21 +13,50 @@ import { fmtDateTime } from "@/lib/format";
 
 export const metadata = { title: "Nonprofit filings" };
 
-export default async function NonprofitsPage() {
+const VIEWS = {
+  all: "All",
+  ours: "Our nonprofit filing clients",
+  needs: "Needs information",
+  due: "Upcoming/overdue filings",
+} as const;
+
+export default async function NonprofitsPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   await connection();
   await requireUser();
-  const rows = await nonprofitDashboard();
+  const sp = await searchParams;
+  const view = (sp.view && sp.view in VIEWS ? sp.view : "all") as keyof typeof VIEWS;
+  const all = await nonprofitDashboard();
+  const rows = all.filter((r) =>
+    view === "ours" ? r.service === "YES"
+    : view === "needs" ? r.bucket === "NOT_SET_UP" || r.review.length > 0
+    : view === "due" ? r.service === "YES" && ["OVERDUE", "DUE", "UPCOMING"].includes(r.bucket)
+    : true);
+  // Owners who said they have a nonprofit whose organization record isn't linked yet.
+  const unlinked = view === "needs" || view === "all"
+    ? await prisma.client.findMany({ where: { hasNonprofit: "YES", archivedAt: null, ownsBusinesses: { none: { business: { clientType: "NONPROFIT" } } } }, select: { id: true, displayName: true }, orderBy: { displayName: "asc" }, take: 100 })
+    : [];
   const docs = await prisma.document.findMany({
     where: { clientId: { in: rows.map((r) => r.client.id) }, deletedAt: null, category: { in: ["TAXES", "OTHER"] } },
     select: { id: true, clientId: true, title: true, createdAt: true },
     orderBy: { createdAt: "desc" },
     take: 500,
   });
-  const counts = Object.fromEntries(Object.keys(BUCKETS).map((b) => [b, rows.filter((r) => r.bucket === b).length]));
+  const counts = Object.fromEntries(Object.keys(BUCKETS).map((b) => [b, all.filter((r) => r.bucket === b).length]));
 
   return (
     <>
-      <PageHeader title="Nonprofit filings" subtitle="Annual federal returns for nonprofit clients: the form each one files, its deadline, and filed vs. accepted kept separate." />
+      <PageHeader title="Nonprofit filings" subtitle="Annual federal returns for the nonprofit organizations whose filings TTurner handles: the form each one files, its deadline, and filed vs. accepted kept separate. Nonprofit Interest (formation inquiries) isn't listed here." />
+      <nav className="mb-3 flex flex-wrap gap-2" data-testid="np-views">
+        {Object.entries(VIEWS).map(([k, v]) => (
+          <Link key={k} href={k === "all" ? "/nonprofits" : `/nonprofits?view=${k}`} aria-current={view === k ? "page" : undefined} className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${view === k ? "bg-navy-900 text-white" : "border border-navy-200 text-navy-900"}`}>{v}</Link>
+        ))}
+      </nav>
+      {unlinked.length > 0 && (
+        <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="np-unlinked">
+          Has a nonprofit, organization not linked yet:{" "}
+          {unlinked.map((c, i) => <span key={c.id}>{i > 0 && ", "}<Link className="underline" href={`/clients/${c.id}`}>{c.displayName}</Link></span>)}
+        </p>
+      )}
       <div className="mb-4 flex flex-wrap gap-2" data-testid="np-counts">
         {(["OVERDUE", "DUE", "NOT_SET_UP", "SUBMITTED", "UPCOMING", "COMPLETED"] as const).map((b) => <Badge key={b} tone={BUCKETS[b].tone}>{BUCKETS[b].label}: {counts[b]}</Badge>)}
       </div>
@@ -35,22 +64,24 @@ export default async function NonprofitsPage() {
         Rules from the IRS (checked Oct 31, 2026): who files which form, due the 15th day of the 5th month after the tax year ends (next business day if a weekend or holiday), and Form 8868&apos;s automatic 6-month extension for 990, 990-EZ and 990-PF — <strong>not</strong> 990-N. Sources:{" "}
         {IRS_SOURCES.map((u, i) => <span key={u}>{i > 0 && " · "}<a className="underline" href={u} target="_blank" rel="noopener noreferrer">IRS {i + 1}</a></span>)}. Three consecutive years without filing automatically revokes exempt status.
       </p>
-      {rows.length === 0 && <EmptyState title="No nonprofit clients">Clients marked Nonprofit appear here.</EmptyState>}
+      {rows.length === 0 && <EmptyState title="Nothing here">Add a nonprofit from any client record (Overview → Nonprofit), then set “Does TTurner handle its annual filings?” to Yes.</EmptyState>}
       <div className="space-y-4">
         {rows.map((r) => {
           const name = r.client.businessName || r.client.displayName;
           const clientDocs = docs.filter((d) => d.clientId === r.client.id);
           const form = r.profile?.formType ? NONPROFIT_FORMS[r.profile.formType as keyof typeof NONPROFIT_FORMS] : null;
           return (
-            <div key={r.client.id} data-testid="np-card" data-client={name}>
+            <div key={r.client.id} id={`np-${r.client.id}`} className="scroll-mt-6" data-testid="np-card" data-client={name}>
             <Card title={<span data-testid="np-row">{name} <span className="text-sm font-normal text-slate-600">· {r.taxYear ? `tax year ${r.taxYear}` : "tax year unknown"}</span></span>} actions={<span data-testid="np-bucket"><Badge tone={BUCKETS[r.bucket].tone}>{BUCKETS[r.bucket].label}</Badge></span>}>
-              <dl className="mb-3 grid gap-2 text-sm sm:grid-cols-4">
+              <dl className="mb-3 grid gap-2 text-sm sm:grid-cols-5">
+                <div><dt className="text-xs uppercase text-slate-500">TTurner files it?</dt><dd data-testid="np-service">{r.service ? FILING_SERVICE[r.service] : <span className="text-amber-800">Not recorded</span>} · <Link className="underline" href={`/clients/${r.client.id}`}>change</Link></dd></div>
                 <div><dt className="text-xs uppercase text-slate-500">Fiscal year ends</dt><dd>{r.client.fiscalYearEnd ? MONTHS[r.client.fiscalYearEnd - 1] : <span className="text-amber-800">Not recorded</span>}</dd></div>
                 <div><dt className="text-xs uppercase text-slate-500">Return</dt><dd>{form ? (r.profile?.formType === "OTHER" ? r.profile.otherForm : form.label) : "Not chosen"}</dd></div>
                 <div><dt className="text-xs uppercase text-slate-500">Assigned</dt><dd>{r.client.assignedTo?.name ?? "Unassigned"}</dd></div>
                 <div><dt className="text-xs uppercase text-slate-500">Due</dt><dd data-testid="np-due">{r.due && r.days !== null ? <>{fmtIso(r.due, { month: "short", day: "numeric", year: "numeric" })}{r.extended ? " (extended — Form 8868 accepted)" : ""} · {r.days < 0 ? `${-r.days} days late` : `${r.days} days`}</> : "Unknown until the fiscal year-end is recorded"}</dd></div>
               </dl>
               {r.missing.length > 0 && <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="np-missing">Needs review: {r.missing.join(" · ")}{!r.client.fiscalYearEnd && <> — set it on the client&apos;s <Link className="underline" href={`/clients/${r.client.id}?tab=taxes`}>Taxes tab</Link></>}</p>}
+              {r.review.length > 0 && <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="np-review">Review: {r.review.join(" · ")}</p>}
               {r.filing && (
                 <p className="mb-2 text-sm" data-testid="np-status">
                   Filing status: <strong>{FILING_LABELS[r.filing.filingStatus]}</strong>

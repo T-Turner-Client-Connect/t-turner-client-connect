@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { chicagoToday } from "@/lib/dates";
 import { BusinessTabs } from "@/components/business-tabs";
+import { NonprofitCard } from "@/components/nonprofit-card";
 import { recordHeading } from "@/lib/services/related-businesses";
 import { notFound } from "next/navigation";
 import type { ConsentKind } from "@prisma/client";
@@ -151,6 +152,8 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
               {client.notes && <div className="sm:col-span-2"><dt className="font-semibold text-slate-600">Notes</dt><dd className="whitespace-pre-wrap">{client.notes}</dd></div>}
             </dl>
           </Card>
+
+          <NonprofitCard clientId={id} />
 
           <Card title="Contacts" actions={<span className="text-sm text-slate-600">People at this business or household</span>}>
             {client.contacts.length > 0 && (

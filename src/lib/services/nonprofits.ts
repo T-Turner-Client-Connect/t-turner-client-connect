@@ -59,10 +59,26 @@ export const BUCKETS: Record<Bucket, { label: string; tone: "green" | "navy" | "
 
 const returnTypeFor = (p: { formType: string | null; otherForm: string | null }) => (p.formType === "OTHER" ? p.otherForm || "OTHER" : p.formType);
 
-/** Dashboard rows: one per nonprofit client, for its latest ended tax year. */
+export const FILING_SERVICE = { YES: "Yes — TTurner files it", NO: "No", PENDING_AGREEMENT: "Pending agreement" } as const;
+export type FilingService = keyof typeof FILING_SERVICE;
+
+/**
+ * Dashboard rows: one per nonprofit organization whose filings we handle (or
+ * might — not recorded yet, or pending agreement, flagged for review), for its
+ * latest ended tax year. Organizations we don't file for, and prospects we
+ * haven't agreed to file for (e.g. Nonprofit Interest formation inquiries), are left out.
+ */
 export async function nonprofitDashboard(today = officeToday()) {
   const clients = await prisma.client.findMany({
-    where: { clientType: "NONPROFIT", archivedAt: null },
+    where: {
+      clientType: "NONPROFIT",
+      archivedAt: null,
+      OR: [
+        { nonprofitProfile: { filingService: "YES" } },
+        { nonprofitProfile: { filingService: "PENDING_AGREEMENT" } },
+        { status: { not: "PROSPECT" }, OR: [{ nonprofitProfile: null }, { nonprofitProfile: { filingService: null } }] },
+      ],
+    },
     select: { id: true, displayName: true, businessName: true, fiscalYearEnd: true, assignedTo: { select: { id: true, name: true } }, nonprofitProfile: true },
     orderBy: { displayName: "asc" },
   });
@@ -70,6 +86,11 @@ export async function nonprofitDashboard(today = officeToday()) {
   for (const c of clients) {
     // Missing facts are flagged for review, never assumed (no default December year-end).
     const missing: string[] = [];
+    const service = (c.nonprofitProfile?.filingService ?? null) as FilingService | null;
+    if (!service) missing.push("Whether TTurner handles its annual filings isn't recorded");
+    else if (service === "PENDING_AGREEMENT") missing.push("Filing agreement pending — confirm before tracking its deadline");
+    // Flagged for review without hiding the deadline.
+    const review = c.assignedTo ? [] : ["No staff assigned"];
     if (!c.fiscalYearEnd) missing.push("Fiscal year-end not recorded");
     if (!c.nonprofitProfile?.formType) missing.push("Required return not chosen");
     else if (!c.nonprofitProfile.formBasis) missing.push("How the form was determined isn't recorded");
@@ -82,7 +103,7 @@ export async function nonprofitDashboard(today = officeToday()) {
       ]);
       if (assumedFilings.length) missing.push(`Filing record${assumedFilings.length === 1 ? "" : "s"} (${assumedFilings.map((f) => `${f.returnType} ${f.taxYear}`).join(", ")}) may use a tax year based on an assumed December year-end — verify`);
       if (assumedReminders) missing.push(`${assumedReminders} reminder${assumedReminders === 1 ? " was" : "s were"} sent using an assumed December deadline — verify`);
-      rows.push({ client: c, profile: c.nonprofitProfile, taxYear: null, returnType: null, filing: null, extension: null, extended: false, due: null, days: null, bucket: "NOT_SET_UP" as Bucket, missing });
+      rows.push({ client: c, service, profile: c.nonprofitProfile, taxYear: null, returnType: null, filing: null, extension: null, extended: false, due: null, days: null, bucket: "NOT_SET_UP" as Bucket, missing, review });
       continue;
     }
     const taxYear = latestEndedTaxYear(c.fiscalYearEnd, today);
@@ -106,7 +127,7 @@ export async function nonprofitDashboard(today = officeToday()) {
     else if (days < 0) bucket = "OVERDUE";
     else if (days <= 30) bucket = "DUE";
     else bucket = "UPCOMING";
-    rows.push({ client: c, profile: p, taxYear: taxYear as number | null, returnType, filing, extension, extended, due: due as string | null, days: days as number | null, bucket, missing });
+    rows.push({ client: c, service, profile: p, taxYear: taxYear as number | null, returnType, filing, extension, extended, due: due as string | null, days: days as number | null, bucket, missing, review });
   }
   const order: Bucket[] = ["OVERDUE", "DUE", "NOT_SET_UP", "SUBMITTED", "UPCOMING", "COMPLETED"];
   return rows.sort((a, b) => order.indexOf(a.bucket) - order.indexOf(b.bucket) || (a.days ?? 0) - (b.days ?? 0));
@@ -171,7 +192,8 @@ export async function runNonprofitReminders(today = officeToday()) {
   let sent = 0;
   const owner = await prisma.ownerAccess.findFirst({ where: { isPrimary: true, revokedAt: null }, select: { userId: true } });
   for (const r of rows) {
-    if (!r.profile?.formType || r.days === null || r.taxYear === null || r.bucket === "COMPLETED" || r.bucket === "SUBMITTED") continue;
+    // Only organizations whose filings we handle get reminders.
+    if (r.service !== "YES" || !r.profile?.formType || r.days === null || r.taxYear === null || r.bucket === "COMPLETED" || r.bucket === "SUBMITTED") continue;
     if (!r.profile.reminderDays.includes(r.days)) continue;
     const key = `nonprofit-reminder:${r.client.id}:${r.taxYear}:${r.days}`;
     if (await prisma.auditLog.count({ where: { action: "nonprofit.reminder", entityId: key } })) continue;
