@@ -93,14 +93,22 @@ export default async function DocumentsHub() {
               <li>{health.configured ? "✅" : "❌"} Scanner connected {health.configured ? `(${provider})` : "— set MALWARE_SCAN_PROVIDER and the scanner's settings in Netlify (see docs/INTEGRATIONS.md)"}</li>
               <li>{health.selfTest?.ok ? "✅" : "❌"} Self-test {health.selfTest ? (health.selfTest.ok ? `passed ${fmtDateTime(health.selfTest.at)}` : `failed ${fmtDateTime(health.selfTest.at)}`) : "not run yet"} — the standard antivirus test file must be blocked and a clean file must pass</li>
               <li data-testid="recheck-status">
-                {health.recheckRunning && health.configured ? "✅" : "❌"} Automatic re-check every 10 minutes —{" "}
-                {!health.lastRecheckAt
-                  ? `hasn't run yet. ${health.cronSecretSet ? "CRON_SECRET is set; check that the latest deploy finished and the scheduled function “notifications-cron” is listed in Netlify → Functions." : "CRON_SECRET isn't set in Netlify, so the scheduled job can't run."}`
-                  : !health.recheckRunning
-                    ? `stopped: last ran ${fmtDateTime(health.lastRecheckAt)}, more than 30 minutes ago.`
-                    : health.lastRecheck?.configured === false
-                      ? `running (last ${fmtDateTime(health.lastRecheckAt)}), but no scanner is connected, so it couldn't scan anything.`
-                      : `running: last ${fmtDateTime(health.lastRecheckAt)} checked ${health.lastRecheck?.scanned ?? 0} file(s): ${health.lastRecheck?.clean ?? 0} clean, ${health.lastRecheck?.infected ?? 0} blocked.`}
+                {health.recheckRunning && health.configured && health.cronSecretSet ? "✅" : "❌"} Automatic re-check every 10 minutes —{" "}
+                {!health.cronSecretSet
+                  ? "not verified. CRON_SECRET isn't set on this site, so the scheduled job's requests are refused (HTTP 401) and nothing is re-checked automatically."
+                  : !health.lastRecheckAt
+                    ? "not verified: no scheduled run has been recorded yet. CRON_SECRET is set; after the next deploy finishes, a scheduled run should appear here within 10 minutes (Netlify → Functions → notifications-cron should log “notifications: HTTP 200”)."
+                    : !health.recheckRunning
+                      ? `stopped: last scheduled run ${fmtDateTime(health.lastRecheckAt)}, more than 30 minutes ago.`
+                      : health.lastRecheck?.configured === false
+                        ? `the schedule ran (last ${fmtDateTime(health.lastRecheckAt)}), but no scanner is connected, so it couldn't scan anything.`
+                        : `verified: last scheduled run ${fmtDateTime(health.lastRecheckAt)} checked ${health.lastRecheck?.scanned ?? 0} file(s): ${health.lastRecheck?.clean ?? 0} clean, ${health.lastRecheck?.infected ?? 0} blocked.`}
+                {health.lastRefusedAt && (!health.lastRecheckAt || health.lastRefusedAt > health.lastRecheckAt) && (
+                  <> Last refused request to the scheduled endpoint: {fmtDateTime(health.lastRefusedAt)} ({health.cronSecretSet ? "the secret sent didn't match — check CRON_SECRET's scopes include Functions, then redeploy" : "CRON_SECRET not set"}).</>
+                )}
+              </li>
+              <li data-testid="manual-scan-status">
+                Last manual scan (“Scan quarantined files now”): {health.lastManualAt ? fmtDateTime(health.lastManualAt) : "none"} — a manual scan never counts as the automatic re-check.
               </li>
             </ul>
             {user.role === "ADMIN" && (
@@ -117,7 +125,7 @@ export default async function DocumentsHub() {
             )}
             <p data-testid="quarantine-summary">
               {quarantined.length === 0 ? "No files in quarantine." : `${quarantined.length} file(s) in quarantine — not downloadable and not shown to clients until a scan passes.`}{" "}
-              {health.configured && health.recheckRunning ? "They're re-checked automatically every 10 minutes." : "They're re-checked only when the scanner is connected and the automatic re-check is running (see above), or when you press “Scan quarantined files now”."}
+              {health.configured && health.recheckRunning && health.cronSecretSet ? "They're re-checked automatically every 10 minutes." : "Until a scheduled run is verified above, they're re-checked only when you press “Scan quarantined files now”."}
             </p>
             <div className="flex flex-wrap gap-2">
               <ActionForm action={scanNowAction}><Button type="submit" variant="secondary" disabled={!scanConfigured()}>Scan quarantined files now</Button></ActionForm>

@@ -21,7 +21,7 @@ export function scanState(d: ScanDoc, h: ScanHealth) {
   }
   const tries = d.scanAttempts ?? 0;
   const last = d.lastScanAt ? ` Last try ${d.lastScanAt.toLocaleString("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${d.lastScanError ? `: ${d.lastScanError}` : "."}` : "";
-  const schedule = h.recheckRunning ? " Re-checked automatically every 10 minutes." : " Automatic re-checks aren't running (the 10-minute schedule hasn't reported in) — use “Scan quarantined files now” on the Documents page.";
+  const schedule = h.recheckRunning ? " Re-checked automatically every 10 minutes." : " Automatic re-checks aren't verified (no recent scheduled run) — use “Scan quarantined files now” on the Documents page.";
   if (tries === 0) return { label: "Pending scan", tone: "amber" as const, explain: `Quarantined: waiting for its first scan.${schedule}` };
   return { label: "Scanning", tone: "amber" as const, explain: `Quarantined: the scan hasn't finished (${tries} attempt${tries === 1 ? "" : "s"}).${last}${schedule}` };
 }
