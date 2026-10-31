@@ -36,7 +36,7 @@ export async function packetReports(periodId: string, periodType: PeriodType, vi
       // version stays published until its revision is delivered (then it's unpublished).
       ...("staff" in viewer ? { supersededAt: null } : {}),
       ...(periodType === "MONTH" ? { OR: [{ reportPeriodType: "MONTH" }, { reportPeriodType: null }] } : { reportPeriodType: periodType }),
-      ...("staff" in viewer ? {} : { visibility: "PUBLISHED", scanStatus: "CLEAN" }),
+      ...("staff" in viewer ? {} : { visibility: "PUBLISHED", scanStatus: "CLEAN", reviewStatus: "APPROVED" }),
     },
     include: { file: true, bookkeepingAccount: true },
     orderBy: { createdAt: "asc" },
@@ -47,7 +47,7 @@ export async function packetReports(periodId: string, periodType: PeriodType, vi
 /** The packets (month / quarter / year to date) available in a bookkeeping month. */
 export async function packetsInPeriod(periodId: string, viewer: Viewer) {
   const docs = await prisma.document.findMany({
-    where: { periodId, deletedAt: null, category: "BOOKKEEPING", reportType: { not: null }, ...("staff" in viewer ? { supersededAt: null } : { visibility: "PUBLISHED", scanStatus: "CLEAN" }) },
+    where: { periodId, deletedAt: null, category: "BOOKKEEPING", reportType: { not: null }, ...("staff" in viewer ? { supersededAt: null } : { visibility: "PUBLISHED", scanStatus: "CLEAN", reviewStatus: "APPROVED" }) },
     select: { reportPeriodType: true },
   });
   return [...new Set(docs.map((d) => (d.reportPeriodType ?? "MONTH") as PeriodType))];
