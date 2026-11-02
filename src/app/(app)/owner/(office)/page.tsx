@@ -3,6 +3,9 @@ import { Badge, Card, LinkButton, Notice, PageHeader, Stat } from "@/components/
 import { requireOwner } from "@/lib/auth/owner";
 import { monthlySummary, receivables, todayYmd } from "@/lib/services/owner-billing";
 import { AGING_BUCKETS, money } from "@/lib/billing/pricing";
+import { nameOf, paymentStatus, squareRevenueSummary } from "@/lib/services/square-billing";
+import { squareHealth } from "@/lib/services/square-health";
+import { fmtDate, fmtDateTime } from "@/lib/format";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -10,7 +13,7 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
   const { actor } = await requireOwner("full");
   const thisYear = Number(todayYmd().slice(0, 4));
   const year = Number((await searchParams).year) || thisYear;
-  const [{ months, total }, r] = await Promise.all([monthlySummary(actor, year), receivables(actor)]);
+  const [{ months, total }, r, sq, health] = await Promise.all([monthlySummary(actor, year), receivables(actor), squareRevenueSummary(), squareHealth()]);
   const month = year === thisYear ? months[Number(todayYmd().slice(5, 7)) - 1] : null;
   return (
     <>
@@ -97,6 +100,45 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
           Invoices are &ldquo;invoiced revenue&rdquo; when accepted or issued; only recorded payments count as cash collected.
         </Notice>
       </div>
+      <Card
+        className="mt-4"
+        title="Square recurring billing (from Square)"
+        actions={<Link className="text-sm underline" href="/bookkeeping/square-billing">Square billing</Link>}
+      >
+        <div data-testid="owner-square">
+          <p className="mb-3 text-sm text-slate-600">
+            Read only, from the last verified sync of {sq.linked} confirmed Square series{sq.linked === 1 ? "" : ""}. Refreshed hourly.{" "}
+            {sq.oldestSync ? <>Oldest sync: <strong>{fmtDateTime(sq.oldestSync)}</strong>.</> : "Nothing synced yet."}{" "}
+            Connection: <Badge tone={health.state === "WORKING" ? "green" : health.state === "FAILING" ? "red" : "amber"}>{health.state === "WORKING" ? "Working" : health.state === "FAILING" ? "Not working" : health.state === "UNCHECKED" ? "Not yet verified" : "Not set up"}</Badge>
+          </p>
+          {(sq.stale > 0 || health.state === "FAILING") && <Notice tone="warn" title="Some Square figures may be out of date">{sq.stale} of {sq.linked} series haven&apos;t been read successfully in the last 3 hours. The figures below are the last verified ones.</Notice>}
+          <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            <Stat label="Monthly recurring (Square)" value={money(sq.recurringMonthlyCents)} hint={sq.unknownCadence ? `${sq.unknownCadence} series with an unclear schedule not counted` : "Quarterly/yearly converted to monthly"} />
+            <Stat label={`Paid invoices due ${sq.month}`} value={money(sq.paidThisMonthCents)} hint="Square invoices marked paid" />
+            <Stat label="Outstanding (Square)" value={money(sq.outstandingCents)} hint="Unpaid, incl. overdue — scheduled invoices aren't counted" />
+            <Stat label="Overdue (Square)" value={money(sq.overdueCents)} hint={`${sq.overdueInvoices} invoice${sq.overdueInvoices === 1 ? "" : "s"} past due${sq.failedInvoices ? ` · ${sq.failedInvoices} failed payment${sq.failedInvoices === 1 ? "" : "s"}` : ""}`} />
+            <Stat label="Upcoming, next 30 days" value={money(sq.upcomingCents)} hint={`${sq.upcoming.length} scheduled invoice${sq.upcoming.length === 1 ? "" : "s"}`} />
+          </div>
+          {sq.attention.length > 0 && (
+            <div className="mt-4">
+              <p className="text-sm font-semibold text-red-800">Needs attention</p>
+              <ul className="text-sm">{sq.attention.map((a) => <li key={a.id}>{a.members.map((m) => nameOf(m.client)).join(", ")} — <Badge tone={paymentStatus(a).tone}>{paymentStatus(a).label}</Badge></li>)}</ul>
+            </div>
+          )}
+          {sq.upcoming.length > 0 && (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm" data-testid="owner-square-upcoming">
+                <thead className="text-left text-slate-600"><tr><th className="py-1">Client</th><th>Series</th><th>Next invoice</th><th>Amount</th><th>Last synced</th></tr></thead>
+                <tbody className="divide-y divide-navy-100">
+                  {sq.upcoming.map((a) => (
+                    <tr key={a.id}><td className="py-1">{a.members.map((m) => nameOf(m.client)).join(", ")}</td><td>{a.seriesKey}</td><td>{fmtDate(a.nextDueDate!)}</td><td>{money(a.amountCents ?? 0)}</td><td>{a.syncedAt ? fmtDateTime(a.syncedAt) : "—"}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </Card>
     </>
   );
 }
