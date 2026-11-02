@@ -6,6 +6,7 @@ import { billingSettings } from "@/lib/services/owner-billing";
 import { describeAmount } from "@/lib/billing/pricing";
 import { fmtDateTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { FeeSettingsCard } from "@/components/owner/fee-settings";
 
 const plain = (type: string, v: number) => (type === "FLAT" || type === "PERCENT" ? (v / 100).toString() : "");
 
@@ -91,6 +92,7 @@ export default async function OwnerSettingsPage() {
           <Notice tone="info">Only you see this log. Owner activity is never written to the shared staff audit log.</Notice>
         </div>
       </div>
+      <div className="mt-4"><FeeSettingsCard /></div>
     </>
   );
 }
