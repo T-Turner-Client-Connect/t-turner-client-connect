@@ -10,6 +10,65 @@ import { fmtDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { NOT_SYNCED, portalSquareBilling } from "@/lib/services/square-billing";
 import { PaymentPanel } from "@/components/portal/payment-panel";
+import { MonthlyBillingCard, type BillingRow, type MonthlyBilling } from "@/components/portal/monthly-billing-card";
+import { portalManualBilling } from "@/lib/services/manual-billing";
+
+type SquareView = NonNullable<Awaited<ReturnType<typeof portalSquareBilling>>["view"]>;
+type ManualView = NonNullable<Awaited<ReturnType<typeof portalManualBilling>>>;
+const SQ_LABEL: Record<string, [string, BillingRow["tone"]]> = {
+  PAID: ["Paid", "green"], PARTIALLY_PAID: ["Partly paid", "red"], FAILED: ["Payment failed", "red"], CANCELED: ["Canceled", "gray"],
+  REFUNDED: ["Refunded", "gray"], PARTIALLY_REFUNDED: ["Partly refunded", "gray"], SCHEDULED: ["Upcoming", "navy"], UNPAID: ["Unpaid", "amber"], PAYMENT_PENDING: ["Pending", "amber"],
+};
+const ordinal = (d: number) => `${d}${d % 10 === 1 && d !== 11 ? "st" : d % 10 === 2 && d !== 12 ? "nd" : d % 10 === 3 && d !== 13 ? "rd" : "th"}`;
+
+/** Square-billed: every figure from Square (this account's linked series only). */
+function squareCard(v: SquareView): MonthlyBilling {
+  const [schedule, due] = v.schedule.split(" · ");
+  const upcoming = v.invoices.filter((i) => i.status === "SCHEDULED").sort((x, y) => x.due.localeCompare(y.due)).slice(0, 1);
+  const lastPaid = v.invoices.find((i) => i.status === "PAID");
+  return {
+    title: `${v.title || "Monthly service"} · billed through Square`,
+    amountCents: v.amountCents,
+    schedule: schedule ?? "Monthly",
+    dueDay: due ? due.replace(/^due/, "Due") : null,
+    payWith: v.autopay ? (v.card ? `${v.card.brand} ending in ${v.card.last4}` : "Card on file") : "Pay each invoice",
+    status: { label: v.status.label.replace(" in Square", ""), tone: v.status.tone as BillingRow["tone"] },
+    next: v.nextDueDate ? { date: new Date(v.nextDueDate).toISOString(), amountCents: upcoming[0]?.amountCents ?? v.amountCents } : null,
+    last: lastPaid ? { date: lastPaid.paidAt ?? lastPaid.due, amountCents: lastPaid.amountCents } : null,
+    overdueCents: v.overdueCents,
+    overdueNote: v.overdueCount ? `${v.overdueCount} invoice${v.overdueCount === 1 ? "" : "s"}` : null,
+    rows: [
+      ...upcoming.map((i) => ({ key: `next-${i.number ?? i.due}`, due: i.due, amountCents: i.amountCents, paidOn: null, status: "Upcoming", tone: "navy" as const, link: i.invoiceUrl ? { href: i.invoiceUrl, label: "Invoice" } : null, upcoming: true })),
+      ...v.invoices.filter((i) => i.status !== "SCHEDULED").map((i) => ({
+        key: i.number ?? i.due, due: i.due, amountCents: i.amountCents, paidOn: i.paidAt,
+        detail: i.paidCents != null ? `$${(i.paidCents / 100).toFixed(2)} paid · $${(((i.amountCents ?? 0) - i.paidCents) / 100).toFixed(2)} due` : null,
+        status: (SQ_LABEL[i.status] ?? ["Unpaid", "amber"])[0], tone: (SQ_LABEL[i.status] ?? ["Unpaid", "amber"])[1],
+        link: i.receiptUrl ? { href: i.receiptUrl, label: "Receipt" } : i.invoiceUrl ? { href: i.invoiceUrl, label: "Invoice" } : null,
+      })),
+    ],
+    source: `Shown from Square as of ${fmtDate(v.syncedAt)}. "Paid" appears only when Square confirms it. To change your card or schedule, send us a message.`,
+  };
+}
+
+/** Office-billed: payments our office recorded for this account. */
+function manualCard(v: ManualView): MonthlyBilling {
+  return {
+    title: "Monthly bookkeeping · billed by our office",
+    amountCents: v.feeCents,
+    schedule: "Monthly",
+    dueDay: v.billingDay ? `Due on the ${ordinal(v.billingDay)}` : null,
+    payWith: v.payments[0]?.method ?? null,
+    status: v.status ? { label: v.status.label, tone: v.status.tone } : { label: "—", tone: "gray" },
+    next: v.next ? { date: v.next.due, amountCents: v.next.amountCents } : null,
+    last: v.payments[0] ? { date: v.payments[0].paidOn.toISOString(), amountCents: v.payments[0].amountCents } : null,
+    overdueCents: v.overdueCents,
+    rows: [
+      ...(v.next ? [{ key: "next", due: v.next.due, amountCents: v.next.amountCents, paidOn: null, status: "Upcoming", tone: "navy" as const, upcoming: true }] : []),
+      ...v.payments.map((p) => ({ key: p.id, due: `${p.periodMonth}-${String(v.billingDay ?? 1).padStart(2, "0")}`, amountCents: p.amountCents, paidOn: p.paidOn.toISOString(), detail: p.method, status: "Paid", tone: "green" as const })),
+    ],
+    source: "Payments recorded by our office. If something looks wrong, send us a message.",
+  };
+}
 
 export const metadata = { title: "Billing" };
 
@@ -25,72 +84,30 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
       </>
     );
   }
-  const [items, sq] = await Promise.all([portalBilling(user, current.clientId), portalSquareBilling(user, current.clientId)]);
+  const [items, sq, manual] = await Promise.all([portalBilling(user, current.clientId), portalSquareBilling(user, current.clientId), portalManualBilling(user, current.clientId)]);
   const client = await prisma.client.findUniqueOrThrow({ where: { id: current.clientId }, select: { displayName: true } });
   const methods = new Map((await prisma.invoice.findMany({ where: { id: { in: items.map((i) => i.id) } }, select: { id: true, paymentMethod: true } })).map((i) => [i.id, i.paymentMethod]));
   return (
     <>
       <PageHeader title="Billing" subtitle="Quotes and invoices from TTurner & Associates Group for this account." />
-      {sq.state !== "NONE" && (
-        <Card title="Monthly billing" className="mb-4">
+      {sq.state !== "NONE" && !sq.view && (
+        <Card className="mb-6" title="Your monthly billing">
           <div data-testid="portal-square-billing">
-            {!sq.view ? (
-              <>
-                <p><Badge tone="amber">{NOT_SYNCED}</Badge></p>
-                <p className="mt-2 text-sm text-slate-700">Your recurring billing with our office continues in Square exactly as arranged. There&apos;s nothing to authorize or update here, and nothing new will be charged.</p>
-              </>
-            ) : (
-              <>
-                <dl className="grid gap-3 text-sm sm:grid-cols-2">
-                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">{sq.view.title || "Monthly service"}</dt><dd className="text-lg font-semibold text-navy-900">{sq.view.amountCents == null ? "—" : money(sq.view.amountCents)}</dd></div>
-                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">Schedule</dt><dd>{sq.view.schedule}</dd></div>
-                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">Next payment</dt><dd>{sq.view.nextDueDate ? <>{fmtDate(sq.view.nextDueDate)}{sq.view.amountCents != null && <> · {money(sq.view.amountCents)}</>}</> : "None scheduled"}</dd></div>
-                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">Status</dt><dd><Badge tone={sq.view.status.tone}>{sq.view.status.label.replace(" in Square", "")}</Badge></dd></div>
-                  {sq.view.card && <div><dt className="text-xs uppercase tracking-wide text-slate-500">Automatic payment</dt><dd>{sq.view.card.brand} ending in {sq.view.card.last4}</dd></div>}
-                  {sq.view.authorizationVerified && <div><dt className="text-xs uppercase tracking-wide text-slate-500">Authorization</dt><dd>On file with Square — nothing new is needed</dd></div>}
-                </dl>
-                {sq.view.overdueCents > 0 && <p className="mt-3 rounded bg-red-50 p-2 text-sm text-red-800" data-testid="portal-square-overdue">Past due: {money(sq.view.overdueCents)} ({sq.view.overdueCount} invoice{sq.view.overdueCount === 1 ? "" : "s"}). Questions? Send us a message.</p>}
-                {sq.view.overdueCents === 0 && sq.view.outstandingCents > 0 && <p className="mt-3 text-sm" data-testid="portal-square-outstanding">Open balance: {money(sq.view.outstandingCents)}</p>}
-                <div className="mt-4" data-testid="portal-square-history">
-                  <p className="mb-1 text-sm font-semibold">Your payments</p>
-                  {sq.view.invoices.length === 0 ? <p className="text-sm text-slate-600">No payments yet.</p> : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="text-left text-xs uppercase tracking-wide text-slate-500"><tr><th className="py-1">Due</th><th>Amount</th><th>Paid on</th><th>Status</th><th>Receipt</th></tr></thead>
-                        <tbody className="divide-y divide-navy-100">
-                          {sq.view.invoices.filter((i) => i.status === "SCHEDULED").sort((x, y) => x.due.localeCompare(y.due)).slice(0, 1).map((i) => (
-                            <tr key={`next-${i.number ?? i.due}`} className="bg-gold-100/50" data-testid="portal-square-upcoming">
-                              <td className="py-1.5 font-semibold">{fmtDate(new Date(`${i.due}T12:00:00Z`))}</td>
-                              <td className="font-semibold">{i.amountCents == null ? "—" : money(i.amountCents)}</td>
-                              <td className="text-xs text-slate-600">{sq.view!.autopay ? "Charged automatically" : "—"}</td>
-                              <td><Badge tone="navy">Upcoming</Badge></td>
-                              <td>{i.invoiceUrl ? <a className="underline" href={i.invoiceUrl} target="_blank" rel="noopener noreferrer">Invoice</a> : "—"}</td>
-                            </tr>
-                          ))}
-                          {sq.view.invoices.filter((i) => i.status !== "SCHEDULED").map((i) => (
-                            <tr key={i.number ?? i.due}>
-                              <td className="py-1.5">{fmtDate(new Date(`${i.due}T12:00:00Z`))}</td>
-                              <td>{i.amountCents == null ? "—" : money(i.amountCents)}{i.paidCents != null && <span className="block text-xs text-slate-600">{money(i.paidCents)} paid · {money((i.amountCents ?? 0) - i.paidCents)} due</span>}</td>
-                              <td>{i.paidAt ? fmtDate(new Date(`${i.paidAt}T12:00:00Z`)) : "—"}</td>
-                              <td><Badge tone={i.status === "PAID" ? "green" : i.status === "FAILED" || i.status === "PARTIALLY_PAID" ? "red" : i.status === "CANCELED" || i.status === "REFUNDED" ? "gray" : "amber"}>{i.status === "PAID" ? "Paid" : i.status === "PARTIALLY_PAID" ? "Partly paid" : i.status === "FAILED" ? "Payment failed" : i.status === "CANCELED" ? "Canceled" : i.status === "REFUNDED" ? "Refunded" : i.status === "PARTIALLY_REFUNDED" ? "Partly refunded" : "Unpaid"}</Badge></td>
-                              <td>{i.receiptUrl ? <a className="underline" href={i.receiptUrl} target="_blank" rel="noopener noreferrer">Receipt</a> : i.invoiceUrl ? <a className="underline" href={i.invoiceUrl} target="_blank" rel="noopener noreferrer">Invoice</a> : "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-                {(sq.view.alsoCovers.length > 0 || sq.view.otherAccounts > 0) && (
-                  <p className="mt-3 text-sm" data-testid="portal-square-covers">This one bill also covers {[...sq.view.alsoCovers, ...(sq.view.otherAccounts ? [`${sq.view.otherAccounts} other account${sq.view.otherAccounts === 1 ? "" : "s"}`] : [])].join(", ")} — you&apos;re charged once per cycle.</p>
-                )}
-                <p className="mt-3 text-xs text-slate-600">Shown from Square as of {fmtDate(sq.view.syncedAt)}. Billing runs in Square as arranged; to change your card or schedule, send us a message.</p>
-              </>
-            )}
+            <p><Badge tone="amber">{NOT_SYNCED}</Badge></p>
+            <p className="mt-2 text-sm text-slate-700">Your recurring billing with our office continues in Square exactly as arranged. There&apos;s nothing to authorize or update here, and nothing new will be charged.</p>
           </div>
         </Card>
       )}
-      {items.length === 0 && sq.state === "NONE" && <EmptyState title="Nothing here yet">Quotes and invoices we send you will appear here.</EmptyState>}
+      {sq.view && (
+        <>
+          <MonthlyBillingCard testId="portal-square-billing" b={squareCard(sq.view)} />
+          {(sq.view.alsoCovers.length > 0 || sq.view.otherAccounts > 0) && (
+            <p className="-mt-3 mb-6 text-sm" data-testid="portal-square-covers">This one bill also covers {[...sq.view.alsoCovers, ...(sq.view.otherAccounts ? [`${sq.view.otherAccounts} other account${sq.view.otherAccounts === 1 ? "" : "s"}`] : [])].join(", ")} — you&apos;re charged once per cycle.</p>
+          )}
+        </>
+      )}
+      {manual && <MonthlyBillingCard testId="portal-manual-billing" b={manualCard(manual)} />}
+      {items.length === 0 && sq.state === "NONE" && !manual && <EmptyState title="Nothing here yet">Quotes and invoices we send you will appear here.</EmptyState>}
       <div className="space-y-4">
         {items.map((inv) => (
           <Card

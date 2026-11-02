@@ -119,6 +119,22 @@ export function SquareBillingPanel({ clientId, sb, approver, addable, client, au
       <p className="mt-1">Not included in current billing or totals. Its invoices and payments stay in Square&apos;s history; nothing was changed in Square.</p>
     </details>
   );
+  if (!a && sb.state === "NONE") {
+    // Office-billed client: a slim option to switch to Square billing, below the office billing box.
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-ivory-200 px-4 py-3 text-sm text-slate-600" data-testid="square-billing">
+        <span className="flex items-center gap-2"><SquareMark className="size-6" /> Not billed through Square. If this client starts paying through Square, link their billing here.</span>
+        <div className="flex flex-wrap gap-2">
+          <SquareFindPanel owner={approver} client={{ id: clientId, ...client }} coverOptions={[{ id: clientId, name: client.name }, ...addable.filter((c) => c.id !== clientId).map((c) => ({ id: c.id, name: nameOf(c) }))]} />
+          <ActionForm action={setSquareExpectedAction.bind(null, clientId, true)} showSuccess>
+            <Button type="submit" variant="ghost">Mark as billed through Square</Button>
+          </ActionForm>
+        </div>
+        {reviewList}
+        {endedHistory}
+      </div>
+    );
+  }
   if (!a) {
     return (
       <div className="space-y-3 rounded-xl border border-ivory-200 p-3" data-testid="square-billing">

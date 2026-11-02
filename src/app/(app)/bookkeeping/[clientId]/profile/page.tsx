@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import {
-  recordAuthorizationAction, revealEinAction, revokeAuthorizationAction, saveAccountAction, saveBillingAction, saveBillingNotesAction, saveBusinessInfoAction,
+  recordAuthorizationAction, revealEinAction, revokeAuthorizationAction, saveAccountAction, saveBillingNotesAction, saveBusinessInfoAction,
 } from "@/app/actions/bookkeeping-clients";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
@@ -20,6 +20,8 @@ import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { businessFamily } from "@/lib/services/related-businesses";
 import { SquareBillingPanel, SquareConnectionStatus } from "@/components/square-billing-panel";
 import { squareHealth } from "@/lib/services/square-health";
+import { manualBillingView } from "@/lib/services/manual-billing";
+import { ManualBillingPanel } from "@/components/manual-billing-panel";
 
 export const metadata = { title: "Business profile" };
 
@@ -39,6 +41,8 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
   const billing = await billingView(user, clientId);
   const evidenceDocs = billing.allowed ? await prisma.document.findMany({ where: { clientId, deletedAt: null, category: { not: "IDENTITY" } }, select: { id: true, title: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 40 }) : [];
   const [approver, family, health] = billing.allowed ? await Promise.all([isReportApprover(user), businessFamily(clientId), squareHealth()]) : [false, null, null];
+  // Office-managed billing (clients not billed through Square): payments recorded by the office.
+  const manual = billing.allowed && billing.squareBilling.state === "NONE" ? await manualBillingView(user, clientId) : null;
   // Businesses (and the owner's Personal record) that could share this client's Square bill.
   const onBill = new Set(billing.allowed ? billing.squareBilling.arrangement?.members.map((m) => m.clientId) ?? [] : []);
   const addable = family ? [family.person, ...family.businesses].filter((c): c is NonNullable<typeof c> => !!c && !onBill.has(c.id)) : [];
@@ -151,31 +155,18 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
               <p className="text-sm text-slate-600" data-testid="billing-restricted">Billing and payment methods are managed by Tabitha.</p>
             ) : (
               <div className="space-y-4" data-testid="billing">
-                {health && !billing.squareBilling.arrangement && <SquareConnectionStatus health={health} />}
+                {health && !billing.squareBilling.arrangement && billing.squareBilling.state !== "NONE" && <SquareConnectionStatus health={health} />}
+                {billing.squareBilling.state === "NONE" && manual && <ManualBillingPanel clientId={clientId} view={manual} owner={approver} officeStatus={billing.billing?.paymentStatus ?? "NOT_SET_UP"} />}
                 <SquareBillingPanel
                   clientId={clientId} sb={billing.squareBilling} approver={approver} addable={addable}
                   client={{ name: client.businessName || client.displayName, email: client.email, phone: client.phone }}
                   // Unlinked clients are searched in Square automatically (read only) — but only while the connection works.
-                  autoSuggest={!billing.squareBilling.arrangement && health?.state === "WORKING"}
+                  autoSuggest={billing.squareBilling.state === "NOT_SYNCED" && health?.state === "WORKING"}
                   initialQuery={billing.square.customerId?.status === "UNVERIFIED" ? billing.square.customerId.id : undefined}
                   health={health} notes={billing.billing?.notes ?? null} notesAction={saveBillingNotesAction.bind(null, clientId)}
                 />
                 {billing.squareBilling.state === "NONE" ? (
-                  <div className="space-y-3 rounded-xl border border-ivory-200 p-3" data-testid="manual-billing">
-                    <p className="text-sm"><strong>Manually managed billing</strong> <Badge tone="gray">Not billed through Square</Badge> <span className="block text-xs text-slate-600">Only for clients who aren&apos;t billed through Square. If this client pays through Square, use “Mark as billed through Square” above and link them instead.</span></p>
-                    <div className="grid gap-3 text-sm sm:grid-cols-2">
-                      <p><span className="block text-xs uppercase tracking-wide text-slate-500">Card saved through the portal</span>{billing.square.card ? `${billing.square.card.brand} ****${billing.square.card.last4} · exp ${billing.square.card.expMonth}/${billing.square.card.expYear}` : "None saved"}</p>
-                      <p><span className="block text-xs uppercase tracking-wide text-slate-500">Recurring charges</span>{billing.chargeAuthorized ? <Badge tone="green">Authorized</Badge> : <Badge tone="red">Not authorized</Badge>} <span className="block text-xs text-slate-600">A card on file alone never authorizes a charge.</span></p>
-                    </div>
-                    <ActionForm action={saveBillingAction.bind(null, clientId)} className="grid gap-3 sm:grid-cols-3">
-                      <Field label="Monthly bookkeeping charge ($)"><input className="input" name="monthlyFee" inputMode="decimal" defaultValue={money(billing.billing?.monthlyFeeCents)} /></Field>
-                      <Field label="Billing start date"><input className="input" type="date" name="billingStartDate" defaultValue={iso(billing.billing?.billingStartDate)} /></Field>
-                      <Field label="Billing day of the month"><select className="input" name="billingDay" defaultValue={billing.billing?.billingDay ?? ""}><option value="">—</option>{Array.from({ length: 28 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d}</option>)}</select></Field>
-                      <Field label="Office-recorded status (not from Square)"><select className="input" name="paymentStatus" defaultValue={billing.billing?.paymentStatus ?? "NOT_SET_UP"}>{Object.entries(BILLING_STATUSES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
-                      <Field label="Notes"><input className="input" name="notes" defaultValue={billing.billing?.notes ?? ""} /></Field>
-                      <div className="sm:col-span-3"><Button type="submit" variant="secondary">Save billing</Button></div>
-                    </ActionForm>
-                  </div>
+                  null
                 ) : (
                   (billing.billing?.monthlyFeeCents != null || billing.billing?.billingDay != null || billing.billing?.billingStartDate || (billing.billing?.paymentStatus && billing.billing.paymentStatus !== "NOT_SET_UP") || billing.square.customerId?.status === "UNVERIFIED" || billing.square.customerId?.previousManual) && (
                     <details className="rounded-xl border border-dashed border-slate-300 p-3 text-sm" data-testid="manual-history">
