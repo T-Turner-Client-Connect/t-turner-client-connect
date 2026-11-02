@@ -12,7 +12,7 @@ import {
 } from "@/lib/services/bookkeeping-clients";
 import { prisma } from "@/lib/prisma";
 import {
-  recordChargeAuthorization, revealEin, setCoethaLink, revokeChargeAuthorization, saveAccount, saveBilling, saveBusinessInfo, setBillingAccess,
+  recordChargeAuthorization, revealEin, setCoethaLink, revokeChargeAuthorization, saveAccount, saveBilling, saveBillingNotes, saveBusinessInfo, setBillingAccess,
 } from "@/lib/services/bookkeeping-profile";
 
 const refresh = (clientId?: string) => {
@@ -309,6 +309,15 @@ export async function saveAccountAction(clientId: string, accountId: string | nu
     });
     refresh(clientId);
     return accountId ? "Account updated." : "Account added.";
+  });
+}
+
+export async function saveBillingNotesAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await saveBillingNotes(actor, clientId, str(fd, "notes"));
+    refresh(clientId);
+    return "Billing notes saved.";
   });
 }
 

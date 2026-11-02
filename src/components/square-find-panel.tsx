@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Badge, Button } from "@/components/ui";
 
 type Tone = "navy" | "gold" | "green" | "red" | "gray" | "amber";
-import { linkSquareBillingAction, squareSearchAction, squareSuggestAction, type SquareSearchResult } from "@/app/actions/square-billing";
+import { linkSquareBillingAction, reviewSquareSeriesAction, squareSearchAction, squareSuggestAction, type SquareSearchResult } from "@/app/actions/square-billing";
 
 type Client = { id: string; name: string; email: string | null; phone: string | null };
 type Option = { id: string; name: string };
@@ -23,7 +23,7 @@ const fmtDay = (iso: string | null) => (iso ? new Date(`${iso}T12:00:00`).toLoca
  * saves only the verified Square customer ID and series in Client Connect. Nothing
  * is created, changed or charged in Square.
  */
-export function SquareFindPanel({ client, coverOptions, autoSuggest = false, initialQuery }: { client: Client; coverOptions: Option[]; autoSuggest?: boolean; initialQuery?: string }) {
+export function SquareFindPanel({ client, coverOptions, autoSuggest = false, initialQuery, owner = false }: { client: Client; coverOptions: Option[]; autoSuggest?: boolean; initialQuery?: string; owner?: boolean }) {
   const router = useRouter();
   const [open, setOpen] = useState(autoSuggest);
   const [query, setQuery] = useState(initialQuery || client.email || client.name);
@@ -57,14 +57,14 @@ export function SquareFindPanel({ client, coverOptions, autoSuggest = false, ini
     });
   }, [autoSuggest, client.id]);
 
-  const search = () => {
+  const search = (text = query) => {
     setError(null);
     setPick(null);
     setDone(null);
     setSuggested(null);
     startSearch(async () => {
       try {
-        const r = await squareSearchAction(query);
+        const r = await squareSearchAction(text);
         if (r.error) {
           setResults(null);
           setError(r.error);
@@ -159,8 +159,36 @@ export function SquareFindPanel({ client, coverOptions, autoSuggest = false, ini
               {c.reasons && c.reasons.length > 0 && (
                 <p className="mt-1 flex flex-wrap gap-1">{c.reasons.map((r) => <Badge key={r} tone={r.startsWith("different") ? "amber" : "green"}>{r}</Badge>)}</p>
               )}
+              {c.review.length > 0 && (
+                <div className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-950" data-testid="square-review-series">
+                  <p className="font-semibold">Status needs review — not offered for linking ({c.review.length})</p>
+                  <ul className="mt-1 space-y-2">
+                    {c.review.map((e) => (
+                      <li key={e.seriesKey} data-review-series={e.seriesKey}>
+                        <Badge tone="amber">Needs review</Badge> <strong>Series {e.seriesKey}</strong>{e.matched ? " (the series you searched)" : ""} · {e.title || "Recurring invoice"} · {usd(e.amountCents)} · {e.schedule}{e.lastDueDate ? ` · last invoice due ${fmtDay(e.lastDueDate)}` : ""}
+                        <span className="block">{e.reason} Square&apos;s API has no series status, so this needs your decision.</span>
+                        {owner ? <ReviewSeries customerId={c.id} seriesKey={e.seriesKey} onDone={() => search()} /> : <span className="block italic">Tabitha reviews this series.</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {c.ended.length > 0 && (
+                <details className="mt-2 text-xs text-slate-600" data-testid="square-ended-series" open={c.ended.some((e) => e.matched)}>
+                  <summary className="cursor-pointer">{c.ended.length} ended series — history only, can&apos;t be linked</summary>
+                  <ul className="mt-1 space-y-1">
+                    {c.ended.map((e) => (
+                      <li key={e.seriesKey} data-ended-series={e.seriesKey}>
+                        <Badge tone="gray">Ended</Badge> <strong>Series {e.seriesKey}</strong>{e.matched ? " (the series you searched)" : ""} · {e.title || "Recurring invoice"} · {usd(e.amountCents)} · {e.schedule}{e.lastDueDate ? ` · last invoice due ${fmtDay(e.lastDueDate)}` : ""}
+                        <span className="block">{e.decision ? `Marked ended by Tabitha on ${fmtDay(e.decision.decidedAt)}: ${e.decision.reason}` : e.reason}</span>
+                        {owner && <ReviewSeries customerId={c.id} seriesKey={e.seriesKey} onDone={() => search()} correction />}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
               {c.series.length === 0 ? (
-                <p className="mt-1 text-slate-600">No recurring invoices found in Square for this customer.</p>
+                <p className="mt-1 text-slate-600">{c.ended.length ? "No active recurring series in Square for this customer." : "No recurring invoices found in Square for this customer."}</p>
               ) : (
                 <ul className="mt-2 space-y-2">
                   {c.series.map((s) => (
@@ -233,6 +261,31 @@ export function SquareFindPanel({ client, coverOptions, autoSuggest = false, ini
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Owner only: settle a series' status (Active / Ended) with a reason. Nothing is changed in Square. */
+function ReviewSeries({ customerId, seriesKey, onDone, correction = false }: { customerId: string; seriesKey: string; onDone: () => void; correction?: boolean }) {
+  const [reason, setReason] = useState("");
+  const [msg, setMsg] = useState<{ ok?: string; error?: string } | null>(null);
+  const [pending, start] = useTransition();
+  const decide = (decision: "ACTIVE" | "ENDED") => {
+    const fd = new FormData();
+    fd.set("reason", reason);
+    start(async () => {
+      const r = await reviewSquareSeriesAction(customerId, seriesKey, decision, null, fd);
+      setMsg(r?.error ? { error: r.error } : { ok: r?.ok ?? "Saved." });
+      if (!r?.error) onDone();
+    });
+  };
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2" data-testid={`review-${seriesKey}`}>
+      <input className="input w-72 text-xs" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={correction ? "Why correct it? (required)" : "Why? e.g. Replaced by the monthly series"} aria-label={`Reason for series ${seriesKey}`} />
+      {!correction && <Button type="button" variant="secondary" disabled={pending} onClick={() => decide("ENDED")}>Mark ended (historical)</Button>}
+      <Button type="button" variant="ghost" disabled={pending} onClick={() => decide("ACTIVE")}>{correction ? "Correct: mark active" : "Mark active"}</Button>
+      {msg?.error && <span className="text-red-700" role="alert">{msg.error}</span>}
+      {msg?.ok && <span className="text-emerald-800" role="status">{msg.ok}</span>}
     </div>
   );
 }
