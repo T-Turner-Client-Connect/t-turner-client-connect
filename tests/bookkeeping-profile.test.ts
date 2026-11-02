@@ -99,12 +99,13 @@ describe("monthly bookkeeping billing", () => {
     expect((await billingView(otherAdmin, shop.id)).allowed).toBe(false);
     await expect(saveBilling(daria, shop.id, { monthlyFee: "350" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(saveBilling(tabitha, shop.id, { monthlyFee: "350", notes: "card 4111 1111 1111 1111" })).rejects.toThrow(/Card numbers/);
-    await expect(saveBilling(tabitha, shop.id, { monthlyFee: "350", squareCustomerId: "4111111111111111" })).rejects.toThrow(/never a card number/);
-    await saveBilling(tabitha, shop.id, { monthlyFee: "$350.00", billingStartDate: new Date(2026, 10, 1), billingDay: 5, paymentStatus: "CURRENT", squareCustomerId: "SQ_CUST_FICTIONAL_1" });
+    await saveBilling(tabitha, shop.id, { monthlyFee: "$350.00", billingStartDate: new Date(2026, 10, 1), billingDay: 5, paymentStatus: "CURRENT", ...({ squareCustomerId: "SQ_CUST_FICTIONAL_1" } as object) });
     let v = await billingView(tabitha, shop.id);
     if (!v.allowed) throw new Error("expected access");
     expect(v.billing?.monthlyFeeCents).toBe(35000);
-    expect(v.square).toEqual({ connected: false, card: null, cardId: null });
+    // A Square customer ID is never saved from the billing form — only from a confirmed Find and link.
+    expect(v.billing?.squareCustomerId).toBeNull();
+    expect(v.square).toEqual({ connected: false, card: null, cardId: null, customerId: null });
     expect(v.chargeAuthorized).toBe(false);
     await expect(recordChargeAuthorization(tabitha, shop.id, { amount: "350", startDate: new Date(2026, 10, 5), method: "SIGNED_FORM", authorizedByName: "Sam Example", authorizedAt: new Date(2026, 9, 20) })).rejects.toThrow(/Attach the signed/);
     const form = await staffUploadDocument(tabitha, { clientId: shop.id, category: "CONTRACTS", visibility: "STAFF_ONLY", bytes: await pdf(), originalName: "authorization.pdf" });

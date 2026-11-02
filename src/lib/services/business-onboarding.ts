@@ -387,7 +387,9 @@ export async function savePaymentMethod(user: PortalActor, clientId: string, inp
   const client = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { displayName: true, email: true } });
   const billing = await prisma.bookkeepingBilling.findUnique({ where: { clientId } });
   try {
-    let customerId = billing?.squareCustomerId ?? null;
+    // A hand-typed, never-verified Square customer ID is not used: the card could end up on someone else's Square account.
+    let customerId = billing?.squareCustomerIdSource === "MANUAL" ? null : billing?.squareCustomerId ?? null;
+    const unverifiedId = billing?.squareCustomerIdSource === "MANUAL" ? billing.squareCustomerId : null;
     if (!customerId) {
       const created = await squareRequest<{ customer: { id: string } }>("POST", "/v2/customers", { idempotency_key: randomUUID(), reference_id: clientId, company_name: client.displayName, ...(client.email ? { email_address: client.email } : {}) });
       customerId = created.customer.id;
@@ -401,12 +403,12 @@ export async function savePaymentMethod(user: PortalActor, clientId: string, inp
     const old = billing?.squareCardId;
     await prisma.bookkeepingBilling.upsert({
       where: { clientId },
-      create: { clientId, squareCustomerId: customerId, squareCardId: saved.card.id, cardBrand: saved.card.card_brand ?? null, cardLast4: saved.card.last_4 ?? null, cardExpMonth: saved.card.exp_month ?? null, cardExpYear: saved.card.exp_year ?? null, cardSavedAt: new Date() },
-      update: { squareCustomerId: customerId, squareCardId: saved.card.id, cardBrand: saved.card.card_brand ?? null, cardLast4: saved.card.last_4 ?? null, cardExpMonth: saved.card.exp_month ?? null, cardExpYear: saved.card.exp_year ?? null, cardSavedAt: new Date() },
+      create: { clientId, squareCustomerId: customerId, squareCustomerIdSource: "CLIENT_CONNECT", squareCardId: saved.card.id, cardBrand: saved.card.card_brand ?? null, cardLast4: saved.card.last_4 ?? null, cardExpMonth: saved.card.exp_month ?? null, cardExpYear: saved.card.exp_year ?? null, cardSavedAt: new Date() },
+      update: { squareCustomerId: customerId, ...(customerId !== billing?.squareCustomerId ? { squareCustomerIdSource: "CLIENT_CONNECT", squareCustomerIdVerifiedAt: null } : {}), squareCardId: saved.card.id, cardBrand: saved.card.card_brand ?? null, cardLast4: saved.card.last_4 ?? null, cardExpMonth: saved.card.exp_month ?? null, cardExpYear: saved.card.exp_year ?? null, cardSavedAt: new Date() },
     });
     if (old && old !== saved.card.id) await squareRequest("POST", `/v2/cards/${encodeURIComponent(old)}/disable`).catch(() => {});
     // Logged without any card data or token.
-    await prisma.auditLog.create({ data: { action: old ? "billing.payment_method_replaced" : "billing.payment_method_saved", entityType: "Client", entityId: clientId, clientId, details: { portalUserId: user.id, brand: saved.card.card_brand ?? null, last4: saved.card.last_4 ?? null } } });
+    await prisma.auditLog.create({ data: { action: old ? "billing.payment_method_replaced" : "billing.payment_method_saved", entityType: "Client", entityId: clientId, clientId, details: { portalUserId: user.id, brand: saved.card.card_brand ?? null, last4: saved.card.last_4 ?? null, ...(unverifiedId ? { replacedUnverifiedSquareCustomerId: unverifiedId } : {}) } } });
     return saved.card;
   } catch (err) {
     if (err instanceof SquareError) throw new ValidationError(err.message);

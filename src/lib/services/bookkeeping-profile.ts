@@ -217,7 +217,7 @@ export async function setBillingAccess(actor: Actor, userId: string, allowed: bo
   await audit(prisma, { actorId: actor.id, action: allowed ? "bookkeeping.billing_access_granted" : "bookkeeping.billing_access_removed", entityType: "User", entityId: userId });
 }
 
-export type BillingInput = { tierName?: string | null; monthlyFee?: string | null; billingStartDate?: Date | null; billingDay?: number | null; paymentStatus?: string | null; squareCustomerId?: string | null; notes?: string | null };
+export type BillingInput = { tierName?: string | null; monthlyFee?: string | null; billingStartDate?: Date | null; billingDay?: number | null; paymentStatus?: string | null; notes?: string | null };
 
 export async function saveBilling(actor: Actor, clientId: string, input: BillingInput) {
   await assertBilling(actor);
@@ -230,11 +230,9 @@ export async function saveBilling(actor: Actor, clientId: string, input: Billing
   if (input.billingDay != null && (!Number.isInteger(input.billingDay) || input.billingDay < 1 || input.billingDay > 28)) throw new ValidationError("Choose a billing day from 1 to 28.");
   const status = input.paymentStatus || "NOT_SET_UP";
   if (!(status in BILLING_STATUSES)) throw new ValidationError("Choose the payment status.");
-  const squareCustomerId = clean(input.squareCustomerId, 64);
-  // Square ids are letters, digits, hyphens and underscores. Anything that looks like a card number is refused.
-  if (squareCustomerId && (!/^[A-Za-z0-9_-]+$/.test(squareCustomerId) || /\d{12,}/.test(squareCustomerId))) throw new ValidationError("Enter the Square customer ID (letters and numbers from Square), never a card number.");
+  // The Square customer ID is never typed here: it's saved only from a confirmed Find and link in Square.
   if (input.notes && /\b(?:\d[ -]?){13,19}\b/.test(input.notes)) throw new ValidationError("Card numbers can't be saved. Payment methods are kept only in Square.");
-  const data = { tierName: clean(input.tierName, 60), monthlyFeeCents: cents, billingStartDate: input.billingStartDate ?? null, billingDay: input.billingDay ?? null, paymentStatus: status, squareCustomerId, notes: clean(input.notes, 500), updatedById: actor.id };
+  const data = { tierName: clean(input.tierName, 60), monthlyFeeCents: cents, billingStartDate: input.billingStartDate ?? null, billingDay: input.billingDay ?? null, paymentStatus: status, notes: clean(input.notes, 500), updatedById: actor.id };
   await prisma.bookkeepingBilling.upsert({ where: { clientId }, create: { clientId, ...data }, update: data });
   await audit(prisma, { actorId: actor.id, action: "bookkeeping.billing_saved", entityType: "Client", entityId: clientId, clientId, details: { monthlyFeeCents: cents, paymentStatus: status } });
 }
@@ -290,12 +288,22 @@ export async function billingView(actor: Actor, clientId: string) {
   const connected = squareConnected();
   // Card details only as Square returned them, and only while Square is connected.
   const card = connected && billing?.squareCardId && billing.cardLast4 ? { brand: billing.cardBrand ?? "Card", last4: billing.cardLast4, expMonth: billing.cardExpMonth ?? 0, expYear: billing.cardExpYear ?? 0 } : null;
+  // Whether the Square customer ID on file is one Square confirmed, or only typed by hand.
+  const linkedId = squareBilling.arrangement?.squareCustomerId ?? null;
+  const storedId = billing?.squareCustomerId ?? null;
+  const customerId = !storedId && !linkedId ? null : {
+    id: linkedId ?? storedId!,
+    status: (linkedId && storedId === linkedId ? "VERIFIED" : linkedId ? "VERIFIED_LINK_ONLY" : billing?.squareCustomerIdSource === "CLIENT_CONNECT" ? "FROM_CARD_SETUP" : "UNVERIFIED") as "VERIFIED" | "VERIFIED_LINK_ONLY" | "FROM_CARD_SETUP" | "UNVERIFIED",
+    verifiedAt: linkedId && storedId === linkedId ? billing?.squareCustomerIdVerifiedAt ?? squareBilling.arrangement!.createdAt : null,
+    // A hand-typed ID that differs from the verified one is shown, never silently dropped.
+    previousManual: linkedId && storedId && storedId !== linkedId ? storedId : null,
+  };
   return {
     allowed: true as const,
     billing,
     authorizations,
     active,
-    square: { connected, card, cardId: connected ? billing?.squareCardId ?? null : null },
+    square: { connected, card, cardId: connected ? billing?.squareCardId ?? null : null, customerId },
     // A charge may run only with an active authorization for the current amount; a card on file alone is not enough.
     chargeAuthorized: !!active && active.amountCents === billing?.monthlyFeeCents,
     // Existing recurring billing in Square (read-only link); while present, no new authorization is recorded here.

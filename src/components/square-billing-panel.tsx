@@ -1,5 +1,6 @@
 import { ActionForm } from "@/components/action-form";
-import { Badge, Button, Field, LinkButton } from "@/components/ui";
+import { Badge, Button, Field } from "@/components/ui";
+import { SquareFindPanel } from "@/components/square-find-panel";
 import {
   addToSquareBillingAction, removeFromSquareBillingAction, setSquareExpectedAction, syncSquareBillingAction, verifySquareAuthorizationAction,
 } from "@/app/actions/square-billing";
@@ -22,7 +23,7 @@ export function SquareStateBadge({ state }: { state: SB["state"] }) {
 }
 
 /** Staff view of a client's existing Square recurring billing (read-only link). */
-export function SquareBillingPanel({ clientId, sb, approver, addable }: { clientId: string; sb: SB; approver: boolean; addable: { id: string; displayName: string; businessName?: string | null }[] }) {
+export function SquareBillingPanel({ clientId, sb, approver, addable, client }: { clientId: string; sb: SB; approver: boolean; addable: { id: string; displayName: string; businessName?: string | null }[]; client: { name: string; email: string | null; phone: string | null } }) {
   const a = sb.arrangement;
   return (
     <div className="space-y-3 rounded-xl border border-ivory-200 p-3" data-testid="square-billing">
@@ -38,7 +39,7 @@ export function SquareBillingPanel({ clientId, sb, approver, addable }: { client
             <p className="text-slate-600">Not marked as billed through Square.</p>
           )}
           <div className="flex flex-wrap gap-2">
-            <LinkButton variant="secondary" href={`/bookkeeping/square-billing?client=${clientId}`} data-testid="connect-square">Find and link in Square</LinkButton>
+            <SquareFindPanel client={{ id: clientId, ...client }} coverOptions={[{ id: clientId, name: client.name }, ...addable.filter((c) => c.id !== clientId).map((c) => ({ id: c.id, name: nameOf(c) }))]} />
             <ActionForm action={setSquareExpectedAction.bind(null, clientId, sb.state !== "NOT_SYNCED")} showSuccess>
               <Button type="submit" variant="ghost">{sb.state === "NOT_SYNCED" ? "Not billed through Square" : "Mark as billed through Square"}</Button>
             </ActionForm>
@@ -46,11 +47,14 @@ export function SquareBillingPanel({ clientId, sb, approver, addable }: { client
         </div>
       ) : (
         <>
+          <p className="text-sm text-emerald-800" data-testid="square-verified-customer">
+            ✓ Verified Square customer: <strong>{a.companyName || a.customerName || "Square customer"}</strong>{a.companyName && a.customerName ? ` · ${a.customerName}` : ""} <span className="text-xs text-slate-600">(ID {a.squareCustomerId}, confirmed {fmtDate(a.createdAt)})</span>
+          </p>
           <dl className="grid gap-3 text-sm sm:grid-cols-3" data-testid="square-details">
             <div><dt className="text-xs uppercase tracking-wide text-slate-500">Amount (from Square)</dt><dd className="font-semibold">{usd(a.amountCents)}</dd></div>
             <div><dt className="text-xs uppercase tracking-wide text-slate-500">Schedule</dt><dd>{a.syncedAt ? scheduleText(a) : "—"}</dd></div>
             <div><dt className="text-xs uppercase tracking-wide text-slate-500">Next invoice</dt><dd>{a.nextDueDate ? `${fmtDate(a.nextDueDate)}${a.autopay ? " · charged automatically by Square" : " · client pays the invoice"}` : "None scheduled in Square"}</dd></div>
-            <div><dt className="text-xs uppercase tracking-wide text-slate-500">Payment status</dt><dd>{a.syncedAt ? <Badge tone={paymentStatus(a).tone}>{paymentStatus(a).label}</Badge> : "—"}</dd></div>
+            <div><dt className="text-xs uppercase tracking-wide text-slate-500">Payment status (from Square)</dt><dd>{a.syncedAt ? <Badge tone={paymentStatus(a).tone}>{paymentStatus(a).label}</Badge> : "—"}</dd></div>
             <div><dt className="text-xs uppercase tracking-wide text-slate-500">Card on file (from Square)</dt><dd>{a.cardLast4 ? `${a.cardBrand ?? "Card"} ****${a.cardLast4} · exp ${a.cardExpMonth}/${a.cardExpYear}` : a.autopay ? "On file in Square" : "No automatic payment"}</dd></div>
             <div><dt className="text-xs uppercase tracking-wide text-slate-500">Square series</dt><dd>{a.title ? `${a.title} · ` : ""}{a.seriesKey}-R · {a.invoiceCount} invoice{a.invoiceCount === 1 ? "" : "s"}</dd></div>
           </dl>
@@ -83,9 +87,10 @@ export function SquareBillingPanel({ clientId, sb, approver, addable }: { client
           </div>
           {approver && (
             <details className="text-sm">
-              <summary className="cursor-pointer underline">Remove this client from the link</summary>
+              <summary className="cursor-pointer underline" data-testid="square-correct">Wrong match? Remove this client from the link</summary>
+              <p className="mt-2 text-xs text-slate-600">Removes the link and its verified customer ID from this client in Client Connect only, with your reason in the audit history. Billing in Square continues unchanged. Then use Find and link to choose the right customer.</p>
               <ActionForm action={removeFromSquareBillingAction.bind(null, a.id, clientId)} className="mt-2 flex flex-wrap items-end gap-2" confirm="Remove the link in Client Connect? Billing in Square continues unchanged.">
-                <input className="input w-72" name="reason" placeholder="Why?" aria-label="Reason" />
+                <input className="input w-72" name="reason" placeholder="Why? e.g. Wrong Square customer — verified with client" aria-label="Reason" />
                 <Button type="submit" variant="ghost">Remove link</Button>
               </ActionForm>
             </details>
