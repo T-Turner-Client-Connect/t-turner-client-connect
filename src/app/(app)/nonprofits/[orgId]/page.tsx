@@ -4,13 +4,14 @@ import { connection } from "next/server";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import {
-  addItemAction, addOfficerAction, applyTemplateAction, irsEventAction, itemStatusAction, itemUploadAction, openPortfolioAction, releaseFileAction, removeOfficerAction, resendNoticeAction, savePortfolioAction,
+  addItemAction, addOfficerAction, applyTemplateAction, assignPackageAction, irsEventAction, itemStatusAction, itemUploadAction, openPortfolioAction, releaseFileAction, removeOfficerAction, resendNoticeAction, savePortfolioAction,
 } from "@/app/actions/nonprofit-portfolio";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { downloadToken } from "@/lib/services/documents";
-import { AG_STATUS, annualDeadline, CATEGORIES, classifications, DONE, IRS_EVENTS, irsStatus, ITEM_STATUS, ORIGINS, portfolio, releaseNotices, SAM_STATUS, stateTemplate, type ItemStatus } from "@/lib/services/nonprofit-portfolio";
+import { AG_STATUS, annualDeadline, CATEGORIES, classifications, DONE, packagePrice, packages, SECTIONS, type Section, IRS_EVENTS, irsStatus, ITEM_STATUS, ORIGINS, portfolio, releaseNotices, SAM_STATUS, stateTemplate, type ItemStatus } from "@/lib/services/nonprofit-portfolio";
 import { FILING_SERVICE } from "@/lib/services/nonprofits";
+import { SERVICE_STATUS, startGate } from "@/lib/services/service-agreements";
 import { STATES } from "@/lib/resources/catalog";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 
@@ -51,6 +52,11 @@ export default async function NonprofitPortfolioPage({ params, searchParams }: {
   const deadline = annualDeadline(p.client);
   const docs = await prisma.document.findMany({ where: { id: { in: p.items.flatMap((i) => i.files.map((f) => f.documentId)) } }, select: { id: true, title: true, scanStatus: true, visibility: true, file: { select: { originalName: true } } } });
   const staffName = new Map(staff.map((s) => [s.id, s.name]));
+  const pkgs = await packages();
+  const assigned = p.packageKey ? await prisma.nonprofitPackage.findUnique({ where: { key: p.packageKey } }) : null;
+  const svc = p.serviceId ? await prisma.clientService.findUnique({ where: { id: p.serviceId }, include: { agreements: true } }) : null;
+  const gate = svc ? startGate(svc) : null;
+  const usd = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
 
   return (
     <>
@@ -63,6 +69,30 @@ export default async function NonprofitPortfolioPage({ params, searchParams }: {
         <div className="mb-1 flex justify-between text-sm font-semibold"><span>Progress</span><span>{done} of {applicable.length}</span></div>
         <div className="h-2 rounded-full bg-ivory-200"><div className="h-2 rounded-full bg-emerald-600" style={{ width: `${applicable.length ? (done / applicable.length) * 100 : 0}%` }} /></div>
       </div>
+
+      <Card title="Formation package" className="mb-4">
+        <div className="text-sm" data-testid="np-package">
+          {assigned ? (
+            <p className="mb-2">
+              <strong>{assigned.name}</strong> · government filing fees {p.govFeesMode === "INCLUDED" ? "included in the price" : "added to the price"}
+              {svc && <> · <Link className="underline" href={`/clients/${orgId}?tab=services`}>agreement: {SERVICE_STATUS[svc.status]}</Link></>}
+              {assigned.grantDisclaimer && <> · <Badge tone="gold">Includes grant disclaimer</Badge></>}
+            </p>
+          ) : <p className="mb-2 text-slate-700">No package assigned. Assigning one adds its documents to the checklist and prepares the pricing agreement.</p>}
+          {gate && !gate.ok && <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-amber-900" data-testid="package-gate">Package work can&apos;t begin yet: {gate.reason}</p>}
+          <ActionForm action={assignPackageAction.bind(null, orgId)} className="flex flex-wrap items-end gap-2">
+            <Field label={assigned ? "Change package" : "Package"}>
+              <select className="input" name="packageKey" defaultValue={p.packageKey ?? ""} required>
+                <option value="" disabled>Choose</option>
+                {pkgs.map((k) => <option key={k.key} value={k.key}>{k.name} — {k.priceNote ? `${k.priceNote} ` : ""}{usd(packagePrice(k, p.formationState))}{k.govFeesMode === "INCLUDED" ? " (fees included)" : " + government fees"}</option>)}
+              </select>
+            </Field>
+            <Field label="Price (optional)" hint="Adjust for filings and complexity."><input className="input w-32" name="price" inputMode="decimal" placeholder="Package price" /></Field>
+            <Field label="Government filing fees" hint="When fees are added to the price."><input className="input w-32" name="govFee" inputMode="decimal" placeholder="$0.00" /></Field>
+            <Button type="submit" variant="secondary">{assigned ? "Change package" : "Assign package"}</Button>
+          </ActionForm>
+        </div>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Organization">
@@ -151,11 +181,15 @@ export default async function NonprofitPortfolioPage({ params, searchParams }: {
           <ActionForm action={applyTemplateAction.bind(null, orgId)} className="mt-2"><input type="hidden" name="state" value={chosenState} /><Button type="submit" variant="secondary">Add these to the checklist</Button></ActionForm>
         </div>
 
-        <ul className="divide-y divide-ivory-200" data-testid="np-checklist">
-          {p.items.map((i) => (
+        <div data-testid="np-checklist">
+        {(Object.keys(SECTIONS) as Section[]).filter((sec) => p.items.some((i) => i.section === sec)).map((sec) => (
+        <div key={sec} className="mb-4">
+        <h3 className="mb-1 border-b border-ivory-200 pb-1 font-serif text-lg text-navy-900">{SECTIONS[sec]}</h3>
+        <ul className="divide-y divide-ivory-200">
+          {p.items.filter((i) => i.section === sec).map((i) => (
             <li key={i.id} className="py-3 text-sm" data-item={i.label}>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <span><strong>{i.label}</strong> <span className="text-xs text-slate-600">· {CATEGORIES[i.category as keyof typeof CATEGORIES]}{i.responsibleId ? ` · ${staffName.get(i.responsibleId) ?? ""}` : ""}{i.completedAt ? ` · completed ${fmtDate(i.completedAt)}` : ""}{i.filingReference ? ` · ref ${i.filingReference}` : ""}</span></span>
+                <span><strong>{i.label}</strong> {i.deliverable && <Badge tone="gold">Package deliverable</Badge>} {i.requirement && <Badge tone="gray">Government requirement</Badge>} <span className="text-xs text-slate-600">· {CATEGORIES[i.category as keyof typeof CATEGORIES]}{i.responsibleId ? ` · ${staffName.get(i.responsibleId) ?? ""}` : ""}{i.completedAt ? ` · completed ${fmtDate(i.completedAt)}` : ""}{i.filingReference ? ` · ref ${i.filingReference}` : ""}</span></span>
                 <span data-testid="item-status"><Badge tone={DONE.includes(i.status as ItemStatus) ? "green" : i.status === "NOT_APPLICABLE" ? "gray" : "amber"}>{ITEM_STATUS[i.status as ItemStatus]}</Badge></span>
               </div>
               <div className="grid gap-2 lg:grid-cols-2">
@@ -167,7 +201,7 @@ export default async function NonprofitPortfolioPage({ params, searchParams }: {
                 </ActionForm>
                 <ActionForm action={itemUploadAction.bind(null, orgId, i.id)} className="flex flex-wrap items-end gap-2" resetOnSuccess>
                   <select className="input w-52" name="origin" defaultValue="" required aria-label="Kind of document"><option value="" disabled>Kind of document</option>{Object.entries(ORIGINS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-                  <input className="input w-56" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label="File" />
+                  <input className="input w-56" type="file" name="file" accept="application/pdf,image/png,image/jpeg,.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required aria-label="File" />
                   <Button type="submit" variant="secondary">Upload</Button>
                 </ActionForm>
               </div>
@@ -199,11 +233,15 @@ export default async function NonprofitPortfolioPage({ params, searchParams }: {
               )}
             </li>
           ))}
-          {p.items.length === 0 && <li className="py-3 text-sm text-slate-600">Add the state requirements above, or add items below.</li>}
         </ul>
+        </div>
+        ))}
+        {p.items.length === 0 && <p className="py-3 text-sm text-slate-600">Assign a package or add the state requirements above, or add items below.</p>}
+        </div>
         <ActionForm action={addItemAction.bind(null, orgId)} className="mt-3 flex flex-wrap items-end gap-2 text-sm" resetOnSuccess>
           <Field label="Add a document to this portfolio"><input className="input w-72" name="label" required /></Field>
           <Field label="Category"><select className="input" name="category" defaultValue="OTHER">{Object.entries(CATEGORIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+          <Field label="Section"><select className="input" name="section" defaultValue="OTHER">{Object.entries(SECTIONS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
           <Button type="submit" variant="secondary">Add</Button>
         </ActionForm>
       </Card>
