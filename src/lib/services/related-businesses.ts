@@ -111,18 +111,64 @@ export async function createAndLinkBusiness(actor: Actor, personClientId: string
 }
 
 /**
- * Admin-only correction of a wrong link, with a recorded reason. The link's
- * details (who created it, when, role) are saved in the audit log first, so the
- * evidence is preserved. Removing a link never deletes either client's records
- * or documents; portal access granted through it is revoked separately.
+ * What else connects a person's records to a business, shown before a link is
+ * removed. Nothing here is changed by removing the link — each item is for
+ * separate review: portal logins of this person that can open the business,
+ * and a Square bill that includes the business together with this person's records.
  */
-export async function unlinkBusiness(actor: Actor, personClientId: string, businessClientId: string, reason = "") {
+export async function linkImpact(personClientId: string, businessClientId: string) {
+  const rel = await prisma.clientRelationship.findUnique({ where: { personClientId_businessClientId: { personClientId, businessClientId } } });
+  if (!rel) return null;
+  const owners = await prisma.clientRelationship.findMany({ where: { businessClientId }, orderBy: { createdAt: "asc" }, select: { id: true, personClientId: true } });
+  const personLogins = await prisma.portalAccess.findMany({ where: { clientId: personClientId, revokedAt: null }, select: { portalUserId: true } });
+  const sharedAccess = personLogins.length
+    ? await prisma.portalAccess.findMany({ where: { clientId: businessClientId, revokedAt: null, portalUserId: { in: personLogins.map((l) => l.portalUserId) } }, include: { portalUser: { select: { email: true } } } })
+    : [];
+  const member = await prisma.squareBillingMember.findUnique({ where: { clientId: businessClientId }, include: { arrangement: { include: { members: { select: { clientId: true } } } } } });
+  const personGroup = new Set([personClientId, ...(await prisma.clientRelationship.findMany({ where: { personClientId }, select: { businessClientId: true } })).map((r) => r.businessClientId)]);
+  const sharedBill = !!member && member.arrangement.members.some((m) => m.clientId !== businessClientId && personGroup.has(m.clientId));
+  // The original (first) owner link, or the only one, is the organization's own ownership record.
+  const isPrimary = owners[0]?.id === rel.id;
+  const flags = [
+    ...(sharedAccess.length ? [`${sharedAccess.length} of this client's portal logins can open this organization — review its Portal tab (not changed here).`] : []),
+    ...(sharedBill ? ["This organization is on a Square bill with this client's records — review billing (not changed here)."] : []),
+  ];
+  return { isPrimary, onlyOwner: owners.length === 1, otherOwners: owners.length - 1, flags };
+}
+
+/**
+ * Admin-only correction of a wrong link, with a recorded reason. The link's
+ * details (who created it, when, role) and anything else connecting the two
+ * records are saved in the audit log first, so the evidence is preserved.
+ * Removing a link never deletes either client's records, documents, filings or
+ * billing; portal access and Square bills are flagged for separate review, not
+ * changed. The organization's original or only owner link also needs its name
+ * typed, so its legitimate ownership can't be removed by accident.
+ */
+export async function unlinkBusiness(actor: Actor, personClientId: string, businessClientId: string, reason = "", opts: { confirmName?: string } = {}) {
   assertAdmin(actor);
   if (reason.trim().length < 10) throw new ValidationError("Record why this link is wrong (what you checked) before removing it.");
-  const rel = await prisma.clientRelationship.findUnique({ where: { personClientId_businessClientId: { personClientId, businessClientId } } });
+  const rel = await prisma.clientRelationship.findUnique({ where: { personClientId_businessClientId: { personClientId, businessClientId } }, include: { business: { select: { displayName: true } } } });
   if (!rel) throw new ValidationError("That link doesn't exist.");
-  await audit(prisma, { actorId: actor.id, action: "client.business_unlinked", entityType: "Client", entityId: personClientId, clientId: personClientId, details: { businessClientId, reason: reason.trim().slice(0, 500), removedLink: { id: rel.id, role: rel.role, createdAt: rel.createdAt.toISOString(), createdById: rel.createdById } } });
+  const impact = (await linkImpact(personClientId, businessClientId))!;
+  if (impact.isPrimary || impact.onlyOwner) {
+    const typed = (opts.confirmName ?? "").trim().toLowerCase();
+    if (typed !== rel.business.displayName.trim().toLowerCase()) {
+      throw new ValidationError(`This is ${rel.business.displayName}'s ${impact.onlyOwner ? "only" : "original"} owner link. To remove it anyway, type the organization's name exactly.`);
+    }
+  }
+  await audit(prisma, {
+    actorId: actor.id,
+    action: "client.business_unlinked",
+    entityType: "Client",
+    entityId: personClientId,
+    clientId: personClientId,
+    details: { businessClientId, reason: reason.trim().slice(0, 500), removedLink: { id: rel.id, role: rel.role, createdAt: rel.createdAt.toISOString(), createdById: rel.createdById }, wasPrimary: impact.isPrimary, flaggedForReview: impact.flags },
+  });
+  // The organization's own record also notes it, so its history shows the removal.
+  await audit(prisma, { actorId: actor.id, action: "client.owner_link_removed", entityType: "Client", entityId: businessClientId, clientId: businessClientId, details: { personClientId, reason: reason.trim().slice(0, 500) } });
   await prisma.clientRelationship.delete({ where: { id: rel.id } });
+  return impact;
 }
 
 /**

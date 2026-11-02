@@ -4,6 +4,7 @@ import { Badge, Button, Card, Field } from "@/components/ui";
 import { createNonprofitAction, filingServiceAction, hasNonprofitAction, linkNonprofitAction } from "@/app/actions/nonprofits";
 import { HAS_NONPROFIT, linkableNonprofits, nonprofitsForClient } from "@/lib/services/nonprofit-links";
 import { FILING_SERVICE } from "@/lib/services/nonprofits";
+import { RemoveFromClient } from "@/components/remove-from-client";
 
 /**
  * Nonprofits on every client record — bookkeeping enrollment isn't needed.
@@ -11,7 +12,7 @@ import { FILING_SERVICE } from "@/lib/services/nonprofits";
  * own organization record; only "TTurner handles its filings: Yes" puts it on
  * Nonprofit Filings.
  */
-export async function NonprofitCard({ clientId }: { clientId: string }) {
+export async function NonprofitCard({ clientId, isAdmin = false }: { clientId: string; isAdmin?: boolean }) {
   const { anchor, has, orgs, flags, ownerIsNonprofit } = await nonprofitsForClient(clientId);
   const linkable = ownerIsNonprofit ? [] : await linkableNonprofits(clientId);
   return (
@@ -57,6 +58,7 @@ export async function NonprofitCard({ clientId }: { clientId: string }) {
                       <span className="text-xs text-slate-600">On Nonprofit Filings only when this is Yes.</span>
                     )}
                   </ActionForm>
+                  {o.id !== clientId && <RemoveFromClient clientId={clientId} businessId={o.id} businessName={o.businessName || o.displayName} isAdmin={isAdmin} />}
                 </li>
               );
             })}

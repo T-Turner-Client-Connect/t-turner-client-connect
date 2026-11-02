@@ -79,7 +79,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
 
   return (
     <>
-      <BusinessTabs clientId={id} base="/clients" />
+      <BusinessTabs clientId={id} base="/clients" isAdmin={user.role === "ADMIN"} />
       <PageHeader
         title={heading?.title ?? client.displayName}
         subtitle={
@@ -156,7 +156,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
             </dl>
           </Card>
 
-          <NonprofitCard clientId={id} />
+          <NonprofitCard clientId={id} isAdmin={user.role === "ADMIN"} />
 
           <Card title="Contacts" actions={<span className="text-sm text-slate-600">People at this business or household</span>}>
             {client.contacts.length > 0 && (
