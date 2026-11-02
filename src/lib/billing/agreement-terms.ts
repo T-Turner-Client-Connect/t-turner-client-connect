@@ -19,6 +19,8 @@ export type AgreementTerms = {
   options: MethodQuote[];
   paymentTerms: string;
   refundTransfer: { eligible: boolean; feeCents: number; provider: string | null } | null;
+  // Acknowledgments the client agrees to by signing (e.g. the grant assistance disclaimer).
+  disclaimers?: { title: string; text: string }[];
 };
 
 export type AgreementSelection = { method: string; label: string; feeCents: number; totalCents: number; note: string };

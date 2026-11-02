@@ -57,6 +57,13 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
                 </tbody>
               </table>
               <p className="mb-4 whitespace-pre-wrap text-sm"><strong>Payment terms:</strong> {t.paymentTerms}</p>
+              {(t.disclaimers ?? []).map((d) => (
+                <div key={d.title} className="mb-4 rounded-xl border border-gold-300 bg-ivory-50 p-3 text-sm" data-testid="agreement-disclaimer">
+                  <p className="mb-1 font-semibold text-navy-900">{d.title}</p>
+                  <p className="whitespace-pre-wrap">{d.text}</p>
+                  <p className="mt-2 text-xs text-slate-600">Signing this agreement acknowledges this disclaimer.</p>
+                </div>
+              ))}
               <SignAgreementForm action={signAgreementAction.bind(null, a.id)} baseCents={t.baseCents} options={options} hashes={hashes} consentText={CONSENT_TEXT} />
             </Card>
           );

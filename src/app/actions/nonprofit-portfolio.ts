@@ -6,8 +6,8 @@ import { assertAdmin } from "@/lib/auth/actor";
 import { dateOrNull, run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
 import {
-  addChecklistItem, addOfficer, applyStateTemplate, CATEGORIES, ensurePortfolio, recordIrsEvent, releaseItemFile, removeOfficer, resendReleaseNotice, saveClassification, savePortfolio,
-  saveStateTemplate, updateChecklistItem, uploadItemFile, type TemplateItem,
+  addChecklistItem, addOfficer, applyStateTemplate, assignPackage, CATEGORIES, ensurePortfolio, recordIrsEvent, releaseItemFile, removeOfficer, resendReleaseNotice, saveClassification, savePortfolio,
+  savePackage, saveStateTemplate, updateChecklistItem, uploadItemFile, type PackageDeliverable, type TemplateItem,
 } from "@/lib/services/nonprofit-portfolio";
 
 const refresh = (orgId: string) => revalidatePath(`/nonprofits/${orgId}`);
@@ -70,7 +70,7 @@ export async function applyTemplateAction(orgId: string, _prev: ActionState, fd:
 export async function addItemAction(orgId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    await addChecklistItem(actor, orgId, { label: str(fd, "label"), category: str(fd, "category") });
+    await addChecklistItem(actor, orgId, { label: str(fd, "label"), category: str(fd, "category"), section: str(fd, "section") || undefined });
     refresh(orgId);
     return "Added.";
   });
@@ -139,5 +139,39 @@ export async function saveStateTemplateAction(state: string, _prev: ActionState,
     await saveStateTemplate(actor, state, { items, verifiedNote: str(fd, "verifiedNote"), markVerified: fd.get("markVerified") === "on" });
     revalidatePath("/nonprofits/settings");
     return "Saved.";
+  });
+}
+
+// --- Packages ---------------------------------------------------------------------
+
+const money = (v: string) => {
+  const n = Number(v.replace(/[$,\s]/g, ""));
+  return v.trim() && Number.isFinite(n) ? Math.round(n * 100) : undefined;
+};
+
+export async function assignPackageAction(orgId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const r = await assignPackage(actor, orgId, { packageKey: str(fd, "packageKey"), govFeeCents: money(str(fd, "govFee")), priceCents: money(str(fd, "price")) });
+    refresh(orgId);
+    return { ok: `Package assigned. ${r.added} document${r.added === 1 ? "" : "s"} added to the checklist, and a draft pricing agreement is ready — package work begins after the client signs it.`, next: { href: `/clients/${orgId}?tab=services`, label: "Review and send the agreement" } };
+  });
+}
+
+/** One deliverable per line: key | description | section (FORMATION, IRS, STATE, SAM, GRANT, OTHER). State prices: one per line, e.g. GA=3750. */
+export async function savePackageAction(key: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const deliverables = str(fd, "deliverables").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
+      const [k, label, section] = line.split("|").map((x) => x.trim());
+      return { key: k, label, section: (section ?? "OTHER").toUpperCase() } as PackageDeliverable;
+    });
+    const statePrices = Object.fromEntries(str(fd, "statePrices").split(/[\n,]/).map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [st, v] = l.split("=").map((x) => x.trim());
+      return [st.toUpperCase(), money(v ?? "") ?? NaN];
+    }));
+    await savePackage(actor, key || str(fd, "key").toUpperCase(), { name: str(fd, "name"), priceCents: money(str(fd, "price")) ?? 0, priceNote: str(fd, "priceNote"), statePrices, govFeesMode: str(fd, "govFeesMode"), deliverables, grantDisclaimer: fd.get("grantDisclaimer") === "on", active: fd.get("active") === "on" });
+    revalidatePath("/nonprofits/settings");
+    return "Saved. It applies to packages assigned from now on; signed agreements keep their terms.";
   });
 }
