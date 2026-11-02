@@ -83,10 +83,11 @@ const quote = (clientId: string, over: Partial<QuoteInput> = {}): QuoteInput => 
   ...over,
 });
 
-async function setFee(tab: Actor, type: "FLAT" | "PERCENT", value: number) {
+// Payment plans no longer carry a fee; this saves the other billing defaults.
+async function setFee(tab: Actor, _type?: "FLAT" | "PERCENT", _value?: number) {
   await updateBillingSettings(tab, {
-    planFeeType: type,
-    planFeeValue: value,
+    planFeeType: "NONE",
+    planFeeValue: 0,
     maxInstallments: 4,
     defaultInstallments: 3,
     defaultDiscountType: "NONE",
@@ -149,7 +150,8 @@ describe("pricing math", () => {
   });
 
   it("refuses plans without the configured fee, typed-in fee lines, and bad installment counts", () => {
-    expect(() => validatePricing({ ...base, planFeeType: "NONE", planFeeValue: 0 }, { maxInstallments: 4 })).toThrow(/payment-plan fee in Billing settings/);
+    // A plan no longer needs a plan fee.
+    expect(() => validatePricing({ ...base, planFeeType: "NONE", planFeeValue: 0 }, { maxInstallments: 4 })).not.toThrow();
     expect(() => validatePricing({ ...base, lines: [...base.lines, { service: "Payment plan fee", quantity: 1, unitCents: 500 }] }, { maxInstallments: 4 })).toThrow(/added automatically/);
     expect(() => validatePricing({ ...base, lines: [{ service: "Card convenience fee", quantity: 1, unitCents: 300 }] }, { maxInstallments: 4 })).toThrow();
     expect(() => validatePricing({ ...base, planInstallments: 6 }, { maxInstallments: 4 })).toThrow(/2 to 4 installments/);
@@ -233,10 +235,11 @@ describe("Owner's Office access", () => {
     await expect(setFee(daria, "FLAT", 100)).rejects.toBeInstanceOf(ForbiddenError);
     // A delegate can't grant onward.
     await expect(grantOwnerAccess(daria, { userId: otherAdmin.id, scope: "BILLING", password: PASSWORD })).rejects.toBeInstanceOf(ForbiddenError);
-    // A delegate can't override the plan fee.
-    await setFee(tab, "FLAT", 2500);
+    // Nobody can add a plan fee to a quote any more.
+    await setFee(tab);
     const { acme } = await portalClients(tab);
-    await expect(createQuote(daria, quote(acme.id, { planFeeOverride: { type: "FLAT", value: 1 } }))).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(createQuote(daria, quote(acme.id, { planFeeOverride: { type: "FLAT", value: 1 } }))).rejects.toThrow(/don't carry a fee/);
+    await expect(createQuote(tab, quote(acme.id, { planFeeOverride: { type: "FLAT", value: 1 } }))).rejects.toThrow(/don't carry a fee/);
     await revokeOwnerAccess(tab, daria.id);
     await expect(assertOwner(daria, "billing")).rejects.toBeInstanceOf(ForbiddenError);
     await expect(revokeOwnerAccess(tab, tab.id)).rejects.toThrow(/your own/);
@@ -266,7 +269,7 @@ describe("quotes, acceptance and payments", () => {
 
     const [shown] = await portalBilling(acmeUser, acme.id);
     expect(JSON.stringify(shown)).not.toContain("OWNER-ONLY NOTE");
-    expect(shown.breakdown.options.PLAN!.planFeeCents).toBe(5400); // 5% of 1,080.00
+    expect(shown.breakdown.options.PLAN!.planFeeCents).toBe(0); // plans carry no fee
     await expect(portalBilling(otherUser, acme.id)).rejects.toBeInstanceOf(ForbiddenError);
     expect(await portalBilling(otherUser, other.id)).toEqual([]);
 

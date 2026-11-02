@@ -104,7 +104,7 @@ export function validatePricing(i: PricingInput, settings: { maxInstallments: nu
   if (!Number.isInteger(i.taxRateBps) || i.taxRateBps < 0 || i.taxRateBps > 2000) throw new PricingError("Enter a tax rate between 0% and 20%.");
   if (i.dueDate < i.issueDate) throw new PricingError("The due date can't be before the quote date.");
   if (i.allowPlan) {
-    if (i.planFeeType === "NONE" || i.planFeeValue <= 0) throw new PricingError("Set your payment-plan fee in Billing settings before offering a plan.");
+    // Payment plans don't require (or carry) a plan fee — removed by the owner's decision.
     if (!Number.isInteger(i.planInstallments) || i.planInstallments < 2 || i.planInstallments > settings.maxInstallments) {
       throw new PricingError(`Payment plans need 2 to ${settings.maxInstallments} installments (your Billing settings limit).`);
     }

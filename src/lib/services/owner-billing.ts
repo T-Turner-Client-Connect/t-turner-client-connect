@@ -2,8 +2,7 @@ import "server-only";
 import type { AmountType, Invoice, InvoiceLine, Installment, Payment, PaymentMethod, PaymentOption, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
-import { ForbiddenError } from "@/lib/auth/actor";
-import { assertOwner, ownerAccessFor, ownerAudit } from "@/lib/auth/owner";
+import { assertOwner, ownerAudit } from "@/lib/auth/owner";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import {
@@ -58,11 +57,8 @@ export type SettingsInput = {
 /** Fee and default settings: primary owner (full access) only. */
 export async function updateBillingSettings(actor: Actor, input: SettingsInput) {
   await assertOwner(actor, "full");
-  if (input.planFeeType !== "NONE" && !input.planFeeRulesConfirmed) {
-    throw new ValidationError("Confirm you've checked your payment provider's rules and the legal requirements before turning on a payment-plan fee.");
-  }
-  if (input.planFeeType === "PERCENT" && (input.planFeeValue <= 0 || input.planFeeValue > 2500)) throw new ValidationError("Set a payment-plan fee between 0.01% and 25%.");
-  if (input.planFeeType === "FLAT" && (input.planFeeValue <= 0 || input.planFeeValue > 100_000)) throw new ValidationError("Set a flat payment-plan fee between $0.01 and $1,000.");
+  // The payment-plan fee was removed by the owner's decision: plans never add a fee.
+  if (input.planFeeType !== "NONE") throw new ValidationError("Payment plans don't carry a fee.");
   if (input.maxInstallments < 2 || input.maxInstallments > 24) throw new ValidationError("Allow between 2 and 24 installments.");
   if (input.defaultInstallments < 2 || input.defaultInstallments > input.maxInstallments) throw new ValidationError("The default number of installments must be within your limit.");
   const before = await billingSettings();
@@ -135,14 +131,14 @@ export type QuoteInput = {
   planFeeOverride?: { type: AmountType; value: number } | null;
 };
 
-async function planFeeFor(actor: Actor, override: QuoteInput["planFeeOverride"]) {
+/**
+ * Payment-plan fee: removed by the owner's decision (Nov 2026). Choosing a payment
+ * plan never adds a fee. Quotes already accepted keep the terms they were accepted with.
+ */
+async function planFeeFor(_actor: Actor, override: QuoteInput["planFeeOverride"]) {
+  if (override) throw new ValidationError("Payment plans don't carry a fee.");
   const s = await billingSettings();
-  if (override) {
-    const access = await ownerAccessFor(actor.id);
-    if (!access || access.scope !== "FULL") throw new ForbiddenError("Only the owner can change the payment-plan fee on a quote.");
-    return { type: override.type, value: override.value, maxInstallments: s.maxInstallments, confirmed: s.planFeeRulesConfirmedAt };
-  }
-  return { type: s.planFeeType, value: s.planFeeValue, maxInstallments: s.maxInstallments, confirmed: s.planFeeRulesConfirmedAt };
+  return { type: "NONE" as AmountType, value: 0, maxInstallments: s.maxInstallments, confirmed: s.planFeeRulesConfirmedAt };
 }
 
 function checkPricing(input: PricingInput, maxInstallments: number) {
