@@ -44,7 +44,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
                 <dl className="grid gap-3 text-sm sm:grid-cols-2">
                   <div><dt className="text-xs uppercase tracking-wide text-slate-500">{sq.view.title || "Monthly service"}</dt><dd className="text-lg font-semibold text-navy-900">{sq.view.amountCents == null ? "—" : money(sq.view.amountCents)}</dd></div>
                   <div><dt className="text-xs uppercase tracking-wide text-slate-500">Schedule</dt><dd>{sq.view.schedule}</dd></div>
-                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">Next invoice</dt><dd>{sq.view.nextDueDate ? fmtDate(sq.view.nextDueDate) : "None scheduled"}</dd></div>
+                  <div><dt className="text-xs uppercase tracking-wide text-slate-500">Next payment</dt><dd>{sq.view.nextDueDate ? <>{fmtDate(sq.view.nextDueDate)}{sq.view.amountCents != null && <> · {money(sq.view.amountCents)}</>}</> : "None scheduled"}</dd></div>
                   <div><dt className="text-xs uppercase tracking-wide text-slate-500">Status</dt><dd><Badge tone={sq.view.status.tone}>{sq.view.status.label.replace(" in Square", "")}</Badge></dd></div>
                   {sq.view.card && <div><dt className="text-xs uppercase tracking-wide text-slate-500">Automatic payment</dt><dd>{sq.view.card.brand} ending in {sq.view.card.last4}</dd></div>}
                   {sq.view.authorizationVerified && <div><dt className="text-xs uppercase tracking-wide text-slate-500">Authorization</dt><dd>On file with Square — nothing new is needed</dd></div>}
@@ -53,11 +53,20 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
                 {sq.view.overdueCents === 0 && sq.view.outstandingCents > 0 && <p className="mt-3 text-sm" data-testid="portal-square-outstanding">Open balance: {money(sq.view.outstandingCents)}</p>}
                 <div className="mt-4" data-testid="portal-square-history">
                   <p className="mb-1 text-sm font-semibold">Your payments</p>
-                  {sq.view.invoices.filter((i) => i.status !== "SCHEDULED").length === 0 ? <p className="text-sm text-slate-600">No payments yet.</p> : (
+                  {sq.view.invoices.length === 0 ? <p className="text-sm text-slate-600">No payments yet.</p> : (
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
                         <thead className="text-left text-xs uppercase tracking-wide text-slate-500"><tr><th className="py-1">Due</th><th>Amount</th><th>Paid on</th><th>Status</th><th>Receipt</th></tr></thead>
                         <tbody className="divide-y divide-navy-100">
+                          {sq.view.invoices.filter((i) => i.status === "SCHEDULED").sort((x, y) => x.due.localeCompare(y.due)).slice(0, 1).map((i) => (
+                            <tr key={`next-${i.number ?? i.due}`} className="bg-gold-100/50" data-testid="portal-square-upcoming">
+                              <td className="py-1.5 font-semibold">{fmtDate(new Date(`${i.due}T12:00:00Z`))}</td>
+                              <td className="font-semibold">{i.amountCents == null ? "—" : money(i.amountCents)}</td>
+                              <td className="text-xs text-slate-600">{sq.view!.autopay ? "Charged automatically" : "—"}</td>
+                              <td><Badge tone="navy">Upcoming</Badge></td>
+                              <td>{i.invoiceUrl ? <a className="underline" href={i.invoiceUrl} target="_blank" rel="noopener noreferrer">Invoice</a> : "—"}</td>
+                            </tr>
+                          ))}
                           {sq.view.invoices.filter((i) => i.status !== "SCHEDULED").map((i) => (
                             <tr key={i.number ?? i.due}>
                               <td className="py-1.5">{fmtDate(new Date(`${i.due}T12:00:00Z`))}</td>

@@ -99,7 +99,7 @@ export type SquareSearchResult = {
   // Not offered for linking: series waiting for the owner's review, and series ended (history only).
   review: OtherSeries[];
   ended: OtherSeries[];
-  series: { seriesKey: string; title: string | null; amountCents: number | null; matched: boolean; schedule: string; nextDueDate: string | null; autopay: boolean; status: string; statusTone: string; linkedTo: string[] }[];
+  series: { seriesKey: string; title: string | null; amountCents: number | null; matched: boolean; schedule: string; cadence: string; dueDay: number | null; lastPaidDate: string | null; lastPaidCents: number | null; nextDueDate: string | null; autopay: boolean; status: string; statusTone: string; linkedTo: string[] }[];
 };
 
 /** In-card Square search (read only): by name, email, phone, Square customer ID or recurring series number. Never creates or changes anything in Square. */
@@ -116,6 +116,10 @@ const serialize = (c: Found): SquareSearchResult => ({
     amountCents: x.amountCents,
     matched: x.matched,
     schedule: scheduleText(x),
+    cadence: x.cadence,
+    dueDay: x.dueDay,
+    lastPaidDate: x.lastPaidDueDate ? new Date(x.lastPaidDueDate).toISOString().slice(0, 10) : null,
+    lastPaidCents: x.lastPaidCents,
     nextDueDate: x.nextDueDate ? new Date(x.nextDueDate).toISOString().slice(0, 10) : null,
     autopay: !!x.autopay,
     status: paymentStatus(x).label,
