@@ -28,7 +28,11 @@ function localMock() {
   return /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(base) ? base : null;
 }
 
-export class SquareError extends Error {}
+export class SquareError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message);
+  }
+}
 
 /** Calls the Square API. Errors carry Square's own message (never card data, which this app never has). */
 export async function squareRequest<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
@@ -46,7 +50,7 @@ export async function squareRequest<T>(method: "GET" | "POST", path: string, bod
     throw new SquareError("Square couldn't be reached. Nothing was saved — please try again.");
   }
   const json = (await res.json().catch(() => ({}))) as { errors?: { detail?: string; code?: string }[] } & T;
-  if (!res.ok) throw new SquareError(json.errors?.[0]?.detail ? `Square: ${json.errors[0].detail}` : `Square answered with an error (HTTP ${res.status}).`);
+  if (!res.ok) throw new SquareError(json.errors?.[0]?.detail ? `Square: ${json.errors[0].detail}` : `Square answered with an error (HTTP ${res.status}).`, res.status);
   return json;
 }
 

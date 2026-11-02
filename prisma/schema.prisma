@@ -2543,28 +2543,33 @@ model BookkeepingAccount {
 /// Square holds the payment method; only Square's reference ids live here.
 /// Managed by Tabitha, or staff she grants (User.bookkeepingBillingAccess).
 model BookkeepingBilling {
-  clientId         String    @id
-  client           Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  monthlyFeeCents  Int?
-  billingStartDate DateTime?
+  clientId                   String    @id
+  client                     Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  monthlyFeeCents            Int?
+  billingStartDate           DateTime?
   // Day of the month the charge is due (1–28).
-  billingDay       Int?
+  billingDay                 Int?
   // NOT_SET_UP | CURRENT | DUE | PAST_DUE | PAUSED
-  paymentStatus    String    @default("NOT_SET_UP")
-  squareCustomerId String?
-  squareCardId     String?
+  paymentStatus              String    @default("NOT_SET_UP")
+  squareCustomerId           String?
+  // Where squareCustomerId came from: MANUAL (typed by hand, never verified),
+  // SQUARE_LINK (confirmed through Find and link in Square) or CLIENT_CONNECT
+  // (Square returned it when the client saved a card in the portal).
+  squareCustomerIdSource     String?
+  squareCustomerIdVerifiedAt DateTime?
+  squareCardId               String?
   // Monthly tier name set by Tabitha (e.g. "Essentials").
-  tierName         String?
+  tierName                   String?
   // Display details exactly as returned by Square for the card on file. Never the number or CVV.
-  cardBrand        String?
-  cardLast4        String?
-  cardExpMonth     Int?
-  cardExpYear      Int?
-  cardSavedAt      DateTime?
-  notes            String?
-  updatedById      String?
-  updatedAt        DateTime  @updatedAt
-  createdAt        DateTime  @default(now())
+  cardBrand                  String?
+  cardLast4                  String?
+  cardExpMonth               Int?
+  cardExpYear                Int?
+  cardSavedAt                DateTime?
+  notes                      String?
+  updatedById                String?
+  updatedAt                  DateTime  @updatedAt
+  createdAt                  DateTime  @default(now())
 }
 
 /// The client's authorization for recurring charges. A card on file alone authorizes nothing.

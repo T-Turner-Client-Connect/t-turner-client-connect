@@ -320,7 +320,6 @@ export async function saveBillingAction(clientId: string, _prev: ActionState, fd
       billingStartDate: localDate(fd, "billingStartDate"),
       billingDay: str(fd, "billingDay") ? Number(str(fd, "billingDay")) : null,
       paymentStatus: str(fd, "paymentStatus"),
-      squareCustomerId: str(fd, "squareCustomerId"),
       notes: str(fd, "notes"),
     });
     refresh(clientId);

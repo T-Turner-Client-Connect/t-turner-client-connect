@@ -170,7 +170,27 @@ function groupSeries(invoices: SqInvoice[], today: string) {
   return [...bySeries.entries()].map(([seriesKey, list]) => ({ seriesKey, ...summarizeSeries(list, today) }));
 }
 
-export type LookupInput = { email?: string; phone?: string; customerId?: string };
+// Square customer IDs are long runs of capital letters and digits (with at least one digit), e.g. "VDKXEEKPJN48QDG3BGGFAK05P8".
+const SQUARE_ID = /^(?=.*\d)(?=.*[A-Z])[A-Z0-9]{12,40}$/;
+
+export type LookupInput = { email?: string; phone?: string; customerId?: string; query?: string };
+
+/** Customers whose name or company contains every word typed (Square can't search names, so the list is read and filtered here). */
+async function customersByName(text: string) {
+  const words = text.toLowerCase().split(/\s+/).filter(Boolean);
+  const out: SqCustomer[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 20 && out.length < 10; page++) {
+    const r = await squareRequest<{ customers?: SqCustomer[]; cursor?: string }>("GET", `/v2/customers?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    for (const c of r.customers ?? []) {
+      const hay = [c.given_name, c.family_name, c.company_name].filter(Boolean).join(" ").toLowerCase();
+      if (words.every((w) => hay.includes(w))) out.push(c);
+    }
+    cursor = r.cursor;
+    if (!cursor) break;
+  }
+  return out;
+}
 
 /** Finds Square customers by email, phone or customer ID and lists their recurring series. Reads only. */
 export async function lookupSquareBilling(actor: Actor, input: LookupInput) {
@@ -189,7 +209,30 @@ export async function lookupSquareBilling(actor: Actor, input: LookupInput) {
   const phone = normalizePhone(input.phone);
   if (input.phone?.trim() && !phone) throw new ValidationError("Enter a valid phone number.");
   if (phone) add((await squareRequest<{ customers?: SqCustomer[] }>("POST", "/v2/customers/search", { query: { filter: { phone_number: { exact: phone } } }, limit: 20 })).customers);
-  if (!email && !phone && !input.customerId?.trim()) throw new ValidationError("Enter the client's email, phone or Square customer ID.");
+  // One search box: an email, a phone number, or a name.
+  const q = input.query?.trim() ?? "";
+  if (q) {
+    if (SQUARE_ID.test(q)) {
+      // Looks like a Square customer ID: read that one customer (a miss falls through to "none found").
+      try {
+        add([(await squareRequest<{ customer: SqCustomer }>("GET", `/v2/customers/${encodeURIComponent(q)}`)).customer]);
+      } catch (err) {
+        if (!(err instanceof SquareError) || err.status !== 404) throw err;
+      }
+    } else if (q.includes("@")) {
+      const e = normalizeEmail(q);
+      if (!e) throw new ValidationError("Enter a valid email address.");
+      add((await squareRequest<{ customers?: SqCustomer[] }>("POST", "/v2/customers/search", { query: { filter: { email_address: { fuzzy: e } } }, limit: 20 })).customers);
+    } else if (q.replace(/\D/g, "").length >= 7) {
+      const digits = q.replace(/\D/g, "");
+      add((await squareRequest<{ customers?: SqCustomer[] }>("POST", "/v2/customers/search", { query: { filter: { phone_number: { fuzzy: digits.slice(-10) } } }, limit: 20 })).customers);
+    } else if (q.length >= 2) {
+      add(await customersByName(q));
+    } else {
+      throw new ValidationError("Type at least two letters of the name, or an email or phone number.");
+    }
+  }
+  if (!email && !phone && !input.customerId?.trim() && !q) throw new ValidationError("Enter the client's name, email, phone or Square customer ID.");
 
   const today = todayCentral();
   const linked = await prisma.squareBillingArrangement.findMany({ where: { squareLocationId: s.locationId, squareCustomerId: { in: customers.map((c) => c.id) } }, include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } } } } });
@@ -205,7 +248,7 @@ export async function lookupSquareBilling(actor: Actor, input: LookupInput) {
       series: series.map((x) => ({ ...x, linked: linked.find((l) => l.seriesKey === x.seriesKey) ?? null })),
     });
   }
-  await audit(prisma, { actorId: actor.id, action: "square_billing.looked_up", entityType: "Square", entityId: "lookup", details: { by: [input.customerId ? "customerId" : "", email ? "email" : "", phone ? "phone" : ""].filter(Boolean), customers: results.length } });
+  await audit(prisma, { actorId: actor.id, action: "square_billing.looked_up", entityType: "Square", entityId: "lookup", details: { by: [input.customerId ? "customerId" : "", email ? "email" : "", phone ? "phone" : "", q ? "search" : ""].filter(Boolean), customers: results.length } });
   return results;
 }
 
@@ -273,9 +316,23 @@ export async function linkSquareBilling(actor: Actor, input: { customerId: strin
   if (existing) throw new ValidationError("That Square series is already linked. Add the business to the existing link instead, so the bill stays one arrangement.");
   const clients = await assertClientsFree(input.clientIds);
   await assertOneOwnerGroup(clients.map((c) => c.id));
+  // The same Square customer's other billing can't already belong to a different owner's records.
+  const elsewhere = await prisma.squareBillingMember.findMany({ where: { arrangement: { squareCustomerId: input.customerId, squareLocationId: s.locationId } }, select: { clientId: true } });
+  if (elsewhere.length) await assertOneOwnerGroup([...elsewhere.map((m) => m.clientId), ...clients.map((c) => c.id)]).catch(() => {
+    throw new ValidationError("This Square customer's billing is already linked to a different client's records. Check the match before linking.");
+  });
   const a = await prisma.squareBillingArrangement.create({
     data: { squareCustomerId: input.customerId, squareLocationId: s.locationId, seriesKey: input.seriesKey, linkedById: actor.id, members: { create: clients.map((c) => ({ clientId: c.id, addedById: actor.id })) } },
   });
+  // The verified Square customer ID is saved on each client's billing record. Any earlier value
+  // (for example one typed by hand) is kept in the audit history, never silently dropped.
+  const now = new Date();
+  for (const c of clients) {
+    const before = await prisma.bookkeepingBilling.findUnique({ where: { clientId: c.id }, select: { squareCustomerId: true, squareCustomerIdSource: true } });
+    const data = { squareCustomerId: input.customerId, squareCustomerIdSource: "SQUARE_LINK", squareCustomerIdVerifiedAt: now };
+    await prisma.bookkeepingBilling.upsert({ where: { clientId: c.id }, create: { clientId: c.id, ...data }, update: data });
+    await audit(prisma, { actorId: actor.id, action: "square_billing.customer_id_verified", entityType: "Client", entityId: c.id, clientId: c.id, details: { squareCustomerId: input.customerId, previous: before?.squareCustomerId ? { squareCustomerId: before.squareCustomerId, source: before.squareCustomerIdSource ?? "MANUAL" } : null } });
+  }
   await audit(prisma, { actorId: actor.id, action: "square_billing.linked", entityType: "SquareBillingArrangement", entityId: a.id, details: { seriesKey: a.seriesKey, squareCustomerId: a.squareCustomerId, clients: clients.map((c) => c.id) } });
   for (const c of clients) await audit(prisma, { actorId: actor.id, action: "square_billing.client_linked", entityType: "SquareBillingArrangement", entityId: a.id, clientId: c.id, details: { seriesKey: a.seriesKey } });
   try {
@@ -303,10 +360,14 @@ export async function addClientToSquareBilling(actor: Actor, arrangementId: stri
 export async function removeClientFromSquareBilling(actor: Actor, arrangementId: string, clientId: string, reason: string) {
   if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can remove a Square billing link.");
   if (reason.trim().length < 5) throw new ValidationError("Record why this link is being removed.");
-  const m = await prisma.squareBillingMember.findFirst({ where: { arrangementId, clientId } });
+  const m = await prisma.squareBillingMember.findFirst({ where: { arrangementId, clientId }, include: { arrangement: { select: { squareCustomerId: true, seriesKey: true } } } });
   if (!m) throw new ValidationError("That client isn't on this Square bill.");
   await prisma.squareBillingMember.delete({ where: { id: m.id } });
-  await audit(prisma, { actorId: actor.id, action: "square_billing.client_unlinked", entityType: "SquareBillingArrangement", entityId: arrangementId, clientId, details: { reason: reason.trim().slice(0, 300) } });
+  // A wrong match also takes its verified customer ID off this client; the audit keeps what it was.
+  const billing = await prisma.bookkeepingBilling.findUnique({ where: { clientId }, select: { squareCustomerId: true, squareCustomerIdSource: true } });
+  const clearId = billing?.squareCustomerIdSource === "SQUARE_LINK" && billing.squareCustomerId === m.arrangement.squareCustomerId;
+  if (clearId) await prisma.bookkeepingBilling.update({ where: { clientId }, data: { squareCustomerId: null, squareCustomerIdSource: null, squareCustomerIdVerifiedAt: null } });
+  await audit(prisma, { actorId: actor.id, action: "square_billing.client_unlinked", entityType: "SquareBillingArrangement", entityId: arrangementId, clientId, details: { reason: reason.trim().slice(0, 300), squareCustomerId: m.arrangement.squareCustomerId, seriesKey: m.arrangement.seriesKey, customerIdCleared: clearId } });
   if (!(await prisma.squareBillingMember.count({ where: { arrangementId } }))) await prisma.squareBillingArrangement.delete({ where: { id: arrangementId } });
 }
 

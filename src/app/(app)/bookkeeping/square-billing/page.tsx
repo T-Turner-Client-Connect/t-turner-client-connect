@@ -104,6 +104,7 @@ export default async function SquareBillingPage({ searchParams }: { searchParams
                           ))}
                         </fieldset>
                         <p className="text-xs text-slate-600">Check every business this Square bill pays for. Each business can be on only one Square bill, so none is charged twice. Amount, schedule and card stay exactly as they are in Square.</p>
+                        <label className="flex items-start gap-2"><input type="checkbox" name="confirmMatch" /> <span>I confirm this Square customer is {nameOf(chosen)}. Nothing will be charged, invoiced or changed in Square.</span></label>
                         <Button type="submit" variant="secondary">Link this Square billing</Button>
                       </ActionForm>
                     )}
