@@ -2776,3 +2776,28 @@ model NonprofitProfile {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
+
+/// A completed return uploaded through the bulk screen, waiting for staff to
+/// confirm the client, business, tax year, return type and jurisdiction.
+/// Until confirmed it belongs to no client and stays staff-only.
+model ReturnIntake {
+  id                String    @id @default(cuid())
+  fileId            String    @unique
+  originalName      String
+  sha256            String
+  // Suggested match (never applied without confirmation) and why.
+  suggestedClientId String?
+  matchReason       String?
+  suggestedYear     Int?
+  suggestedType     String?
+  // PENDING | FILED | DISCARDED
+  status            String    @default("PENDING")
+  documentId        String?
+  uploadedById      String
+  filedById         String?
+  filedAt           DateTime?
+  discardedReason   String?
+  createdAt         DateTime  @default(now())
+
+  @@index([status])
+}

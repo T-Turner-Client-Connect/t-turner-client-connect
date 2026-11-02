@@ -108,7 +108,7 @@ describe("financial statements reach clients only through Tabitha's approval", (
     expect([after.deletedAt, after.category, after.reportType, after.visibility]).toEqual([null, "BOOKKEEPING", null, "PUBLISHED"]);
 
     // Non-financial client documents are unaffected; the client's own uploads stay theirs.
-    const w9 = await staffUploadDocument(tabitha, { clientId: biz.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "1120s.pdf" });
+    const w9 = await staffUploadDocument(tabitha, { clientId: biz.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "SUPPORTING", bytes: pdf(), originalName: "k1-support.pdf" });
     expect(await canOpen(w9.id)).toBe(true);
   });
 

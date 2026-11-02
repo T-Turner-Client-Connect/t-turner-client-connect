@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { connection } from "next/server";
 import { ActionForm } from "@/components/action-form";
-import { Button, Card, Field, Notice, PageHeader } from "@/components/ui";
+import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
+import { emailMyCopyAction } from "@/app/actions/tax-returns";
+import { filingLabel, lastCopyEmails } from "@/lib/services/tax-returns";
 import { PrintButton } from "@/components/print-button";
 import { VerifyEmailCard } from "@/components/verification";
 import { requestCopyAction } from "@/app/actions/tax-center";
@@ -32,7 +34,7 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
   const { current } = await resolveAccount(user.id, sp.account);
   if (!current) return null;
   const q = `?account=${current.clientId}`;
-  const header = <PageHeader title="Retrieve Tax Filings" subtitle="Returns and records our office has saved to your Client Connect account. This doesn't pull anything from TaxAct or the IRS." />;
+  const header = <PageHeader title="Retrieve Tax Filings" subtitle={<>Returns and records for <strong>{current.client.businessName || current.client.displayName}</strong>, released by our office. This doesn&apos;t pull anything from TaxAct or the IRS.</>} />;
   if (!current.canViewTax) return <>{header}<Notice>Tax records aren&apos;t included in your access to this account.</Notice></>;
 
   if (!(await isPortalVerified(user.id))) {
@@ -55,6 +57,7 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
   const years = retrieveYears();
   const year = years.includes(Number(sp.year)) ? Number(sp.year) : years[1] ?? years[0];
   const r = await retrieveFilings(user, current.clientId, year);
+  const emails = await lastCopyEmails(user.id);
   const link = (id: string) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`;
 
   return (
@@ -92,15 +95,23 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
                     <li key={d.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                       <span>
                         <strong className="text-navy-900">{d.title}</strong>
+                        {(() => {
+                          // "Accepted Return" only from the filing record's verified acknowledgment — never from the PDF itself.
+                          const fl = filingLabel(d.filing?.filingStatus);
+                          return fl ? <span className="ml-2" data-testid="filing-label"><Badge tone={fl.tone}>{fl.label}</Badge></span> : null;
+                        })()}
                         <span className="block text-xs text-slate-600">
                           {d.docType ? ALL_DOC_TYPES[d.docType] ?? "Document" : "Document"}
                           {d.filing && ` · ${d.filing.jurisdiction === "FEDERAL" ? "Federal" : d.filing.jurisdiction} ${d.filing.returnType}`} · added {fmtDate(d.publishedAt)} · {formatBytes(d.file.sizeBytes)}
                         </span>
                       </span>
                       <span className="flex flex-wrap gap-2">
-                        <a href={href} target="_blank" rel="noopener" className="rounded-lg bg-navy-900 px-3 py-1.5 text-sm font-semibold text-white">Preview</a>
+                        <a href={href} target="_blank" rel="noopener" className="rounded-lg bg-navy-900 px-3 py-1.5 text-sm font-semibold text-white">View</a>
                         <a href={`${href}?download=1`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-semibold text-navy-900">Download</a>
                         <PrintButton href={href} />
+                        <ActionForm action={emailMyCopyAction.bind(null, current.clientId, d.id)} className="inline">
+                          <Button type="submit" variant="ghost">Email My Copy</Button>
+                        </ActionForm>
                       </span>
                     </li>
                   );
@@ -108,6 +119,12 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
               </ul>
             </Card>
           ))}
+          {emails.length > 0 && (
+            <p className="text-xs text-slate-600" data-testid="copy-email-status">
+              Email My Copy: {emails.map((e) => `${e.status === "SENT" ? "sent" : "not sent"} ${fmtDate(e.createdAt)}${e.statusDetail ? ` — ${e.statusDetail}` : ""}`).join(" · ")}
+            </p>
+          )}
+          <p className="text-xs text-slate-600">Email My Copy sends a secure sign-in link to your verified email — never the file itself.</p>
           <p className="text-xs text-slate-600">Missing something for {year}? <Link className="underline" href={`/client/messages${q}`}>Message our office</Link>.</p>
         </div>
       )}

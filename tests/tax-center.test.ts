@@ -1,3 +1,4 @@
+import { fileReturn, releaseReturn, submitReturnForRelease } from "@/lib/services/tax-returns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
@@ -115,16 +116,26 @@ describe("Retrieve Tax Filings", () => {
     const { tab, client, user } = await portal("ana@example.com", "Ana");
     await expect(retrieveFilings(user, client.id, 2024)).rejects.toThrow(/verify your account/);
     await confirmPortalIdentity(tab, client.id, user.id, "Called the number on file");
-    const fed = await staffUploadDocument(tab, { clientId: client.id, category: "TAXES", visibility: "PUBLISHED", year: 2024, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "1040.pdf" });
-    await staffUploadDocument(tab, { clientId: client.id, category: "TAXES", visibility: "PUBLISHED", year: 2024, docType: "STATE_RETURN", bytes: pdf(), originalName: "al40.pdf" });
-    await staffUploadDocument(tab, { clientId: client.id, category: "TAXES", visibility: "PUBLISHED", year: 2024, docType: "AMENDED_RETURN", bytes: pdf(), originalName: "1040x.pdf" });
-    const draft = await staffUploadDocument(tab, { clientId: client.id, category: "TAXES", visibility: "STAFF_ONLY", year: 2024, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "draft.pdf" });
+    // Returns reach the client only through Tax Return Delivery: file → review → Tabitha releases.
+    if (!(await prisma.ownerAccess.count({ where: { userId: tab.id } }))) await prisma.ownerAccess.create({ data: { userId: tab.id, isPrimary: true } });
+    const release = async (jurisdiction: string, filingType: "ORIGINAL" | "AMENDED", name: string) => {
+      const d = await fileReturn(tab, { clientId: client.id, taxYear: 2024, returnType: jurisdiction === "FEDERAL" ? "1040" : "40", jurisdiction, filingType, bytes: pdf(), originalName: name });
+      await submitReturnForRelease(tab, d.id);
+      await releaseReturn(tab, d.id);
+      return d;
+    };
+    const fed = await release("FEDERAL", "ORIGINAL", "1040.pdf");
+    await release("AL", "ORIGINAL", "al40.pdf");
+    await release("FEDERAL", "AMENDED", "1040x.pdf");
+    const draft = await fileReturn(tab, { clientId: client.id, taxYear: 2024, returnType: "40", jurisdiction: "GA", filingType: "ORIGINAL", bytes: pdf(), originalName: "draft.pdf" });
     const r = await retrieveFilings(user, client.id, 2024);
     expect(r.groups.FEDERAL.map((d) => d.id)).toEqual([fed.id]);
     expect(r.groups.STATE).toHaveLength(1);
     expect(r.groups.AMENDED).toHaveLength(1);
     expect(r.total).toBe(3); // staff-only draft hidden
-    await setVisibility(tab, draft.id, "PUBLISHED");
+    await expect(setVisibility(tab, draft.id, "PUBLISHED")).rejects.toThrow(/Tabitha releases/);
+    await submitReturnForRelease(tab, draft.id);
+    await releaseReturn(tab, draft.id);
     expect((await retrieveFilings(user, client.id, 2024)).total).toBe(4);
 
     expect((await retrieveFilings(user, client.id, 2021)).total).toBe(0);
