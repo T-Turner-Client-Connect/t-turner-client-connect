@@ -130,7 +130,7 @@ describe("one owner, several businesses (fictional Steven Cox example)", () => {
     await expect(createAndLinkBusiness(tabitha, energy.id, { businessName: "Drive Time (fictional)", clientType: "BUSINESS" })).rejects.toThrow(/Already in the CRM/);
     const other = await createClient(tabitha, { businessName: "Other Owner Co (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
     await expect(linkBusiness(tabitha, other.id, energy.id)).rejects.toThrow(/main record of its own group/);
-    await expect(linkBusiness(tabitha, other.id, drive.id)).rejects.toThrow(/already linked to/);
+    await expect(linkBusiness(tabitha, other.id, drive.id)).rejects.toThrow(/already belongs to .*records/);
   });
 
   it("proposes links for an Admin to confirm; nothing is linked or merged automatically", async () => {

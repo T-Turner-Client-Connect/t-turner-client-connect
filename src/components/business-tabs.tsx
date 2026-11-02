@@ -3,7 +3,7 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Field } from "@/components/ui";
 import { createLinkedBusinessAction, grantOwnerAccessAction, linkExistingBusinessAction } from "@/app/actions/related-businesses";
 import { prisma } from "@/lib/prisma";
-import { businessFamily, REL_ROLES } from "@/lib/services/related-businesses";
+import { businessFamily, linkableBusinesses, REL_ROLES } from "@/lib/services/related-businesses";
 
 /**
  * Staff tabs across one owner's records, with + Add / Link Another Business
@@ -20,7 +20,8 @@ export async function BusinessTabs({ clientId, base }: { clientId: string; base:
   const others = businesses.filter((b) => b.id !== anchor.id);
   const [candidates, logins, access] = onMain
     ? await Promise.all([
-        prisma.client.findMany({ where: { archivedAt: null, clientType: { not: "INDIVIDUAL" }, id: { notIn: [anchor.id, ...businesses.map((b) => b.id)] }, ownsBusinesses: { none: {} } }, select: { id: true, displayName: true }, orderBy: { displayName: "asc" }, take: 300 }),
+        // Only records not in anyone's group: another owner's business is never offered here.
+        linkableBusinesses(anchor.id),
         prisma.portalAccess.findMany({ where: { clientId: current.id, revokedAt: null }, include: { portalUser: { select: { id: true, email: true } } } }),
         prisma.portalAccess.findMany({ where: { clientId: { in: others.map((b) => b.id) }, revokedAt: null }, select: { clientId: true, portalUserId: true } }),
       ])

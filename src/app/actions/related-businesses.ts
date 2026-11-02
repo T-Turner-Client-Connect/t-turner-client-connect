@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
-import { confirmProposedLink, createAndLinkBusiness, grantOwnerPortalAccess, linkBusiness } from "@/lib/services/related-businesses";
+import { confirmProposedLink, createAndLinkBusiness, grantOwnerPortalAccess, linkBusiness, unlinkBusiness } from "@/lib/services/related-businesses";
 
 const refresh = () => {
   revalidatePath("/clients", "layout");
@@ -43,5 +43,15 @@ export async function confirmLinkAction(personId: string, businessId: string, _p
     await confirmProposedLink(actor, personId, businessId);
     refresh();
     return "Link confirmed.";
+  });
+}
+
+export async function unlinkBusinessAction(personId: string, businessId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await unlinkBusiness(actor, personId, businessId, str(fd, "reason"));
+    refresh();
+    revalidatePath("/settings/linked-records");
+    return "Link removed. Both clients' records are unchanged, and the removed link is saved in the activity log.";
   });
 }

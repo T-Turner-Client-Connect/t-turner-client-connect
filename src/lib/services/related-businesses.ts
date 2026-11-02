@@ -67,24 +67,35 @@ async function assertMainRecord(anchorId: string) {
   return a;
 }
 
-async function assertPair(personClientId: string, businessClientId: string) {
+/**
+ * A business already linked under a different owner is someone else's record:
+ * it can't be linked here by picking it from a list. A genuine co-owner link
+ * needs an Admin and a recorded reason.
+ */
+async function assertPair(personClientId: string, businessClientId: string, opts: { actor?: Actor; coOwnerReason?: string } = {}) {
   if (personClientId === businessClientId) throw new ValidationError("Choose a different business.");
   const p = await assertMainRecord(personClientId);
   const b = await prisma.client.findUnique({ where: { id: businessClientId }, include: { _count: { select: { ownsBusinesses: true } }, ownedBy: { include: { person: { select: { displayName: true, clientType: true } } } } } });
   if (!b || b.archivedAt || b.clientType === "INDIVIDUAL") throw new ValidationError("Choose a business or nonprofit record to link.");
   if (b._count.ownsBusinesses) throw new ValidationError(`${b.displayName} is the main record of its own group. Add businesses from one main record instead.`);
-  if (p.clientType !== "INDIVIDUAL" && b.ownedBy.some((o) => o.personClientId !== personClientId)) throw new ValidationError(`${b.displayName} is already linked to ${b.ownedBy[0].person.displayName}.`);
-  return { p, b };
+  const otherOwners = b.ownedBy.filter((o) => o.personClientId !== personClientId);
+  if (otherOwners.length) {
+    const reason = opts.coOwnerReason?.trim() ?? "";
+    if (!opts.actor || opts.actor.role !== "ADMIN" || reason.length < 10) {
+      throw new ValidationError(`${b.displayName} already belongs to ${otherOwners[0].person.displayName}'s records. It can't be linked to another client. If both people truly co-own it, an Admin must confirm co-ownership with a reason.`);
+    }
+  }
+  return { p, b, otherOwners };
 }
 
 /** Links an existing business to the owner's Personal record. Nothing is merged or copied. */
-export async function linkBusiness(actor: Actor, personClientId: string, businessClientId: string, role = "OWNER") {
+export async function linkBusiness(actor: Actor, personClientId: string, businessClientId: string, role = "OWNER", opts: { coOwnerReason?: string } = {}) {
   if (!(role in REL_ROLES)) throw new ValidationError("Choose the person's role.");
-  const { b } = await assertPair(personClientId, businessClientId);
+  const { b, otherOwners } = await assertPair(personClientId, businessClientId, { actor, coOwnerReason: opts.coOwnerReason });
   const existing = await prisma.clientRelationship.findUnique({ where: { personClientId_businessClientId: { personClientId, businessClientId } } });
   if (existing) throw new ValidationError(`${b.displayName} is already linked.`);
   const rel = await prisma.clientRelationship.create({ data: { personClientId, businessClientId, role, createdById: actor.id } });
-  await audit(prisma, { actorId: actor.id, action: "client.business_linked", entityType: "Client", entityId: personClientId, clientId: personClientId, details: { businessClientId, role } });
+  await audit(prisma, { actorId: actor.id, action: "client.business_linked", entityType: "Client", entityId: personClientId, clientId: personClientId, details: { businessClientId, role, ...(otherOwners.length ? { coOwnerOf: otherOwners.map((o) => o.personClientId), coOwnerReason: opts.coOwnerReason?.trim().slice(0, 300) } : {}) } });
   return rel;
 }
 
@@ -99,10 +110,19 @@ export async function createAndLinkBusiness(actor: Actor, personClientId: string
   return business;
 }
 
-export async function unlinkBusiness(actor: Actor, personClientId: string, businessClientId: string) {
+/**
+ * Admin-only correction of a wrong link, with a recorded reason. The link's
+ * details (who created it, when, role) are saved in the audit log first, so the
+ * evidence is preserved. Removing a link never deletes either client's records
+ * or documents; portal access granted through it is revoked separately.
+ */
+export async function unlinkBusiness(actor: Actor, personClientId: string, businessClientId: string, reason = "") {
   assertAdmin(actor);
-  await prisma.clientRelationship.delete({ where: { personClientId_businessClientId: { personClientId, businessClientId } } });
-  await audit(prisma, { actorId: actor.id, action: "client.business_unlinked", entityType: "Client", entityId: personClientId, clientId: personClientId, details: { businessClientId } });
+  if (reason.trim().length < 10) throw new ValidationError("Record why this link is wrong (what you checked) before removing it.");
+  const rel = await prisma.clientRelationship.findUnique({ where: { personClientId_businessClientId: { personClientId, businessClientId } } });
+  if (!rel) throw new ValidationError("That link doesn't exist.");
+  await audit(prisma, { actorId: actor.id, action: "client.business_unlinked", entityType: "Client", entityId: personClientId, clientId: personClientId, details: { businessClientId, reason: reason.trim().slice(0, 500), removedLink: { id: rel.id, role: rel.role, createdAt: rel.createdAt.toISOString(), createdById: rel.createdById } } });
+  await prisma.clientRelationship.delete({ where: { id: rel.id } });
 }
 
 /**
@@ -110,8 +130,11 @@ export async function unlinkBusiness(actor: Actor, personClientId: string, busin
  * an explicit staff action per business (owning one never opens another).
  */
 export async function grantOwnerPortalAccess(actor: Actor, personClientId: string, businessClientId: string, portalUserId: string) {
-  await assertPair(personClientId, businessClientId);
   if (!(await prisma.clientRelationship.count({ where: { personClientId, businessClientId } }))) throw new ValidationError("Link the business to this person first.");
+  // Opening another owner's business to this login is never a one-click staff action.
+  const others = await prisma.clientRelationship.count({ where: { businessClientId, personClientId: { not: personClientId } } });
+  if (others && actor.role !== "ADMIN") throw new ValidationError("This business is also linked to another owner's records. Only an Admin can give this login access to it.");
+  await assertMainRecord(personClientId);
   const own = await prisma.portalAccess.findFirst({ where: { clientId: personClientId, portalUserId, revokedAt: null } });
   if (!own) throw new ValidationError("That login isn't this person's portal login.");
   await prisma.portalAccess.upsert({
@@ -130,7 +153,8 @@ export async function grantOwnerPortalAccess(actor: Actor, personClientId: strin
 export async function proposedLinks() {
   const [people, businesses, linked] = await Promise.all([
     prisma.client.findMany({ where: { archivedAt: null, clientType: "INDIVIDUAL" }, select: { id: true, displayName: true, emailNormalized: true, phoneNormalized: true } }),
-    prisma.client.findMany({ where: { archivedAt: null, clientType: { not: "INDIVIDUAL" } }, select: { id: true, displayName: true, emailNormalized: true, phoneNormalized: true, contacts: { select: { emailNormalized: true, phoneNormalized: true, name: true } } } }),
+    // A business already linked to an owner is never suggested for anyone else.
+    prisma.client.findMany({ where: { archivedAt: null, clientType: { not: "INDIVIDUAL" }, ownedBy: { none: {} }, ownsBusinesses: { none: {} } }, select: { id: true, displayName: true, emailNormalized: true, phoneNormalized: true, contacts: { select: { emailNormalized: true, phoneNormalized: true, name: true } } } }),
     prisma.clientRelationship.findMany({ select: { personClientId: true, businessClientId: true } }),
   ]);
   const done = new Set(linked.map((l) => `${l.personClientId}:${l.businessClientId}`));
@@ -158,6 +182,70 @@ export async function possibleDuplicatePeople() {
     }
   }
   return [...groups.entries()].filter(([, v]) => v.length > 1).map(([k, v]) => ({ reason: k.startsWith("e:") ? "same email" : "same phone", clients: v }));
+}
+
+/**
+ * Businesses that may be offered in "Link an existing business": not in any
+ * owner's group yet (not linked under an owner, not a group's main record).
+ */
+export async function linkableBusinesses(anchorId: string) {
+  return prisma.client.findMany({
+    where: { archivedAt: null, clientType: { not: "INDIVIDUAL" }, id: { not: anchorId }, ownedBy: { none: {} }, ownsBusinesses: { none: {} } },
+    select: { id: true, displayName: true },
+    orderBy: { displayName: "asc" },
+    take: 300,
+  });
+}
+
+/**
+ * Admin review of every owner ↔ business link (read-only): who created it and
+ * when, how, and flags that need a look — a business linked to more than one
+ * owner, no shared email/phone/contact between the two records, and portal
+ * access granted through the link (with whether that login opened any of the
+ * business's documents). Nothing is changed.
+ */
+export async function relationshipReview(actor: Actor) {
+  assertAdmin(actor);
+  const rels = await prisma.clientRelationship.findMany({
+    include: {
+      person: { select: { id: true, displayName: true, emailNormalized: true, phoneNormalized: true, contacts: { select: { name: true, emailNormalized: true, phoneNormalized: true } } } },
+      business: { select: { id: true, displayName: true, clientType: true, emailNormalized: true, phoneNormalized: true, contacts: { select: { name: true, emailNormalized: true, phoneNormalized: true } }, ownedBy: { select: { personClientId: true } } } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const users = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
+  const out = [];
+  for (const r of rels) {
+    const keys = (c: { displayName?: string; emailNormalized: string | null; phoneNormalized: string | null; contacts: { name: string; emailNormalized: string | null; phoneNormalized: string | null }[] }) =>
+      new Set([c.emailNormalized, c.phoneNormalized, ...c.contacts.flatMap((x) => [x.emailNormalized, x.phoneNormalized, x.name.trim().toLowerCase()])].filter(Boolean) as string[]);
+    const pk = keys(r.person);
+    pk.add(r.person.displayName.trim().toLowerCase());
+    const shared = [...keys(r.business)].some((k) => pk.has(k));
+    const logs = await prisma.auditLog.findMany({ where: { action: "client.business_linked", entityId: r.personClientId }, orderBy: { createdAt: "asc" }, select: { createdAt: true, actorId: true, details: true } });
+    const how = logs.find((l) => (l.details as { businessClientId?: string } | null)?.businessClientId === r.businessClientId);
+    const grants = await prisma.auditLog.findMany({ where: { action: "portal.access_granted", clientId: r.businessClientId }, select: { entityId: true, createdAt: true, actorId: true, details: true } });
+    const viaLink = grants.filter((g) => (g.details as { personClientId?: string } | null)?.personClientId === r.personClientId);
+    const opened = viaLink.length
+      ? await prisma.documentAccessLog.count({ where: { portalUserId: { in: viaLink.map((g) => g.entityId!).filter(Boolean) }, document: { clientId: r.businessClientId }, action: { in: ["VIEW", "DOWNLOAD"] } } })
+      : 0;
+    const flags = [
+      ...(r.business.ownedBy.length > 1 ? ["Business linked to more than one owner"] : []),
+      ...(!shared ? ["No shared email, phone or contact name between the two records"] : []),
+      ...(viaLink.length ? [`Portal access granted through this link (${viaLink.length})`] : []),
+      ...(opened ? [`That login opened ${opened} of the business's documents`] : []),
+    ];
+    out.push({
+      id: r.id,
+      person: { id: r.person.id, name: r.person.displayName },
+      business: { id: r.business.id, name: r.business.displayName, type: r.business.clientType },
+      role: r.role,
+      createdAt: r.createdAt,
+      createdBy: r.createdById ? users.get(r.createdById) ?? "Unknown" : "Unknown",
+      loggedAt: how?.createdAt ?? null,
+      flags,
+    });
+  }
+  return out;
 }
 
 /** Admin confirms a proposed link. */
