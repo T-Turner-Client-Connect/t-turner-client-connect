@@ -9,6 +9,7 @@ import { squareRequest, squareSettings, SquareError, type SquareCard } from "@/l
 import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { canManageBilling } from "./bookkeeping-profile";
+import { businessFamily } from "./related-businesses";
 
 /**
  * Existing Square recurring billing, linked read-only.
@@ -237,6 +238,22 @@ async function refresh(arrangementId: string) {
   }
 }
 
+/**
+ * One Square bill covers one owner's records only: every client on it must be
+ * in the same owner group, and none may also be linked under another owner.
+ * Stops a wrongly linked business from being billed with an unrelated client.
+ */
+async function assertOneOwnerGroup(clientIds: string[]) {
+  let anchor: string | null = null;
+  for (const id of clientIds) {
+    const fam = await businessFamily(id);
+    if (!fam) throw new ValidationError("Client not found.");
+    if (fam.otherOwners.length) throw new ValidationError(`${nameOf(fam.current)} is linked to more than one owner. Resolve that in Linked records review before billing it.`);
+    if (anchor && fam.anchor.id !== anchor) throw new ValidationError("Every business on one Square bill must belong to the same owner.");
+    anchor = fam.anchor.id;
+  }
+}
+
 async function assertClientsFree(clientIds: string[], exceptArrangementId?: string) {
   const ids = [...new Set(clientIds.filter(Boolean))];
   if (!ids.length) throw new ValidationError("Choose the client(s) this Square bill covers.");
@@ -255,6 +272,7 @@ export async function linkSquareBilling(actor: Actor, input: { customerId: strin
   const existing = await prisma.squareBillingArrangement.findUnique({ where: { squareLocationId_seriesKey: { squareLocationId: s.locationId, seriesKey: input.seriesKey } } });
   if (existing) throw new ValidationError("That Square series is already linked. Add the business to the existing link instead, so the bill stays one arrangement.");
   const clients = await assertClientsFree(input.clientIds);
+  await assertOneOwnerGroup(clients.map((c) => c.id));
   const a = await prisma.squareBillingArrangement.create({
     data: { squareCustomerId: input.customerId, squareLocationId: s.locationId, seriesKey: input.seriesKey, linkedById: actor.id, members: { create: clients.map((c) => ({ clientId: c.id, addedById: actor.id })) } },
   });
@@ -275,6 +293,8 @@ export async function addClientToSquareBilling(actor: Actor, arrangementId: stri
   if (!a) throw new ValidationError("Square billing link not found.");
   const [c] = await assertClientsFree([clientId], arrangementId);
   if (await prisma.squareBillingMember.findUnique({ where: { clientId } })) throw new ValidationError(`${nameOf(c)} is already on this Square bill.`);
+  const members = await prisma.squareBillingMember.findMany({ where: { arrangementId }, select: { clientId: true } });
+  await assertOneOwnerGroup([...members.map((m) => m.clientId), clientId]);
   await prisma.squareBillingMember.create({ data: { arrangementId, clientId, addedById: actor.id } });
   await audit(prisma, { actorId: actor.id, action: "square_billing.client_linked", entityType: "SquareBillingArrangement", entityId: arrangementId, clientId, details: { seriesKey: a.seriesKey } });
 }

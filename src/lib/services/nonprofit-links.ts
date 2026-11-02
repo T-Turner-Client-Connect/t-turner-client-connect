@@ -89,7 +89,6 @@ export async function setFilingService(actor: Actor, orgId: string, value: strin
 /** Nonprofit organization records an owner could be linked to (not already in another owner's group). */
 export async function linkableNonprofits(clientId: string) {
   const fam = await ownerRecord(clientId);
-  const linked = new Set(fam.businesses.map((b) => b.id));
-  const all = await prisma.client.findMany({ where: { clientType: "NONPROFIT", archivedAt: null, ownsBusinesses: { none: {} } }, select: { id: true, displayName: true, ownedBy: { select: { personClientId: true } } }, orderBy: { displayName: "asc" }, take: 300 });
-  return all.filter((o) => !linked.has(o.id) && o.id !== fam.anchor.id && (fam.anchor.clientType === "INDIVIDUAL" || o.ownedBy.every((x) => x.personClientId === fam.anchor.id)));
+  // Only nonprofits not in anyone's group: another owner's organization is never offered here.
+  return prisma.client.findMany({ where: { clientType: "NONPROFIT", archivedAt: null, id: { not: fam.anchor.id }, ownedBy: { none: {} }, ownsBusinesses: { none: {} } }, select: { id: true, displayName: true }, orderBy: { displayName: "asc" }, take: 300 });
 }

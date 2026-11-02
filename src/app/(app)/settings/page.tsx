@@ -77,7 +77,7 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" actions={isAdmin ? <LinkButton href="#invite-staff" data-testid="add-staff-button">+ Add Staff / Invite Employee</LinkButton> : undefined} />
+      <PageHeader title="Settings" actions={isAdmin ? <span className="flex flex-wrap gap-2"><LinkButton href="/settings/linked-records" variant="secondary">Linked records review</LinkButton><LinkButton href="#invite-staff" data-testid="add-staff-button">+ Add Staff / Invite Employee</LinkButton></span> : undefined} />
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Staff accounts" actions={isAdmin ? <LinkButton href="#invite-staff" variant="secondary">+ Invite Employee</LinkButton> : undefined}>
           <ul className="divide-y divide-navy-100">
