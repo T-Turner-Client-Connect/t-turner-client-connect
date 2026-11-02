@@ -7,6 +7,7 @@ import { decryptSecret, encryptSecret, sign } from "@/lib/crypto";
 import { requireClientAccess } from "@/lib/portal/access";
 import type { PortalActor } from "@/lib/portal/session";
 import { filingGroup } from "@/lib/document-types";
+import { clientReceivableWhere } from "./documents";
 import { normalizeEmail } from "@/lib/normalize";
 import { ValidationError } from "./clients";
 import { assertNotDuplicate, portalVerified, retentionDate, sha256Of, storeDocumentFile } from "./documents";
@@ -399,8 +400,9 @@ export async function retrieveFilings(user: PortalActor, clientId: string, year:
   await requireVerified(user);
   if (!retrieveYears().includes(year)) throw new ValidationError("Choose a year from the list.");
   const docs = await prisma.document.findMany({
-    where: { clientId, year, deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN", category: "TAXES", uploadedByStaffId: { not: null } },
-    include: { filing: { select: { jurisdiction: true, filingType: true, returnType: true } }, file: { select: { mimeType: true, sizeBytes: true } } },
+    // Released returns only (Tabitha's release); returns published before Tax Return Delivery stay visible.
+    where: { clientId, year, deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN", category: "TAXES", uploadedByStaffId: { not: null }, AND: [clientReceivableWhere] },
+    include: { filing: { select: { jurisdiction: true, filingType: true, returnType: true, filingStatus: true } }, file: { select: { mimeType: true, sizeBytes: true } } },
     orderBy: [{ publishedAt: "desc" }],
   });
   const groups = { FEDERAL: [] as typeof docs, STATE: [] as typeof docs, AMENDED: [] as typeof docs, RELATED: [] as typeof docs };

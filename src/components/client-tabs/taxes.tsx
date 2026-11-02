@@ -1,4 +1,9 @@
+import Link from "next/link";
 import type { Actor } from "@/lib/auth/actor";
+import { ReturnFields } from "@/components/return-fields";
+import { fileReturnAction, returnStepAction } from "@/app/actions/tax-returns";
+import { filingLabel, RETURN_COPY_STATUS } from "@/lib/services/tax-returns";
+import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Field, Notice } from "@/components/ui";
 import { amendmentOutcomeAction, attachFilingDocAction, createFilingAction, filingStatusAction, prepStatusAction, publishFilingAction, setTaxSoftwareIdAction } from "@/app/actions/tax";
@@ -20,6 +25,10 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
     }),
     prisma.document.findMany({ where: { clientId, deletedAt: null, category: "TAXES" }, select: { id: true, title: true }, orderBy: { createdAt: "desc" } }),
   ]);
+  const [returnDocs, approver] = await Promise.all([
+    prisma.document.findMany({ where: { clientId, filingDocType: "RETURN", deletedAt: null }, include: { filing: { select: { filingStatus: true } } }, orderBy: [{ year: "desc" }, { createdAt: "desc" }] }),
+    isReportApprover(user),
+  ]);
   const staffNames = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const years = Array.from(new Set(filings.map((f) => f.taxYear)));
   const thisYear = new Date().getFullYear();
@@ -27,6 +36,27 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
   return (
     <div className="space-y-4">
       <TaxCenterStaff clientId={clientId} user={user} />
+      <Card title="Completed returns (Tax Return Delivery)">
+        <ActionForm action={fileReturnAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-6" resetOnSuccess data-testid="file-return">
+          <ReturnFields />
+          <Field label="Return PDF"><input className="input" type="file" name="file" accept="application/pdf" required /></Field>
+          <div className="sm:col-span-6"><Button type="submit" variant="secondary">File return (staff-only draft)</Button> <span className="text-xs text-slate-600">For several at once, use <Link className="underline" href="/taxes/returns">Tax returns</Link>. Tabitha releases each copy to the portal.</span></div>
+        </ActionForm>
+        <ul className="mt-3 divide-y divide-ivory-200 text-sm" data-testid="client-returns">
+          {returnDocs.map((d) => {
+            const fl = filingLabel(d.filing?.filingStatus);
+            const st = RETURN_COPY_STATUS[(d.reviewStatus ?? "DRAFT") as keyof typeof RETURN_COPY_STATUS];
+            return (
+              <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span>{d.title}{d.version && d.version > 1 ? ` · version ${d.version}` : ""}{d.supersededAt ? " · replaced by a newer version" : ""} <Badge tone={st.tone as never}>{st.label}</Badge>{fl && <Badge tone={fl.tone} className="ml-1">{fl.label}</Badge>}</span>
+                {d.reviewStatus === "DRAFT" && <ActionForm action={returnStepAction.bind(null, d.id, "submit")}><Button type="submit" variant="ghost" disabled={d.scanStatus !== "CLEAN"}>Send for review</Button></ActionForm>}
+                {d.reviewStatus === "AWAITING_REVIEW" && (approver ? <ActionForm action={returnStepAction.bind(null, d.id, "release")}><Button type="submit" variant="gold" disabled={d.scanStatus !== "CLEAN"}>Release to client</Button></ActionForm> : <Badge tone="gold">Waiting for Tabitha</Badge>)}
+              </li>
+            );
+          })}
+          {returnDocs.length === 0 && <li className="py-2 text-slate-600">No returns filed through Tax Return Delivery yet.</li>}
+        </ul>
+      </Card>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Add a filing">
           <ActionForm action={createFilingAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-2" resetOnSuccess>
