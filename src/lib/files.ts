@@ -13,10 +13,22 @@ export type SniffedType =
   | { mime: "image/jpeg"; ext: "jpg" }
   | { mime: "application/pdf"; ext: "pdf" }
   | { mime: "video/mp4"; ext: "mp4" }
-  | { mime: "video/quicktime"; ext: "mov" };
+  | { mime: "video/quicktime"; ext: "mov" }
+  | { mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"; ext: "docx" }
+  | { mime: "application/msword"; ext: "doc" };
 
 /** Video is only accepted into the marketing media library, never client documents. */
-export function sniffType(bytes: Uint8Array, opts: { allowVideo?: boolean } = {}): SniffedType | null {
+export function sniffType(bytes: Uint8Array, opts: { allowVideo?: boolean; allowOffice?: boolean; name?: string } = {}): SniffedType | null {
+  if (opts.allowOffice) {
+    // .docx is a ZIP package with a word/ part. Macro-enabled documents (vbaProject) are refused.
+    if (bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+      const head = new TextDecoder("latin1").decode(bytes.slice(0, Math.min(bytes.length, 2_000_000)));
+      if (head.includes("word/") && head.includes("[Content_Types].xml") && !head.includes("vbaProject")) return { mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ext: "docx" };
+    }
+    // Legacy .doc (OLE compound file) — only with a .doc name, since other Office formats share the header.
+    const ole = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+    if (bytes.length > 8 && ole.every((b, i) => bytes[i] === b) && /\.doc$/i.test(opts.name ?? "")) return { mime: "application/msword", ext: "doc" };
+  }
   if (opts.allowVideo && bytes.length > 12 && String.fromCharCode(...bytes.slice(4, 8)) === "ftyp") {
     const brand = String.fromCharCode(...bytes.slice(8, 12));
     return brand === "qt  " ? { mime: "video/quicktime", ext: "mov" } : { mime: "video/mp4", ext: "mp4" };

@@ -90,6 +90,11 @@ export async function renderAgreementPdf(t: AgreementTerms, sel: AgreementSelect
   text("Payment terms", { f: bold, size: 11, color: NAVY });
   text(t.paymentTerms, { gap: 10 });
 
+  for (const d of t.disclaimers ?? []) {
+    text(d.title, { f: bold, size: 11, color: NAVY });
+    text(d.text, { size: 9, gap: 10 });
+  }
+
   text("Acknowledgment and electronic signature", { f: bold, size: 11, color: NAVY });
   text(sig.consentText);
   row("Signed by", sig.signerName, bold);

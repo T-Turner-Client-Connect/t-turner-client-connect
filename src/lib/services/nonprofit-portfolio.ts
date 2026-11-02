@@ -8,7 +8,9 @@ import { sendEmail } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
 import { STATES } from "@/lib/resources/catalog";
 import { officeToday, daysBetween } from "@/lib/tax/deadlines";
+import { assertOwner } from "@/lib/auth/owner";
 import { ValidationError } from "./clients";
+import { createService, prepareAgreement, startGate } from "./service-agreements";
 import { staffUploadDocument } from "./documents";
 import { latestEndedTaxYear, nonprofitDueDate, NONPROFIT_FORMS } from "./nonprofits";
 
@@ -48,6 +50,39 @@ export const ORIGINS = {
 export type Origin = keyof typeof ORIGINS;
 
 export const CATEGORIES = { STATE: "State", FEDERAL: "Federal", GOVERNANCE: "Governance", GRANT: "Grant readiness", OTHER: "Other" } as const;
+
+/** Portfolio sections, in the order clients see them. */
+export const SECTIONS = {
+  FORMATION: "Formation documents",
+  IRS: "IRS exemption",
+  STATE: "State filings",
+  SAM: "SAM.gov / UEI",
+  GRANT: "Grant readiness",
+  OTHER: "Other documents",
+} as const;
+export type Section = keyof typeof SECTIONS;
+
+const FORMATION_KEYS = ["sos_formation", "state_formation", "ein", "incorporator_statement", "org_minutes", "bylaws", "bank_resolution"];
+/** Section for a state-template item (templates are grouped by category; formation documents span several). */
+export function sectionFor(item: { key: string; category: string; section?: string }): Section {
+  if (item.section && item.section in SECTIONS) return item.section as Section;
+  if (FORMATION_KEYS.includes(item.key) || item.category === "GOVERNANCE") return "FORMATION";
+  if (item.key.startsWith("irs_")) return "IRS";
+  if (item.category === "STATE") return "STATE";
+  if (item.category === "GRANT") return "GRANT";
+  return "OTHER";
+}
+
+export const GRANT_DISCLAIMER = {
+  title: "GRANT ASSISTANCE & FUNDING DISCLAIMER",
+  text: [
+    "T. Turner & Associates, LLC provides nonprofit formation, organizational documentation, SAM.gov registration assistance, and grant-readiness preparation services as described in the client's selected service agreement.",
+    "Grant research, grant writing, grant application preparation, and grant submissions are not included unless separately agreed to in writing.",
+    "T. Turner & Associates, LLC may offer limited additional grant assistance when time and availability permit, at its sole discretion.",
+    "T. Turner & Associates, LLC does not guarantee grant eligibility, grant approval, grant awards, funding amounts, or funding timelines.",
+    "The organization remains responsible for its grant applications, supporting information, compliance requirements, and funding decisions.",
+  ].join("\n\n"),
+};
 
 export const IRS_EVENTS = {
   SUBMITTED: "Submitted to the IRS",
@@ -222,22 +257,25 @@ export async function applyStateTemplate(actor: Actor, orgId: string, state: str
   const fresh = t.items.filter((item) => !keys.has(item.key));
   if (fresh.length) {
     await prisma.nonprofitChecklistItem.createMany({
-      data: fresh.map((item, i) => ({ portfolioId: orgId, templateKey: item.key, label: item.label, category: item.category, sortOrder: have.length + i })),
+      data: fresh.map((item, i) => ({ portfolioId: orgId, templateKey: item.key, label: item.label, category: item.category, section: sectionFor(item), requirement: true, sortOrder: have.length + i })),
       skipDuplicates: true,
     });
   }
+  // Package documents that are also government requirements are flagged as both (one item, not two).
+  await prisma.nonprofitChecklistItem.updateMany({ where: { portfolioId: orgId, templateKey: { in: t.items.map((i) => i.key) } }, data: { requirement: true } });
   const added = fresh.length;
   await prisma.nonprofitPortfolio.update({ where: { clientId: orgId }, data: { formationState: state } });
   await audit(prisma, { actorId: actor.id, action: "nonprofit.template_applied", entityType: "NonprofitPortfolio", entityId: orgId, clientId: orgId, details: { state, added, verified: !!t.verifiedAt } });
   return { added, verified: !!t.verifiedAt, baseline: !t.saved };
 }
 
-export async function addChecklistItem(actor: Actor, orgId: string, input: { label: string; category: string }) {
+export async function addChecklistItem(actor: Actor, orgId: string, input: { label: string; category: string; section?: string }) {
   await ensurePortfolio(actor, orgId);
   if (!input.label.trim()) throw new ValidationError("Describe the document.");
   const category = input.category in CATEGORIES ? input.category : "OTHER";
   const n = await prisma.nonprofitChecklistItem.count({ where: { portfolioId: orgId } });
-  const item = await prisma.nonprofitChecklistItem.create({ data: { portfolioId: orgId, label: input.label.trim().slice(0, 200), category, sortOrder: n } });
+  const section = input.section && input.section in SECTIONS ? input.section : sectionFor({ key: "", category });
+  const item = await prisma.nonprofitChecklistItem.create({ data: { portfolioId: orgId, label: input.label.trim().slice(0, 200), category, section, sortOrder: n } });
   await audit(prisma, { actorId: actor.id, action: "nonprofit.item_added", entityType: "NonprofitChecklistItem", entityId: item.id, clientId: orgId, details: { label: item.label } });
   return item;
 }
@@ -247,6 +285,7 @@ export async function updateChecklistItem(actor: Actor, itemId: string, input: {
   if (!item) throw new ValidationError("Not found.");
   if (!(input.status in ITEM_STATUS)) throw new ValidationError("Choose a status.");
   if (input.status === "DELIVERED" && !(await prisma.nonprofitItemFile.count({ where: { itemId, releasedAt: { not: null } } }))) throw new ValidationError("Release a document to the client before marking it delivered.");
+  if (!["NOT_STARTED", "INFORMATION_NEEDED", "NOT_APPLICABLE"].includes(input.status)) await assertWorkMayBegin(item.portfolioId);
   if (input.responsibleId && !(await prisma.user.count({ where: { id: input.responsibleId, active: true } }))) throw new ValidationError("Choose an active staff member.");
   const done = DONE.includes(input.status as ItemStatus);
   await prisma.nonprofitChecklistItem.update({
@@ -261,7 +300,7 @@ export async function uploadItemFile(actor: Actor, itemId: string, input: { orig
   const item = await prisma.nonprofitChecklistItem.findUnique({ where: { id: itemId } });
   if (!item) throw new ValidationError("Not found.");
   if (!(input.origin in ORIGINS)) throw new ValidationError("Say whether this is government-issued, a final document we prepared, client-prepared or an internal draft.");
-  const doc = await staffUploadDocument(actor, { clientId: item.portfolioId, category: "OTHER", title: item.label, visibility: "STAFF_ONLY", docType: "NONPROFIT_ITEM", bytes: input.bytes, originalName: input.originalName });
+  const doc = await staffUploadDocument(actor, { clientId: item.portfolioId, category: "OTHER", title: item.label, visibility: "STAFF_ONLY", docType: "NONPROFIT_ITEM", bytes: input.bytes, originalName: input.originalName, allowOffice: true });
   const f = await prisma.nonprofitItemFile.create({ data: { itemId, documentId: doc.id, origin: input.origin, uploadedById: actor.id } });
   await audit(prisma, { actorId: actor.id, action: "nonprofit.item_file_uploaded", entityType: "NonprofitChecklistItem", entityId: itemId, clientId: item.portfolioId, details: { documentId: doc.id, origin: input.origin } });
   return f;
@@ -279,6 +318,7 @@ export async function releaseItemFile(actor: Actor, fileId: string): Promise<Rel
   if (!f) throw new ValidationError("Not found.");
   if (f.origin === "INTERNAL_DRAFT") throw new ValidationError("Internal drafts are never released to the client. Upload the final version.");
   if (f.releasedAt) throw new ValidationError("Already released. Use Resend notice to email the client again.");
+  await assertWorkMayBegin(f.item.portfolioId);
   const doc = await prisma.document.findUniqueOrThrow({ where: { id: f.documentId } });
   if (doc.deletedAt) throw new ValidationError("This file was deleted.");
   if (doc.scanStatus !== "CLEAN") throw new ValidationError("This file hasn't passed the malware scan yet, so it can't be released.");
@@ -342,6 +382,84 @@ export async function releaseNotices(orgId: string) {
   });
 }
 
+// --- Formation packages -------------------------------------------------------------
+
+export type PackageDeliverable = { key: string; label: string; section: Section };
+
+export async function packages(includeInactive = false) {
+  return prisma.nonprofitPackage.findMany({ where: includeInactive ? {} : { active: true }, orderBy: { sortOrder: "asc" } });
+}
+
+/** Owner: edit a package — name, price, price note, state prices, government-fee handling, deliverables, grant disclaimer. */
+export async function savePackage(actor: Actor, key: string, input: { name: string; priceCents: number; priceNote?: string; statePrices?: Record<string, number>; govFeesMode: string; deliverables: PackageDeliverable[]; grantDisclaimer: boolean; active: boolean }) {
+  await assertOwner(actor, "full");
+  if (!/^[A-Z0-9_]{2,30}$/.test(key)) throw new ValidationError("Use a short key like AL_BASIC.");
+  if (!input.name.trim()) throw new ValidationError("Name the package.");
+  if (!Number.isInteger(input.priceCents) || input.priceCents <= 0) throw new ValidationError("Enter the package price.");
+  if (!["INCLUDED", "ADDED"].includes(input.govFeesMode)) throw new ValidationError("Say whether government filing fees are included in the price or added to it.");
+  if (!input.deliverables.length || input.deliverables.some((d) => !d.key || !d.label || !(d.section in SECTIONS))) throw new ValidationError("Each deliverable needs a key, a description and a section.");
+  for (const [st, cents] of Object.entries(input.statePrices ?? {})) {
+    if (!stateName(st) || !Number.isInteger(cents) || cents <= 0) throw new ValidationError(`Check the price for ${st}.`);
+  }
+  const data = { name: input.name.trim().slice(0, 120), priceCents: input.priceCents, priceNote: input.priceNote?.trim() || null, statePrices: input.statePrices && Object.keys(input.statePrices).length ? input.statePrices : undefined, govFeesMode: input.govFeesMode, deliverables: input.deliverables, grantDisclaimer: input.grantDisclaimer, active: input.active, updatedById: actor.id };
+  const max = await prisma.nonprofitPackage.aggregate({ _max: { sortOrder: true } });
+  await prisma.nonprofitPackage.upsert({ where: { key }, create: { key, ...data, sortOrder: (max._max.sortOrder ?? 0) + 1 }, update: data });
+  await audit(prisma, { actorId: actor.id, action: "nonprofit.package_saved", entityType: "NonprofitPackage", entityId: key, details: { priceCents: input.priceCents, deliverables: input.deliverables.length, govFeesMode: input.govFeesMode } });
+}
+
+/** The price for a package in a state: its state price if set, otherwise the base price. */
+export function packagePrice(pkg: { priceCents: number; statePrices: unknown }, state: string | null) {
+  const sp = (pkg.statePrices ?? {}) as Record<string, number>;
+  return state && sp[state] ? sp[state] : pkg.priceCents;
+}
+
+/**
+ * Assigns a package to the organization: its deliverables join the checklist
+ * (flagged as included in the package, kept apart from government
+ * requirements), and a service with a draft pricing agreement is prepared —
+ * work on package documents can't begin until the client signs it. The $5,000
+ * portfolio's agreement carries the grant disclaimer, so signing it is the
+ * client's electronic acknowledgment.
+ */
+export async function assignPackage(actor: Actor, orgId: string, input: { packageKey: string; govFeeCents?: number; priceCents?: number }) {
+  const p = await ensurePortfolio(actor, orgId);
+  const pkg = await prisma.nonprofitPackage.findUnique({ where: { key: input.packageKey } });
+  if (!pkg || !pkg.active) throw new ValidationError("Choose a package.");
+  const deliverables = pkg.deliverables as unknown as PackageDeliverable[];
+  const price = input.priceCents && input.priceCents > 0 ? input.priceCents : packagePrice(pkg, p.formationState);
+  if (pkg.govFeesMode === "ADDED" && input.govFeeCents !== undefined && (!Number.isInteger(input.govFeeCents) || input.govFeeCents < 0)) throw new ValidationError("Enter the government filing fees in dollars and cents.");
+
+  // Checklist: one item per deliverable; an existing item with the same key (e.g. a state requirement) is reused.
+  const existing = await prisma.nonprofitChecklistItem.findMany({ where: { portfolioId: orgId }, select: { templateKey: true } });
+  const have = new Set(existing.map((e) => e.templateKey));
+  const fresh = deliverables.filter((d) => !have.has(d.key));
+  if (fresh.length) await prisma.nonprofitChecklistItem.createMany({ data: fresh.map((d, i) => ({ portfolioId: orgId, templateKey: d.key, label: d.label, section: d.section, category: d.section === "GRANT" ? "GRANT" : d.section === "STATE" ? "STATE" : d.section === "FORMATION" ? "GOVERNANCE" : "FEDERAL", deliverable: true, sortOrder: existing.length + i })), skipDuplicates: true });
+  for (const d of deliverables.filter((x) => have.has(x.key))) {
+    await prisma.nonprofitChecklistItem.update({ where: { portfolioId_templateKey: { portfolioId: orgId, templateKey: d.key } }, data: { deliverable: true, label: d.label, section: d.section } });
+  }
+  // Documents from a previously assigned package that this one doesn't include stay, but aren't package deliverables any more.
+  await prisma.nonprofitChecklistItem.updateMany({ where: { portfolioId: orgId, deliverable: true, templateKey: { notIn: deliverables.map((d) => d.key) } }, data: { deliverable: false } });
+
+  // Billing: a service on the organization's record with its draft agreement.
+  const serviceId = p.serviceId ?? (await createService(actor, { clientId: orgId, type: "NONPROFIT_SERVICES", periodLabel: pkg.name, title: pkg.name, description: `Deliverables: ${deliverables.map((d) => d.label).join("; ")}.`, requiresPaymentAuth: false })).id;
+  const lines = [{ label: `${pkg.name}${pkg.govFeesMode === "INCLUDED" ? " (government filing fees included)" : ""}`, cents: price }];
+  if (pkg.govFeesMode === "ADDED" && input.govFeeCents) lines.push({ label: "Government filing fees (paid to the state and IRS; added to the package price)", cents: input.govFeeCents });
+  const agreement = await prepareAgreement(actor, serviceId, { lines, disclaimers: pkg.grantDisclaimer ? [GRANT_DISCLAIMER] : [] });
+  await prisma.nonprofitPortfolio.update({ where: { clientId: orgId }, data: { packageKey: pkg.key, serviceId, govFeesMode: pkg.govFeesMode } });
+  await audit(prisma, { actorId: actor.id, action: "nonprofit.package_assigned", entityType: "NonprofitPortfolio", entityId: orgId, clientId: orgId, details: { packageKey: pkg.key, priceCents: price, govFeeCents: input.govFeeCents ?? null, agreementId: agreement.id } });
+  return { serviceId, agreementId: agreement.id, added: fresh.length };
+}
+
+/** Package work waits for the signed agreement (or the owner's documented override). */
+async function assertWorkMayBegin(orgId: string) {
+  const p = await prisma.nonprofitPortfolio.findUnique({ where: { clientId: orgId }, select: { serviceId: true } });
+  if (!p?.serviceId) return;
+  const s = await prisma.clientService.findUnique({ where: { id: p.serviceId }, include: { agreements: true } });
+  if (!s) return;
+  const gate = startGate(s);
+  if (!gate.ok) throw new ValidationError(`Package work can't begin yet: ${gate.reason}`);
+}
+
 // --- Client side -----------------------------------------------------------------
 
 /** Released, clean files the client may open, for one organization they have access to. */
@@ -368,12 +486,23 @@ export async function portalPortfolio(user: PortalActor, orgId: string) {
   const done = applicable.filter((i) => DONE.includes(i.status as ItemStatus)).length;
   const files = await releasedFiles(orgId);
   const cls = p.classification ? await prisma.nonprofitClassification.findUnique({ where: { key: p.classification } }) : null;
+  const pkg = p.packageKey ? await prisma.nonprofitPackage.findUnique({ where: { key: p.packageKey } }) : null;
   return {
     org: { name: p.legalName || p.client.businessName || p.client.displayName, state: p.formationState ? stateName(p.formationState) : null, formationDate: p.formationDate, ein: p.ein, sosEntityNumber: p.sosEntityNumber, classification: cls?.label ?? null, uei: p.uei, samStatus: p.samStatus, agStatus: p.agStatus },
     irs: irsStatus(p.irsEvents),
     progress: { done, total: applicable.length },
-    items: applicable.map((i) => ({ id: i.id, label: i.label, status: i.status as ItemStatus, released: files.some((f) => f.itemId === i.id) })),
+    items: applicable.map((i) => ({
+      id: i.id,
+      label: i.label,
+      status: i.status as ItemStatus,
+      section: (i.section in SECTIONS ? i.section : "OTHER") as Section,
+      deliverable: i.deliverable,
+      requirement: i.requirement,
+      // Every released format of this document (e.g. PDF and Word).
+      files: files.filter((f) => f.itemId === i.id).map((f) => ({ id: f.id, documentId: f.doc.id, mime: f.doc.file.mimeType, name: f.doc.file.originalName, origin: f.origin as Origin, releasedAt: f.releasedAt! })),
+    })),
     files: files.map((f) => ({ id: f.id, documentId: f.doc.id, label: f.item.label, title: f.doc.title, origin: f.origin as Origin, releasedAt: f.releasedAt!, mime: f.doc.file.mimeType })),
+    package: pkg ? { name: pkg.name, grantDisclaimer: pkg.grantDisclaimer } : null,
     deadlines: annualDeadline(p.client),
   };
 }

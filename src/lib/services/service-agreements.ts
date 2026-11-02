@@ -179,7 +179,7 @@ export async function ownerOverride(actor: Actor, serviceId: string, reason: str
 
 // --- Agreements ---------------------------------------------------------------
 
-type PrepareInput = { lines: { label: string; cents: number }[]; paymentTerms?: string; refundTransfer?: { eligible: boolean; feeCents: number } | null };
+type PrepareInput = { lines: { label: string; cents: number }[]; paymentTerms?: string; refundTransfer?: { eligible: boolean; feeCents: number } | null; disclaimers?: { title: string; text: string }[] };
 
 /**
  * Prepares the next agreement version (or updates the unsent draft). Signed and
@@ -219,6 +219,8 @@ export async function prepareAgreement(actor: Actor, serviceId: string, input: P
     options: quoteAll(baseCents, settings, { kind, refundTransfer: rt }),
     paymentTerms: input.paymentTerms?.trim().slice(0, 1500) || DEFAULT_PAYMENT_TERMS,
     refundTransfer: rt ? { ...rt, provider: rtSetting?.providerName ?? null } : null,
+    // A revised draft keeps the disclaimers the earlier version carried unless new ones are given.
+    ...((input.disclaimers ?? (prev?.terms as unknown as AgreementTerms | undefined)?.disclaimers)?.length ? { disclaimers: input.disclaimers ?? (prev!.terms as unknown as AgreementTerms).disclaimers } : {}),
   };
   const a = draft
     ? await prisma.pricingAgreement.update({ where: { id: draft.id }, data: { terms, kind } })

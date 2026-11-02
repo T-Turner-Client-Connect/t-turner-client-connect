@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { Badge, Card, EmptyState, Notice, PageHeader } from "@/components/ui";
-import { PortfolioDocuments } from "@/components/portal/portfolio-documents";
+import { PortfolioSections, type PortfolioSection } from "@/components/portal/portfolio-documents";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { downloadToken } from "@/lib/services/documents";
-import { DONE, IRS_EVENTS, ITEM_STATUS, ORIGINS, portalPortfolio } from "@/lib/services/nonprofit-portfolio";
+import { DONE, GRANT_DISCLAIMER, IRS_EVENTS, ITEM_STATUS, ORIGINS, portalPortfolio, SECTIONS, type Section } from "@/lib/services/nonprofit-portfolio";
 import { fmtDate } from "@/lib/format";
 
 export const metadata = { title: "Nonprofit Portfolio" };
@@ -30,10 +30,27 @@ export default async function PortalNonprofit({ searchParams }: { searchParams: 
   const v = await portalPortfolio(user, current.clientId);
   if (!v) return <><PageHeader title="Nonprofit Portfolio" /><Notice>Your portfolio is being set up. Check back soon.</Notice></>;
   const pct = v.progress.total ? Math.round((v.progress.done / v.progress.total) * 100) : 0;
+  const kind = (mime: string) => (mime === "application/pdf" ? "PDF" : mime.startsWith("image/") ? "Image" : "Word") as "PDF" | "Word" | "Image";
+  const sections: PortfolioSection[] = (Object.keys(SECTIONS) as Section[])
+    .filter((sec) => v.items.some((i) => i.section === sec))
+    .map((sec) => ({
+      key: sec,
+      label: SECTIONS[sec],
+      note: sec === "GRANT" && v.package?.grantDisclaimer ? GRANT_DISCLAIMER : undefined,
+      cards: v.items.filter((i) => i.section === sec).map((i) => ({
+        id: i.id,
+        label: i.label,
+        statusLabel: ITEM_STATUS[i.status],
+        done: DONE.includes(i.status),
+        deliverable: i.deliverable,
+        origin: i.files[0] ? ORIGINS[i.files[0].origin].replace(" (prepared by us)", "") : null,
+        files: i.files.map((f) => ({ id: f.id, kind: kind(f.mime), name: f.name, href: `/api/documents/${downloadToken(f.documentId, { portalUserId: user.id })}` })),
+      })),
+    }));
 
   return (
     <>
-      <PageHeader title="Nonprofit Portfolio" subtitle={v.org.name} />
+      <PageHeader title="Nonprofit Portfolio" subtitle={v.package ? `${v.org.name} · ${v.package.name}` : v.org.name} />
       <div className="grid gap-4 lg:grid-cols-3">
         <Card title="Formation progress" className="lg:col-span-2" actions={<span className="text-sm font-semibold" data-testid="progress-count">{v.progress.done} of {v.progress.total}</span>}>
           <div className="mb-4 h-2 rounded-full bg-ivory-200"><div className="h-2 rounded-full bg-emerald-600" style={{ width: `${pct}%` }} /></div>
@@ -70,14 +87,9 @@ export default async function PortalNonprofit({ searchParams }: { searchParams: 
           </Card>
         </div>
       </div>
-      <Card title="Your documents" className="mt-4">
-        {v.files.length === 0 ? <p className="text-sm text-slate-600">Documents appear here as they&apos;re completed and released to you.</p> : (
-          <PortfolioDocuments
-            orgId={current.clientId}
-            docs={v.files.map((f) => ({ id: f.id, label: f.label, title: f.title, origin: ORIGINS[f.origin].replace(" (prepared by us)", ""), released: fmtDate(f.releasedAt), href: `/api/documents/${downloadToken(f.documentId, { portalUserId: user.id })}` }))}
-          />
-        )}
-      </Card>
+      <div className="mt-6">
+        <PortfolioSections orgId={current.clientId} sections={sections} />
+      </div>
     </>
   );
 }

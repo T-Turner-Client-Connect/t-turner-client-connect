@@ -2972,6 +2972,10 @@ model NonprofitPortfolio {
   samExpiresOn           DateTime? @db.Date
   mission                String?
   programs               String?
+  // Formation package purchased (NonprofitPackage key), the service it's billed under, and how government fees are handled.
+  packageKey             String?
+  serviceId              String?
+  govFeesMode            String?
   updatedById            String?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
@@ -3046,6 +3050,11 @@ model NonprofitChecklistItem {
   // STATE | FEDERAL | GOVERNANCE | GRANT | OTHER
   category        String             @default("OTHER")
   // NOT_STARTED | INFORMATION_NEEDED | PREPARING | READY_FOR_REVIEW | SUBMITTED | AWAITING_GOVERNMENT | APPROVED_FILED | COMPLETED | DELIVERED | NOT_APPLICABLE
+  // Portfolio section: FORMATION | IRS | STATE | SAM | GRANT | OTHER
+  section         String             @default("OTHER")
+  // Included in the client's package (our deliverable) vs. a government requirement — tracked separately; an item can be both.
+  deliverable     Boolean            @default(false)
+  requirement     Boolean            @default(false)
   status          String             @default("NOT_STARTED")
   responsibleId   String?
   completedAt     DateTime?
@@ -3074,4 +3083,23 @@ model NonprofitItemFile {
   releasedById String?
 
   @@index([itemId])
+}
+
+// Owner-editable formation packages. Deliverables: [{ key, label, section }] — the documents we provide.
+model NonprofitPackage {
+  key             String   @id
+  name            String
+  priceCents      Int
+  // e.g. "Starting at" for packages priced by state.
+  priceNote       String?
+  // Price by state, e.g. { "GA": 375000 }; the base price applies otherwise.
+  statePrices     Json?
+  // Government filing fees: INCLUDED in the price, or ADDED to it.
+  govFeesMode     String   @default("ADDED")
+  deliverables    Json
+  grantDisclaimer Boolean  @default(false)
+  active          Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  updatedById     String?
+  updatedAt       DateTime @updatedAt
 }
