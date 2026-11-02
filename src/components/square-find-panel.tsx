@@ -2,7 +2,14 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { CalendarClock, CalendarDays, Check, CircleCheck, CreditCard, Receipt, Repeat } from "lucide-react";
 import { Badge, Button } from "@/components/ui";
+
+const CADENCE: Record<string, string> = { MONTHLY: "Monthly", QUARTERLY: "Quarterly", YEARLY: "Yearly", WEEKLY: "Weekly" };
+const ordinal = (d: number) => `${d}${d % 10 === 1 && d !== 11 ? "st" : d % 10 === 2 && d !== 12 ? "nd" : d % 10 === 3 && d !== 13 ? "rd" : "th"}`;
+const Tick = ({ ok, children }: { ok: boolean; children: React.ReactNode }) => (
+  <li className="flex items-center gap-2.5">{ok ? <CircleCheck aria-hidden className="size-5 fill-emerald-600 text-white" /> : <span aria-hidden className="grid size-5 place-items-center rounded-full bg-slate-300 text-xs font-bold text-white">–</span>}<span className={ok ? "text-navy-900" : "text-slate-500"}>{children}</span></li>
+);
 
 type Tone = "navy" | "gold" | "green" | "red" | "gray" | "amber";
 import { linkSquareBillingAction, reviewSquareSeriesAction, squareSearchAction, squareSuggestAction, type SquareSearchResult } from "@/app/actions/square-billing";
@@ -190,22 +197,65 @@ export function SquareFindPanel({ client, coverOptions, autoSuggest = false, ini
               {c.series.length === 0 ? (
                 <p className="mt-1 text-slate-600">{c.ended.length ? "No active recurring series in Square for this customer." : "No recurring invoices found in Square for this customer."}</p>
               ) : (
-                <ul className="mt-2 space-y-2">
-                  {c.series.map((s) => (
-                    <li key={s.seriesKey} className={`flex flex-wrap items-center gap-2 rounded p-2 ${s.matched ? "bg-gold-100 ring-1 ring-gold-500" : "bg-ivory-50"}`} data-testid="square-find-series" data-series={s.seriesKey}>
-                      {s.matched && <Badge tone="gold">Series {s.seriesKey} you searched</Badge>}
-                      <span>
-                        <strong>Series {s.seriesKey}</strong> · {s.title || "Recurring invoice"} · {usd(s.amountCents)} · {s.schedule} · {s.nextDueDate ? `next ${fmtDay(s.nextDueDate)}` : "no upcoming invoice"} · {s.autopay ? "card on file charged by Square" : "client pays each invoice"}
-                      </span>
-                      <Badge tone={s.statusTone as Tone}>{s.status}</Badge>
-                      {s.linkedTo.length > 0 ? (
-                        <span className="text-amber-800">Already linked to {s.linkedTo.join(", ")}</span>
-                      ) : (
-                        <Button type="button" variant="ghost" onClick={() => choose({ customer: c, series: s })}>Review this match</Button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+                  <div className="space-y-4">
+                    {c.series.map((s) => (
+                      <div key={s.seriesKey} data-testid="square-find-series" data-series={s.seriesKey}>
+                        <span className="relative z-10 ml-4 inline-block rounded-t-lg bg-gradient-to-b from-gold-300 to-gold-500 px-4 py-1 text-sm font-bold text-navy-950 shadow-sm">Active Recurring Billing</span>
+                        <div className="overflow-hidden rounded-2xl border-2 border-gold-500 bg-gradient-to-br from-navy-950 to-navy-900 text-white shadow-lg">
+                          <div className="flex flex-wrap items-start justify-between gap-3 p-5">
+                            <div className="flex gap-4">
+                              <span aria-hidden className="hidden size-16 shrink-0 place-items-center rounded-full border-2 border-gold-500/70 text-gold-300 sm:grid"><CalendarDays className="size-8" /></span>
+                              <div>
+                                <p className="text-xl font-bold">Series {s.seriesKey}</p>
+                                <p className="text-sm text-slate-200">{s.title || "Recurring invoice"}</p>
+                                <p className="mt-1 font-serif text-4xl font-bold text-gold-300">{usd(s.amountCents)}</p>
+                                <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-100">
+                                  <span className="inline-flex items-center gap-1.5"><Repeat aria-hidden className="size-4" />{CADENCE[s.cadence] ?? "Recurring"}</span>
+                                  {s.dueDay && <><span aria-hidden className="text-white/30">|</span><span className="inline-flex items-center gap-1.5"><CalendarDays aria-hidden className="size-4" />Due on the {ordinal(s.dueDay)}</span></>}
+                                  <span aria-hidden className="text-white/30">|</span>
+                                  <span className="inline-flex items-center gap-1.5"><CreditCard aria-hidden className="size-4" />{s.autopay ? "Card on File" : "Client pays each invoice"}</span>
+                                </p>
+                              </div>
+                            </div>
+                            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400 bg-emerald-500/15 px-3 py-1 text-sm font-semibold text-emerald-300"><Check aria-hidden className="size-4" /> Active</span>
+                          </div>
+                          <div className="grid divide-y divide-white/15 border-t border-white/15 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                            <div className="flex gap-3 p-4"><CalendarClock aria-hidden className="mt-0.5 size-6 shrink-0 text-gold-300" /><div><p className="text-sm text-slate-300">Next Invoice</p><p className="text-lg font-bold">{s.nextDueDate ? fmtDay(s.nextDueDate) : "None scheduled"}</p>{s.nextDueDate && <p className="text-sm text-slate-200">{usd(s.amountCents)}{s.autopay ? " · auto-pay" : ""}</p>}</div></div>
+                            <div className="flex gap-3 p-4"><CircleCheck aria-hidden className="mt-0.5 size-6 shrink-0 text-gold-300" /><div><p className="text-sm text-slate-300">Status</p><p className={`text-lg font-bold ${s.statusTone === "green" ? "text-emerald-300" : s.statusTone === "red" ? "text-red-300" : "text-gold-300"}`}>{s.status}</p></div></div>
+                            <div className="flex gap-3 p-4"><Receipt aria-hidden className="mt-0.5 size-6 shrink-0 text-gold-300" /><div><p className="text-sm text-slate-300">Last Payment</p><p className="text-lg font-bold">{s.lastPaidDate ? fmtDay(s.lastPaidDate) : "—"}</p>{s.lastPaidDate && <p className="text-sm text-slate-200">{usd(s.lastPaidCents)}</p>}</div></div>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/15 bg-navy-950/60 px-5 py-3">
+                            {s.linkedTo.length > 0 ? (
+                              <span className="text-sm text-gold-300">Already linked to {s.linkedTo.join(", ")}</span>
+                            ) : (
+                              <>
+                                <span className="text-xs text-slate-300">From Square, read only. Nothing is linked until you confirm.</span>
+                                <Button type="button" variant="gold" className="rounded-xl" onClick={() => choose({ customer: c, series: s })}>Review this match</Button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="h-fit rounded-2xl border border-ivory-200 bg-white p-5 shadow-sm" data-testid="square-find-customer">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="flex items-center gap-2 text-lg font-bold text-navy-900"><span aria-hidden className="grid size-7 place-items-center rounded-md bg-navy-950"><span className="size-3.5 rounded-[2px] border-2 border-white" /></span> Square Customer</p>
+                      {suggested?.confident === c.id && <Badge tone="green">Likely match</Badge>}
+                    </div>
+                    <p className="mt-3 text-lg font-bold text-navy-900">{c.company || c.name || "Square customer"}</p>
+                    {c.company && c.name && <p className="text-sm text-slate-700">{c.name}</p>}
+                    <p className="text-sm">Customer ID: {c.id}</p>
+                    {c.email && <p className="text-sm text-slate-600">{c.email}</p>}
+                    {c.phone && <p className="text-sm text-slate-600">{c.phone}</p>}
+                    <ul className="mt-3 space-y-1.5 text-sm">
+                      <Tick ok={c.series.length > 0}>Recurring Billing Active</Tick>
+                      <Tick ok={c.series.some((x) => x.autopay)}>Card on File</Tick>
+                      <Tick ok={c.series.some((x) => x.autopay)}>Auto-Pay Enabled</Tick>
+                    </ul>
+                  </div>
+                </div>
               )}
             </li>
           ))}
