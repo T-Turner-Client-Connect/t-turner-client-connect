@@ -4,13 +4,14 @@ import { Badge, Button, Field } from "@/components/ui";
 import { createLinkedBusinessAction, grantOwnerAccessAction, linkExistingBusinessAction } from "@/app/actions/related-businesses";
 import { prisma } from "@/lib/prisma";
 import { businessFamily, linkableBusinesses, REL_ROLES } from "@/lib/services/related-businesses";
+import { RemoveFromClient } from "@/components/remove-from-client";
 
 /**
  * Staff tabs across one owner's records, with + Add / Link Another Business
  * on the owner's main record (their Personal record, or the Business record
  * they were set up under). Each tab is a separate client record.
  */
-export async function BusinessTabs({ clientId, base }: { clientId: string; base: "/clients" | "/bookkeeping" }) {
+export async function BusinessTabs({ clientId, base, isAdmin = false }: { clientId: string; base: "/clients" | "/bookkeeping"; isAdmin?: boolean }) {
   const fam = await businessFamily(clientId);
   if (!fam) return null;
   const { current, anchor, person, businesses } = fam;
@@ -37,6 +38,19 @@ export async function BusinessTabs({ clientId, base }: { clientId: string; base:
         ))}
         {!onMain && <Link href={`/clients/${anchor.id}#link-business`} className="text-sm underline">+ Add / Link Another Business</Link>}
       </nav>
+      {isAdmin && others.length > 0 && (
+        <details className="mt-2 text-sm" data-testid="linked-records">
+          <summary className="cursor-pointer text-xs font-semibold underline">Linked to {anchor.displayName} — remove an incorrect link</summary>
+          <ul className="mt-1 space-y-2">
+            {others.map((b) => (
+              <li key={b.id} className="rounded-lg bg-ivory-50 p-2" data-linked={b.displayName}>
+                <span className="font-semibold">{b.businessName || b.displayName}</span> <span className="text-xs text-slate-600">({b.clientType === "NONPROFIT" ? "Nonprofit" : "Business"})</span>
+                <RemoveFromClient clientId={current.id} businessId={b.id} businessName={b.businessName || b.displayName} isAdmin={isAdmin} />
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       <p className="mt-2 text-xs text-slate-600">Viewing <strong>{current.businessName || current.displayName}</strong>. Each business keeps its own EIN, accounts, billing, documents, staff and Coetha link.</p>
       {onMain && (
         <details className="mt-2" id="link-business">

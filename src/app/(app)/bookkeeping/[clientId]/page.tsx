@@ -103,7 +103,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
   return (
     <>
       <p className="mb-2 text-sm"><Link className="underline" href="/bookkeeping">← Bookkeeping Clients</Link></p>
-      <BusinessTabs clientId={clientId} base="/bookkeeping" />
+      <BusinessTabs clientId={clientId} base="/bookkeeping" isAdmin={user.role === "ADMIN"} />
       <PageHeader
         title={biz}
         subtitle={

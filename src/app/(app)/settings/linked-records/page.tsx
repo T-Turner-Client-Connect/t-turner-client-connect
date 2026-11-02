@@ -40,6 +40,7 @@ export default async function LinkedRecordsPage() {
                 <summary className="cursor-pointer underline">Remove this link (after reviewing the evidence)</summary>
                 <ActionForm action={unlinkBusinessAction.bind(null, r.person.id, r.business.id)} confirm={`Remove the link between ${r.person.name} and ${r.business.name}? Both records stay; only the link is removed and it's recorded in the activity log.`} className="mt-1 flex flex-wrap gap-1">
                   <input className="input w-80" name="reason" placeholder="What you checked and why this link is wrong" required />
+                  <input className="input w-64" name="confirmName" placeholder="Organization name (required for its original or only owner link)" />
                   <Button type="submit" variant="ghost">Remove link</Button>
                 </ActionForm>
               </details>
