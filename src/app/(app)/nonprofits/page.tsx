@@ -45,7 +45,7 @@ export default async function NonprofitsPage({ searchParams }: { searchParams: P
 
   return (
     <>
-      <PageHeader title="Nonprofit filings" subtitle="Annual federal returns for the nonprofit organizations whose filings TTurner handles: the form each one files, its deadline, and filed vs. accepted kept separate. Nonprofit Interest (formation inquiries) isn't listed here." />
+      <PageHeader title="Nonprofit filings" subtitle="Annual federal returns for the nonprofit organizations whose filings TTurner handles: the form each one files, its deadline, and filed vs. accepted kept separate. Nonprofit Interest (formation inquiries) isn't listed here." actions={<Link className="text-sm underline" href="/nonprofits/settings">Classifications &amp; state requirements</Link>} />
       <nav className="mb-3 flex flex-wrap gap-2" data-testid="np-views">
         {Object.entries(VIEWS).map(([k, v]) => (
           <Link key={k} href={k === "all" ? "/nonprofits" : `/nonprofits?view=${k}`} aria-current={view === k ? "page" : undefined} className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${view === k ? "bg-navy-900 text-white" : "border border-navy-200 text-navy-900"}`}>{v}</Link>

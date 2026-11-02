@@ -169,6 +169,9 @@ export type StaffUploadInput = {
   notify?: boolean;
 };
 
+// Nonprofit portfolio files reach the client only through Release in the portfolio (drafts never do).
+const NONPROFIT_GATE = "Nonprofit portfolio documents are released from the organization's Nonprofit Portfolio, which keeps drafts private and notifies the client.";
+
 export async function staffUploadDocument(actor: Actor, input: StaffUploadInput) {
   if (input.category === "IDENTITY") throw new ValidationError("Identity documents are uploaded in the Identity Documents section.");
   // Financial reports go to Tabitha for approval before any client sees them.
@@ -178,6 +181,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   // Tabitha-approved delivery path, so a financial statement can't be published by accident.
   if (input.category === "BOOKKEEPING" && input.visibility === "PUBLISHED") throw new ValidationError(FINANCIAL_GATE);
   if (input.visibility === "PUBLISHED" && input.docType && RETURN_DOC_TYPES.includes(input.docType)) throw new ValidationError(RETURN_GATE);
+  if (input.visibility === "PUBLISHED" && input.docType === "NONPROFIT_ITEM") throw new ValidationError(NONPROFIT_GATE);
   const client = await prisma.client.findUnique({ where: { id: input.clientId } });
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
@@ -232,6 +236,7 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
   if (visibility === "PUBLISHED" && !doc.reportType && doc.docType && STATEMENT_TYPES.includes(doc.docType)) throw new ValidationError(FINANCIAL_GATE);
   if (visibility === "PUBLISHED" && (doc.filingDocType === "RETURN" || (doc.docType && RETURN_DOC_TYPES.includes(doc.docType) && !doc.publishedAt))) throw new ValidationError(RETURN_GATE);
   if (visibility === "PUBLISHED" && doc.category === "IDENTITY") throw new ValidationError("Identity documents aren't published.");
+  if (visibility === "PUBLISHED" && doc.docType === "NONPROFIT_ITEM") throw new ValidationError(NONPROFIT_GATE);
   if (visibility === "PUBLISHED" && doc.supersededAt) throw new ValidationError("A newer version of this report exists. Deliver the newest version instead.");
   await prisma.$transaction([
     prisma.document.update({ where: { id: documentId }, data: { visibility, publishedAt: visibility === "PUBLISHED" ? doc.publishedAt ?? new Date() : null } }),

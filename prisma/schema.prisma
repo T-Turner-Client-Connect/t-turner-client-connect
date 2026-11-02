@@ -264,6 +264,7 @@ model Client {
   bookkeepingBilling   BookkeepingBilling?
   squareBilling        SquareBillingMember?
   nonprofitProfile     NonprofitProfile?
+  nonprofitPortfolio   NonprofitPortfolio?
   chargeAuthorizations RecurringChargeAuthorization[]
   businessOnboarding   BusinessOnboarding?
   // A person (Personal record) linked to the businesses they own, and back.
@@ -2941,4 +2942,136 @@ model ReturnIntake {
   createdAt         DateTime  @default(now())
 
   @@index([status])
+}
+
+// --- Nonprofit Formation & Compliance Center ----------------------------------
+// One portfolio per nonprofit organization record (a Client of type Nonprofit,
+// linked to its owner's record as in PR #31). It holds the organization's
+// formation facts, federal and state status, checklist and released documents.
+
+model NonprofitPortfolio {
+  clientId               String    @id
+  client                 Client    @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  legalName              String?
+  formationState         String?
+  formationDate          DateTime? @db.Date
+  ein                    String?
+  sosEntityNumber        String?
+  sosFilingDate          DateTime? @db.Date
+  registeredAgent        String?
+  registeredAgentAddress String?
+  // Key from NonprofitClassification (e.g. "501C3"); null = not decided.
+  classification         String?
+  // Attorney General charitable solicitation: REVIEW_NEEDED | REQUIRED | REGISTERED | EXEMPT | NOT_APPLICABLE
+  agStatus               String?
+  agNote                 String?
+  agRenewalDate          DateTime? @db.Date
+  // SAM.gov: NOT_STARTED | IN_PROGRESS | ACTIVE | EXPIRED | NOT_APPLICABLE
+  samStatus              String?
+  uei                    String?
+  samExpiresOn           DateTime? @db.Date
+  mission                String?
+  programs               String?
+  updatedById            String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  officers  NonprofitOfficer[]
+  irsEvents NonprofitIrsEvent[]
+  items     NonprofitChecklistItem[]
+}
+
+model NonprofitOfficer {
+  id          String             @id @default(cuid())
+  portfolioId String
+  portfolio   NonprofitPortfolio @relation(fields: [portfolioId], references: [clientId], onDelete: Cascade)
+  name        String
+  role        String
+  termStart   DateTime?          @db.Date
+  termEnd     DateTime?          @db.Date
+  removedAt   DateTime?
+  createdAt   DateTime           @default(now())
+}
+
+// IRS exemption application history; each step is its own dated entry.
+model NonprofitIrsEvent {
+  id          String             @id @default(cuid())
+  portfolioId String
+  portfolio   NonprofitPortfolio @relation(fields: [portfolioId], references: [clientId], onDelete: Cascade)
+  // SUBMITTED | PENDING_REVIEW | INFO_REQUESTED | INFO_RESPONDED | APPROVED | DENIED | DETERMINATION_LETTER_RECEIVED | WITHDRAWN
+  kind        String
+  at          DateTime
+  note        String?
+  reference   String?
+  documentId  String?
+  byId        String
+  createdAt   DateTime           @default(now())
+
+  @@index([portfolioId, at])
+}
+
+// Owner-editable list of federal exemption categories and how each applies.
+model NonprofitClassification {
+  key          String    @id
+  label        String
+  // Plain-language process (form, whether an application is required) with its IRS source.
+  process      String
+  form         String?
+  sourceUrl    String?
+  active       Boolean   @default(true)
+  sortOrder    Int       @default(0)
+  // Set when the owner or staff confirm the process against the official source.
+  verifiedAt   DateTime?
+  verifiedNote String?
+  updatedAt    DateTime  @updatedAt
+}
+
+// Updateable state requirement templates. Items: [{ key, label, category, required, note, sourceUrl }].
+model NonprofitStateTemplate {
+  state        String    @id
+  items        Json
+  verifiedAt   DateTime?
+  verifiedNote String?
+  updatedById  String?
+  updatedAt    DateTime  @updatedAt
+}
+
+model NonprofitChecklistItem {
+  id              String             @id @default(cuid())
+  portfolioId     String
+  portfolio       NonprofitPortfolio @relation(fields: [portfolioId], references: [clientId], onDelete: Cascade)
+  // Template key when it came from a state template; null for items staff added.
+  templateKey     String?
+  label           String
+  // STATE | FEDERAL | GOVERNANCE | GRANT | OTHER
+  category        String             @default("OTHER")
+  // NOT_STARTED | INFORMATION_NEEDED | PREPARING | READY_FOR_REVIEW | SUBMITTED | AWAITING_GOVERNMENT | APPROVED_FILED | COMPLETED | DELIVERED | NOT_APPLICABLE
+  status          String             @default("NOT_STARTED")
+  responsibleId   String?
+  completedAt     DateTime?
+  filingReference String?
+  staffNote       String?
+  sortOrder       Int                @default(0)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  files NonprofitItemFile[]
+
+  @@unique([portfolioId, templateKey])
+}
+
+// A file on a checklist item. Only non-draft files can be released to the client.
+model NonprofitItemFile {
+  id           String                 @id @default(cuid())
+  itemId       String
+  item         NonprofitChecklistItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  documentId   String                 @unique
+  // GOVERNMENT_ISSUED | FINAL_PREPARED | CLIENT_PREPARED | INTERNAL_DRAFT
+  origin       String
+  uploadedById String
+  createdAt    DateTime               @default(now())
+  releasedAt   DateTime?
+  releasedById String?
+
+  @@index([itemId])
 }

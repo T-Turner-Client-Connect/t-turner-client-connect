@@ -41,6 +41,7 @@ export async function NonprofitCard({ clientId }: { clientId: string }) {
                     {o.id === clientId ? <strong>{o.businessName || o.displayName}</strong> : <Link className="font-semibold underline" href={`/clients/${o.id}`}>{o.businessName || o.displayName}</Link>}
                     <Badge tone="gray">Nonprofit organization</Badge>
                     {o.status === "PROSPECT" && <Badge tone="amber">Prospect</Badge>}
+                    <Link className="text-sm font-semibold text-gold-700 underline" href={`/nonprofits/${o.id}`} data-testid="open-portfolio">Open Nonprofit Portfolio</Link>
                   </div>
                   <ActionForm action={filingServiceAction.bind(null, clientId, o.id)} className="flex flex-wrap items-end gap-2" showSuccess={false}>
                     <Field label="Does TTurner handle its annual filings?">

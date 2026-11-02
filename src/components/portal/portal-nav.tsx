@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
-import { Bell, BookOpen, ChevronDown, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, Home, Landmark, Menu, MessageCircle, Newspaper, PenLine, Settings, ShieldCheck, Users, X } from "lucide-react";
+import { Bell, BookOpen, ChevronDown, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, Menu, MessageCircle, Newspaper, PenLine, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { Mountains } from "./mountains";
 
 const MAIN = [
@@ -16,6 +16,7 @@ const MAIN = [
   ["/client/messages", "Messages", MessageCircle],
   ["/client/billing", "Invoices", CreditCard],
   ["/client/agreements", "Pricing Agreements", FileSignature],
+  ["/client/nonprofit", "Nonprofit Portfolio", HeartHandshake],
   ["/client/resources", "Resource Center", BookOpen],
   ["/client/referrals", "Referrals", Users],
 ] as const;
