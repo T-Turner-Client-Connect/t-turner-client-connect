@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
@@ -47,7 +48,7 @@ export type SqInvoice = {
   status?: string;
   location_id?: string;
   primary_recipient?: { customer_id?: string };
-  payment_requests?: { request_type?: string; due_date?: string; card_id?: string; automatic_payment_source?: string; computed_amount_money?: { amount?: number } }[];
+  payment_requests?: { request_type?: string; due_date?: string; card_id?: string; automatic_payment_source?: string; computed_amount_money?: { amount?: number }; total_completed_amount_money?: { amount?: number } }[];
 };
 type SqCustomer = { id: string; given_name?: string; family_name?: string; company_name?: string; email_address?: string; phone_number?: string };
 
@@ -95,12 +96,39 @@ export function summarizeSeries(invoices: SqInvoice[], today: string) {
     lastDueDate: last ? noon(last.due) : null,
     lastInvoiceStatus: last?.status ?? null,
     lastPaidDueDate: lastPaid ? noon(lastPaid.due) : null,
+    lastPaidCents: lastPaid ? lastPaid.req?.total_completed_amount_money?.amount ?? lastPaid.req?.computed_amount_money?.amount ?? null : null,
     autopay: latest?.req?.automatic_payment_source === "CARD_ON_FILE",
     squareCardId: latest?.req?.automatic_payment_source === "CARD_ON_FILE" ? latest.req.card_id ?? null : null,
     invoiceCount: rows.length,
   };
 }
 export type SeriesSummary = ReturnType<typeof summarizeSeries>;
+
+// Invoices Square still expects money on (scheduled-but-not-yet-due invoices aren't owed yet).
+const OWED = new Set(["UNPAID", "PARTIALLY_PAID", "FAILED"]);
+
+/** What the customer owes across ALL their invoices at the location, from Square's own invoice statuses. */
+export function balanceOf(invoices: SqInvoice[], today: string) {
+  let outstandingCents = 0, outstandingCount = 0, overdueCents = 0, overdueCount = 0, failedCount = 0, paidMonthCents = 0;
+  const month = today.slice(0, 7);
+  for (const i of invoices) {
+    if (i.status === "FAILED") failedCount++;
+    if (i.status === "PAID") {
+      const r = i.payment_requests?.find((x) => x.request_type === "BALANCE") ?? i.payment_requests?.[0];
+      if (r?.due_date?.startsWith(month)) paidMonthCents += r.total_completed_amount_money?.amount ?? r.computed_amount_money?.amount ?? 0;
+    }
+    if (!OWED.has(i.status ?? "")) continue;
+    const req = i.payment_requests?.find((r) => r.request_type === "BALANCE") ?? i.payment_requests?.[0];
+    const owed = Math.max(0, (req?.computed_amount_money?.amount ?? 0) - (req?.total_completed_amount_money?.amount ?? 0));
+    outstandingCents += owed;
+    outstandingCount++;
+    if (req?.due_date && req.due_date < today) {
+      overdueCents += owed;
+      overdueCount++;
+    }
+  }
+  return { outstandingCents, outstandingCount, overdueCents, overdueCount, failedCount, paidMonth: month, paidMonthCents };
+}
 
 /** "Monthly · due on the 27th" */
 export function scheduleText(a: { cadence: string | null; dueDay: number | null }) {
@@ -111,8 +139,10 @@ export function scheduleText(a: { cadence: string | null; dueDay: number | null 
 }
 
 /** Payment status in plain words, from Square's invoice statuses only. */
-export function paymentStatus(a: { lastInvoiceStatus: string | null; nextDueDate: Date | null; nextInvoiceStatus: string | null }) {
+export function paymentStatus(a: { lastInvoiceStatus: string | null; nextDueDate: Date | null; nextInvoiceStatus: string | null; overdueCount?: number | null }) {
   const s = a.lastInvoiceStatus;
+  // Never "up to date" while Square shows any invoice past due.
+  if (a.overdueCount) return { label: `${a.overdueCount} invoice${a.overdueCount === 1 ? "" : "s"} overdue in Square`, tone: "red" as const };
   if (s === "FAILED") return { label: "Last automatic payment failed in Square", tone: "red" as const };
   if (s === "UNPAID" || s === "PARTIALLY_PAID") return { label: "Past due in Square", tone: "red" as const };
   if (s === "PAYMENT_PENDING") return { label: "Payment pending in Square", tone: "amber" as const };
@@ -170,6 +200,26 @@ function groupSeries(invoices: SqInvoice[], today: string) {
   return [...bySeries.entries()].map(([seriesKey, list]) => ({ seriesKey, ...summarizeSeries(list, today) }));
 }
 
+// A recurring invoice series number as Square shows it: "54458", or an invoice number in it like "54458-R-0014".
+const SERIES_QUERY = /^(\d{3,6})(?:-R(?:-\d+)?)?$/i;
+
+/** The customer a recurring series bills, from the series' invoices at this location (newest first). Reads only. */
+async function seriesCustomer(seriesKey: string, locationId: string) {
+  let cursor: string | undefined;
+  for (let page = 0; page < 10; page++) {
+    const r = await squareRequest<{ invoices?: SqInvoice[]; cursor?: string }>("POST", "/v2/invoices/search", {
+      query: { filter: { location_ids: [locationId] }, sort: { field: "INVOICE_SORT_DATE", order: "DESC" } },
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    });
+    const hit = (r.invoices ?? []).find((i) => seriesKeyOf(i.invoice_number) === seriesKey && i.primary_recipient?.customer_id);
+    if (hit) return hit.primary_recipient!.customer_id!;
+    cursor = r.cursor;
+    if (!cursor) break;
+  }
+  return null;
+}
+
 // Square customer IDs are long runs of capital letters and digits (with at least one digit), e.g. "VDKXEEKPJN48QDG3BGGFAK05P8".
 const SQUARE_ID = /^(?=.*\d)(?=.*[A-Z])[A-Z0-9]{12,40}$/;
 
@@ -211,8 +261,14 @@ export async function lookupSquareBilling(actor: Actor, input: LookupInput) {
   if (phone) add((await squareRequest<{ customers?: SqCustomer[] }>("POST", "/v2/customers/search", { query: { filter: { phone_number: { exact: phone } } }, limit: 20 })).customers);
   // One search box: an email, a phone number, or a name.
   const q = input.query?.trim() ?? "";
+  const seriesQuery = q.match(SERIES_QUERY)?.[1] ?? null;
   if (q) {
-    if (SQUARE_ID.test(q)) {
+    if (seriesQuery) {
+      // A recurring invoice series number (e.g. "54458" or "54458-R-0014") is not a customer ID:
+      // find the series' invoices at this location and read the customer they're billed to.
+      const owner = await seriesCustomer(seriesQuery, s.locationId);
+      if (owner) add([(await squareRequest<{ customer: SqCustomer }>("GET", `/v2/customers/${encodeURIComponent(owner)}`)).customer]);
+    } else if (SQUARE_ID.test(q)) {
       // Looks like a Square customer ID: read that one customer (a miss falls through to "none found").
       try {
         add([(await squareRequest<{ customer: SqCustomer }>("GET", `/v2/customers/${encodeURIComponent(q)}`)).customer]);
@@ -245,11 +301,53 @@ export async function lookupSquareBilling(actor: Actor, input: LookupInput) {
       company: c.company_name ?? null,
       email: c.email_address ?? null,
       phone: c.phone_number ?? null,
-      series: series.map((x) => ({ ...x, linked: linked.find((l) => l.seriesKey === x.seriesKey) ?? null })),
+      series: series.map((x) => ({ ...x, linked: linked.find((l) => l.seriesKey === x.seriesKey) ?? null, matched: x.seriesKey === seriesQuery })),
     });
   }
-  await audit(prisma, { actorId: actor.id, action: "square_billing.looked_up", entityType: "Square", entityId: "lookup", details: { by: [input.customerId ? "customerId" : "", email ? "email" : "", phone ? "phone" : "", q ? "search" : ""].filter(Boolean), customers: results.length } });
+  await audit(prisma, { actorId: actor.id, action: "square_billing.looked_up", entityType: "Square", entityId: "lookup", details: { by: [input.customerId ? "customerId" : "", email ? "email" : "", phone ? "phone" : "", q ? (seriesQuery ? "series" : "search") : ""].filter(Boolean), customers: results.length } });
   return results;
+}
+
+/**
+ * Automatic suggestions when a client's billing card opens: searches Square (read only) with the
+ * client's saved email, phone, business name and name, and ranks what comes back. Only a single
+ * customer matching on email or phone, with no rival, counts as a confident match — and even
+ * then it's shown for the owner to confirm, never linked automatically.
+ */
+export async function suggestSquareMatches(actor: Actor, clientId: string) {
+  await assertBilling(actor);
+  const c = await prisma.client.findUnique({ where: { id: clientId }, select: { displayName: true, businessName: true, firstName: true, lastName: true, email: true, phone: true, contacts: { select: { email: true, phone: true }, take: 5 } } });
+  if (!c) throw new ValidationError("Client not found.");
+  const emails = [...new Set([c.email, ...c.contacts.map((x) => x.email)].map((e) => normalizeEmail(e ?? undefined)).filter(Boolean) as string[])];
+  const phones = [...new Set([c.phone, ...c.contacts.map((x) => x.phone)].map((p) => (p ?? "").replace(/\D/g, "").slice(-10)).filter((p) => p.length === 10))];
+  const person = [c.firstName, c.lastName].filter(Boolean).join(" ").trim();
+  const plain = (n: string | null | undefined) => (n ?? "").toLowerCase().replace(/\([^)]*\)|[,.]|\b(llc|inc|corp|co|ltd)\b/g, " ").replace(/\s+/g, " ").trim();
+  const names = [...new Set([c.businessName, person || c.displayName].map(plain).filter((n) => n.length >= 2))];
+  const queries = [...emails, ...phones, ...names];
+  if (!queries.length) return { searched: [], results: [] as Awaited<ReturnType<typeof lookupSquareBilling>>, scores: {} as Record<string, { score: number; reasons: string[] }>, confident: null as string | null };
+  const byId = new Map<string, Awaited<ReturnType<typeof lookupSquareBilling>>[number]>();
+  for (const q of queries) for (const r of await lookupSquareBilling(actor, { query: q })) if (!byId.has(r.id)) byId.set(r.id, r);
+  const low = (v: string | null) => (v ?? "").toLowerCase();
+  const digits = (v: string | null) => (v ?? "").replace(/\D/g, "").slice(-10);
+  const scores: Record<string, { score: number; reasons: string[] }> = {};
+  for (const r of byId.values()) {
+    const reasons: string[] = [];
+    let score = 0;
+    const add = (points: number, why: string) => {
+      score += points;
+      reasons.push(why);
+    };
+    if (r.email && emails.includes(low(r.email))) add(3, "email matches");
+    if (r.phone && phones.includes(digits(r.phone))) add(3, "phone matches");
+    if (r.company && plain(r.company) && names.some((n) => plain(r.company).includes(n) || n.includes(plain(r.company)))) add(2, "business name matches");
+    if (r.name && person && low(r.name) === low(person)) add(1, "name matches");
+    if (r.email && emails.length && !emails.includes(low(r.email))) reasons.push("different email in Square");
+    scores[r.id] = { score, reasons };
+  }
+  const results = [...byId.values()].sort((a, b) => scores[b.id].score - scores[a.id].score);
+  const strong = results.filter((r) => scores[r.id].score >= 3);
+  const confident = strong.length === 1 ? strong[0].id : null;
+  return { searched: queries, results, scores, confident };
 }
 
 /** Re-reads a linked series from Square and stores what it says. Never writes to Square. */
@@ -263,20 +361,22 @@ async function refresh(arrangementId: string) {
     const mine = invoices.filter((i) => seriesKeyOf(i.invoice_number) === a.seriesKey);
     if (!mine.length) throw new SquareError(`Square returned no invoices for series ${a.seriesKey}. Nothing was changed in Square; check the series in the Square Dashboard.`);
     const sum = summarizeSeries(mine, todayCentral());
+    const bal = balanceOf(invoices, todayCentral());
     const card = await cardDetails(sum.squareCardId);
     return prisma.squareBillingArrangement.update({
       where: { id: a.id },
       data: {
         ...sum,
+        ...bal,
         customerName: customer ? [customer.given_name, customer.family_name].filter(Boolean).join(" ") || null : a.customerName,
         companyName: customer ? customer.company_name ?? null : a.companyName,
         cardBrand: card?.card_brand ?? null, cardLast4: card?.last_4 ?? null, cardExpMonth: card?.exp_month ?? null, cardExpYear: card?.exp_year ?? null,
-        syncedAt: new Date(), syncError: null,
+        syncedAt: new Date(), syncError: null, syncFailedAt: null,
       },
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Square couldn't be read.";
-    await prisma.squareBillingArrangement.update({ where: { id: a.id }, data: { syncError: msg.slice(0, 300) } });
+    await prisma.squareBillingArrangement.update({ where: { id: a.id }, data: { syncError: msg.slice(0, 300), syncFailedAt: new Date() } });
     throw err;
   }
 }
@@ -398,6 +498,63 @@ export async function syncAllSquareBilling(actor: Actor) {
 }
 
 /**
+ * Scheduled, read-only refresh (hourly cron): re-reads every linked series not synced in the last
+ * `maxAgeHours`. Never writes to Square. No actor — recorded as the system in the audit log.
+ */
+export async function syncStaleSquareBilling(maxAgeMinutes = 50, now = new Date()) {
+  if (!squareSettings().configured) return { ok: 0, failed: 0, skipped: "not configured" };
+  const runId = randomUUID();
+  if (!(await takeLock("square-sync", runId, now))) return { ok: 0, failed: 0, skipped: "another sync is still running" };
+  try {
+    const cutoff = new Date(now.getTime() - maxAgeMinutes * 60_000);
+    // Only series that were confirmed and linked to a client (an arrangement exists only after a confirmed link).
+    const due = await prisma.squareBillingArrangement.findMany({ where: { members: { some: {} }, OR: [{ syncedAt: null }, { syncedAt: { lt: cutoff } }] }, select: { id: true }, take: 200 });
+    let ok = 0;
+    const failed: { arrangementId: string; code: string }[] = [];
+    for (const a of due) {
+      try {
+        await refresh(a.id);
+        ok++;
+      } catch (err) {
+        // Logged by record id and error code only — no names, amounts or card details.
+        failed.push({ arrangementId: a.id, code: err instanceof SquareError ? err.code ?? `HTTP_${err.status ?? 0}` : "ERROR" });
+      }
+    }
+    if (due.length) await audit(prisma, { actorId: null, action: "square_billing.synced_scheduled", entityType: "Square", entityId: runId, details: { ok, failed: failed.length, failures: failed.slice(0, 50) } });
+    if (failed.length) console.warn(`square sync ${runId}: ${ok} ok, ${failed.length} failed (${[...new Set(failed.map((f) => f.code))].join(", ")})`);
+    return { ok, failed: failed.length };
+  } finally {
+    await prisma.jobLock.update({ where: { name: "square-sync" }, data: { lockedUntil: new Date(0), runId: null } }).catch(() => {});
+  }
+}
+
+/** Takes a named lock for up to 15 minutes; false if another run holds it. */
+async function takeLock(name: string, runId: string, now: Date) {
+  const until = new Date(now.getTime() + 15 * 60_000);
+  const got = await prisma.jobLock.updateMany({ where: { name, lockedUntil: { lt: now } }, data: { lockedUntil: until, runId } });
+  if (got.count === 1) return true;
+  try {
+    await prisma.jobLock.create({ data: { name, lockedUntil: until, runId } });
+    return true;
+  } catch {
+    return false; // the row exists and is held
+  }
+}
+
+/** True when the last successful read is older than ~50 minutes (the card refreshes itself on open). */
+export function syncDue(a: { syncedAt: Date | null }, now = new Date()) {
+  return !a.syncedAt || now.getTime() - a.syncedAt.getTime() > 50 * 60_000;
+}
+
+/** Last verified figures are "stale" when the latest read failed or none succeeded recently. */
+export function staleness(a: { syncedAt: Date | null; syncFailedAt: Date | null }, now = new Date()) {
+  if (!a.syncedAt) return { stale: true, reason: "Not read from Square yet." };
+  if (a.syncFailedAt && a.syncFailedAt > a.syncedAt) return { stale: true, reason: "Square couldn't be read on the last attempt." };
+  if (now.getTime() - a.syncedAt.getTime() > 3 * 3600_000) return { stale: true, reason: "Not refreshed in the last 3 hours." };
+  return { stale: false, reason: null };
+}
+
+/**
  * Tabitha confirms the client's authorization already on file in Square (for
  * example the card-on-file agreement they accepted in Square, or the signed
  * agreement in their file). Nothing new is asked of the client or created.
@@ -459,6 +616,40 @@ export async function squareBillingOverview(actor: Actor) {
     const a = p.client.squareBilling?.arrangement ?? null;
     return { clientId: p.clientId, name: nameOf(p.client), expected: p.squareBillingExpected, arrangement: a, state: (a ? (a.authorizationVerifiedAt ? "VERIFIED" : a.syncedAt ? "SYNCED" : "LINKED") : p.squareBillingExpected ? "NOT_SYNCED" : "NONE") as SquareState };
   });
+}
+
+const MONTHLY_FACTOR: Record<string, number> = { MONTHLY: 1, QUARTERLY: 1 / 3, YEARLY: 1 / 12, WEEKLY: 52 / 12 };
+
+/**
+ * Owner's Office totals across every linked (confirmed) Square series, from the last verified sync
+ * only. Each Square bill counts once, however many businesses it covers.
+ */
+export async function squareRevenueSummary(now = new Date()) {
+  const all = await prisma.squareBillingArrangement.findMany({ where: { members: { some: {} } }, include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } } } } });
+  const synced = all.filter((a) => a.syncedAt);
+  const month = todayCentral().slice(0, 7);
+  const in30 = new Date(now.getTime() + 30 * 86_400_000);
+  const sum = (f: (a: (typeof all)[number]) => number) => synced.reduce((n, a) => n + f(a), 0);
+  const unknownCadence = synced.filter((a) => a.amountCents != null && !(a.cadence && a.cadence in MONTHLY_FACTOR));
+  const oldestSync = synced.reduce<Date | null>((d, a) => (!d || a.syncedAt! < d ? a.syncedAt! : d), null);
+  return {
+    linked: all.length,
+    synced: synced.length,
+    stale: all.filter((a) => staleness(a, now).stale).length,
+    oldestSync,
+    month,
+    recurringMonthlyCents: Math.round(sum((a) => (a.amountCents ?? 0) * (MONTHLY_FACTOR[a.cadence ?? ""] ?? 0))),
+    unknownCadence: unknownCadence.length,
+    paidThisMonthCents: sum((a) => (a.paidMonth === month ? a.paidMonthCents ?? 0 : 0)),
+    outstandingCents: sum((a) => a.outstandingCents ?? 0),
+    overdueCents: sum((a) => a.overdueCents ?? 0),
+    overdueInvoices: sum((a) => a.overdueCount ?? 0),
+    failedInvoices: sum((a) => a.failedCount ?? 0),
+    upcoming: synced.filter((a) => a.nextDueDate && a.nextDueDate <= in30).sort((x, y) => x.nextDueDate!.getTime() - y.nextDueDate!.getTime()),
+    upcomingCents: sum((a) => (a.nextDueDate && a.nextDueDate <= in30 ? a.amountCents ?? 0 : 0)),
+    attention: synced.filter((a) => (a.overdueCount ?? 0) > 0 || (a.failedCount ?? 0) > 0),
+    rows: all,
+  };
 }
 
 /** What the client sees. Authorization is mentioned only once Tabitha has verified it. */

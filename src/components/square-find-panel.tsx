@@ -1,15 +1,16 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Badge, Button } from "@/components/ui";
 
 type Tone = "navy" | "gold" | "green" | "red" | "gray" | "amber";
-import { linkSquareBillingAction, squareSearchAction, type SquareSearchResult } from "@/app/actions/square-billing";
+import { linkSquareBillingAction, squareSearchAction, squareSuggestAction, type SquareSearchResult } from "@/app/actions/square-billing";
 
 type Client = { id: string; name: string; email: string | null; phone: string | null };
 type Option = { id: string; name: string };
-type Pick = { customer: SquareSearchResult; series: SquareSearchResult["series"][number] };
+type Result = SquareSearchResult & { score?: number; reasons?: string[] };
+type Pick = { customer: Result; series: SquareSearchResult["series"][number] };
 
 const usd = (c: number | null) => (c == null ? "—" : `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })}`);
 const digits = (s: string | null) => (s ?? "").replace(/\D/g, "").slice(-10);
@@ -22,11 +23,14 @@ const fmtDay = (iso: string | null) => (iso ? new Date(`${iso}T12:00:00`).toLoca
  * saves only the verified Square customer ID and series in Client Connect. Nothing
  * is created, changed or charged in Square.
  */
-export function SquareFindPanel({ client, coverOptions }: { client: Client; coverOptions: Option[] }) {
+export function SquareFindPanel({ client, coverOptions, autoSuggest = false, initialQuery }: { client: Client; coverOptions: Option[]; autoSuggest?: boolean; initialQuery?: string }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(client.email || client.name);
-  const [results, setResults] = useState<SquareSearchResult[] | null>(null);
+  const [open, setOpen] = useState(autoSuggest);
+  const [query, setQuery] = useState(initialQuery || client.email || client.name);
+  const [results, setResults] = useState<Result[] | null>(null);
+  // Set when the results came from the automatic search with the client's saved details.
+  const [suggested, setSuggested] = useState<{ confident: string | null } | null>(null);
+  const ran = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [pick, setPick] = useState<Pick | null>(null);
   const [covers, setCovers] = useState<string[]>([client.id]);
@@ -35,10 +39,29 @@ export function SquareFindPanel({ client, coverOptions }: { client: Client; cove
   const [searching, startSearch] = useTransition();
   const [linking, startLink] = useTransition();
 
+  // Searches automatically with the client's saved name, business name, email and phone (read only).
+  useEffect(() => {
+    if (!autoSuggest || ran.current) return;
+    ran.current = true;
+    startSearch(async () => {
+      try {
+        const r = await squareSuggestAction(client.id);
+        if (r.error) setError(r.error);
+        else {
+          setResults(r.results ?? []);
+          setSuggested({ confident: r.confident ?? null });
+        }
+      } catch {
+        setError("Square couldn't be searched right now. Nothing was changed — please try again.");
+      }
+    });
+  }, [autoSuggest, client.id]);
+
   const search = () => {
     setError(null);
     setPick(null);
     setDone(null);
+    setSuggested(null);
     startSearch(async () => {
       try {
         const r = await squareSearchAction(query);
@@ -104,7 +127,7 @@ export function SquareFindPanel({ client, coverOptions }: { client: Client; cove
         }}
       >
         <label className="flex-1">
-          <span className="block text-xs font-semibold text-slate-600">Name, email, phone or Square customer ID</span>
+          <span className="block text-xs font-semibold text-slate-600">Name, email, phone, Square customer ID, or recurring series number (e.g. 54458)</span>
           <input className="input w-full" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" data-testid="square-query" />
         </label>
         <Button type="submit" disabled={searching}>{searching ? "Searching…" : "Search Square (read only)"}</Button>
@@ -113,25 +136,38 @@ export function SquareFindPanel({ client, coverOptions }: { client: Client; cove
       {error && <p className="text-red-700" role="alert" data-testid="square-find-error">{error}</p>}
       {results && results.length === 0 && <p data-testid="square-none">No Square customer matched “{query}”. Try their email, phone, another spelling, or the customer ID from the Square Dashboard.</p>}
 
+      {suggested && results && !pick && (
+        <p className={`rounded p-2 ${suggested.confident ? "bg-emerald-50 text-emerald-900" : "bg-amber-50 text-amber-900"}`} data-testid="square-suggest-summary">
+          {results.length === 0
+            ? "Searched Square automatically with this client's saved name, business name, email and phone — no match. Try another spelling or the series number from the Square Dashboard."
+            : suggested.confident
+              ? "Likely match found automatically (email or phone matches). Review it and confirm — nothing is linked until you do."
+              : `Searched automatically: ${results.length} possible match${results.length === 1 ? "" : "es"}, none certain. Choose the right customer for owner review.`}
+        </p>
+      )}
       {results && results.length > 0 && !pick && (
         <ul className="space-y-2" data-testid="square-find-results">
           {results.map((c) => (
-            <li key={c.id} className="rounded-lg border border-ivory-200 bg-white p-3">
+            <li key={c.id} className={`rounded-lg border bg-white p-3 ${suggested?.confident === c.id ? "border-emerald-400" : "border-ivory-200"}`} data-likely={suggested?.confident === c.id ? "yes" : undefined}>
               <p>
                 <strong>{c.company || c.name || "Square customer"}</strong>
                 {c.company && c.name ? ` · ${c.name}` : ""}
                 {c.email ? ` · ${c.email}` : ""}
                 {c.phone ? ` · ${c.phone}` : ""}
-                <span className="ml-1 text-xs text-slate-500">({c.id})</span>
+                <span className="ml-1 text-xs text-slate-500">(Square customer ID {c.id})</span>
               </p>
+              {c.reasons && c.reasons.length > 0 && (
+                <p className="mt-1 flex flex-wrap gap-1">{c.reasons.map((r) => <Badge key={r} tone={r.startsWith("different") ? "amber" : "green"}>{r}</Badge>)}</p>
+              )}
               {c.series.length === 0 ? (
                 <p className="mt-1 text-slate-600">No recurring invoices found in Square for this customer.</p>
               ) : (
                 <ul className="mt-2 space-y-2">
                   {c.series.map((s) => (
-                    <li key={s.seriesKey} className="flex flex-wrap items-center gap-2 rounded bg-ivory-50 p-2" data-testid="square-find-series">
+                    <li key={s.seriesKey} className={`flex flex-wrap items-center gap-2 rounded p-2 ${s.matched ? "bg-gold-100 ring-1 ring-gold-500" : "bg-ivory-50"}`} data-testid="square-find-series" data-series={s.seriesKey}>
+                      {s.matched && <Badge tone="gold">Series {s.seriesKey} you searched</Badge>}
                       <span>
-                        {s.title || "Recurring invoice"} · {usd(s.amountCents)} · {s.schedule} · {s.nextDueDate ? `next ${fmtDay(s.nextDueDate)}` : "no upcoming invoice"} · {s.autopay ? "card on file charged by Square" : "client pays each invoice"}
+                        <strong>Series {s.seriesKey}</strong> · {s.title || "Recurring invoice"} · {usd(s.amountCents)} · {s.schedule} · {s.nextDueDate ? `next ${fmtDay(s.nextDueDate)}` : "no upcoming invoice"} · {s.autopay ? "card on file charged by Square" : "client pays each invoice"}
                       </span>
                       <Badge tone={s.statusTone as Tone}>{s.status}</Badge>
                       {s.linkedTo.length > 0 ? (
@@ -158,6 +194,7 @@ export function SquareFindPanel({ client, coverOptions }: { client: Client; cove
               <p>Email: {pick.customer.email ?? "—"} {same(pick.customer.email, client.email, lower) && <Badge tone="green">Matches</Badge>}</p>
               <p>Phone: {pick.customer.phone ?? "—"} {same(pick.customer.phone, client.phone, digits) && <Badge tone="green">Matches</Badge>}</p>
               <p className="text-xs text-slate-500">Square customer ID: {pick.customer.id}</p>
+              <p className="text-xs text-slate-500">Recurring invoice series: {pick.series.seriesKey} (invoice numbers {pick.series.seriesKey}-R-…)</p>
               <p className="mt-2">
                 {pick.series.title || "Recurring invoice"} (series {pick.series.seriesKey}-R): {usd(pick.series.amountCents)} · {pick.series.schedule}
                 {" · "}{pick.series.nextDueDate ? `next invoice ${fmtDay(pick.series.nextDueDate)}` : "no upcoming invoice"}

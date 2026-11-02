@@ -2742,8 +2742,22 @@ model SquareBillingArrangement {
   cardExpMonth              Int?
   cardExpYear               Int?
   invoiceCount              Int                   @default(0)
+  // Latest PAID invoice in the series, as Square reports it.
+  lastPaidCents             Int?
+  // Across all of this customer's invoices at the location (not just the series), from Square.
+  outstandingCents          Int?
+  outstandingCount          Int?
+  overdueCents              Int?
+  overdueCount              Int?
+  // Invoices Square reports as FAILED (an automatic payment that didn't go through).
+  failedCount               Int?
+  // Paid invoices due in paidMonth ("YYYY-MM", Central time) — for the Owner's Office totals.
+  paidMonth                 String?
+  paidMonthCents            Int?
+  // syncedAt = last SUCCESSFUL read from Square; syncFailedAt/syncError = the latest failure after it.
   syncedAt                  DateTime?
   syncError                 String?
+  syncFailedAt              DateTime?
   // Tabitha confirms the authorization already on file in Square; nothing new is asked of the client.
   authorizationVerifiedAt   DateTime?
   authorizationVerifiedById String?
@@ -3215,4 +3229,26 @@ model NonprofitPackage {
   sortOrder       Int      @default(0)
   updatedById     String?
   updatedAt       DateTime @updatedAt
+}
+
+// Result of a live, read-only Square connection check. "Configured" (variables present) is not the same as working.
+model SquareHealthCheck {
+  id          String   @id @default(cuid())
+  checkedAt   DateTime @default(now())
+  // true only when Square accepted the token and every required read permission worked
+  ok          Boolean
+  environment String
+  summary     String
+  // Each step: { key, label, ok, status, code, detail } — never the token
+  steps       Json
+  checkedById String?
+
+  @@index([checkedAt])
+}
+
+// Keeps a scheduled job from running twice at once (e.g. the hourly Square sync).
+model JobLock {
+  name        String   @id
+  lockedUntil DateTime
+  runId       String?
 }

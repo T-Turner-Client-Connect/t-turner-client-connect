@@ -3,7 +3,10 @@ import { connection } from "next/server";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { SquareStateBadge } from "@/components/square-billing-panel";
-import { linkSquareBillingAction, syncAllSquareBillingAction } from "@/app/actions/square-billing";
+import { checkSquareConnectionAction, linkSquareBillingAction, syncAllSquareBillingAction } from "@/app/actions/square-billing";
+import { squareHealth, type HealthStep } from "@/lib/services/square-health";
+import { SquareConnectionStatus } from "@/components/square-billing-panel";
+import { fmtDateTime } from "@/lib/format";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { squareSettings, SquareError } from "@/lib/square";
@@ -33,6 +36,7 @@ export default async function SquareBillingPage({ searchParams }: { searchParams
   const sp = await searchParams;
   const rows = await squareBillingOverview(user);
   const configured = squareSettings().configured;
+  const health = await squareHealth();
   const chosen = sp.client ? await prisma.client.findUnique({ where: { id: sp.client }, select: { id: true, displayName: true, businessName: true, email: true, phone: true, contacts: { select: { email: true, phone: true }, take: 3 } } }) : null;
   const family = chosen ? await businessFamily(chosen.id) : null;
   const coverOptions = chosen ? [chosen, ...(family ? [family.person, ...family.businesses] : [])].filter((c, i, all): c is NonNullable<typeof c> => !!c && all.findIndex((x) => x?.id === c.id) === i) : [];
@@ -59,6 +63,26 @@ export default async function SquareBillingPage({ searchParams }: { searchParams
         subtitle="Connects the recurring invoices already set up in Square. Read only: nothing is created, changed or charged in Square, and clients aren't asked to authorize again."
         actions={configured ? <ActionForm action={syncAllSquareBillingAction} showSuccess><Button type="submit" variant="secondary">Sync all from Square</Button></ActionForm> : null}
       />
+      <Card title="Square connection check" className="mb-4">
+        <div id="connection" data-testid="square-health">
+          <SquareConnectionStatus health={health} />
+          <p className="mt-2 text-sm text-slate-600">Asks Square directly — one read per permission Client Connect needs. Nothing is created, changed or charged, and the token is never shown.</p>
+          <ActionForm action={checkSquareConnectionAction} className="mt-2" showSuccess>
+            <Button type="submit" variant="secondary" data-testid="square-health-run">Check Square connection</Button>
+          </ActionForm>
+          {health.last && (
+            <ul className="mt-3 space-y-1 text-sm" data-testid="square-health-steps">
+              {(health.last.steps as HealthStep[]).map((st) => (
+                <li key={st.key} className="flex flex-wrap items-start gap-2">
+                  <Badge tone={st.ok ? (st.warn ? "amber" : "green") : "red"}>{st.ok ? (st.warn ? "Check" : "OK") : "Failed"}</Badge>
+                  <span><strong>{st.label}</strong>{st.status ? ` · HTTP ${st.status}` : ""}{st.code ? ` · ${st.code}` : ""} — {st.detail}</span>
+                </li>
+              ))}
+              <li className="text-xs text-slate-500">Checked {fmtDateTime(health.last.checkedAt)}</li>
+            </ul>
+          )}
+        </div>
+      </Card>
       {!configured && <Notice tone="warn" title="Square isn't connected yet">Add SQUARE_ACCESS_TOKEN, SQUARE_LOCATION_ID and SQUARE_APPLICATION_ID in Netlify (never in GitHub or chat). Until then every client shows &ldquo;Existing Square billing—not yet synced&rdquo; and billing continues in Square as usual.</Notice>}
 
       <Card title="Find a client's billing in Square">

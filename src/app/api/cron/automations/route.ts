@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { runAutomations } from "@/lib/services/automations";
 import { heartbeat } from "@/lib/services/documents";
+import { syncStaleSquareBilling } from "@/lib/services/square-billing";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {
@@ -12,5 +13,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   const summary = await runAutomations();
-  return Response.json({ ok: true, summary });
+  // Read-only Square refresh, so billing figures stay current without anyone pressing Sync.
+  const square = await syncStaleSquareBilling().catch((e) => ({ error: e instanceof Error ? e.message : "failed" }));
+  return Response.json({ ok: true, summary, square });
 }
