@@ -250,6 +250,7 @@ model Client {
   deadlines            ClientDeadline[]
   signatureReqs        SignatureRequest[]
   contracts            ContractAssignment[]
+  installmentPlans     InstallmentPlan[]
   invoices             Invoice[]
   clientServices       ClientService[]
   payments             Payment[]
@@ -1962,6 +1963,8 @@ model Invoice {
   declinedAt            DateTime?
   voidedAt              DateTime?
   voidReason            String?
+  // The one payment method selected for this invoice (changes need owner approval; see PaymentMethodChange).
+  paymentMethod         String?
   createdById           String
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
@@ -3074,4 +3077,109 @@ model NonprofitItemFile {
   releasedById String?
 
   @@index([itemId])
+}
+
+// --- In-house payment plans & payment-method controls ---------------------------------
+// Plans are computed on the server (30% deposit, equal monthly installments, final
+// installment absorbs rounding). Nothing is charged until the client accepted the
+// terms, the owner approved, and a card-on-file authorization is recorded.
+
+model InstallmentPlan {
+  id                   String    @id @default(cuid())
+  clientId             String
+  client               Client    @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  invoiceId            String?
+  serviceId            String?
+  title                String
+  // REQUESTED | PENDING_APPROVAL | APPROVED | DECLINED | DEPOSIT_PENDING | ACTIVE | PAST_DUE | PAID_IN_FULL | CANCELLED
+  status               String    @default("REQUESTED")
+  serviceCents         Int
+  // CARD_CREDIT | CARD_DEBIT (debit never carries a fee)
+  card                 String
+  months               Int
+  feeCents             Int
+  totalCents           Int
+  depositCents         Int
+  // [{ seq, dueDate, amountCents }]
+  schedule             Json
+  terms                Json
+  termsHash            String
+  requestedById        String?
+  requestedByPortalId  String?
+  acceptedAt           DateTime?
+  acceptedByPortalId   String?
+  acceptedName         String?
+  acceptedIp           String?
+  approvedAt           DateTime?
+  approvedById         String?
+  declinedAt           DateTime?
+  declinedById         String?
+  declineReason        String?
+  // Card-on-file authorization (Square, added with the Square integration). Never card numbers.
+  cardAuthorizedAt     DateTime?
+  cardAuthorizationRef String?
+  verifiedCardType     String?
+  paidCents            Int       @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([clientId, status])
+  @@index([status])
+}
+
+// Payment instructions shown to the client for each method (owner-edited; not secrets).
+model PaymentInstruction {
+  method      String   @id
+  label       String
+  details     String
+  active      Boolean  @default(true)
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}
+
+// Changing an invoice's or plan's payment method needs the owner's approval.
+model PaymentMethodChange {
+  id                  String    @id @default(cuid())
+  clientId            String
+  invoiceId           String?
+  planId              String?
+  fromMethod          String?
+  toMethod            String
+  reason              String?
+  requestedById       String?
+  requestedByPortalId String?
+  // PENDING | APPROVED | DECLINED
+  status              String    @default("PENDING")
+  decidedById         String?
+  decidedAt           DateTime?
+  decisionNote        String?
+  createdAt           DateTime  @default(now())
+
+  @@index([status])
+}
+
+// Late-fee policy: configurable, disabled until the owner records a legal review and turns it on.
+model LateFeeSettings {
+  id           String    @id @default("default")
+  enabled      Boolean   @default(false)
+  graceDays    Int       @default(5)
+  periodDays   Int       @default(5)
+  rateBps      Int       @default(1000)
+  capBps       Int?
+  reviewedNote String?
+  reviewedAt   DateTime?
+  reviewedById String?
+  updatedAt    DateTime  @updatedAt
+}
+
+// Waived late fees (owner only), kept for reconciliation.
+model FeeWaiver {
+  id          String   @id @default(cuid())
+  clientId    String
+  planId      String?
+  invoiceId   String?
+  amountCents Int
+  reason      String
+  waivedById  String
+  createdAt   DateTime @default(now())
 }

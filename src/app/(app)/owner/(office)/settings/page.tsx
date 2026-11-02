@@ -3,10 +3,10 @@ import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui"
 import { grantOwnerAction, revokeOwnerAction, saveBillingSettingsAction } from "@/app/actions/owner";
 import { requireOwner } from "@/lib/auth/owner";
 import { billingSettings } from "@/lib/services/owner-billing";
-import { describeAmount } from "@/lib/billing/pricing";
 import { fmtDateTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { FeeSettingsCard } from "@/components/owner/fee-settings";
+import { PlanSettingsCards } from "@/components/owner/plan-settings";
 
 const plain = (type: string, v: number) => (type === "FLAT" || type === "PERCENT" ? (v / 100).toString() : "");
 
@@ -33,17 +33,10 @@ export default async function OwnerSettingsPage() {
     <>
       <PageHeader title="Billing settings & access" />
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="Payment-plan fee and defaults">
+        <Card title="Quote and payment-plan defaults">
           <ActionForm action={saveBillingSettingsAction} className="space-y-3">
-            <AmountPicker name="planFee" type={s.planFeeType} value={s.planFeeValue} label="Payment-plan fee" hint="Flat $ per plan, or % of the services after discount and before tax. Added once, only when the client chooses a plan." />
-            <label className="flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-              <input type="checkbox" name="planFeeRulesConfirmed" defaultChecked={!!s.planFeeRulesConfirmedAt} className="mt-1" />
-              <span>
-                I&apos;ve checked my payment provider&apos;s rules and the legal requirements for charging this payment-plan fee. I understand it is a fee for paying in installments — not a card surcharge
-                — and that card surcharges are not enabled in this app.
-                {s.planFeeRulesConfirmedAt && <span className="block text-xs">Confirmed {fmtDateTime(s.planFeeRulesConfirmedAt)}</span>}
-              </span>
-            </label>
+            <input type="hidden" name="planFeeType" value="NONE" />
+            <p className="rounded-lg bg-ivory-50 p-3 text-sm" data-testid="no-plan-fee">No payment-plan fee: choosing a payment plan never adds a fee. Card processing fees are set separately under Payment-method fees.</p>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Most installments allowed"><input className="input" name="maxInstallments" inputMode="numeric" defaultValue={s.maxInstallments} /></Field>
               <Field label="Default installments"><input className="input" name="defaultInstallments" inputMode="numeric" defaultValue={s.defaultInstallments} /></Field>
@@ -54,7 +47,6 @@ export default async function OwnerSettingsPage() {
             <Field label="Default payment terms"><textarea className="input" name="defaultPaymentTerms" rows={3} defaultValue={s.defaultPaymentTerms ?? ""} /></Field>
             <Button type="submit">Save settings</Button>
           </ActionForm>
-          <p className="mt-3 text-xs text-slate-600">Current plan fee: {describeAmount(s.planFeeType, s.planFeeValue)}. Changes apply to new quotes only.</p>
         </Card>
 
         <div className="space-y-4">
@@ -93,6 +85,7 @@ export default async function OwnerSettingsPage() {
         </div>
       </div>
       <div className="mt-4"><FeeSettingsCard /></div>
+      <PlanSettingsCards />
     </>
   );
 }

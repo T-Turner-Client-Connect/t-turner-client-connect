@@ -9,6 +9,7 @@ import { METHOD_LABELS } from "@/lib/billing/labels";
 import { fmtDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { NOT_SYNCED, portalSquareBilling } from "@/lib/services/square-billing";
+import { PaymentPanel } from "@/components/portal/payment-panel";
 
 export const metadata = { title: "Billing" };
 
@@ -26,6 +27,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
   }
   const [items, sq] = await Promise.all([portalBilling(user, current.clientId), portalSquareBilling(user, current.clientId)]);
   const client = await prisma.client.findUniqueOrThrow({ where: { id: current.clientId }, select: { displayName: true } });
+  const methods = new Map((await prisma.invoice.findMany({ where: { id: { in: items.map((i) => i.id) } }, select: { id: true, paymentMethod: true } })).map((i) => [i.id, i.paymentMethod]));
   return (
     <>
       <PageHeader title="Billing" subtitle="Quotes and invoices from TTurner & Associates Group for this account." />
@@ -89,8 +91,6 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
                       <label key={k} className="block cursor-pointer rounded-xl border-2 border-navy-100 p-4 has-[:checked]:border-gold-500 has-[:checked]:bg-ivory">
                         <span className="flex items-center gap-2 font-semibold"><input type="radio" name="choice" value={`${k}|${hash}`} required /> {k === "FULL" ? "Pay in full" : "Payment plan"}</span>
                         <dl className="mt-2 space-y-0.5 text-sm">
-                          {k === "PLAN" && <div className="flex justify-between"><dt>Payment-plan fee</dt><dd>{money(o.planFeeCents)}</dd></div>}
-                          {o.planFeeDiscountCents > 0 && <div className="flex justify-between"><dt>Discount on plan fee</dt><dd>−{money(o.planFeeDiscountCents)}</dd></div>}
                           <div className="flex justify-between font-bold text-navy-900"><dt>Final total</dt><dd>{money(o.totalCents)}</dd></div>
                         </dl>
                         <ul className="mt-2 space-y-0.5 text-xs text-slate-700">
@@ -133,6 +133,9 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
               <ActionForm action={declineQuoteAction.bind(null, inv.id)} confirm="Decline this quote?" className="mt-2">
                 <Button variant="ghost">Decline</Button>
               </ActionForm>
+            )}
+            {inv.state !== "DECLINED" && (inv.balanceCents ?? 1) > 0 && (
+              <PaymentPanel clientId={current.clientId} invoice={{ id: inv.id, serviceCents: inv.breakdown.options.FULL?.totalCents ?? inv.breakdown.lines.reduce((a, l) => a + l.amountCents, 0), paymentMethod: methods.get(inv.id) ?? null }} />
             )}
             {inv.memo && <p className="mt-3 text-sm text-slate-700">{inv.memo}</p>}
           </Card>
