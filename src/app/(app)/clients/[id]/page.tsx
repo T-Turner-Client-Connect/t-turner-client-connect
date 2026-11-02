@@ -20,6 +20,7 @@ import { DocumentsTab } from "@/components/client-tabs/documents";
 import { BookkeepingTab } from "@/components/client-tabs/bookkeeping";
 import { PortalTab } from "@/components/client-tabs/portal";
 import { TaxesTab } from "@/components/client-tabs/taxes";
+import { ServicesTab } from "@/components/client-tabs/services";
 
 export const metadata = { title: "Client" };
 
@@ -33,6 +34,7 @@ const TABS = [
   { key: "documents", label: "Documents" },
   { key: "bookkeeping", label: "Bookkeeping" },
   { key: "taxes", label: "Taxes" },
+  { key: "services", label: "Services & Agreements" },
   { key: "portal", label: "Portal & signatures" },
 ] as const;
 
@@ -130,6 +132,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       {tab === "documents" && <DocumentsTab clientId={id} user={user} />}
       {tab === "bookkeeping" && <BookkeepingTab clientId={id} />}
       {tab === "taxes" && <TaxesTab clientId={id} user={user} />}
+      {tab === "services" && <ServicesTab clientId={id} user={user} />}
       {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} actor={user} />}
 
       {tab === "overview" && (
