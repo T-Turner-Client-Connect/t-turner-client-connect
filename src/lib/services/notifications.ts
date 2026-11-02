@@ -23,6 +23,7 @@ const TEXT: Record<string, string> = {
   FILING_UPDATE: "A tax filing update is available",
   QUOTE_READY: "A quote is ready for your review",
   NEW_INVOICE: "A new invoice is available",
+  AGREEMENT_READY: "A pricing agreement is ready for your review and signature",
   DEADLINE_REMINDER: "A filing deadline is coming up",
   // Identity documents: deliberately generic (no document type or details).
   ID_EXPIRING: "A document on file needs to be updated soon",

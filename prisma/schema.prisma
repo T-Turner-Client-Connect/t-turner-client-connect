@@ -62,30 +62,31 @@ model User {
   createdAt                   DateTime  @default(now())
   updatedAt                   DateTime  @updatedAt
 
-  sessions        Session[]
-  resetTokens     PasswordResetToken[]
-  invitesSent     Invite[]             @relation("InvitedBy")
-  assignedClients Client[]             @relation("AssignedStaff")
-  assignedTasks   Task[]               @relation("TaskAssignee")
-  createdTasks    Task[]               @relation("TaskCreator")
-  notes           ClientNote[]
-  auditLogs       AuditLog[]
-  imports         ImportBatch[]
-  campaigns       Campaign[]
-  files           StoredFile[]
-  consentRecords  ConsentRecord[]      @relation("ConsentRecordedBy")
-  consentReviews  ConsentRecord[]      @relation("ConsentReviewedBy")
-  recoveryCodes   MfaRecoveryCode[]
-  conversations   Conversation[]       @relation("ConversationAssignee")
-  messages        Message[]            @relation("StaffMessages")
-  documents       Document[]           @relation("StaffDocuments")
-  periods         BookkeepingPeriod[]
-  docRequests     DocumentRequest[]
-  announcements   Announcement[]
-  signatureReqs   SignatureRequest[]
-  contracts       ContractAssignment[]
-  portalInvites   PortalInvite[]
-  ownerAccess     OwnerAccess?         @relation("OwnerAccessUser")
+  sessions         Session[]
+  resetTokens      PasswordResetToken[]
+  invitesSent      Invite[]             @relation("InvitedBy")
+  assignedClients  Client[]             @relation("AssignedStaff")
+  assignedServices ClientService[]      @relation("ServiceAssignee")
+  assignedTasks    Task[]               @relation("TaskAssignee")
+  createdTasks     Task[]               @relation("TaskCreator")
+  notes            ClientNote[]
+  auditLogs        AuditLog[]
+  imports          ImportBatch[]
+  campaigns        Campaign[]
+  files            StoredFile[]
+  consentRecords   ConsentRecord[]      @relation("ConsentRecordedBy")
+  consentReviews   ConsentRecord[]      @relation("ConsentReviewedBy")
+  recoveryCodes    MfaRecoveryCode[]
+  conversations    Conversation[]       @relation("ConversationAssignee")
+  messages         Message[]            @relation("StaffMessages")
+  documents        Document[]           @relation("StaffDocuments")
+  periods          BookkeepingPeriod[]
+  docRequests      DocumentRequest[]
+  announcements    Announcement[]
+  signatureReqs    SignatureRequest[]
+  contracts        ContractAssignment[]
+  portalInvites    PortalInvite[]
+  ownerAccess      OwnerAccess?         @relation("OwnerAccessUser")
 }
 
 model Session {
@@ -250,6 +251,7 @@ model Client {
   signatureReqs        SignatureRequest[]
   contracts            ContractAssignment[]
   invoices             Invoice[]
+  clientServices       ClientService[]
   payments             Payment[]
   appointments         Appointment[]
   pipelineCards        PipelineCard[]
@@ -2781,6 +2783,140 @@ model NonprofitProfile {
   updatedById   String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+}
+
+// --- Services & pricing agreements -------------------------------------------
+// One record per billable service a client has with us (a tax return for one
+// year, monthly bookkeeping for a period, a formation…). A client can have many
+// at once, each with its own status, staff, agreement and billing. Work can't
+// start until its pricing agreement is signed (and any payment authorization
+// recorded), unless the owner overrides with a logged reason.
+
+enum ServiceType {
+  TAX_INDIVIDUAL
+  TAX_BUSINESS
+  TAX_AMENDED
+  TAX_NONPROFIT
+  BOOKKEEPING
+  PAYROLL
+  NONPROFIT_SERVICES
+  BUSINESS_FORMATION
+  CONSULTING
+  PROPERTY_MANAGEMENT
+  IRS_CORRESPONDENCE
+  OTHER
+}
+
+enum ServiceStatus {
+  AGREEMENT_PENDING
+  AGREEMENT_SENT
+  AGREEMENT_VIEWED
+  AGREEMENT_SIGNED
+  AWAITING_PAYMENT_AUTHORIZATION
+  APPROVED_TO_BEGIN
+  IN_PROGRESS
+  COMPLETED
+  CLOSED
+}
+
+model ClientService {
+  id                  String        @id @default(cuid())
+  clientId            String
+  client              Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  type                ServiceType
+  // Tax services name their tax year; others name their period (e.g. "Jan–Dec 2026").
+  taxYear             Int?
+  periodLabel         String?
+  title               String
+  description         String?
+  status              ServiceStatus @default(AGREEMENT_PENDING)
+  assignedToId        String?
+  assignedTo          User?         @relation("ServiceAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  // Whether a payment authorization (deposit, card authorization, refund-transfer
+  // application…) must be recorded before work may begin.
+  requiresPaymentAuth Boolean       @default(false)
+  paymentAuthAt       DateTime?
+  paymentAuthNote     String?
+  paymentAuthById     String?
+  // Owner's documented override to begin work without the signed agreement.
+  overrideAt          DateTime?
+  overrideReason      String?
+  overrideById        String?
+  completedAt         DateTime?
+  closedAt            DateTime?
+  createdById         String
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  agreements PricingAgreement[]
+
+  @@index([clientId, taxYear])
+  @@index([status])
+}
+
+enum AgreementKind {
+  // Service Pricing & Payment Agreement
+  SERVICE
+  // Tax Preparation Payment Selection & Fee Agreement
+  TAX_PAYMENT_SELECTION
+}
+
+enum AgreementStatus {
+  DRAFT
+  SENT
+  VIEWED
+  SIGNED
+  SUPERSEDED
+  VOID
+}
+
+model PricingAgreement {
+  id               String          @id @default(cuid())
+  serviceId        String
+  service          ClientService   @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  clientId         String
+  kind             AgreementKind
+  version          Int
+  status           AgreementStatus @default(DRAFT)
+  // Exact terms shown to the client (prices, charges, payment options with their fees, payment terms).
+  terms            Json
+  // The client's payment-method choice and the totals it produced (frozen at signing).
+  selectedMethod   String?
+  selection        Json?
+  termsHash        String?
+  sentAt           DateTime?
+  viewedAt         DateTime?
+  signedAt         DateTime?
+  signerName       String?
+  signedByPortalId String?
+  signerIp         String?
+  signerAgent      String?
+  consentText      String?
+  pdfDocumentId    String?         @unique
+  supersededAt     DateTime?
+  voidedAt         DateTime?
+  voidReason       String?
+  createdById      String
+  createdAt        DateTime        @default(now())
+
+  @@unique([serviceId, version])
+  @@index([clientId, status])
+}
+
+// Fees by payment method. A fee applies only when the owner has turned it on and
+// recorded how it was verified as permitted; otherwise the method has no fee.
+model PaymentFeeSetting {
+  method       String    @id
+  enabled      Boolean   @default(false)
+  // Basis points for a percentage fee (350 = 3.5%), or cents for a flat fee.
+  percentBps   Int       @default(0)
+  flatCents    Int       @default(0)
+  verifiedNote String?
+  verifiedAt   DateTime?
+  verifiedById String?
+  // Refund transfer: the third-party provider offering it (must be set to offer the option).
+  providerName String?
+  updatedAt    DateTime  @updatedAt
 }
 
 /// A completed return uploaded through the bulk screen, waiting for staff to
