@@ -237,6 +237,16 @@ export async function saveBilling(actor: Actor, clientId: string, input: Billing
   await audit(prisma, { actorId: actor.id, action: "bookkeeping.billing_saved", entityType: "Client", entityId: clientId, clientId, details: { monthlyFeeCents: cents, paymentStatus: status } });
 }
 
+/** Billing Notes only (office notes; never card numbers). Leaves every other billing field as it is. */
+export async function saveBillingNotes(actor: Actor, clientId: string, notes: string) {
+  await assertBilling(actor);
+  if (/\b(?:\d[ -]?){13,19}\b/.test(notes)) throw new ValidationError("Card numbers can't be saved. Payment methods are kept only in Square.");
+  const before = await prisma.bookkeepingBilling.findUnique({ where: { clientId }, select: { notes: true } });
+  const value = clean(notes, 500);
+  await prisma.bookkeepingBilling.upsert({ where: { clientId }, create: { clientId, notes: value, updatedById: actor.id }, update: { notes: value, updatedById: actor.id } });
+  await audit(prisma, { actorId: actor.id, action: "bookkeeping.billing_notes_saved", entityType: "Client", entityId: clientId, clientId, details: { changed: (before?.notes ?? null) !== value } });
+}
+
 export type AuthorizationInput = { amount: string; startDate: Date | null; method: string; authorizedByName: string; authorizedAt: Date | null; evidenceDocumentId?: string | null };
 
 /** Records the client's authorization for recurring charges (evidence required). */

@@ -49,6 +49,29 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
                   {sq.view.card && <div><dt className="text-xs uppercase tracking-wide text-slate-500">Automatic payment</dt><dd>{sq.view.card.brand} ending in {sq.view.card.last4}</dd></div>}
                   {sq.view.authorizationVerified && <div><dt className="text-xs uppercase tracking-wide text-slate-500">Authorization</dt><dd>On file with Square — nothing new is needed</dd></div>}
                 </dl>
+                {sq.view.overdueCents > 0 && <p className="mt-3 rounded bg-red-50 p-2 text-sm text-red-800" data-testid="portal-square-overdue">Past due: {money(sq.view.overdueCents)} ({sq.view.overdueCount} invoice{sq.view.overdueCount === 1 ? "" : "s"}). Questions? Send us a message.</p>}
+                {sq.view.overdueCents === 0 && sq.view.outstandingCents > 0 && <p className="mt-3 text-sm" data-testid="portal-square-outstanding">Open balance: {money(sq.view.outstandingCents)}</p>}
+                <div className="mt-4" data-testid="portal-square-history">
+                  <p className="mb-1 text-sm font-semibold">Your payments</p>
+                  {sq.view.invoices.filter((i) => i.status !== "SCHEDULED").length === 0 ? <p className="text-sm text-slate-600">No payments yet.</p> : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="text-left text-xs uppercase tracking-wide text-slate-500"><tr><th className="py-1">Due</th><th>Amount</th><th>Paid on</th><th>Status</th><th>Receipt</th></tr></thead>
+                        <tbody className="divide-y divide-navy-100">
+                          {sq.view.invoices.filter((i) => i.status !== "SCHEDULED").map((i) => (
+                            <tr key={i.number ?? i.due}>
+                              <td className="py-1.5">{fmtDate(new Date(`${i.due}T12:00:00Z`))}</td>
+                              <td>{i.amountCents == null ? "—" : money(i.amountCents)}{i.paidCents != null && <span className="block text-xs text-slate-600">{money(i.paidCents)} paid · {money((i.amountCents ?? 0) - i.paidCents)} due</span>}</td>
+                              <td>{i.paidAt ? fmtDate(new Date(`${i.paidAt}T12:00:00Z`)) : "—"}</td>
+                              <td><Badge tone={i.status === "PAID" ? "green" : i.status === "FAILED" || i.status === "PARTIALLY_PAID" ? "red" : i.status === "CANCELED" || i.status === "REFUNDED" ? "gray" : "amber"}>{i.status === "PAID" ? "Paid" : i.status === "PARTIALLY_PAID" ? "Partly paid" : i.status === "FAILED" ? "Payment failed" : i.status === "CANCELED" ? "Canceled" : i.status === "REFUNDED" ? "Refunded" : i.status === "PARTIALLY_REFUNDED" ? "Partly refunded" : "Unpaid"}</Badge></td>
+                              <td>{i.receiptUrl ? <a className="underline" href={i.receiptUrl} target="_blank" rel="noopener noreferrer">Receipt</a> : i.invoiceUrl ? <a className="underline" href={i.invoiceUrl} target="_blank" rel="noopener noreferrer">Invoice</a> : "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
                 {(sq.view.alsoCovers.length > 0 || sq.view.otherAccounts > 0) && (
                   <p className="mt-3 text-sm" data-testid="portal-square-covers">This one bill also covers {[...sq.view.alsoCovers, ...(sq.view.otherAccounts ? [`${sq.view.otherAccounts} other account${sq.view.otherAccounts === 1 ? "" : "s"}`] : [])].join(", ")} — you&apos;re charged once per cycle.</p>
                 )}

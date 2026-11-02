@@ -48,6 +48,8 @@ export type SqInvoice = {
   status?: string;
   location_id?: string;
   primary_recipient?: { customer_id?: string };
+  order_id?: string;
+  public_url?: string;
   payment_requests?: { request_type?: string; due_date?: string; card_id?: string; automatic_payment_source?: string; computed_amount_money?: { amount?: number }; total_completed_amount_money?: { amount?: number } }[];
 };
 type SqCustomer = { id: string; given_name?: string; family_name?: string; company_name?: string; email_address?: string; phone_number?: string };
@@ -71,6 +73,39 @@ function cadenceOf(dueDates: string[]): Cadence {
   if (g >= 88 && g <= 93) return "QUARTERLY";
   if (g >= 360 && g <= 370) return "YEARLY";
   return "UNKNOWN";
+}
+
+const PERIOD_DAYS: Record<string, number> = { WEEKLY: 7, MONTHLY: 31, QUARTERLY: 92, YEARLY: 366 };
+// Square makes each recurring invoice before the previous one is due, so a running series normally
+// has a scheduled invoice. This much extra time is allowed before the evidence reads "likely ended".
+const ENDED_GRACE_DAYS = 21;
+
+export type SeriesStatus = "ACTIVE" | "NEEDS_REVIEW" | "ENDED";
+export const SERIES_STATUS_LABELS: Record<SeriesStatus, string> = { ACTIVE: "Active", NEEDS_REVIEW: "Status needs review", ENDED: "Ended — history only" };
+
+/**
+ * What Square's own invoices say about a recurring series. Square's API has no series status, so
+ * only a scheduled or open invoice proves a series is ACTIVE. Without one, the evidence is described
+ * (waiting for the next invoice, likely ended, or all canceled) but never treated as proof it ended.
+ */
+export function seriesActivity(invoices: { status: string; due: string }[], cadence: string, today: string) {
+  const open = invoices.filter((r) => OPEN.has(r.status));
+  if (open.length) return { conclusive: true, active: true, evidence: "OPEN" as const, reason: `Square has ${open.length} scheduled or open invoice${open.length === 1 ? "" : "s"} in this series.`, expectedNext: null as string | null };
+  const live = invoices.filter((r) => r.status !== "CANCELED" && r.status !== "DRAFT");
+  if (!live.length) return { conclusive: false, active: false, evidence: "ALL_CANCELED" as const, reason: "Every invoice in this series was canceled in Square — it has likely ended.", expectedNext: null };
+  const lastDue = live.map((r) => r.due).sort().at(-1)!;
+  const period = PERIOD_DAYS[cadence] ?? 92;
+  const expectedNext = new Date(noon(lastDue).getTime() + period * 86_400_000).toISOString().slice(0, 10);
+  const cutoff = new Date(noon(expectedNext).getTime() + ENDED_GRACE_DAYS * 86_400_000).toISOString().slice(0, 10);
+  if (today <= cutoff) return { conclusive: false, active: false, evidence: "WAITING" as const, reason: `No scheduled invoice in Square right now. The last was due ${lastDue}; the next would be expected around ${expectedNext}.`, expectedNext };
+  return { conclusive: false, active: false, evidence: "LIKELY_ENDED" as const, reason: `No new invoice since the one due ${lastDue}; the next was expected around ${expectedNext}. The series has likely ended in Square.`, expectedNext };
+}
+
+/** Square's evidence first (a scheduled/open invoice is always ACTIVE); otherwise the owner's decision; otherwise needs review. */
+export function seriesStatus(act: ReturnType<typeof seriesActivity>, decision: { decision: string } | null | undefined): SeriesStatus {
+  if (act.conclusive && act.active) return "ACTIVE";
+  if (decision?.decision === "ACTIVE" || decision?.decision === "ENDED") return decision.decision;
+  return "NEEDS_REVIEW";
 }
 
 /** What one recurring series looks like, worked out only from Square's own invoices. */
@@ -100,14 +135,51 @@ export function summarizeSeries(invoices: SqInvoice[], today: string) {
     autopay: latest?.req?.automatic_payment_source === "CARD_ON_FILE",
     squareCardId: latest?.req?.automatic_payment_source === "CARD_ON_FILE" ? latest.req.card_id ?? null : null,
     invoiceCount: rows.length,
+    activity: seriesActivity(rows.map((r) => ({ status: r.status, due: r.due })), cadenceOf(live.map((r) => r.due)), today),
+    // Every invoice in this series, newest first, as Square reports it (Payment History).
+    seriesInvoices: [...rows].reverse().filter((r) => r.status !== "DRAFT").map((r): SeriesInvoice => ({
+      id: r.i.id, number: r.i.invoice_number ?? null, title: r.i.title ?? null, due: r.due, status: r.status,
+      amountCents: r.req?.computed_amount_money?.amount ?? null, paidCents: r.req?.total_completed_amount_money?.amount ?? null,
+      orderId: r.i.order_id ?? null, invoiceUrl: r.i.public_url ?? null, paidAt: null, receiptUrl: null,
+    })),
   };
 }
 export type SeriesSummary = ReturnType<typeof summarizeSeries>;
+export type SeriesInvoice = {
+  id: string; number: string | null; title: string | null; due: string; status: string; amountCents: number | null; paidCents: number | null;
+  orderId: string | null; invoiceUrl: string | null;
+  // From Square's payment record for a PAID invoice (null when Square doesn't provide it).
+  paidAt: string | null; receiptUrl: string | null;
+};
+
+/**
+ * Adds Square's payment date and receipt link to each PAID invoice: invoice → order tenders →
+ * payment. Reads only; a paid invoice's details are kept once found, so each is looked up once.
+ */
+async function withPaymentDetails(locationId: string, list: SeriesInvoice[], previous: SeriesInvoice[]) {
+  const known = new Map(previous.filter((p) => p.paidAt).map((p) => [p.id, p]));
+  const out = list.map((i) => (i.status === "PAID" && known.has(i.id) ? { ...i, paidAt: known.get(i.id)!.paidAt, receiptUrl: known.get(i.id)!.receiptUrl } : i));
+  const need = out.filter((i) => i.status === "PAID" && !i.paidAt && i.orderId).slice(0, 24);
+  if (!need.length) return out;
+  try {
+    const { orders } = await squareRequest<{ orders?: { id: string; tenders?: { payment_id?: string; created_at?: string }[] }[] }>("POST", "/v2/orders/batch-retrieve", { location_id: locationId, order_ids: need.map((i) => i.orderId) });
+    for (const i of need) {
+      const tender = orders?.find((o) => o.id === i.orderId)?.tenders?.at(-1);
+      if (!tender?.payment_id) continue;
+      const pay = await squareRequest<{ payment?: { status?: string; created_at?: string; updated_at?: string; receipt_url?: string } }>("GET", `/v2/payments/${encodeURIComponent(tender.payment_id)}`).catch(() => null);
+      // Only a COMPLETED payment counts as proof of the paid date.
+      if (pay?.payment?.status === "COMPLETED") Object.assign(i, { paidAt: (pay.payment.updated_at ?? pay.payment.created_at ?? tender.created_at ?? "").slice(0, 10) || null, receiptUrl: pay.payment.receipt_url ?? null });
+    }
+  } catch {
+    // Without permission to read orders/payments the paid date is shown as unavailable; nothing else changes.
+  }
+  return out;
+}
 
 // Invoices Square still expects money on (scheduled-but-not-yet-due invoices aren't owed yet).
 const OWED = new Set(["UNPAID", "PARTIALLY_PAID", "FAILED"]);
 
-/** What the customer owes across ALL their invoices at the location, from Square's own invoice statuses. */
+/** What is owed on a set of invoices (the linked series), from Square's own invoice statuses. */
 export function balanceOf(invoices: SqInvoice[], today: string) {
   let outstandingCents = 0, outstandingCount = 0, overdueCents = 0, overdueCount = 0, failedCount = 0, paidMonthCents = 0;
   const month = today.slice(0, 7);
@@ -293,15 +365,23 @@ export async function lookupSquareBilling(actor: Actor, input: LookupInput) {
   const today = todayCentral();
   const linked = await prisma.squareBillingArrangement.findMany({ where: { squareLocationId: s.locationId, squareCustomerId: { in: customers.map((c) => c.id) } }, include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } } } } });
   const results = [];
+  const decisions = await prisma.squareSeriesReview.findMany({ where: { squareLocationId: s.locationId, squareCustomerId: { in: customers.map((c) => c.id) } } });
   for (const c of customers.slice(0, 10)) {
-    const series = groupSeries(await customerInvoices(c.id, s.locationId), today);
+    const series = groupSeries(await customerInvoices(c.id, s.locationId), today).map((x) => {
+      const decision = decisions.find((d) => d.seriesKey === x.seriesKey && d.squareCustomerId === c.id) ?? null;
+      return { ...x, status: seriesStatus(x.activity, decision), decision };
+    });
+    const info = (x: (typeof series)[number]) => ({ seriesKey: x.seriesKey, title: x.title, amountCents: x.amountCents, cadence: x.cadence, lastDueDate: x.lastDueDate, reason: x.activity.reason, decision: x.decision ? { decision: x.decision.decision, reason: x.decision.reason, decidedAt: x.decision.decidedAt } : null, matched: x.seriesKey === seriesQuery });
     results.push({
       id: c.id,
       name: [c.given_name, c.family_name].filter(Boolean).join(" ") || null,
       company: c.company_name ?? null,
       email: c.email_address ?? null,
       phone: c.phone_number ?? null,
-      series: series.map((x) => ({ ...x, linked: linked.find((l) => l.seriesKey === x.seriesKey) ?? null, matched: x.seriesKey === seriesQuery })),
+      // Only ACTIVE series are offered for linking. Uncertain ones wait for the owner's review; ended ones are history.
+      series: series.filter((x) => x.status === "ACTIVE").map((x) => ({ ...x, linked: linked.find((l) => l.seriesKey === x.seriesKey && l.active && l.members.length) ?? null, matched: x.seriesKey === seriesQuery })),
+      review: series.filter((x) => x.status === "NEEDS_REVIEW").map(info),
+      ended: series.filter((x) => x.status === "ENDED").map(info),
     });
   }
   await audit(prisma, { actorId: actor.id, action: "square_billing.looked_up", entityType: "Square", entityId: "lookup", details: { by: [input.customerId ? "customerId" : "", email ? "email" : "", phone ? "phone" : "", q ? (seriesQuery ? "series" : "search") : ""].filter(Boolean), customers: results.length } });
@@ -360,14 +440,33 @@ async function refresh(arrangementId: string) {
     ]);
     const mine = invoices.filter((i) => seriesKeyOf(i.invoice_number) === a.seriesKey);
     if (!mine.length) throw new SquareError(`Square returned no invoices for series ${a.seriesKey}. Nothing was changed in Square; check the series in the Square Dashboard.`);
-    const sum = summarizeSeries(mine, todayCentral());
-    const bal = balanceOf(invoices, todayCentral());
+    const { activity, seriesInvoices, ...sum } = summarizeSeries(mine, todayCentral());
+    const invoicesWithPayments = await withPaymentDetails(a.squareLocationId, seriesInvoices, (a.seriesInvoices as SeriesInvoice[] | null) ?? []);
+    const decision = await prisma.squareSeriesReview.findUnique({ where: { squareLocationId_seriesKey: { squareLocationId: a.squareLocationId, seriesKey: a.seriesKey } } });
+    const status = seriesStatus(activity, decision);
+    const active = status === "ACTIVE";
+    const reason = decision && !activity.conclusive ? `Owner decision: ${decision.reason}` : activity.reason;
+    // Balances for THIS series only — never another series of the same customer.
+    const bal = balanceOf(mine, todayCentral());
     const card = await cardDetails(sum.squareCardId);
+    // Only a series that is ACTIVE stays in the current billing view; its history always stays.
+    const before: SeriesStatus = a.active ? "ACTIVE" : a.needsReview ? "NEEDS_REVIEW" : "ENDED";
+    if (before !== status) {
+      const members = await prisma.squareBillingMember.findMany({ where: { arrangementId: a.id }, select: { clientId: true } });
+      for (const m of members.length ? members : [{ clientId: null as string | null }]) {
+        await audit(prisma, { actorId: null, action: "square_billing.series_status_changed", entityType: "SquareBillingArrangement", entityId: a.id, clientId: m.clientId, details: { seriesKey: a.seriesKey, from: before, to: status, reason } });
+      }
+    }
     return prisma.squareBillingArrangement.update({
       where: { id: a.id },
       data: {
         ...sum,
         ...bal,
+        active,
+        needsReview: status === "NEEDS_REVIEW",
+        seriesInvoices: invoicesWithPayments,
+        endedAt: active ? null : a.active ? new Date() : a.endedAt,
+        endedReason: active ? null : reason,
         customerName: customer ? [customer.given_name, customer.family_name].filter(Boolean).join(" ") || null : a.customerName,
         companyName: customer ? customer.company_name ?? null : a.companyName,
         cardBrand: card?.card_brand ?? null, cardLast4: card?.last_4 ?? null, cardExpMonth: card?.exp_month ?? null, cardExpYear: card?.exp_year ?? null,
@@ -400,9 +499,10 @@ async function assertOneOwnerGroup(clientIds: string[]) {
 async function assertClientsFree(clientIds: string[], exceptArrangementId?: string) {
   const ids = [...new Set(clientIds.filter(Boolean))];
   if (!ids.length) throw new ValidationError("Choose the client(s) this Square bill covers.");
-  const clients = await prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, displayName: true, businessName: true, archivedAt: true, squareBilling: { include: { arrangement: { select: { seriesKey: true } } } } } });
+  const clients = await prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, displayName: true, businessName: true, archivedAt: true, squareBilling: { include: { arrangement: { select: { seriesKey: true, active: true } } } } } });
   if (clients.length !== ids.length || clients.some((c) => c.archivedAt)) throw new ValidationError("One of those clients wasn't found.");
-  const taken = clients.find((c) => c.squareBilling && c.squareBilling.arrangementId !== exceptArrangementId);
+  // A link to a series that has ended in Square doesn't block linking the client's current series.
+  const taken = clients.find((c) => c.squareBilling && c.squareBilling.arrangement.active && c.squareBilling.arrangementId !== exceptArrangementId);
   if (taken) throw new ValidationError(`${nameOf(taken)} is already linked to Square billing series ${taken.squareBilling!.arrangement.seriesKey}. A client can be on only one Square bill, so it's never billed twice. Remove that link first if it's wrong.`);
   return clients;
 }
@@ -421,6 +521,21 @@ export async function linkSquareBilling(actor: Actor, input: { customerId: strin
   if (elsewhere.length) await assertOneOwnerGroup([...elsewhere.map((m) => m.clientId), ...clients.map((c) => c.id)]).catch(() => {
     throw new ValidationError("This Square customer's billing is already linked to a different client's records. Check the match before linking.");
   });
+  // Read the series from Square first: it must belong to this customer and still be running.
+  const seriesInvoices = (await customerInvoices(input.customerId, s.locationId)).filter((i) => seriesKeyOf(i.invoice_number) === input.seriesKey);
+  if (!seriesInvoices.length) throw new ValidationError(`Square has no invoices in series ${input.seriesKey} for this customer, so it can't be linked to them.`);
+  const check = summarizeSeries(seriesInvoices, todayCentral());
+  const decision = await prisma.squareSeriesReview.findUnique({ where: { squareLocationId_seriesKey: { squareLocationId: s.locationId, seriesKey: input.seriesKey } } });
+  const status = seriesStatus(check.activity, decision);
+  if (status !== "ACTIVE") throw new ValidationError(`Series ${input.seriesKey} isn't verified as active (${SERIES_STATUS_LABELS[status]}), so it isn't linked: ${check.activity.reason}${status === "NEEDS_REVIEW" ? " The owner can review it first." : ""} Its invoices stay in Square's history.`);
+  // A client still on a series that has since ended moves to the current one; the ended link is kept as history.
+  for (const c of clients) {
+    const old = await prisma.squareBillingMember.findUnique({ where: { clientId: c.id }, include: { arrangement: { select: { id: true, active: true, seriesKey: true, formerClientIds: true } } } });
+    if (!old || old.arrangement.active) continue;
+    await prisma.squareBillingMember.delete({ where: { id: old.id } });
+    await prisma.squareBillingArrangement.update({ where: { id: old.arrangement.id }, data: { formerClientIds: [...new Set([...old.arrangement.formerClientIds, c.id])] } });
+    await audit(prisma, { actorId: actor.id, action: "square_billing.moved_from_ended_series", entityType: "SquareBillingArrangement", entityId: old.arrangement.id, clientId: c.id, details: { endedSeriesKey: old.arrangement.seriesKey, newSeriesKey: input.seriesKey } });
+  }
   const a = await prisma.squareBillingArrangement.create({
     data: { squareCustomerId: input.customerId, squareLocationId: s.locationId, seriesKey: input.seriesKey, linkedById: actor.id, members: { create: clients.map((c) => ({ clientId: c.id, addedById: actor.id })) } },
   });
@@ -443,13 +558,42 @@ export async function linkSquareBilling(actor: Actor, input: { customerId: strin
   return prisma.squareBillingArrangement.findUniqueOrThrow({ where: { id: a.id } });
 }
 
+/**
+ * The owner settles a series Square's invoices can't (no scheduled or open invoice): ACTIVE or
+ * ENDED, with a reason. Reads Square to confirm the series belongs to the customer; changes nothing
+ * in Square. A later scheduled/open invoice in Square always counts as ACTIVE regardless.
+ */
+export async function reviewSquareSeries(actor: Actor, input: { customerId: string; seriesKey: string; decision: "ACTIVE" | "ENDED"; reason: string }) {
+  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can decide a recurring series' status.");
+  const s = requireSquare();
+  if (input.decision !== "ACTIVE" && input.decision !== "ENDED") throw new ValidationError("Choose Active or Ended.");
+  const reason = input.reason.trim();
+  if (reason.length < 5) throw new ValidationError("Record why (for example: “Replaced by monthly series 54458 in Sept 2025”).");
+  const mine = (await customerInvoices(input.customerId, s.locationId)).filter((i) => seriesKeyOf(i.invoice_number) === input.seriesKey);
+  if (!mine.length) throw new ValidationError(`Square has no invoices in series ${input.seriesKey} for this customer.`);
+  const before = await prisma.squareSeriesReview.findUnique({ where: { squareLocationId_seriesKey: { squareLocationId: s.locationId, seriesKey: input.seriesKey } } });
+  const data = { squareCustomerId: input.customerId, decision: input.decision, reason: reason.slice(0, 300), decidedById: actor.id, decidedAt: new Date() };
+  await prisma.squareSeriesReview.upsert({ where: { squareLocationId_seriesKey: { squareLocationId: s.locationId, seriesKey: input.seriesKey } }, create: { squareLocationId: s.locationId, seriesKey: input.seriesKey, ...data }, update: data });
+  await audit(prisma, { actorId: actor.id, action: "square_billing.series_reviewed", entityType: "Square", entityId: `${s.locationId}:${input.seriesKey}`, details: { seriesKey: input.seriesKey, squareCustomerId: input.customerId, decision: input.decision, reason: data.reason, previous: before ? { decision: before.decision, reason: before.reason } : null } });
+  const linked = await prisma.squareBillingArrangement.findUnique({ where: { squareLocationId_seriesKey: { squareLocationId: s.locationId, seriesKey: input.seriesKey } } });
+  if (linked) await refresh(linked.id).catch(() => {});
+  return { status: seriesStatus(summarizeSeries(mine, todayCentral()).activity, data) };
+}
+
 /** Adds another business to the same Square bill (one combined charge). */
 export async function addClientToSquareBilling(actor: Actor, arrangementId: string, clientId: string) {
   await assertBilling(actor);
   const a = await prisma.squareBillingArrangement.findUnique({ where: { id: arrangementId } });
   if (!a) throw new ValidationError("Square billing link not found.");
+  if (!a.active) throw new ValidationError("That Square series has ended, so no one can be added to it. Link the client's current series instead.");
   const [c] = await assertClientsFree([clientId], arrangementId);
-  if (await prisma.squareBillingMember.findUnique({ where: { clientId } })) throw new ValidationError(`${nameOf(c)} is already on this Square bill.`);
+  const current = await prisma.squareBillingMember.findUnique({ where: { clientId }, include: { arrangement: { select: { active: true } } } });
+  if (current?.arrangementId === arrangementId) throw new ValidationError(`${nameOf(c)} is already on this Square bill.`);
+  if (current && !current.arrangement.active) {
+    // Leaving an ended series for this current one; the ended link is kept as history.
+    await prisma.squareBillingMember.delete({ where: { id: current.id } });
+    await prisma.squareBillingArrangement.update({ where: { id: current.arrangementId }, data: { formerClientIds: { push: clientId } } });
+  }
   const members = await prisma.squareBillingMember.findMany({ where: { arrangementId }, select: { clientId: true } });
   await assertOneOwnerGroup([...members.map((m) => m.clientId), clientId]);
   await prisma.squareBillingMember.create({ data: { arrangementId, clientId, addedById: actor.id } });
@@ -508,7 +652,13 @@ export async function syncStaleSquareBilling(maxAgeMinutes = 50, now = new Date(
   try {
     const cutoff = new Date(now.getTime() - maxAgeMinutes * 60_000);
     // Only series that were confirmed and linked to a client (an arrangement exists only after a confirmed link).
-    const due = await prisma.squareBillingArrangement.findMany({ where: { members: { some: {} }, OR: [{ syncedAt: null }, { syncedAt: { lt: cutoff } }] }, select: { id: true }, take: 200 });
+    const daily = new Date(now.getTime() - 24 * 3600_000);
+    // Current series hourly; ended ones once a day, in case Square resumes them.
+    const due = await prisma.squareBillingArrangement.findMany({
+      where: { members: { some: {} }, OR: [{ active: true, OR: [{ syncedAt: null }, { syncedAt: { lt: cutoff } }] }, { active: false, OR: [{ syncedAt: null }, { syncedAt: { lt: daily } }] }] },
+      select: { id: true },
+      take: 200,
+    });
     let ok = 0;
     const failed: { arrangementId: string; code: string }[] = [];
     for (const a of due) {
@@ -585,9 +735,15 @@ export async function squareBillingFor(clientId: string) {
     prisma.squareBillingMember.findUnique({ where: { clientId }, include: { arrangement: { include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } }, orderBy: { createdAt: "asc" } } } } } }),
     prisma.bookkeepingProfile.findUnique({ where: { clientId }, select: { squareBillingExpected: true } }),
   ]);
-  const a = member?.arrangement ?? null;
+  // Only a series still running in Square is current billing; an ended one is history.
+  const a = member?.arrangement.active ? member.arrangement : null;
+  const ended = await prisma.squareBillingArrangement.findMany({
+    where: { active: false, OR: [{ members: { some: { clientId } } }, { formerClientIds: { has: clientId } }] },
+    select: { id: true, seriesKey: true, title: true, amountCents: true, cadence: true, lastDueDate: true, endedAt: true, endedReason: true, squareCustomerId: true, needsReview: true },
+    orderBy: { endedAt: "desc" },
+  });
   const state = a ? (a.authorizationVerifiedAt ? "VERIFIED" : a.syncedAt ? "SYNCED" : "LINKED") : profile?.squareBillingExpected ? "NOT_SYNCED" : "NONE";
-  return { arrangement: a, state: state as SquareState, expected: !!profile?.squareBillingExpected };
+  return { arrangement: a, ended: ended.filter((e) => !e.needsReview), review: ended.filter((e) => e.needsReview), state: state as SquareState, expected: !!profile?.squareBillingExpected };
 }
 
 /**
@@ -613,7 +769,7 @@ export async function squareBillingOverview(actor: Actor) {
     orderBy: { client: { displayName: "asc" } },
   });
   return profiles.map((p) => {
-    const a = p.client.squareBilling?.arrangement ?? null;
+    const a = p.client.squareBilling?.arrangement.active ? p.client.squareBilling.arrangement : null;
     return { clientId: p.clientId, name: nameOf(p.client), expected: p.squareBillingExpected, arrangement: a, state: (a ? (a.authorizationVerifiedAt ? "VERIFIED" : a.syncedAt ? "SYNCED" : "LINKED") : p.squareBillingExpected ? "NOT_SYNCED" : "NONE") as SquareState };
   });
 }
@@ -625,7 +781,10 @@ const MONTHLY_FACTOR: Record<string, number> = { MONTHLY: 1, QUARTERLY: 1 / 3, Y
  * only. Each Square bill counts once, however many businesses it covers.
  */
 export async function squareRevenueSummary(now = new Date()) {
-  const all = await prisma.squareBillingArrangement.findMany({ where: { members: { some: {} } }, include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } } } } });
+  // Current billing only: series that have ended in Square are left out of every total.
+  const all = await prisma.squareBillingArrangement.findMany({ where: { active: true, members: { some: {} } }, include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } } } } });
+  const endedCount = await prisma.squareBillingArrangement.count({ where: { active: false, needsReview: false, members: { some: {} } } });
+  const reviewCount = await prisma.squareBillingArrangement.count({ where: { needsReview: true, members: { some: {} } } });
   const synced = all.filter((a) => a.syncedAt);
   const month = todayCentral().slice(0, 7);
   const in30 = new Date(now.getTime() + 30 * 86_400_000);
@@ -634,6 +793,8 @@ export async function squareRevenueSummary(now = new Date()) {
   const oldestSync = synced.reduce<Date | null>((d, a) => (!d || a.syncedAt! < d ? a.syncedAt! : d), null);
   return {
     linked: all.length,
+    endedCount,
+    reviewCount,
     synced: synced.length,
     stale: all.filter((a) => staleness(a, now).stale).length,
     oldestSync,
@@ -667,6 +828,9 @@ export async function portalSquareBilling(user: PortalActor, clientId: string) {
           title: a.title, amountCents: a.amountCents, schedule: scheduleText(a), nextDueDate: a.nextDueDate, status: paymentStatus(a),
           card: a.autopay && a.cardLast4 ? { brand: a.cardBrand ?? "Card", last4: a.cardLast4, expMonth: a.cardExpMonth, expYear: a.cardExpYear } : null,
           autopay: a.autopay, authorizationVerified: !!a.authorizationVerifiedAt, syncedAt: a.syncedAt,
+          // This series only: each invoice's amount, due date, Square-confirmed paid date and receipt.
+          invoices: ((a.seriesInvoices as SeriesInvoice[] | null) ?? []).map((i) => ({ number: i.number, due: i.due, status: i.status, amountCents: i.amountCents, paidCents: i.status === "PARTIALLY_PAID" ? i.paidCents : null, paidAt: i.status === "PAID" ? i.paidAt : null, receiptUrl: i.status === "PAID" ? i.receiptUrl : null, invoiceUrl: i.invoiceUrl })),
+          outstandingCents: a.outstandingCents ?? 0, overdueCents: a.overdueCents ?? 0, overdueCount: a.overdueCount ?? 0,
           alsoCovers: others.filter((m) => visible.has(m.clientId)).map((m) => nameOf(m.client)),
           otherAccounts: others.filter((m) => !visible.has(m.clientId)).length,
         }

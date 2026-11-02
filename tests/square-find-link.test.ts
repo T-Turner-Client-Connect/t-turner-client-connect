@@ -48,7 +48,7 @@ function mockSquare() {
   });
 }
 // Lookups and links only ever read: the only POSTs allowed are Square's search endpoints.
-const writes = () => calls.filter((c) => c.method === "POST" && !c.path.endsWith("/search"));
+const writes = () => calls.filter((c) => c.method === "POST" && !c.path.endsWith("/search") && !c.path.endsWith("/batch-retrieve"));
 
 beforeEach(async () => {
   await resetDb();

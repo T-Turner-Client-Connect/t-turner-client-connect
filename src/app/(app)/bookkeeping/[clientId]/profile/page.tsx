@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import {
-  recordAuthorizationAction, revealEinAction, revokeAuthorizationAction, saveAccountAction, saveBillingAction, saveBusinessInfoAction,
+  recordAuthorizationAction, revealEinAction, revokeAuthorizationAction, saveAccountAction, saveBillingAction, saveBillingNotesAction, saveBusinessInfoAction,
 } from "@/app/actions/bookkeeping-clients";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
@@ -151,13 +151,14 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
               <p className="text-sm text-slate-600" data-testid="billing-restricted">Billing and payment methods are managed by Tabitha.</p>
             ) : (
               <div className="space-y-4" data-testid="billing">
-                {health && <SquareConnectionStatus health={health} lastSuccessfulSync={billing.squareBilling.arrangement?.syncedAt ?? null} />}
+                {health && !billing.squareBilling.arrangement && <SquareConnectionStatus health={health} />}
                 <SquareBillingPanel
                   clientId={clientId} sb={billing.squareBilling} approver={approver} addable={addable}
                   client={{ name: client.businessName || client.displayName, email: client.email, phone: client.phone }}
                   // Unlinked clients are searched in Square automatically (read only) — but only while the connection works.
                   autoSuggest={!billing.squareBilling.arrangement && health?.state === "WORKING"}
                   initialQuery={billing.square.customerId?.status === "UNVERIFIED" ? billing.square.customerId.id : undefined}
+                  health={health} notes={billing.billing?.notes ?? null} notesAction={saveBillingNotesAction.bind(null, clientId)}
                 />
                 {billing.squareBilling.state === "NONE" ? (
                   <div className="space-y-3 rounded-xl border border-ivory-200 p-3" data-testid="manual-billing">

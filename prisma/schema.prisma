@@ -2758,6 +2758,18 @@ model SquareBillingArrangement {
   syncedAt                  DateTime?
   syncError                 String?
   syncFailedAt              DateTime?
+  // Square's API has no recurring-series status, so "active" is worked out from the series' own
+  // invoices (see seriesActivity). An ended link stays as history; it's never deleted.
+  active                    Boolean               @default(true)
+  // No scheduled/open invoice and no owner decision yet: not shown as current billing until reviewed.
+  needsReview               Boolean               @default(false)
+  // Every invoice in THIS series as Square reports it, newest first (Payment History): due date,
+  // amount, status, and — for paid ones — Square's payment date and receipt link. No card data.
+  seriesInvoices            Json?
+  endedAt                   DateTime?
+  endedReason               String?
+  // Clients that were on this bill before it ended and they were linked to a current series.
+  formerClientIds           String[]              @default([])
   // Tabitha confirms the authorization already on file in Square; nothing new is asked of the client.
   authorizationVerifiedAt   DateTime?
   authorizationVerifiedById String?
@@ -3251,4 +3263,20 @@ model JobLock {
   name        String   @id
   lockedUntil DateTime
   runId       String?
+}
+
+// The owner's decision on a recurring series whose status Square's invoices can't settle
+// (no scheduled or open invoice). A new scheduled/open invoice in Square always wins.
+model SquareSeriesReview {
+  id               String   @id @default(cuid())
+  squareLocationId String
+  seriesKey        String
+  squareCustomerId String
+  // ACTIVE | ENDED
+  decision         String
+  reason           String
+  decidedById      String
+  decidedAt        DateTime @default(now())
+
+  @@unique([squareLocationId, seriesKey])
 }

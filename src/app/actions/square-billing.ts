@@ -8,7 +8,7 @@ import { paymentStatus, scheduleText } from "@/lib/services/square-billing";
 import { ValidationError } from "@/lib/services/clients";
 import { noteSquareAuthFailure, runSquareHealthCheck } from "@/lib/services/square-health";
 import {
-  addClientToSquareBilling, linkSquareBilling, lookupSquareBilling, suggestSquareMatches, removeClientFromSquareBilling, setSquareBillingExpected, syncAllSquareBilling, syncSquareBilling, verifyExistingAuthorization,
+  addClientToSquareBilling, linkSquareBilling, lookupSquareBilling, reviewSquareSeries, suggestSquareMatches, removeClientFromSquareBilling, setSquareBillingExpected, syncAllSquareBilling, syncSquareBilling, verifyExistingAuthorization,
 } from "@/lib/services/square-billing";
 
 const refresh = () => revalidatePath("/bookkeeping", "layout");
@@ -89,12 +89,16 @@ export async function setSquareExpectedAction(clientId: string, expected: boolea
   });
 }
 
+type OtherSeries = { seriesKey: string; title: string | null; amountCents: number | null; schedule: string; lastDueDate: string | null; reason: string; decision: { decision: string; reason: string; decidedAt: string } | null; matched: boolean };
 export type SquareSearchResult = {
   id: string;
   name: string | null;
   company: string | null;
   email: string | null;
   phone: string | null;
+  // Not offered for linking: series waiting for the owner's review, and series ended (history only).
+  review: OtherSeries[];
+  ended: OtherSeries[];
   series: { seriesKey: string; title: string | null; amountCents: number | null; matched: boolean; schedule: string; nextDueDate: string | null; autopay: boolean; status: string; statusTone: string; linkedTo: string[] }[];
 };
 
@@ -118,7 +122,16 @@ const serialize = (c: Found): SquareSearchResult => ({
     statusTone: paymentStatus(x).tone,
     linkedTo: x.linked ? x.linked.members.map((m) => m.client.businessName || m.client.displayName) : [],
   })),
+  review: c.review.map(other),
+  ended: c.ended.map(other),
 });
+function other(x: Found["ended"][number]): OtherSeries {
+  return {
+    seriesKey: x.seriesKey, title: x.title ?? null, amountCents: x.amountCents, schedule: scheduleText({ cadence: x.cadence, dueDay: null }),
+    lastDueDate: x.lastDueDate ? new Date(x.lastDueDate).toISOString().slice(0, 10) : null, reason: x.reason,
+    decision: x.decision ? { decision: x.decision.decision, reason: x.decision.reason, decidedAt: new Date(x.decision.decidedAt).toISOString().slice(0, 10) } : null, matched: x.matched,
+  };
+}
 
 async function squareRead<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
   try {
@@ -157,5 +170,15 @@ export async function checkSquareConnectionAction(_prev: ActionState): Promise<A
     refresh();
     revalidatePath("/bookkeeping/square-billing");
     return r.summary;
+  });
+}
+
+/** Owner only: settle a series Square's invoices can't (Active or Ended), with a reason. Changes nothing in Square. */
+export async function reviewSquareSeriesAction(customerId: string, seriesKey: string, decision: "ACTIVE" | "ENDED", _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const r = await square(() => reviewSquareSeries(actor, { customerId, seriesKey, decision, reason: str(fd, "reason") }));
+    refresh();
+    return r.status === "ACTIVE" ? `Series ${seriesKey} marked active. It can now be linked.` : `Series ${seriesKey} marked ended — kept as history, out of current billing. Nothing was changed in Square.`;
   });
 }

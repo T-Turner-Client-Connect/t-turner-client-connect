@@ -107,10 +107,11 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
       >
         <div data-testid="owner-square">
           <p className="mb-3 text-sm text-slate-600">
-            Read only, from the last verified sync of {sq.linked} confirmed Square series{sq.linked === 1 ? "" : ""}. Refreshed hourly.{" "}
+            Read only, from the last verified sync of {sq.linked} active, confirmed Square series. Refreshed hourly.{" "}
             {sq.oldestSync ? <>Oldest sync: <strong>{fmtDateTime(sq.oldestSync)}</strong>.</> : "Nothing synced yet."}{" "}
             Connection: <Badge tone={health.state === "WORKING" ? "green" : health.state === "FAILING" ? "red" : "amber"}>{health.state === "WORKING" ? "Working" : health.state === "FAILING" ? "Not working" : health.state === "UNCHECKED" ? "Not yet verified" : "Not set up"}</Badge>
           </p>
+          {(sq.endedCount > 0 || sq.reviewCount > 0) && <p className="mb-2 text-xs text-slate-600" data-testid="owner-square-excluded">Not counted: {sq.endedCount} ended series (history only){sq.reviewCount ? ` and ${sq.reviewCount} series whose status needs your review` : ""}.</p>}
           {(sq.stale > 0 || health.state === "FAILING") && <Notice tone="warn" title="Some Square figures may be out of date">{sq.stale} of {sq.linked} series haven&apos;t been read successfully in the last 3 hours. The figures below are the last verified ones.</Notice>}
           <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <Stat label="Monthly recurring (Square)" value={money(sq.recurringMonthlyCents)} hint={sq.unknownCadence ? `${sq.unknownCadence} series with an unclear schedule not counted` : "Quarterly/yearly converted to monthly"} />

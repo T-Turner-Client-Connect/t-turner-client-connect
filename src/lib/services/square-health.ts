@@ -18,6 +18,7 @@ const PERMISSION: Record<string, string> = {
   customers: "CUSTOMERS_READ",
   invoices: "INVOICES_READ",
   cards: "PAYMENTS_READ",
+  orders: "ORDERS_READ",
 };
 
 export async function runSquareHealthCheck(actor: Actor) {
@@ -75,6 +76,7 @@ export async function runSquareHealthCheck(actor: Actor) {
     ["customers", "Read customers", () => squareProbe("GET", "/v2/customers?limit=1"), true],
     ["invoices", "Read invoices", () => squareProbe("POST", "/v2/invoices/search", { query: { filter: { location_ids: [s.locationId] } }, limit: 1 }), true],
     ["cards", "Read cards on file (display only)", () => squareProbe("GET", "/v2/cards?limit=1"), false],
+    ["orders", "Read paid dates and receipts", () => squareProbe("POST", "/v2/orders/search", { location_ids: [s.locationId], limit: 1 }), false],
   ];
   for (const [key, label, run, required] of reads) {
     const r = await run();
