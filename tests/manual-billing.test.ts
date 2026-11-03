@@ -116,7 +116,7 @@ describe("marking several months paid at once", () => {
     await expect(markMonthsPaid(daria, rich.id, { months, amountEach: "350", method: "CASH_APP", dateMode: "DUE_DATE" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(markMonthsPaid(tabitha, rich.id, { months, amountEach: "350", method: "CHECK", dateMode: "DUE_DATE" })).rejects.toThrow(/check number/);
     const r = await markMonthsPaid(tabitha, rich.id, { months, amountEach: "350", method: "CASH_APP", dateMode: "DUE_DATE" });
-    expect(r).toEqual({ recorded: [month(-2), month(0)], skipped: [month(-1)] });
+    expect(r).toEqual({ recorded: [month(-2), month(0)], skipped: [month(-1)], partial: [] });
     const v = await manualBillingView(tabitha, rich.id);
     expect(v.live.filter((p) => p.method === "CASH_APP")).toHaveLength(2);
     expect(v.live.find((p) => p.periodMonth === month(-2))!.note).toMatch(/due date/);
@@ -128,5 +128,50 @@ describe("marking several months paid at once", () => {
     const y = await markMonthsPaid(tabitha, rich.id, { months: lastYear, amountEach: "350", method: "CASH", dateMode: "DUE_DATE" });
     expect(y.recorded.length + y.skipped.length).toBe(12);
     expect((await manualBillingView(tabitha, rich.id)).ledger!.overdueCount).toBe(0);
+  });
+});
+
+describe("Mark Months Paid safety", () => {
+  it("never tops up a partly paid month, never enters a month twice — even when two saves run at once", async () => {
+    const { tabitha, rich } = await setup();
+    // Partly paid: $200 of $350 received for one month.
+    await recordManualPayment(tabitha, rich.id, { amount: "200", paidOn: TODAY, periodMonth: month(-2), method: "CASH" });
+    const months = [month(-2), month(-1), month(0)];
+    const r = await markMonthsPaid(tabitha, rich.id, { months, amountEach: "350", method: "CASH_APP", dateMode: "DUE_DATE" });
+    expect(r).toEqual({ recorded: [month(-1), month(0)], skipped: [], partial: [month(-2)] });
+    let v = await manualBillingView(tabitha, rich.id);
+    expect(v.live.filter((p) => p.periodMonth === month(-2)).map((p) => p.amountCents)).toEqual([20000]); // untouched
+    expect(v.partialMonths).toEqual([month(-2)]);
+    expect(v.ledger!.periods.find((p) => p.month === month(-2))!.owedCents).toBe(15000);
+
+    // Two people (or a double click) marking the same new months at the same moment.
+    const later = [month(1), month(2)];
+    const [a, b] = await Promise.all([
+      markMonthsPaid(tabitha, rich.id, { months: later, amountEach: "350", method: "CASH_APP", dateMode: "ONE_DATE", paidOn: TODAY }),
+      markMonthsPaid(tabitha, rich.id, { months: later, amountEach: "350", method: "CASH_APP", dateMode: "ONE_DATE", paidOn: TODAY }),
+    ]);
+    expect([...a.recorded, ...b.recorded].sort()).toEqual(later);
+    expect([...a.skipped, ...b.skipped].sort()).toEqual(later);
+    v = await manualBillingView(tabitha, rich.id);
+    for (const m of later) expect(v.live.filter((p) => p.periodMonth === m)).toHaveLength(1);
+
+    // Every payment written is in the audit log (bulk entries marked as such).
+    const logs = await prisma.auditLog.findMany({ where: { clientId: rich.id, action: "billing.manual_payment_recorded" } });
+    expect(logs).toHaveLength(v.live.length);
+    expect(logs.filter((l) => (l.details as { via?: string }).via === "bulk")).toHaveLength(4);
+  });
+
+  it("all or nothing: one invalid month means nothing is recorded", async () => {
+    const { tabitha, rich } = await setup();
+    await expect(markMonthsPaid(tabitha, rich.id, { months: [month(-1), month(0)], amountEach: "350", method: "CASH", dateMode: "ONE_DATE", paidOn: "2999-01-01" })).rejects.toThrow(/future/);
+    expect(await prisma.manualBillingPayment.count({ where: { clientId: rich.id } })).toBe(0);
+  });
+
+  it("the same single payment saved twice in a row is refused", async () => {
+    const { tabitha, rich } = await setup();
+    const input = { amount: "350", paidOn: TODAY, periodMonth: month(0), method: "CHECK", reference: "2001" };
+    await recordManualPayment(tabitha, rich.id, input);
+    await expect(recordManualPayment(tabitha, rich.id, input)).rejects.toThrow(/just recorded/);
+    expect(await prisma.manualBillingPayment.count({ where: { clientId: rich.id } })).toBe(1);
   });
 });
