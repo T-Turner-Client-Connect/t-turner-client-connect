@@ -10,6 +10,10 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Version-skew protection: Netlify sets DEPLOY_ID for every build. When a
+  // page from an older deploy talks to a newer one, Next.js reloads the page
+  // instead of calling a form action that no longer exists.
+  deploymentId: process.env.DEPLOY_ID || undefined,
   experimental: {
     // Mapped import rows and uploads go through Server Actions (Netlify caps bodies at ~6 MB).
     serverActions: { bodySizeLimit: "6mb" },
