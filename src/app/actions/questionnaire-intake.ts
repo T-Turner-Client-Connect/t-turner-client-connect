@@ -6,7 +6,6 @@ import { createClient } from "@/lib/services/clients";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { buildFollowUp, dismissInboxItem, fileInboxItem, importRecentSubmissions, reassignSubmission, requestMissingItems, reviewSubmission, sendQuestionnaire, setJotformAutoFile, testJotformConnection } from "@/lib/services/questionnaire-intake";
-import { ValidationError } from "@/lib/services/clients";
 import { linkSubmission } from "@/lib/services/tax-center";
 import { assertAdmin } from "@/lib/auth/actor";
 

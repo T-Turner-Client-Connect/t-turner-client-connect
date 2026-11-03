@@ -79,7 +79,7 @@ describe("tax questionnaires", () => {
     expect(row.answersEnc).not.toContain("Dependents"); // stored encrypted
     expect(submissionAnswers(row)).toContainEqual({ q: "Dependents", a: "2" });
     expect(await prisma.document.findUniqueOrThrow({ where: { id: row.documentIds[0] } })).toMatchObject({ year: 2025, docType: "QUESTIONNAIRE_UPLOAD", needsReview: true });
-    expect((await handleJotformWebhook("fictional-webhook-secret-0123456789abcdef", "5551112223334")).result).toBe("Already recorded");
+    expect((await handleJotformWebhook("fictional-webhook-secret-0123456789abcdef", "5551112223334")).result).toBe("Already in the inbox");
   });
 
   it("staff import an existing submission only after the client match is verified", async () => {

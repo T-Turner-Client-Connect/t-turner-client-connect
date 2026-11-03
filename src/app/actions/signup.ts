@@ -83,6 +83,7 @@ export async function saveOnboardingAction(_prev: ActionState, fd: FormData): Pr
       state: str(fd, "state"),
       postalCode: str(fd, "postalCode"),
       services: fd.getAll("services").map(String),
+      taxYear: Number(str(fd, "taxYear")) || null,
       notes: str(fd, "notes"),
       smsService: fd.get("smsService") === "on",
       smsMarketing: fd.get("smsMarketing") === "on",

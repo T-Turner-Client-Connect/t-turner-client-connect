@@ -2248,6 +2248,8 @@ model OnboardingApplication {
   state             String?
   postalCode        String?
   servicesRequested String[]
+  // Tax year chosen with Tax Preparation (the normal filing year is preselected).
+  taxYear           Int?
   notes             String?
   // Optional, separate communication choices (applied when the account is linked).
   smsService        Boolean          @default(false)

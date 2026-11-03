@@ -1,15 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
-import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
+import { Badge, Button, Card, Field, PageHeader } from "@/components/ui";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
-import { jotformStatus } from "@/lib/services/contracts";
 import { questionnaireFor, submissionAnswers } from "@/lib/services/tax-center";
-import { findClientSubmissions, intakeSummary, proposedUpdates } from "@/lib/services/questionnaire-intake";
+import { intakeSummary, proposedUpdates } from "@/lib/services/questionnaire-intake";
 import { downloadToken } from "@/lib/services/documents";
-import { buildFollowUpAction, linkFoundSubmissionAction, reassignSubmissionAction, requestMissingAction, reviewSubmissionAction, sendQuestionnaireAction, testJotformAction } from "@/app/actions/questionnaire-intake";
-import { previewSubmissionAction } from "@/app/actions/tax-center";
+import { buildFollowUpAction, linkFoundSubmissionAction, reassignSubmissionAction, requestMissingAction, reviewSubmissionAction, sendQuestionnaireAction } from "@/app/actions/questionnaire-intake";
 import { fmtDateTime } from "@/lib/format";
 
 export const metadata = { title: "Tax Questionnaires & Intake" };
@@ -33,19 +31,9 @@ export default async function QuestionnairesPage({ params, searchParams }: { par
   ]);
   const docs = new Map((await prisma.document.findMany({ where: { id: { in: subs.flatMap((s) => s.documentIds) }, deletedAt: null }, select: { id: true, title: true, scanStatus: true } })).map((d) => [d.id, d]));
   const names = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
-  const jf = jotformStatus();
   const clientOptions = subs.some((x) => x.reviewStatus !== "REVIEWED")
     ? await prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true }, orderBy: { displayName: "asc" }, take: 2000 })
     : [];
-  let found: Awaited<ReturnType<typeof findClientSubmissions>> | null = null;
-  let findError: string | null = null;
-  if (sp.find) {
-    try {
-      found = await findClientSubmissions(id, year);
-    } catch (e) {
-      findError = e instanceof Error ? e.message : "Search failed.";
-    }
-  }
 
   return (
     <>
@@ -160,52 +148,19 @@ export default async function QuestionnairesPage({ params, searchParams }: { par
         </div>
 
         <div className="space-y-4">
-          <Card title="Find this client's submissions">
-            <p className="text-sm text-slate-600">Searches the {year} Jotform questionnaire for submissions with this client&apos;s email or name. Submissions already linked are marked, so nothing is linked twice.</p>
-            <Link href={`/clients/${id}/questionnaires?year=${year}&find=1`} className="mt-2 inline-block rounded-xl border border-navy-900 px-3 py-1.5 text-sm font-semibold text-navy-900">Search Jotform</Link>
-            {findError && <div className="mt-2"><Notice tone="error">{findError}</Notice></div>}
-            {found && (
-              <ul className="mt-3 space-y-2 text-sm" data-testid="found-submissions">
-                {found.length === 0 && <li className="text-slate-600">No matching submissions in the {year} form.</li>}
-                {found.map((f) => (
-                  <li key={f.submissionId} className="rounded-lg bg-ivory-50 p-2">
-                    <strong>{f.submissionId}</strong> {f.submittedAt && <span className="text-xs text-slate-600">· {f.submittedAt}</span>}
-                    <span className="block text-xs">{f.matchedBy.length ? `Matched by ${f.matchedBy.join(" + ")}` : ""}</span>
-                    {f.linkedHere ? <Badge tone="green">Already linked</Badge> : f.linkedElsewhere ? <Badge tone="red">Linked to another client</Badge> : (
-                      <ActionForm action={linkFoundSubmissionAction.bind(null, id, year)} className="mt-1 space-y-1">
-                        <input type="hidden" name="submissionId" value={f.submissionId} />
-                        {!f.matchedBy.includes("email") && (
-                          <>
-                            <label className="flex items-center gap-2 text-xs"><input type="checkbox" name="confirmed" /> I confirmed it belongs to this client</label>
-                            <input className="input" name="matchNote" placeholder="How you confirmed it" aria-label="How you confirmed it" />
-                          </>
-                        )}
-                        <Button type="submit" variant="secondary">Link to {year}</Button>
-                      </ActionForm>
-                    )}
-                  </li>
-                ))}
-              </ul>
+          <Card title="Where new questionnaires come from">
+            <p className="text-sm">Questionnaires the client completes from their Client Connect account are linked here automatically. Submissions from old public Jotform links are matched in the <Link className="underline" href="/taxes/questionnaires">Questionnaire Inbox</Link>.</p>
+            {user.role === "ADMIN" && (
+              <details className="mt-3 text-sm">
+                <summary className="cursor-pointer text-slate-600 underline">Fallback: link a submission by its Jotform ID (rarely needed)</summary>
+                <ActionForm action={linkFoundSubmissionAction.bind(null, id, year)} className="mt-2 space-y-2" resetOnSuccess>
+                  <Field label={`Submission ID (links to ${year})`}><input className="input" name="submissionId" inputMode="numeric" required /></Field>
+                  <label className="flex items-center gap-2"><input type="checkbox" name="confirmed" /> I confirmed this submission belongs to this client</label>
+                  <Field label="How you confirmed it"><input className="input" name="matchNote" /></Field>
+                  <Button type="submit" variant="secondary">Link to this client</Button>
+                </ActionForm>
+              </details>
             )}
-          </Card>
-
-          <Card title="Link a submission by ID">
-            <ActionForm action={previewSubmissionAction} className="mb-3 flex flex-wrap items-end gap-2">
-              <Field label="Jotform submission ID"><input className="input" name="submissionId" inputMode="numeric" required /></Field>
-              <Button type="submit" variant="ghost">Preview match</Button>
-            </ActionForm>
-            <ActionForm action={linkFoundSubmissionAction.bind(null, id, year)} className="space-y-2" resetOnSuccess>
-              <Field label={`Submission ID (links to ${year})`}><input className="input" name="submissionId" inputMode="numeric" required /></Field>
-              <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="confirmed" /> I confirmed this submission belongs to this client (needed when the email doesn&apos;t match)</label>
-              <Field label="How you confirmed it"><input className="input" name="matchNote" placeholder="e.g. Called client 3/2, confirmed name and address" /></Field>
-              <Button type="submit">Link to this client</Button>
-            </ActionForm>
-          </Card>
-
-          <Card title="Jotform connection">
-            <p className="text-sm">{jf.label}</p>
-            <p className="mt-1 text-xs text-slate-600">Status is not assumed: run the test to check the credentials with Jotform (read-only; the key is never shown).</p>
-            {user.role === "ADMIN" && <ActionForm action={testJotformAction} className="mt-2"><Button type="submit" variant="secondary">Test Jotform connection</Button></ActionForm>}
           </Card>
         </div>
       </div>

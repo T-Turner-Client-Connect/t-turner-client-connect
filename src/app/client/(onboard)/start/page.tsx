@@ -4,7 +4,7 @@ import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui"
 import { saveOnboardingAction, submitOnboardingAction, uploadOnboardingAction } from "@/app/actions/signup";
 import { requirePortalUser } from "@/lib/portal/session";
 import { accessibleClients } from "@/lib/portal/access";
-import { myApplication, SERVICES } from "@/lib/services/client-signup";
+import { defaultSignupTaxYear, myApplication, SERVICES } from "@/lib/services/client-signup";
 import { BUSINESS, SMS_CONSENT_TEXT } from "@/lib/business";
 import { formatBytes } from "@/lib/files";
 
@@ -14,6 +14,7 @@ export default async function StartPage() {
   const user = await requirePortalUser();
   if ((await accessibleClients(user.id)).length) redirect("/client");
   const app = await myApplication(user);
+  const defaultYear = await defaultSignupTaxYear();
   if (!app || app.status === "DECLINED") {
     return (
       <>
@@ -67,6 +68,11 @@ export default async function StartPage() {
                 {SERVICES.map((s) => <label key={s} className="flex items-center gap-2 text-sm"><input type="checkbox" name="services" value={s} defaultChecked={app.servicesRequested.includes(s)} /> {s}</label>)}
               </div>
             </fieldset>
+            <Field label="Tax year for tax preparation" className="sm:col-span-2" hint="We've chosen the usual filing year. Pick an earlier year if you need a prior-year return.">
+              <select className="input" name="taxYear" defaultValue={app.taxYear ?? defaultYear} aria-label="Tax year">
+                {Array.from({ length: 7 }, (_, k) => new Date().getFullYear() - k).map((y) => <option key={y} value={y}>{y}{y === defaultYear ? " (usual filing year)" : y < defaultYear ? " (prior-year return)" : ""}</option>)}
+              </select>
+            </Field>
             <Field label="Anything we should know? (optional — please don't include Social Security numbers)" className="sm:col-span-2"><textarea className="input" name="notes" rows={3} defaultValue={app.notes ?? ""} /></Field>
             <fieldset className="space-y-2 rounded-lg bg-ivory p-3 text-sm sm:col-span-2">
               <legend className="font-semibold text-navy-900">Optional communication choices</legend>

@@ -43,6 +43,18 @@ export const SERVICES = [
   "Other",
 ] as const;
 
+export const TAX_SERVICES: string[] = ["Individual tax preparation", "Business tax preparation", "Nonprofit tax / compliance"];
+const currentYearNow = () => new Date().getFullYear();
+
+/**
+ * The tax year preselected at sign-up: the latest year with an active
+ * questionnaire form (that's the season we're preparing), otherwise last year.
+ */
+export async function defaultSignupTaxYear() {
+  const q = await prisma.taxQuestionnaire.findFirst({ where: { active: true, jotformFormId: { not: null }, taxYear: { lte: currentYearNow() } }, orderBy: { taxYear: "desc" } });
+  return q?.taxYear ?? currentYearNow() - 1;
+}
+
 const CODE_TTL_MS = 15 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const MAX_SENDS = 5;
@@ -197,6 +209,7 @@ export type OnboardingDetails = {
   state: string;
   postalCode: string;
   services: string[];
+  taxYear?: number | null;
   notes: string;
   smsService: boolean;
   smsMarketing: boolean;
@@ -213,6 +226,9 @@ export async function saveOnboardingDetails(user: PortalActor, d: OnboardingDeta
   if ((d.smsService || d.smsMarketing) && !phoneNormalized) throw new ValidationError("Add a mobile number to choose text messages.");
   const services = d.services.filter((s) => (SERVICES as readonly string[]).includes(s));
   if (!services.length) throw new ValidationError("Choose at least one service you're interested in.");
+  const wantsTax = services.some((x) => TAX_SERVICES.includes(x));
+  const taxYear = wantsTax ? (d.taxYear ? Number(d.taxYear) : await defaultSignupTaxYear()) : null;
+  if (wantsTax && (!Number.isInteger(taxYear) || taxYear! < currentYearNow() - 6 || taxYear! > currentYearNow())) throw new ValidationError("Choose the tax year you need prepared.");
   await prisma.onboardingApplication.update({
     where: { id: app.id },
     data: {
@@ -227,6 +243,7 @@ export async function saveOnboardingDetails(user: PortalActor, d: OnboardingDeta
       state: d.state.trim().toUpperCase().slice(0, 2) || null,
       postalCode: d.postalCode.trim() || null,
       servicesRequested: services,
+      taxYear,
       notes: d.notes.trim().slice(0, 2000) || null,
       smsService: d.smsService,
       smsMarketing: d.smsMarketing,
@@ -264,6 +281,13 @@ export async function possibleMatches(app: Pick<OnboardingApplication, "firstNam
 /** Moves held files into the client's documents and records the client's own choices. */
 async function finishLink(applicationId: string, clientId: string, portalUserId: string, grantedById: string | null) {
   const app = await prisma.onboardingApplication.findUniqueOrThrow({ where: { id: applicationId }, include: { files: true, portalUser: true } });
+  // Tax Preparation chosen at sign-up: record the service and open that
+  // year's tax-preparation case (return type is still selected by staff).
+  if (app.taxYear && app.servicesRequested.some((x) => TAX_SERVICES.includes(x))) {
+    const c = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { services: true } });
+    if (!c.services.some((x) => /tax prep/i.test(x))) await prisma.client.update({ where: { id: clientId }, data: { services: [...c.services, "Tax Preparation"] } });
+    await prisma.taxPrepCase.upsert({ where: { clientId_taxYear: { clientId, taxYear: app.taxYear } }, create: { clientId, taxYear: app.taxYear, createdById: grantedById }, update: {} });
+  }
   await prisma.portalAccess.upsert({
     where: { portalUserId_clientId: { portalUserId, clientId } },
     update: { revokedAt: null },

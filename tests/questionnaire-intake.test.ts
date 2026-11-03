@@ -191,46 +191,74 @@ describe("Jotform webhook", () => {
     expect((await handleJotformWebhook(SECRET, "7000000000001")).status).toBe(502); // not in Jotform → nothing trusted from the POST
   });
 
-  it("with automatic filing OFF (default), even a verified signed submission waits for staff, once", async () => {
+  it("a verified personal-link submission is linked to its client and year automatically, once — answers still need staff review", async () => {
     vi.stubEnv("JOTFORM_WEBHOOK_SECRET", SECRET);
-    const { tab, c } = await setup();
+    const { c } = await setup();
     const { handleJotformWebhook } = await import("@/lib/services/contracts");
     subs.push(withRef("7000000000001", "marisol.vance@example.com", await signed(c.id)));
-    expect(await handleJotformWebhook(SECRET, "7000000000001")).toEqual({ status: 200, result: "Held for staff review (HELD)" });
-    expect(await handleJotformWebhook(SECRET, "7000000000001")).toEqual({ status: 200, result: "Already in staff review" });
-    expect(await prisma.questionnaireSubmission.count()).toBe(0);
+    expect(await handleJotformWebhook(SECRET, "7000000000001")).toEqual({ status: 200, result: "Recorded" });
+    expect(await handleJotformWebhook(SECRET, "7000000000001")).toEqual({ status: 200, result: "Already in the inbox" });
+    const row = await prisma.questionnaireSubmission.findFirstOrThrow();
+    expect(row).toMatchObject({ clientId: c.id, taxYear: 2025, reviewStatus: "NEEDS_REVIEW", source: "jotform_webhook" });
+    const before = await prisma.client.findUniqueOrThrow({ where: { id: c.id } });
+    expect(before.addressLine1).toBeNull(); // answers did not change the record
+    const { inboxKind, inboxState } = await import("@/lib/services/questionnaire-intake");
     const item = await prisma.jotformInbox.findFirstOrThrow();
-    expect(item).toMatchObject({ suggestedClientId: c.id, taxYear: 2025, status: "PENDING" });
-    const { fileInboxItem } = await import("@/lib/services/questionnaire-intake");
-    await fileInboxItem(tab, item.id, { clientId: c.id, taxYear: 2025, confirmed: false });
-    expect(await prisma.questionnaireSubmission.count({ where: { clientId: c.id, taxYear: 2025 } })).toBe(1);
-    expect((await prisma.jotformInbox.findFirstOrThrow()).status).toBe("FILED");
-    expect(await handleJotformWebhook(SECRET, "7000000000001")).toEqual({ status: 200, result: "Already recorded" });
+    expect(item).toMatchObject({ status: "FILED", filedClientId: c.id, suggestedClientId: c.id });
+    expect(inboxKind(item, { source: "Added by staff", createdAt: new Date() })).toBe("VERIFIED_CLIENT");
+    expect(inboxKind(item, { source: "Client portal sign-up", createdAt: new Date() })).toBe("NEW_CLIENT");
+    expect(inboxState(item, row)).toBe("ASSIGNED");
+    expect(await prisma.questionnaireSubmission.count()).toBe(1);
   });
 
-  it("with automatic filing ON, signed submissions file to the right client/year; unmatched go to review", async () => {
+  it("public-link and bad-link submissions wait as Needs Matching; staff approve client + year, choose attachments, or create a client", async () => {
     vi.stubEnv("JOTFORM_WEBHOOK_SECRET", SECRET);
     const { tab, c } = await setup();
-    await prisma.ownerAccess.create({ data: { userId: tab.id, isPrimary: true, grantedById: tab.id } }).catch(() => null);
-    const { setJotformAutoFile, fileInboxItem, dismissInboxItem } = await import("@/lib/services/questionnaire-intake");
-    const staff = await makeUser("STAFF");
-    await expect(setJotformAutoFile(staff, true)).rejects.toThrow(/Only Tabitha/);
-    await setJotformAutoFile(tab, true);
+    const { fileInboxItem, dismissInboxItem, suggestClients, inboxKind } = await import("@/lib/services/questionnaire-intake");
     const { handleJotformWebhook } = await import("@/lib/services/contracts");
-    subs.push(withRef("7000000000001", "marisol.vance@example.com", await signed(c.id)));
-    subs.push(withRef("7000000000002", "marisol.vance@example.com", null)); // public form, no link
+    subs.push(withRef("7000000000002", "marisol.vance@example.com", null)); // public form, client's email
     subs.push(withRef("7000000000003", "stranger@example.com", "q.forged.2025.AAAAAAAAAAAAAAAAAAAAAA"));
-    expect((await handleJotformWebhook(SECRET, "7000000000001")).result).toBe("Recorded");
-    expect(await prisma.questionnaireSubmission.findFirstOrThrow()).toMatchObject({ clientId: c.id, taxYear: 2025, source: "jotform_webhook" });
+    // Same name as an existing client but a different email: must not be pre-selected.
+    subs.push({ ...withRef("7000000000004", "someone@example.com", null) });
     expect((await handleJotformWebhook(SECRET, "7000000000002")).result).toBe("Held for staff review (NO_REFERENCE)");
     expect((await handleJotformWebhook(SECRET, "7000000000003")).result).toBe("Held for staff review (BAD_REFERENCE)");
-    const [noRef, bad] = await prisma.jotformInbox.findMany({ orderBy: { submissionId: "asc" } });
-    expect(noRef).toMatchObject({ suggestedClientId: null, taxYear: 2025, emails: ["marisol.vance@example.com"] });
-    // Unmatched by link but same email → staff can file without extra confirmation; a stranger needs it.
-    await fileInboxItem(tab, noRef.id, { clientId: c.id, taxYear: 2025, confirmed: false });
-    await expect(fileInboxItem(tab, bad.id, { clientId: c.id, taxYear: 2025, confirmed: false })).rejects.toThrow(/doesn't match/);
-    await dismissInboxItem(tab, bad.id, "Not one of our clients");
+    expect((await handleJotformWebhook(SECRET, "7000000000004")).result).toBe("Held for staff review (NO_REFERENCE)");
+    expect(await prisma.questionnaireSubmission.count()).toBe(0);
+    const [publicLink, bad, nameOnly] = await prisma.jotformInbox.findMany({ orderBy: { submissionId: "asc" } });
+    expect(inboxKind(publicLink)).toBe("NEEDS_MATCHING");
+    expect(publicLink).toMatchObject({ taxYear: 2025, emails: ["marisol.vance@example.com"], names: ["Marisol Vance"], phones: ["+12055550177"] });
+
+    const sugg = await suggestClients(publicLink);
+    expect(sugg[0]).toMatchObject({ id: c.id, verified: true });
+    expect(sugg[0].why).toEqual(["Same email"]);
+    const nameSugg = await suggestClients(nameOnly);
+    expect(nameSugg).toEqual([expect.objectContaining({ id: c.id, verified: false })]); // name only — never a verified match
+
+    await expect(fileInboxItem(tab, publicLink.id, { clientId: c.id, taxYear: 2025, yearConfirmed: false })).rejects.toThrow(/Confirm the tax year/);
+    await fileInboxItem(tab, publicLink.id, { clientId: c.id, taxYear: 2025, yearConfirmed: true, fileIndexes: [] }); // no attachments approved
+    const filed = await prisma.questionnaireSubmission.findFirstOrThrow();
+    expect(filed).toMatchObject({ clientId: c.id, taxYear: 2025, reviewStatus: "NEEDS_REVIEW" });
+    expect(filed.documentIds).toEqual([]);
+    expect((await prisma.jotformInbox.findUniqueOrThrow({ where: { id: publicLink.id } })).status).toBe("FILED");
+    await expect(fileInboxItem(tab, publicLink.id, { clientId: c.id, taxYear: 2025, yearConfirmed: true })).rejects.toThrow(/already handled/);
+
+    // Staff approve a stranger's submission onto a brand-new client (no portal login is created).
+    const newClient = await createClient(tab, { firstName: "Jordan", lastName: "Fictional", clientType: "INDIVIDUAL", status: "ACTIVE", email: "stranger@example.com" });
+    await fileInboxItem(tab, bad.id, { clientId: newClient.id, taxYear: 2025, yearConfirmed: true });
+    expect(await prisma.portalUser.count()).toBe(0);
+    await dismissInboxItem(tab, nameOnly.id, "Test submission");
     expect(await prisma.questionnaireSubmission.count()).toBe(2);
+  });
+
+  it("checking Jotform for missed submissions adds each one to the inbox once and files nothing new", async () => {
+    const { tab, c } = await setup();
+    const { importRecentSubmissions } = await import("@/lib/services/questionnaire-intake");
+    subs.push(withRef("7000000000005", "nobody@example.com", null), withRef("7000000000006", "marisol.vance@example.com", await signed(c.id)));
+    const first = await importRecentSubmissions(tab);
+    expect(first).toEqual({ seen: 2, added: 1 }); // the signed one is linked to its client (Verified Client)
+    expect(await importRecentSubmissions(tab)).toEqual({ seen: 2, added: 0 });
+    expect(await prisma.jotformInbox.count()).toBe(2);
+    expect(await prisma.questionnaireSubmission.count()).toBe(1);
   });
 });
 

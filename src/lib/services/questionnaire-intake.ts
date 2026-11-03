@@ -5,11 +5,12 @@ import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { ValidationError } from "@/lib/services/clients";
 import { jotformConfig } from "@/lib/services/contracts";
-import { currentYear, fetchSubmission, linkSubmission, parseQuestionnaireRef, questionnaireFor, questionnaireUrl, recordQuestionnaireWebhook, submissionAnswers, summarize, type JotSubmission } from "@/lib/services/tax-center";
+import { currentYear, linkSubmission, parseQuestionnaireRef, questionnaireFor, questionnaireUrl, recordQuestionnaireWebhook, submissionAnswers, summarize, type JotSubmission } from "@/lib/services/tax-center";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createDocumentRequest } from "@/lib/services/bookkeeping";
 import { brandedEmailHtml, sendTransactionalEmail } from "@/lib/email";
+import { ALL_DOC_TYPES } from "@/lib/document-types";
 import { formatPhone, normalizeEmail, normalizePhone } from "@/lib/normalize";
 
 // ---------------------------------------------------------------- status
@@ -222,17 +223,20 @@ const p = (list: { field: string; to: string }[], f: string) => list.find((x) =>
 type Rule = { key: string; label: string; ask: RegExp; doc: RegExp };
 const RULES: Rule[] = [
   { key: "w2", label: "W-2 from each employer", ask: /\bw-?2\b|wages|employ(ed|er|ment)/i, doc: /\bw-?2\b/i },
-  { key: "1099nec", label: "1099-NEC / 1099-MISC / 1099-K and a summary of business income and expenses", ask: /self[\s-]?employ|1099-?(nec|misc|k)\b|contract(or)? (work|income)|gig|freelanc|side business/i, doc: /1099-?(nec|misc|k)\b|profit|business (income|expense)/i },
+  { key: "1099nec", label: "1099-NEC / 1099-MISC / 1099-K and a summary of business income and expenses", ask: /self[\s-]?employ|1099-?(nec|misc|k)\b|contract(or)? (work|income)|gig|freelanc|side business/i, doc: /1099-?(nec|misc|k)\b|profit|business (income|expense)|self-employment/i },
   { key: "invest", label: "1099-INT / 1099-DIV / 1099-B from banks and brokerages", ask: /interest (income|earned)|earn(ed)? interest|bank interest|dividend|brokerage|stock|crypto|investment/i, doc: /1099-?(int|div|b)\b|brokerage|consolidated/i },
   { key: "retire", label: "1099-R for retirement or pension distributions", ask: /retire|pension|401\s?\(?k|\bira\b.*distribut|distribut.*\bira\b/i, doc: /1099-?r\b/i },
   { key: "ssa", label: "SSA-1099 for Social Security benefits", ask: /social security benefit|ssa-?1099/i, doc: /ssa-?1099/i },
   { key: "unemp", label: "1099-G for unemployment or state refunds", ask: /unemploy/i, doc: /1099-?g\b/i },
-  { key: "mortgage", label: "1098 Mortgage Interest Statement", ask: /mortgage|home loan/i, doc: /\b1098\b(?!-?t)|mortgage/i },
+  { key: "mortgage", label: "1098 Mortgage Interest Statement", ask: /mortgage|home loan/i, doc: /mortgage/i },
   { key: "tuition", label: "1098-T for tuition (and receipts for books/fees)", ask: /tuition|college|universit|education credit/i, doc: /1098-?t\b|tuition/i },
   { key: "childcare", label: "Child or dependent care provider statement (name, address, amount paid)", ask: /child ?care|day ?care|dependent care/i, doc: /child ?care|day ?care|provider/i },
   { key: "hsa", label: "HSA forms 1099-SA and 5498-SA", ask: /\bhsa\b|health savings/i, doc: /1099-?sa|5498|\bhsa\b/i },
   { key: "marketplace", label: "Form 1095-A for Marketplace health insurance", ask: /marketplace|healthcare\.gov|1095-?a/i, doc: /1095-?a/i },
   { key: "rental", label: "Rental income and expense summary", ask: /rental|landlord|rent (out|income)/i, doc: /rental|rent roll|lease/i },
+  { key: "charity", label: "Charitable donation receipts", ask: /charit|donat/i, doc: /charit|donation/i },
+  { key: "vehicle_tag", label: "Vehicle registration / car tag receipt", ask: /vehicle registration|car tag|tag renewal|ad valorem/i, doc: /registration|car tag/i },
+  { key: "vehicle_loan", label: "Vehicle loan interest statement (VIN, purchase date, lender statement)", ask: /vehicle loan|car loan|auto loan/i, doc: /vehicle loan interest|car loan|auto loan/i },
   { key: "estimates", label: "Dates and amounts of estimated tax payments", ask: /estimated (tax )?payment/i, doc: /estimated|1040-?es/i },
 ];
 
@@ -259,7 +263,7 @@ export function followUpChecklist(pairs: { q: string; a: string }[], vaultTitles
 export async function buildFollowUp(actor: Actor, submissionRowId: string) {
   const sub = await prisma.questionnaireSubmission.findUniqueOrThrow({ where: { id: submissionRowId } });
   const docs = await prisma.document.findMany({ where: { clientId: sub.clientId, deletedAt: null, OR: [{ year: sub.taxYear }, { id: { in: sub.documentIds } }] }, select: { title: true, docType: true } });
-  const items = followUpChecklist(submissionAnswers(sub), docs.map((d) => `${d.title} ${d.docType ?? ""}`));
+  const items = followUpChecklist(submissionAnswers(sub), docs.map((d) => `${d.title} ${d.docType ? ALL_DOC_TYPES[d.docType] ?? d.docType : ""}`));
   await prisma.questionnaireSubmission.update({ where: { id: sub.id }, data: { followUp: { items, preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
   await audit(prisma, { actorId: actor.id, action: "questionnaire.followup_prepared", entityType: "QuestionnaireSubmission", entityId: sub.id, clientId: sub.clientId, details: { missing: items.filter((i) => i.status === "MISSING").length } });
   return items;
@@ -306,10 +310,10 @@ function inboxFacts(sub: JotSubmission) {
 
 /**
  * A verified questionnaire webhook (the submission was re-read from the
- * Jotform API). Every submission lands in the central Questionnaire Inbox
- * first. Only when the owner's switch is ON and it carries a valid signed
- * link for an existing client and that year's form is it filed straight
- * away — and then it's still listed in the inbox as Assigned. Never twice.
+ * Jotform API). Every submission is listed in the central Questionnaire
+ * Inbox. A valid personal link (signed for one client + that year's form) is
+ * associated automatically and listed as Verified/New Client for answer
+ * review; everything else waits as Needs Matching. Never recorded twice.
  */
 export async function routeQuestionnaireWebhook(sub: JotSubmission, ref: string | null, arrivedVia: "WEBHOOK" | "IMPORT" = "WEBHOOK"): Promise<string> {
   if (!sub.id || !sub.form_id) return "Missing submission; ignored";
@@ -339,7 +343,11 @@ export async function routeQuestionnaireWebhook(sub: JotSubmission, ref: string 
     await prisma.jotformInbox.create({ data: { ...base, status: "FILED", filedClientId: alreadyFiled.clientId, resolvedAt: alreadyFiled.createdAt } });
     return "Already recorded";
   }
-  if (reason === "HELD" && (await jotformAutoFileOn())) {
+  if (reason === "HELD") {
+    // Approved rule: a submission from a verified personal Client Connect link
+    // is associated with that client and tax year automatically. This only
+    // links it — answers never change the client record and documents stay
+    // "needs review" until staff approve them.
     const result = await recordQuestionnaireWebhook(sub, ref!);
     await prisma.jotformInbox.create({ data: { ...base, status: "FILED", filedClientId: suggestedClientId, resolvedAt: new Date() } });
     return result;
@@ -383,6 +391,21 @@ export const INBOX_REASON: Record<string, string> = {
   FORM_YEAR_MISMATCH: "Form isn't that tax year's questionnaire",
   CLIENT_NOT_FOUND: "The linked client no longer exists",
 };
+
+export type InboxKind = "VERIFIED_CLIENT" | "NEW_CLIENT" | "NEEDS_MATCHING";
+export const INBOX_KIND: Record<InboxKind, { label: string; tone: "green" | "navy" | "amber" }> = {
+  VERIFIED_CLIENT: { label: "Verified Client", tone: "green" },
+  NEW_CLIENT: { label: "New Client", tone: "navy" },
+  NEEDS_MATCHING: { label: "Needs Matching", tone: "amber" },
+};
+const NEW_CLIENT_DAYS = 120;
+
+/** Verified personal link → Verified Client (or New Client if they signed up recently); anything else → Needs Matching. */
+export function inboxKind(item: { reason: string }, client?: { source: string | null; createdAt: Date } | null, now = new Date()): InboxKind {
+  if (item.reason !== "HELD") return "NEEDS_MATCHING";
+  const recent = client && now.getTime() - client.createdAt.getTime() < NEW_CLIENT_DAYS * 86_400_000;
+  return recent && client?.source?.startsWith("Client portal sign-up") ? "NEW_CLIENT" : "VERIFIED_CLIENT";
+}
 
 export type InboxState = "NEW" | "REVIEWED" | "ASSIGNED" | "COMPLETED" | "DISMISSED";
 export const INBOX_STATE: Record<InboxState, { label: string; tone: "gold" | "navy" | "amber" | "green" | "gray" }> = {

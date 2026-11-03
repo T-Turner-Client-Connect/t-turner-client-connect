@@ -4,7 +4,7 @@ import { useState } from "react";
 
 /**
  * Choose a tax year, then Start Questionnaire (opens that year's Jotform form
- * in a new tab). A year without a form shows "coming soon" with Start
+ * inside Client Connect). A year without a form shows "coming soon" with Start
  * disabled — never another year's form. Opening the form doesn't mark it
  * complete; only a verified submission does.
  */
@@ -25,8 +25,8 @@ export function QuestionnairePicker({ options, disabled, uploadHref }: { options
       {pick?.completed && <p className="text-sm text-emerald-800" data-testid="q-status">✓ Our office has your {pick.year} questionnaire. You don&apos;t need to complete it again.</p>}
       {pick && !pick.completed && !pick.url && <p className="text-sm font-semibold text-navy-900" data-testid="q-status">{pick.year} questionnaire coming soon</p>}
       {available ? (
-        <a href={pick!.url!} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center rounded-xl bg-gold-500 px-4 py-2.5 font-semibold text-navy-950 shadow hover:bg-gold-300" data-testid="q-open">
-          Start Questionnaire ↗
+        <a href={pick!.url!} className="inline-flex w-full items-center justify-center rounded-xl bg-gold-500 px-4 py-2.5 font-semibold text-navy-950 shadow hover:bg-gold-300" data-testid="q-open">
+          Start Questionnaire
         </a>
       ) : (
         !pick?.completed && (

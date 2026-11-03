@@ -26,6 +26,7 @@ import {
   MailWarning,
   FileCheck2,
   HeartHandshake,
+  Inbox,
 } from "lucide-react";
 
 const LINKS = [
@@ -38,7 +39,8 @@ const LINKS = [
   { href: "/workflows", label: "Workflows", icon: GitBranch, also: [] },
   { href: "/documents", label: "Documents", icon: FolderLock, also: [] },
   { href: "/notices", label: "Audits & Notices", icon: MailWarning, also: [] },
-  { href: "/taxes/returns", label: "Tax returns", icon: FileCheck2, also: ["/taxes/questionnaires"] },
+  { href: "/taxes/returns", label: "Tax returns", icon: FileCheck2, also: [] },
+  { href: "/taxes/questionnaires", label: "Questionnaire Inbox", icon: Inbox, also: [] },
   { href: "/nonprofits", label: "Nonprofit filings", icon: HeartHandshake, also: [] },
   { href: "/resources", label: "Resource Center", icon: Landmark, also: [] },
   { href: "/news", label: "News & Countdowns", icon: Newspaper, also: [] },

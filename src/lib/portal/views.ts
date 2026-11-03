@@ -55,7 +55,7 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
     perms.canViewTax ? taxYearStatuses(clientId, questionnaireYears()) : [],
     vaultYears(clientId, categories),
     perms.canViewTax
-      ? Promise.all(questionnaireYears().map(async (year) => ({ year, url: (await questionnaireUrl(clientId, client.clientType, year)) ? `/client/questionnaire/${year}?c=${encodeURIComponent(clientId)}` : null, completed: (await prisma.questionnaireSubmission.count({ where: { clientId, taxYear: year } })) > 0 })))
+      ? Promise.all(questionnaireYears().map(async (year) => ({ year, url: (await questionnaireUrl(clientId, client.clientType, year)) ? `/client/tax-center/questionnaire/${year}?account=${encodeURIComponent(clientId)}` : null, completed: (await prisma.questionnaireSubmission.count({ where: { clientId, taxYear: year } })) > 0 })))
       : [],
     viewerPortalUserId ? isPortalVerified(viewerPortalUserId) : true,
     perms.canMessage
