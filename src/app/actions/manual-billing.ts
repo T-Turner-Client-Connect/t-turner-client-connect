@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
-import { recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
+import { markMonthsPaid, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
 
 const refresh = () => revalidatePath("/bookkeeping", "layout");
 
@@ -29,5 +29,22 @@ export async function voidManualPaymentAction(paymentId: string, _prev: ActionSt
     await voidManualPayment(actor, paymentId, str(fd, "reason"));
     refresh();
     return "Payment voided. It stays in the history with your reason.";
+  });
+}
+
+export async function markMonthsPaidAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const r = await markMonthsPaid(actor, clientId, {
+      months: fd.getAll("months").map(String),
+      amountEach: str(fd, "amountEach"),
+      method: str(fd, "method"),
+      reference: str(fd, "reference"),
+      dateMode: str(fd, "dateMode") === "ONE_DATE" ? "ONE_DATE" : "DUE_DATE",
+      paidOn: str(fd, "paidOn"),
+      note: str(fd, "note"),
+    });
+    refresh();
+    return `Marked ${r.recorded.length} month${r.recorded.length === 1 ? "" : "s"} paid${r.skipped.length ? `; skipped ${r.skipped.length} already paid` : ""}.`;
   });
 }

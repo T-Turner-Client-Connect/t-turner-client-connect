@@ -15,7 +15,7 @@ import { squareBillingFor, todayCentral } from "./square-billing";
  * from those records — never typed in, and never presented as Square-verified. Corrections void a
  * payment with a reason; nothing is deleted.
  */
-export const PAY_METHODS = { CASH: "Cash", CHECK: "Check", ZELLE: "Zelle", ACH: "Bank transfer (ACH)", CARD: "Card (outside Square)", OTHER: "Other" } as const;
+export const PAY_METHODS = { CASH: "Cash", CHECK: "Check", ZELLE: "Zelle", CASH_APP: "Cash App", ACH: "Bank transfer (ACH)", SQUARE: "Square (entered by our office)", CARD: "Card (outside Square)", OTHER: "Other" } as const;
 export type PayMethod = keyof typeof PAY_METHODS;
 
 const ym = (d: string) => d.slice(0, 7);
@@ -35,8 +35,9 @@ export function manualLedger(input: { feeCents: number | null; billingDay: numbe
   if (!feeCents || !billingDay) return null;
   const thisMonth = ym(today);
   const earliestPaid = payments.map((p) => p.periodMonth).sort()[0];
+  // Billing is owed from the start date. Payments for earlier months stay in the history
+  // but never create "past due" months before billing started.
   let first = input.startDate ? input.startDate.toISOString().slice(0, 7) : earliestPaid ?? thisMonth;
-  if (earliestPaid && earliestPaid < first) first = earliestPaid;
   const floor = addMonths(thisMonth, -23);
   if (first < floor) first = floor;
   const periods: { month: string; due: string; paidCents: number; owedCents: number; state: PeriodState }[] = [];
@@ -54,6 +55,11 @@ export function manualLedger(input: { feeCents: number | null; billingDay: numbe
     overdueCount: overdue.length,
     overdueCents: overdue.reduce((n, p) => n + p.owedCents, 0),
     next: next ? { due: next.due, amountCents: next.owedCents, month: next.month } : null,
+    // Months a payment can be recorded for: the last two years through two months ahead.
+    monthChoices: Array.from({ length: 26 }, (_, i) => addMonths(thisMonth, 2 - i)).map((m) => {
+      const p = periods.find((x) => x.month === m);
+      return { month: m, state: p?.state ?? ("BEFORE_START" as const), owedCents: p?.owedCents ?? null };
+    }),
     // The month a new payment applies to by default: the oldest one still owed.
     defaultPeriod: (overdue[0] ?? next ?? periods.at(-1)!).month,
     status:
@@ -87,12 +93,49 @@ export async function recordManualPayment(actor: Actor, clientId: string, input:
   if (!(input.method in PAY_METHODS)) throw new ValidationError("Choose how the client paid.");
   const reference = input.reference?.trim().slice(0, 80) || null;
   const note = input.note?.trim().slice(0, 300) || null;
+  if (input.method === "CHECK" && !reference) throw new ValidationError("Enter the check number.");
   if ([reference, note].some((t) => t && /\b(?:\d[ -]?){13,19}\b/.test(t))) throw new ValidationError("Card numbers can't be saved.");
   const p = await prisma.manualBillingPayment.create({
     data: { clientId, amountCents: Math.round(n * 100), paidOn: noonUtc(input.paidOn), periodMonth: input.periodMonth, method: input.method, reference, note, recordedById: actor.id },
   });
   await audit(prisma, { actorId: actor.id, action: "billing.manual_payment_recorded", entityType: "ManualBillingPayment", entityId: p.id, clientId, details: { amountCents: p.amountCents, paidOn: input.paidOn, periodMonth: p.periodMonth, method: p.method } });
   return p;
+}
+
+export type MarkMonthsInput = { months: string[]; amountEach: string; method: string; reference?: string; dateMode: "DUE_DATE" | "ONE_DATE"; paidOn?: string; note?: string };
+
+/**
+ * Records one payment per selected month in a single step (for example a whole year paid in cash).
+ * Months already fully paid are skipped, so nothing is entered twice. The date received is either a
+ * date the office enters or each month's due date (labelled as such in the note).
+ */
+export async function markMonthsPaid(actor: Actor, clientId: string, input: MarkMonthsInput) {
+  await assertBilling(actor);
+  await assertOfficeBilled(clientId);
+  const months = [...new Set(input.months)].filter((m) => /^\d{4}-(0[1-9]|1[0-2])$/.test(m)).sort();
+  if (!months.length) throw new ValidationError("Choose at least one month.");
+  if (months.length > 48) throw new ValidationError("Choose at most four years at a time.");
+  const billing = await prisma.bookkeepingBilling.findUnique({ where: { clientId }, select: { billingDay: true, monthlyFeeCents: true } });
+  const day = billing?.billingDay ?? 1;
+  const today = todayCentral();
+  const existing = await prisma.manualBillingPayment.groupBy({ by: ["periodMonth"], where: { clientId, voidedAt: null, periodMonth: { in: months } }, _sum: { amountCents: true } });
+  const n = Number(String(input.amountEach).replace(/[$,\s]/g, ""));
+  const cents = Math.round(n * 100);
+  const recorded: string[] = [];
+  const skipped: string[] = [];
+  for (const m of months) {
+    const paid = existing.find((e) => e.periodMonth === m)?._sum.amountCents ?? 0;
+    if (paid > 0 && paid >= (billing?.monthlyFeeCents ?? cents)) {
+      skipped.push(m);
+      continue;
+    }
+    const due = `${m}-${String(day).padStart(2, "0")}`;
+    const paidOn = input.dateMode === "ONE_DATE" ? input.paidOn ?? "" : due <= today ? due : today;
+    const note = [input.dateMode === "DUE_DATE" ? "Date shown is the month's due date (entered in bulk)" : "Entered in bulk", input.note?.trim()].filter(Boolean).join(" · ");
+    await recordManualPayment(actor, clientId, { amount: input.amountEach, paidOn, periodMonth: m, method: input.method, reference: input.reference, note });
+    recorded.push(m);
+  }
+  return { recorded, skipped };
 }
 
 /** Owner only: a mistaken entry is voided with a reason and kept in the history. */
@@ -113,7 +156,11 @@ async function viewFor(clientId: string) {
   ]);
   const live = payments.filter((p) => !p.voidedAt);
   const ledger = manualLedger({ feeCents: billing?.monthlyFeeCents ?? null, billingDay: billing?.billingDay ?? null, startDate: billing?.billingStartDate ?? null, payments: live, today: todayCentral() });
-  return { billing, payments, live, ledger, lastPayment: live[0] ?? null };
+  // Months already fully paid (any month, including before the billing start).
+  const byMonth = new Map<string, number>();
+  for (const p of live) byMonth.set(p.periodMonth, (byMonth.get(p.periodMonth) ?? 0) + p.amountCents);
+  const paidMonths = [...byMonth.entries()].filter(([, c]) => c >= (billing?.monthlyFeeCents ?? 1)).map(([m]) => m);
+  return { billing, payments, live, ledger, lastPayment: live[0] ?? null, paidMonths };
 }
 
 /** Staff view of office-managed billing (billing access required). */

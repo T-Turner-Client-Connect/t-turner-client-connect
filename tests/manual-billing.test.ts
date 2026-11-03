@@ -5,7 +5,7 @@ import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { saveBilling } from "@/lib/services/bookkeeping-profile";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
-import { manualBillingView, manualLedger, portalManualBilling, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
+import { manualBillingView, manualLedger, markMonthsPaid, portalManualBilling, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
 
 // Fictional office-billed client ($350 monthly, due on the 5th).
 const TODAY = new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
@@ -44,6 +44,19 @@ describe("office-managed billing ledger", () => {
     expect(partial).toMatchObject({ overdueCount: 1, overdueCents: 15000 });
     expect(manualLedger({ ...base, feeCents: null, payments: [] })).toBeNull(); // no fee set: nothing is guessed
   });
+
+  it("lets the office record any month in the last two years; months before billing start never show as past due", () => {
+    const base = { feeCents: 35000, billingDay: 1, startDate: new Date(`${month(0)}-01T12:00:00Z`), today: `${month(0)}-20` };
+    // A payment for a month well before billing started (e.g. one first paid through Square).
+    const l = manualLedger({ ...base, payments: [{ amountCents: 35000, periodMonth: month(-9) }, { amountCents: 35000, periodMonth: month(0) }] })!;
+    expect(l.overdueCount).toBe(0);
+    expect(l.status).toEqual({ label: "Paid — up to date", tone: "green" });
+    expect(l.monthChoices).toHaveLength(26);
+    expect(l.monthChoices[0].month).toBe(month(2));
+    expect(l.monthChoices.at(-1)!.month).toBe(month(-23));
+    expect(l.monthChoices.find((c) => c.month === month(-9))!.state).toBe("BEFORE_START");
+    expect(l.monthChoices.find((c) => c.month === month(0))!.state).toBe("PAID");
+  });
 });
 
 describe("recording payments", () => {
@@ -52,8 +65,13 @@ describe("recording payments", () => {
     await expect(recordManualPayment(daria, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(0), method: "CHECK" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: "2999-01-01", periodMonth: month(0), method: "CHECK" })).rejects.toThrow(/future/);
     await expect(recordManualPayment(tabitha, rich.id, { amount: "0", paidOn: TODAY, periodMonth: month(0), method: "CHECK" })).rejects.toThrow(/amount/);
-    await expect(recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(0), method: "CHECK", note: "card 4111 1111 1111 1111" })).rejects.toThrow(/Card numbers/);
+    await expect(recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(0), method: "CHECK", reference: "1", note: "card 4111 1111 1111 1111" })).rejects.toThrow(/Card numbers/);
+    await expect(recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(-2), method: "CHECK" })).rejects.toThrow(/check number/);
     const p = await recordManualPayment(tabitha, rich.id, { amount: "$350.00", paidOn: TODAY, periodMonth: month(-2), method: "CHECK", reference: "1042" });
+    // A payment first made through Square can be entered by the office too.
+    const sq = await recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(-12), method: "SQUARE", reference: "Square invoice 000123" });
+    expect(sq).toMatchObject({ method: "SQUARE", periodMonth: month(-12) });
+    await voidManualPayment(tabitha, sq.id, "Test entry for this check only");
     expect(p).toMatchObject({ amountCents: 35000, periodMonth: month(-2), method: "CHECK", reference: "1042" });
     let v = await manualBillingView(tabitha, rich.id);
     expect(v.ledger!.overdueCount).toBe(TODAY.slice(8) > "05" ? 2 : 1);
@@ -61,10 +79,10 @@ describe("recording payments", () => {
     await expect(voidManualPayment(tabitha, p.id, "no")).rejects.toThrow(/Record why/);
     await voidManualPayment(tabitha, p.id, "Entered on the wrong client");
     v = await manualBillingView(tabitha, rich.id);
-    expect(v.payments).toHaveLength(1); // kept, marked voided
-    expect(v.payments[0]).toMatchObject({ voidReason: "Entered on the wrong client" });
+    expect(v.payments).toHaveLength(2); // kept, marked voided
+    expect(v.payments.find((x) => x.id === p.id)).toMatchObject({ voidReason: "Entered on the wrong client" });
     expect(v.live).toHaveLength(0);
-    expect(await prisma.auditLog.count({ where: { clientId: rich.id, action: { in: ["billing.manual_payment_recorded", "billing.manual_payment_voided"] } } })).toBe(2);
+    expect(await prisma.auditLog.count({ where: { clientId: rich.id, action: { in: ["billing.manual_payment_recorded", "billing.manual_payment_voided"] } } })).toBe(4);
   });
 
   it("isn't used for clients billed through Square", async () => {
@@ -87,5 +105,28 @@ describe("the client's view", () => {
     const { token: t2 } = await invitePortalUser(tabitha, other.id, { email: "x@fictional.example", name: "X", role: "OWNER" });
     const x = await acceptPortalInvite(t2!, "Portal-Pass-123456");
     await expect(portalManualBilling({ id: x.id, name: x.name, email: x.email }, rich.id)).rejects.toThrow();
+  });
+});
+
+describe("marking several months paid at once", () => {
+  it("records one payment per month, skips months already paid, and makes the client current", async () => {
+    const { tabitha, daria, rich } = await setup();
+    const months = [month(-2), month(-1), month(0)];
+    await recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(-1), method: "ZELLE" });
+    await expect(markMonthsPaid(daria, rich.id, { months, amountEach: "350", method: "CASH_APP", dateMode: "DUE_DATE" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(markMonthsPaid(tabitha, rich.id, { months, amountEach: "350", method: "CHECK", dateMode: "DUE_DATE" })).rejects.toThrow(/check number/);
+    const r = await markMonthsPaid(tabitha, rich.id, { months, amountEach: "350", method: "CASH_APP", dateMode: "DUE_DATE" });
+    expect(r).toEqual({ recorded: [month(-2), month(0)], skipped: [month(-1)] });
+    const v = await manualBillingView(tabitha, rich.id);
+    expect(v.live.filter((p) => p.method === "CASH_APP")).toHaveLength(2);
+    expect(v.live.find((p) => p.periodMonth === month(-2))!.note).toMatch(/due date/);
+    expect(v.ledger!.overdueCount).toBe(0);
+    expect(v.ledger!.status.tone).toBe("green");
+    expect(v.paidMonths.sort()).toEqual(months);
+    // Earlier years can be marked too (e.g. "paid in full for 2025").
+    const lastYear = Array.from({ length: 12 }, (_, i) => `${Number(TODAY.slice(0, 4)) - 1}-${String(i + 1).padStart(2, "0")}`);
+    const y = await markMonthsPaid(tabitha, rich.id, { months: lastYear, amountEach: "350", method: "CASH", dateMode: "DUE_DATE" });
+    expect(y.recorded.length + y.skipped.length).toBe(12);
+    expect((await manualBillingView(tabitha, rich.id)).ledger!.overdueCount).toBe(0);
   });
 });
