@@ -1,0 +1,149 @@
+import Link from "next/link";
+import { Briefcase, Building2, CalendarDays, ChevronRight, Handshake, Info, Landmark, Megaphone, Users } from "lucide-react";
+/** "2027-04-15" → "Apr 15, 2027" (date only, no time-zone shift). */
+const shortDate = (iso: string) => { const [y, m, d] = iso.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }); };
+
+/** Shared navy · gold · white pieces for the portal home and the News & Tax Countdowns page. */
+
+export const luxCard = "min-w-0 rounded-3xl border border-gold-200/70 bg-white/95 p-5 shadow-[0_1px_2px_rgb(10_26_68/0.05),0_18px_40px_-24px_rgb(10_26_68/0.35)] sm:p-7";
+
+export type Tile = { title: string; sub: string; icon: React.ComponentType<{ className?: string }>; href: string | null; external?: boolean; testId: string; disabledNote?: string };
+
+/** Five headline actions, alternating navy and white like the reference design. */
+export function ActionTiles({ tiles }: { tiles: Tile[] }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5" data-testid="action-tiles">
+      {tiles.map((t, i) => {
+        const navy = i % 2 === 0;
+        const body = (
+          <>
+            <t.icon className={`size-10 shrink-0 ${navy ? "text-gold-400" : "text-gold-600"}`} aria-hidden />
+            <span className="min-w-0 flex-1">
+              <span className={`block font-serif text-[17px] font-bold leading-snug ${navy ? "text-white" : "text-navy-900"}`}>{t.title}</span>
+              <span className={`mt-0.5 block text-[13px] leading-snug ${navy ? "text-navy-100" : "text-slate-600"}`}>{t.disabledNote ?? t.sub}</span>
+            </span>
+            {t.href && <ChevronRight className={`size-5 shrink-0 transition group-hover:translate-x-0.5 ${navy ? "text-gold-400" : "text-gold-600"}`} aria-hidden />}
+          </>
+        );
+        const cls = `group flex min-h-[6.5rem] items-center gap-3 rounded-2xl px-4 py-4 shadow-[0_10px_24px_-16px_rgb(10_26_68/0.55)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_30px_-18px_rgb(10_26_68/0.6)] ${
+          navy ? "bg-gradient-to-br from-navy-900 to-navy-950 ring-1 ring-gold-500/40" : "border border-gold-200 bg-white"
+        }`;
+        return t.href ? (
+          <Link key={t.testId} href={t.href} className={cls} data-testid={t.testId} {...(t.external ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
+            {body}
+          </Link>
+        ) : (
+          <div key={t.testId} className={`${cls} cursor-not-allowed opacity-60`} aria-disabled="true" data-testid={t.testId} data-disabled="true">
+            {body}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export type NewsItem = { id: string; title: string; body: string; topic: string | null; clientId: string | null; pinned: boolean; at?: Date | null; sourceUrl?: string | null };
+
+function topicLook(n: NewsItem) {
+  const t = (n.topic ?? "").toUpperCase();
+  if (n.clientId) return { icon: Briefcase, label: "For your account" };
+  if (t.includes("IRS") || t.includes("FEDERAL")) return { icon: Landmark, label: "IRS" };
+  if (t.includes("STATE")) return { icon: Building2, label: "State" };
+  if (t.includes("DEADLINE")) return { icon: CalendarDays, label: "Deadline" };
+  return { icon: Megaphone, label: "Office" };
+}
+
+/** One elegant row per announcement: emblem, headline, short summary, arrow. */
+export function NewsList({ items, href, limit = 3 }: { items: NewsItem[]; href: string; limit?: number }) {
+  if (!items.length) return <p className="py-6 text-sm text-slate-600">No announcements right now. New IRS, state and office updates will appear here.</p>;
+  return (
+    <ul className="divide-y divide-gold-100" data-testid="news-list">
+      {items.slice(0, limit).map((n) => {
+        const look = topicLook(n);
+        return (
+          <li key={n.id}>
+            <Link href={href} className="group flex items-center gap-4 py-4">
+              <span className="flex size-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-navy-900 to-navy-950 ring-1 ring-gold-500/50 sm:size-20">
+                <look.icon className="size-8 text-gold-400 sm:size-9" aria-hidden />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-[0.18em] text-gold-700">
+                  {n.pinned ? "Pinned · " : ""}
+                  {look.label}
+                  {n.at ? ` · ${n.at.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Chicago" })}` : ""}
+                </span>
+                <span className="block font-serif text-[17px] font-bold leading-snug text-navy-900 [overflow-wrap:anywhere]">{n.title}</span>
+                <span className="mt-0.5 line-clamp-2 block text-sm text-slate-600">{n.body}</span>
+              </span>
+              <ChevronRight className="size-5 shrink-0 text-gold-600 transition group-hover:translate-x-0.5" aria-hidden />
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+export type CountdownLine = { key: string; label: string; form?: string | null; dueDate: string | null; days: number | null; appliesToYou?: boolean };
+
+const FORMS: { key: string; form: string; who: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { key: "individual", form: "Form 1040", who: "Individuals", icon: Users },
+  { key: "PARTNERSHIP", form: "Form 1065", who: "Partnerships", icon: Handshake },
+  { key: "S_CORP", form: "Form 1120-S", who: "S Corporations", icon: Building2 },
+  { key: "C_CORP", form: "Form 1120", who: "C Corporations", icon: Building2 },
+];
+
+/**
+ * The headline federal filing countdowns (from the same deadline engine as before — dates are
+ * never typed in here). A card that applies to this client is marked "Your deadline".
+ */
+export function CountdownCards({ lines, max = 4 }: { lines: CountdownLine[]; max?: number }) {
+  const cards = FORMS.map((f) => ({ ...f, line: lines.find((l) => l.key === f.key) })).filter((c) => c.line && c.line.dueDate && c.line.days !== null).slice(0, max);
+  if (!cards.length) return <p className="py-6 text-sm text-slate-600">Deadlines will appear here once the IRS confirms the next filing season.</p>;
+  return (
+    <div className={`grid gap-3 ${cards.length >= 4 ? "grid-cols-2 xl:grid-cols-4" : "grid-cols-3"}`} data-testid="countdown-cards">
+      {cards.map((c) => (
+        <div key={c.key} className={`flex flex-col overflow-hidden rounded-2xl border bg-white text-center shadow-sm ${c.line!.appliesToYou ? "border-gold-500 ring-2 ring-gold-400/40" : "border-gold-200"}`} data-testid={`countdown-${c.key}`}>
+          <div className="flex flex-1 flex-col items-center px-1.5 pb-3 pt-4 sm:px-3">
+            <c.icon className="size-7 text-gold-600" aria-hidden />
+            <p className="mt-2 font-serif text-sm font-bold leading-tight text-navy-900 sm:text-base">{c.form}</p>
+            <p className="text-[11px] text-slate-600 sm:text-xs">({c.who})</p>
+            <p className="mt-2 font-serif text-4xl font-bold leading-none text-gold-600 sm:text-5xl">{c.line!.days}</p>
+            <p className="text-sm font-semibold text-gold-700">{c.line!.days === 1 ? "Day Left" : "Days Left"}</p>
+            {c.line!.appliesToYou && <span className="mt-2 rounded-full bg-gold-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gold-800">Your deadline</span>}
+          </div>
+          <div className="flex items-center justify-center gap-1 whitespace-nowrap bg-navy-900 px-1 py-2 text-[11px] font-semibold text-white sm:gap-1.5 sm:px-2 sm:text-sm">
+            <CalendarDays className="hidden size-4 text-gold-400 sm:block" aria-hidden />
+            {shortDate(c.line!.dueDate!)}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ImportantToKnow({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mt-4 flex items-start gap-3 rounded-2xl border border-gold-300 bg-gold-50/70 px-4 py-3">
+      <Info className="mt-0.5 size-6 shrink-0 text-gold-600" aria-hidden />
+      <div>
+        <p className="font-serif text-base font-bold text-navy-900">Important to Know</p>
+        <p className="text-sm text-navy-800">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+export function PanelHead({ icon: Icon, title, action }: { icon: React.ComponentType<{ className?: string }>; title: string; action?: React.ReactNode }) {
+  return (
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-3 border-b border-gold-100 pb-4">
+      <h2 className="flex items-center gap-3 font-serif text-2xl font-bold text-navy-900 sm:text-[1.7rem]">
+        <span className="flex size-11 items-center justify-center rounded-xl border border-gold-300 bg-gold-50"><Icon className="size-6 text-gold-600" aria-hidden /></span>
+        {title}
+      </h2>
+      {action}
+    </div>
+  );
+}
+
+
