@@ -248,7 +248,7 @@ async function importFiles(urls: string[], ctx: { clientId: string; taxYear: num
  * is checked against the client's email addresses; anything else needs the
  * staff member to confirm and say how they verified it.
  */
-export async function linkSubmission(actor: Actor, input: { clientId: string; taxYear: number; submissionId: string; confirmed: boolean; matchNote?: string }) {
+export async function linkSubmission(actor: Actor, input: { clientId: string; taxYear: number; submissionId: string; confirmed: boolean; matchNote?: string; signedRef?: boolean }) {
   const submissionId = input.submissionId.trim();
   if (!Number.isInteger(input.taxYear) || input.taxYear < 2000 || input.taxYear > currentYear() + 1) throw new ValidationError("Choose the tax year.");
   const taken = await prisma.questionnaireSubmission.findUnique({ where: { submissionId } });
@@ -265,7 +265,8 @@ export async function linkSubmission(actor: Actor, input: { clientId: string; ta
   }
   const s = sub ? summarize(sub) : { pairs: [], emails: [], names: [], files: [] };
   const emailMatch = s.emails.some((e) => emails.has(e));
-  if (!emailMatch) {
+  // A valid signed questionnaire link for this exact client and year counts as a match.
+  if (!emailMatch && !input.signedRef) {
     if (!input.confirmed || !input.matchNote?.trim()) {
       throw new ValidationError(
         sub
@@ -286,7 +287,7 @@ export async function linkSubmission(actor: Actor, input: { clientId: string; ta
       submittedAt: sub?.created_at ? new Date(sub.created_at.replace(" ", "T") + "Z") : null,
       source,
       answersEnc: s.pairs.length ? encryptSecret(JSON.stringify(s.pairs)) : null,
-      matchNote: emailMatch ? `Email matched (${s.emails.filter((e) => emails.has(e)).join(", ")})` : input.matchNote!.trim().slice(0, 300),
+      matchNote: emailMatch ? `Email matched (${s.emails.filter((e) => emails.has(e)).join(", ")})` : input.signedRef ? "Signed client link (filed by staff from the review inbox)" : input.matchNote!.trim().slice(0, 300),
       linkedById: actor.id,
       documentIds: files.ids,
     },

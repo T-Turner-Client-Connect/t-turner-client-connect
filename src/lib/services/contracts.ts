@@ -87,16 +87,24 @@ type JotformSubmission = { form_id?: string; id?: string; answers?: Record<strin
 export async function handleJotformWebhook(secret: string | null, submissionId: string | null): Promise<{ status: number; result: string }> {
   const c = jotformConfig();
   if (!c.webhookSecret || !c.apiKey) return { status: 503, result: "Jotform verification not configured" };
-  if (!secret || secret !== c.webhookSecret) return { status: 401, result: "Bad secret" };
+  // Jotform doesn't sign webhooks, so the URL carries our own long random
+  // secret (compared in constant time) and the submission itself is always
+  // re-read from the Jotform API with our API key.
+  if (c.webhookSecret.length < 32) return { status: 503, result: "JOTFORM_WEBHOOK_SECRET must be at least 32 characters" };
+  const given = Buffer.from(secret ?? "");
+  const expected = Buffer.from(c.webhookSecret);
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return { status: 401, result: "Bad secret" };
   if (!submissionId || !/^\d+$/.test(submissionId)) return { status: 400, result: "Missing submission" };
   const res = await fetch(`${c.apiBase}/submission/${submissionId}`, { headers: { APIKEY: c.apiKey } });
   if (!res.ok) return { status: 502, result: `Jotform API HTTP ${res.status}` };
   const sub = ((await res.json()) as { content?: JotformSubmission }).content;
   const refAnswer = Object.values(sub?.answers ?? {}).find((a) => a.name === c.refField)?.answer;
-  // Tax questionnaires share this webhook; their references start with "q.".
-  if (typeof refAnswer === "string" && refAnswer.startsWith("q.")) {
-    const { recordQuestionnaireWebhook } = await import("./tax-center");
-    return { status: 200, result: await recordQuestionnaireWebhook({ ...sub, id: submissionId }, refAnswer) };
+  // Tax questionnaires share this webhook: a "q." reference, or any submission
+  // to one of our questionnaire forms (unmatched ones go to staff review).
+  const isQuestionnaireForm = !!sub?.form_id && (await prisma.taxQuestionnaire.count({ where: { jotformFormId: sub.form_id } })) > 0;
+  if ((typeof refAnswer === "string" && refAnswer.startsWith("q.")) || isQuestionnaireForm) {
+    const { routeQuestionnaireWebhook } = await import("./questionnaire-intake");
+    return { status: 200, result: await routeQuestionnaireWebhook({ ...sub, id: submissionId }, typeof refAnswer === "string" ? refAnswer : null) };
   }
   const assignmentId = typeof refAnswer === "string" ? parseAssignmentRef(refAnswer) : null;
   if (!assignmentId) return { status: 200, result: "No valid assignment reference; ignored" };
