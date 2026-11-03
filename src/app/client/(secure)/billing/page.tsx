@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { ArrowLeft, CircleDollarSign, Clock, CreditCard, FileText, Receipt, Wallet } from "lucide-react";
+import { Apple, ArrowLeft, ChevronRight, CircleCheck, ClipboardList, Clock, CreditCard, Download, Eye, FileText, Info } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Notice } from "@/components/ui";
 import { PageBanner } from "@/components/portal/luxury";
-import { GoldNote, StatCard, StatusPill, tableCard, usdc, ymdLabel, type Tone } from "@/components/portal/billing-pages";
+import { luxPanel, navyTable, NoteBar, PanelTitle, pillButton, StatCard, StatusPill, usdc, ymdLabel, type Tone } from "@/components/portal/billing-pages";
 import { PaymentPanel } from "@/components/portal/payment-panel";
 import { acceptQuoteAction, declineQuoteAction } from "@/app/actions/portal-billing";
 import { requirePortalUser } from "@/lib/portal/session";
@@ -32,10 +32,10 @@ type Row = {
 // The ways a client can pay, in the order of the approved design. Details come only from the
 // payment instructions our office has saved — nothing is made up here.
 const WAYS = [
-  { method: "ZELLE", label: "Zelle" },
-  { method: "CASH_APP", label: "Cash App" },
-  { method: "APPLE_PAY", label: "Apple Pay" },
-  { method: "VENMO", label: "Venmo" },
+  { method: "ZELLE", label: "Zelle®", sub: "Send a payment with Zelle", tile: "bg-[#6D1ED4]", glyph: "Z" },
+  { method: "CASH_APP", label: "Cash App®", sub: "Pay with Cash App", tile: "bg-[#00C244]", glyph: "$" },
+  { method: "APPLE_PAY", label: "Apple Pay®", sub: "Pay with Apple Pay", tile: "bg-black", glyph: null },
+  { method: "VENMO", label: "Venmo®", sub: "Pay with Venmo", tile: "bg-[#008CFF]", glyph: "V" },
 ] as const;
 
 function officeStatus(inv: Office, today: string): [string, Tone] {
@@ -63,7 +63,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
   const sp = await searchParams;
   const { current } = await resolveAccount(user.id, sp.account);
   if (!current) return null;
-  const banner = <PageBanner icon={CreditCard} title="Billing & Payments" subtitle="View your invoices, payments, and account balance." />;
+  const banner = <PageBanner icon={CreditCard} title="Billing & Payments" subtitle="View your invoices, make a payment, and choose your preferred payment method." />;
   if (!current.canViewBilling) {
     return (
       <>
@@ -156,86 +156,99 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
     <div className="space-y-6" data-testid="billing-payments">
       {banner}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard navy icon={Wallet} label="Account Balance" value={usdc(balance)} testId="stat-balance" />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard navy icon={ClipboardList} label="Account Balance" value={usdc(balance)} testId="stat-balance" />
         <StatCard icon={FileText} label="Open Invoices" value={String(openCount)} testId="stat-open" />
         <StatCard icon={Clock} label="Pending Payments" value={usdc(pendingCents)} testId="stat-pending" />
-        <StatCard icon={CircleDollarSign} label={`Paid (YTD ${year})`} value={usdc(paidYtd)} testId="stat-paid-ytd" />
+        <StatCard icon={CircleCheck} label="Paid (YTD)" value={usdc(paidYtd)} testId="stat-paid-ytd" />
       </div>
 
-      <div className="grid items-start gap-6 xl:grid-cols-[1.7fr_1fr]">
-        <section className={tableCard} data-testid="your-invoices">
-          <h2 className="flex items-center gap-3 bg-navy-900 px-5 py-3.5 font-serif text-xl font-bold text-white sm:text-2xl">
-            <Receipt className="size-6 shrink-0" aria-hidden /> Your Invoices
-          </h2>
-          {rows.length === 0 ? (
-            <p className="p-5 text-sm text-slate-600">Invoices from our office will appear here.</p>
-          ) : (
-            <div className="relative overflow-x-auto">
-              <table className="w-full min-w-[40rem] text-sm">
-                <thead className="bg-ivory-50 text-left text-xs font-bold uppercase tracking-wide text-slate-600">
-                  <tr><th className="px-5 py-3">Invoice #</th><th className="px-3 py-3">Description</th><th className="px-3 py-3 text-right">Amount</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Date</th><th className="px-5 py-3 text-right">Action</th></tr>
-                </thead>
-                <tbody className="divide-y divide-ivory-200">
-                  {rows.map((r) => (
-                    <tr key={r.key} data-testid="invoice-row">
-                      <td className="whitespace-nowrap px-5 py-3.5 font-semibold text-navy-900">{r.number}</td>
-                      <td className="px-3 py-3.5">{r.description}</td>
-                      <td className="whitespace-nowrap px-3 py-3.5 text-right font-semibold text-navy-900">{usdc(r.amountCents)}</td>
-                      <td className="px-3 py-3.5"><StatusPill tone={r.status[1]}>{r.status[0]}</StatusPill></td>
-                      <td className="whitespace-nowrap px-3 py-3.5">{ymdLabel(r.date)}</td>
-                      <td className="px-5 py-3.5 text-right">
-                        {r.action ? (
-                          r.action.external ? (
-                            <a href={r.action.href} target="_blank" rel="noopener noreferrer" className="inline-flex whitespace-nowrap rounded-lg border border-gold-500 px-3 py-1.5 font-semibold text-navy-900 hover:bg-gold-50">{r.action.label}</a>
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[1.75fr_1fr]">
+        <div className="min-w-0 space-y-6">
+          <section className={`${luxPanel} p-4 sm:p-5`} data-testid="your-invoices">
+            <PanelTitle icon={FileText} title="Your Invoices" sub="Invoices created by T. Turner & Associates for your account." />
+            {rows.length === 0 ? (
+              <p className="mt-4 rounded-xl bg-white px-4 py-5 text-sm text-slate-600 ring-1 ring-ivory-200">Invoices from our office will appear here.</p>
+            ) : (
+              <div className="relative mt-4 overflow-x-auto">
+                <table className={`${navyTable} min-w-[42rem]`}>
+                  <thead>
+                    <tr><th className="pl-4 pr-3">Invoice #</th><th className="px-3">Description</th><th className="px-3">Amount</th><th className="px-3">Status</th><th className="px-3">Date</th><th className="px-3 text-center">Action</th></tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => (
+                      <tr key={r.key} data-testid="invoice-row" className="bg-white">
+                        <td className="whitespace-nowrap py-3 pl-4 pr-3 text-navy-900">{r.number}</td>
+                        <td className="px-3 py-3 text-navy-900">{r.description}</td>
+                        <td className="whitespace-nowrap px-3 py-3 text-navy-900">{usdc(r.amountCents)}</td>
+                        <td className="px-3 py-3"><StatusPill tone={r.status[1]}>{r.status[0]}</StatusPill></td>
+                        <td className="whitespace-nowrap px-3 py-3 text-navy-900">{ymdLabel(r.date)}</td>
+                        <td className="px-3 py-3 text-center">
+                          {r.action ? (
+                            r.action.external ? (
+                              <a href={r.action.href} target="_blank" rel="noopener noreferrer" className={`${pillButton} min-w-28`}>
+                                {r.action.label === "Receipt" ? <Download className="size-4" aria-hidden /> : <Eye className="size-4" aria-hidden />} {r.action.label}
+                              </a>
+                            ) : (
+                              <Link href={r.action.href} className={`${pillButton} min-w-28`}><Eye className="size-4" aria-hidden /> {r.action.label}</Link>
+                            )
                           ) : (
-                            <Link href={r.action.href} className="inline-flex whitespace-nowrap rounded-lg border border-gold-500 px-3 py-1.5 font-semibold text-navy-900 hover:bg-gold-50">{r.action.label}</Link>
-                          )
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {notSynced && <p className="border-t border-ivory-200 px-5 py-3 text-sm text-slate-600" data-testid="portal-square-billing-pending">{NOT_SYNCED}. Your recurring billing continues exactly as arranged — nothing new will be charged.</p>}
-        </section>
-
-        <div className="space-y-6">
-          <section className={tableCard} data-testid="make-a-payment">
-            <h2 className="flex items-center gap-3 bg-navy-900 px-5 py-3.5 font-serif text-xl font-bold text-white sm:text-2xl">
-              <CreditCard className="size-6 shrink-0" aria-hidden /> Make a Payment
-            </h2>
-            <ul className="divide-y divide-ivory-200">
-              <li className="px-5 py-4" data-testid="pay-card">
-                <p className="font-semibold text-navy-900">Pay Invoice (Credit/Debit Card)</p>
-                {/* Until Square can take a card payment here, there is no pay button — only how to pay. */}
-                <p className="mt-0.5 text-sm text-slate-600">{card?.details || "Online card payments are coming soon. To pay by card now, please contact our office."}</p>
-              </li>
-              {WAYS.map((w) => {
-                const d = instructions.find((i) => i.method === w.method)?.details;
-                return (
-                  <li key={w.method} className="px-5 py-4" data-testid={`pay-${w.method}`}>
-                    <p className="font-semibold text-navy-900">{w.label}</p>
-                    <p className="mt-0.5 whitespace-pre-line text-sm text-slate-600">{d || "Ask our office for details."}</p>
-                  </li>
-                );
-              })}
-            </ul>
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {notSynced && <p className="mt-3 text-sm text-slate-600" data-testid="portal-square-billing-pending">{NOT_SYNCED}. Your recurring billing continues exactly as arranged — nothing new will be charged.</p>}
           </section>
 
-          <GoldNote title="Important Payment Info" testId="payment-info">
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Please include your name and invoice number with every payment.</li>
-              <li>Payments show as &ldquo;Paid&rdquo; here once our office confirms them.</li>
-              <li>Nothing is charged to your account automatically from this page.</li>
-              <li>Questions about a bill? Send us a message in the Message Center.</li>
+          <NoteBar icon={Info} title="Important Payment Info" testId="payment-info">
+            <ul className="list-disc space-y-0.5 pl-5">
+              <li>Taxes are not deducted from your refund.</li>
+              <li>You may use Zelle, Cash App, Apple Pay, Venmo, or pay directly through your invoice.</li>
+              <li>Select the payment method on the right to submit your payment.</li>
+              <li>A receipt will be available after your payment is processed.</li>
             </ul>
-          </GoldNote>
+          </NoteBar>
         </div>
+
+        <section className={`${luxPanel} overflow-hidden`} data-testid="make-a-payment">
+          <h2 className="flex items-center gap-3 rounded-2xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-4 font-serif text-2xl font-bold text-white">
+            <CreditCard className="size-8 shrink-0 text-white" aria-hidden /> Make a Payment
+          </h2>
+          <div className="space-y-3 p-4">
+            <p className="text-sm text-navy-800">Choose your preferred payment method and pay securely.</p>
+            {/* Until Square can take a card payment here, this row is information only — no button, no link. */}
+            <div className="flex items-center gap-3 rounded-xl border border-gold-300 bg-gold-50/60 px-4 py-3" data-testid="pay-card">
+              <CreditCard className="size-9 shrink-0 text-gold-600" aria-hidden />
+              <span className="min-w-0">
+                <span className="block font-semibold text-navy-900">Pay Invoice (Credit/Debit Card)</span>
+                <span className="block text-xs text-slate-600">{card?.details || "Online card payments coming soon — contact our office"}</span>
+              </span>
+            </div>
+            {WAYS.map((w) => {
+              const d = instructions.find((i) => i.method === w.method)?.details;
+              return (
+                <details key={w.method} className="group rounded-xl border border-gold-300 bg-gold-50/60 open:bg-white" data-testid={`pay-${w.method}`}>
+                  <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+                    <span className={`flex size-9 shrink-0 items-center justify-center rounded-lg text-xl font-black text-white ${w.tile}`} aria-hidden>
+                      {w.glyph ?? <Apple className="size-5 fill-white" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-semibold text-navy-900">{w.label}</span>
+                      <span className="block text-xs text-slate-600">{w.sub}</span>
+                    </span>
+                    <ChevronRight className="size-5 shrink-0 text-gold-600 transition group-open:rotate-90" aria-hidden />
+                  </summary>
+                  <p className="whitespace-pre-line border-t border-gold-200 px-4 py-3 text-sm text-navy-800">{d || "Ask our office for details."}</p>
+                </details>
+              );
+            })}
+          </div>
+        </section>
       </div>
     </div>
   );
