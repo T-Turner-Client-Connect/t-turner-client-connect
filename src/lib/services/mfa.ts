@@ -71,7 +71,7 @@ export async function beginEnrollment(subject: MfaSubject) {
     await save(subject, { mfaSecretEnc: encryptSecret(secret) });
   }
   const uri = otpauthUri(secret, row.email);
-  const qrSvg = await QRCode.toString(uri, { type: "svg", margin: 1, color: { dark: "#001452", light: "#ffffff" } });
+  const qrSvg = await QRCode.toString(uri, { type: "svg", margin: 1, color: { dark: "#0a1a44", light: "#ffffff" } });
   return { secret, qrSvg };
 }
 

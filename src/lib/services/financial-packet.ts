@@ -16,7 +16,7 @@ import { accountLabel } from "./bookkeeping-profile";
  */
 
 const ORDER = ["PROFIT_AND_LOSS", "GROSS_RECEIPTS", "BALANCE_SHEET", "BANK_RECONCILIATION", "SUPPORTING_SCHEDULE", "OTHER_REPORT"];
-const NAVY = rgb(0.0, 0.08, 0.32);
+const NAVY = rgb(10 / 255, 26 / 255, 68 / 255); // brand navy #0A1A44
 const BLUE = rgb(0.17, 0.3, 0.55);
 const GRAY = rgb(0.4, 0.42, 0.47);
 const RULE = rgb(0.82, 0.83, 0.86);

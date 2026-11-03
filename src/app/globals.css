@@ -1,22 +1,22 @@
 @import "tailwindcss";
 
 @theme {
-  --color-navy-950: #000c33;
-  --color-navy-900: #001452;
-  --color-navy-800: #0b2266;
-  --color-navy-700: #1d3480;
+  --color-navy-950: #071230;
+  --color-navy-900: #0a1a44;
+  --color-navy-800: #27355a;
+  --color-navy-700: #455171;
   --color-navy-100: #e5e9f4;
   --color-navy-50: #f3f5fa;
-  --color-gold-600: #b48a2c;
+  --color-gold-600: #b08a24;
   /* Darker gold for text on light backgrounds (meets 4.5:1). */
-  --color-gold-700: #6b4e10;
-  --color-gold-500: #d2a43f;
-  --color-gold-300: #e8cc8a;
-  --color-gold-100: #f8efd9;
+  --color-gold-700: #685215;
+  --color-gold-500: #c89d29;
+  --color-gold-300: #e4ce94;
+  --color-gold-100: #f7f1e1;
   /* Warm ivory surfaces */
-  --color-ivory-50: #fdfbf6;
-  --color-ivory-100: #f8f4ea;
-  --color-ivory-200: #efe8d8;
+  --color-ivory-50: #ffffff;
+  --color-ivory-100: #fcfaf4;
+  --color-ivory-200: #f6efdd;
   --font-serif: Georgia, "Times New Roman", serif;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
 }
@@ -29,7 +29,7 @@
 
   body {
     background: var(--color-ivory-100);
-    color: #1c2333;
+    color: #0a1a44;
     font-family: var(--font-sans);
     font-size: 16px;
   }
@@ -106,7 +106,7 @@
   background:
     radial-gradient(700px 260px at 88% -30%, rgb(232 204 138 / 0.35), transparent 65%),
     radial-gradient(500px 240px at -10% 120%, rgb(210 164 63 / 0.18), transparent 70%),
-    linear-gradient(135deg, #000a2b 0%, #001452 55%, #0b2266 100%);
+    linear-gradient(135deg, #000a2b 0%, #0a1a44 55%, #27355a 100%);
   box-shadow: 0 20px 45px -20px rgb(0 12 51 / 0.55), inset 0 0 0 1px rgb(210 164 63 / 0.45);
 }
 .lux-hero::before {
