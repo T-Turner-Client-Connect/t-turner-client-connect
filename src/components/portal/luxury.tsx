@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Briefcase, Building2, CalendarDays, ChevronRight, Handshake, Info, Landmark, Megaphone, Users } from "lucide-react";
+import { Building2, CalendarDays, ChevronRight, Handshake, Info, Users } from "lucide-react";
 /** "2027-04-15" → "Apr 15, 2027" (date only, no time-zone shift). */
 const shortDate = (iso: string) => { const [y, m, d] = iso.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }); };
 
@@ -46,15 +46,15 @@ export type NewsItem = { id: string; title: string; body: string; topic: string 
 
 function topicLook(n: NewsItem) {
   const t = (n.topic ?? "").toUpperCase();
-  if (n.clientId) return { icon: Briefcase, label: "For your account" };
-  if (t.includes("IRS") || t.includes("FEDERAL")) return { icon: Landmark, label: "IRS" };
-  if (t.includes("STATE")) return { icon: Building2, label: "State" };
-  if (t.includes("DEADLINE")) return { icon: CalendarDays, label: "Deadline" };
-  return { icon: Megaphone, label: "Office" };
+  const title = n.title.toLowerCase();
+  if (n.clientId) return { img: "/brand/news/office.jpg", label: "For your account" };
+  if (t.includes("STATE") || /\b(alabama|state tax|department of revenue)\b/.test(title)) return { img: "/brand/news/state.jpg", label: "State" };
+  if (t.includes("IRS") || t === "TAX_SEASON" || t === "DEADLINE" || /\birs\b/.test(title)) return { img: "/brand/news/irs.jpg", label: t === "DEADLINE" ? "Deadline" : "IRS" };
+  return { img: "/brand/news/office.jpg", label: "Office" };
 }
 
 /** One elegant row per announcement: emblem, headline, short summary, arrow. */
-export function NewsList({ items, href, limit = 3 }: { items: NewsItem[]; href: string; limit?: number }) {
+export function NewsList({ items, href, limit = 3, full }: { items: NewsItem[]; href: string; limit?: number; full?: boolean }) {
   if (!items.length) return <p className="py-6 text-sm text-slate-600">No announcements right now. New IRS, state and office updates will appear here.</p>;
   return (
     <ul className="divide-y divide-gold-100" data-testid="news-list">
@@ -63,17 +63,16 @@ export function NewsList({ items, href, limit = 3 }: { items: NewsItem[]; href: 
         return (
           <li key={n.id}>
             <Link href={href} className="group flex items-center gap-4 py-4">
-              <span className="flex size-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-navy-900 to-navy-950 ring-1 ring-gold-500/50 sm:size-20">
-                <look.icon className="size-8 text-gold-400 sm:size-9" aria-hidden />
-              </span>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={look.img} alt="" width={128} height={82} className="h-16 w-24 shrink-0 rounded-xl object-cover shadow-sm ring-1 ring-gold-200 sm:h-20 sm:w-32" />
               <span className="min-w-0 flex-1">
-                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-[0.18em] text-gold-700">
+                <span className="block font-serif text-[17px] font-bold leading-snug text-navy-900 [overflow-wrap:anywhere]">{n.title}</span>
+                <span className={`mt-1 block text-sm text-slate-700 ${full ? "whitespace-pre-wrap" : "line-clamp-2"}`}>{n.body}</span>
+                <span className="mt-1 block text-[11px] font-semibold uppercase tracking-[0.14em] text-gold-700">
                   {n.pinned ? "Pinned · " : ""}
                   {look.label}
                   {n.at ? ` · ${n.at.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Chicago" })}` : ""}
                 </span>
-                <span className="block font-serif text-[17px] font-bold leading-snug text-navy-900 [overflow-wrap:anywhere]">{n.title}</span>
-                <span className="mt-0.5 line-clamp-2 block text-sm text-slate-600">{n.body}</span>
               </span>
               <ChevronRight className="size-5 shrink-0 text-gold-600 transition group-hover:translate-x-0.5" aria-hidden />
             </Link>
