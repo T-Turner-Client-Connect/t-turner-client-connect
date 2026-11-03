@@ -78,10 +78,16 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
     <div className="space-y-6">
       {/* Welcome */}
       <section className="relative overflow-hidden rounded-3xl border border-ivory-200 bg-ivory-50 shadow-sm" data-testid="hero">
-        <Mountains variant="light" className="absolute bottom-0 right-0 h-1/2 w-full opacity-80 sm:inset-y-0 sm:h-full sm:w-[70%] sm:opacity-100" />
-        <div className="relative px-6 pb-24 pt-8 sm:px-10 sm:py-12">
-          <h1 className="max-w-[16ch] font-serif text-3xl font-bold leading-tight text-navy-900 sm:max-w-none sm:text-[2.6rem]">{name ? `Welcome back, ${name}` : "Welcome back"}</h1>
-          <p className="mt-2 max-w-[24ch] text-base text-navy-800 sm:max-w-none sm:text-lg">Your documents, tax filings, and updates—all in one place.</p>
+        {/* Artwork sits beside the text on larger screens (never under it), with a soft fade, not a hard edge. */}
+        <Mountains variant="light" className="absolute bottom-0 right-0 h-1/2 w-full opacity-80 sm:inset-y-0 sm:h-full sm:w-[46%] sm:opacity-100 lg:w-[50%]" />
+        <div className="pointer-events-none absolute inset-y-0 hidden w-28 bg-gradient-to-r from-ivory-50 to-transparent sm:block sm:left-[54%] lg:left-1/2" aria-hidden />
+        {/* The text keeps its own column (left of the artwork) and long names wrap onto their own line. */}
+        <div className="relative z-10 px-6 pb-28 pt-8 sm:max-w-[54%] sm:px-10 sm:py-12 lg:max-w-[50%]">
+          <h1 className="font-serif text-[1.65rem] font-bold leading-[1.15] text-navy-900 [overflow-wrap:anywhere] sm:text-3xl lg:text-[2.4rem]" data-testid="hero-heading">
+            Welcome back{name ? "," : ""}
+            {name && <span className="block text-balance text-gold-700">{name}</span>}
+          </h1>
+          <p className="mt-3 max-w-[30ch] text-[15px] text-navy-800 sm:text-base lg:text-lg">Your documents, tax filings, and updates—all in one place.</p>
           {next && (
             <Link href={href("/client/news")} className="mt-4 inline-flex items-center gap-2 rounded-full border border-gold-500/60 bg-white/80 px-3 py-1 text-xs font-semibold text-navy-900 backdrop-blur hover:bg-white" data-testid="hero-deadline">
               <span className="size-1.5 rounded-full bg-gold-500" aria-hidden />Next deadline: {countdownText(next.days!)}
