@@ -87,10 +87,10 @@ export function NoteBar({ icon: Icon, title, children, testId }: { icon: IconT; 
     <div className="flex flex-col gap-3 rounded-2xl border border-gold-200/80 bg-gradient-to-b from-white to-ivory-50 px-6 py-5 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] sm:flex-row sm:items-center sm:gap-6" data-testid={testId}>
       <div className="flex shrink-0 items-center gap-3">
         <Icon className="size-10 text-gold-600" aria-hidden />
-        <p className="font-serif text-2xl font-bold leading-tight text-navy-900">{title}</p>
+        <p className="max-w-[9rem] font-serif text-2xl font-bold leading-tight text-navy-900">{title}</p>
       </div>
       <span className="hidden h-12 w-px shrink-0 bg-gold-400 sm:block" aria-hidden />
-      <div className="min-w-0 text-[15px] text-navy-800">{children}</div>
+      <div className="min-w-0 flex-1 text-[15px] text-navy-800">{children}</div>
     </div>
   );
 }

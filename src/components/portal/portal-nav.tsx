@@ -115,7 +115,7 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
       <Link href={`/client${q}`} onClick={onNavigate} className="flex items-center gap-3 border-b border-gold-500/40 px-5 pb-5 pt-6" aria-label="TTurner Client Connect — home">
         <Image src="/brand/logo-shield.png" alt="" width={353} height={400} priority className="h-12 w-auto shrink-0 rounded-sm bg-white/95 p-1" />
         <span className="min-w-0 leading-none">
-          <span className="block whitespace-nowrap font-serif text-[15px] tracking-[0.04em]">T. TURNER &amp; ASSOCIATES, LLC</span>
+          <span className="block font-serif text-[15px] leading-snug tracking-[0.04em]">T. TURNER &amp;<br />ASSOCIATES, LLC</span>
           <span className="mt-1 block whitespace-nowrap font-serif text-[12px] tracking-[0.14em] text-gold-300">CLIENT CONNECT</span>
         </span>
       </Link>

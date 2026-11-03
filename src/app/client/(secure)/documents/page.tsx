@@ -44,10 +44,10 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
             Records from {thisYear - 2} and earlier open after you verify your account. <Link className="underline" href={`/client/taxes/filings${q}`}>Verify now</Link>.
           </Notice>
         )}
-        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[17rem_minmax(0,1fr)_20rem]">
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[16rem_minmax(0,1fr)] 2xl:grid-cols-[17rem_minmax(0,1fr)_20rem]">
           <CategorySidebar active={cat} href={(c) => href(c)} />
           <DocumentsTable rows={data[cat]} years={folders} year={yearFilter} yearHref={(y) => href(cat, y)} linkFor={linkFor} identityHref={`/client/identity${q}`} />
-          <div className="grid grid-cols-1 gap-5 lg:col-span-2 lg:grid-cols-2 xl:col-span-1 xl:grid-cols-1">
+          <div className="grid grid-cols-1 gap-5 lg:col-span-2 lg:grid-cols-2 2xl:col-span-1 2xl:grid-cols-1">
             {current.canUpload && (
               <UploadPanel
                 action={portalUploadAction.bind(null, current.clientId)}

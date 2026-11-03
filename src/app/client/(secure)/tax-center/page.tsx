@@ -12,8 +12,8 @@ export const metadata = { title: "My Tax Center" };
 type Icon = React.ComponentType<{ className?: string; strokeWidth?: number }>;
 const cream = "border border-gold-300 bg-gradient-to-b from-white to-ivory-50 text-navy-900";
 const navy = "bg-gradient-to-br from-navy-900 to-navy-950 text-white ring-1 ring-navy-800";
-const btnGold = "inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-b from-gold-300 to-gold-500 px-7 py-2.5 font-bold text-navy-950 shadow hover:to-gold-400";
-const btnOutline = "inline-flex items-center justify-center gap-2 rounded-full border-2 border-gold-400 px-7 py-2.5 font-bold text-white hover:bg-white/10";
+const btnGold = "inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-b from-gold-300 to-gold-500 whitespace-nowrap px-5 py-2.5 font-bold text-navy-950 shadow hover:to-gold-400";
+const btnOutline = "inline-flex items-center justify-center gap-2 rounded-full border-2 border-gold-400 whitespace-nowrap px-5 py-2.5 font-bold text-white hover:bg-white/10";
 
 /** One of the four action cards: icon beside the title, centered text, button at the bottom. */
 function ActionCard({ tone, icon: I, title, sub, children, testId }: { tone: "cream" | "navy"; icon: Icon; title: string; sub: string; children: React.ReactNode; testId: string }) {

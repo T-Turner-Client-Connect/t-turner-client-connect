@@ -217,7 +217,7 @@ export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityH
         <p className="rounded-xl border border-ivory-200 px-5 py-10 text-center text-slate-600">No documents here yet.</p>
       ) : (
         <div className="relative overflow-x-auto rounded-xl border border-ivory-200">
-          <table className="w-full min-w-[38rem] text-sm">
+          <table className="w-full min-w-[34rem] text-sm">
             <thead>
               <tr className="bg-navy-900 text-left text-white">
                 <th className="px-4 py-3 font-semibold">Document Name</th>
