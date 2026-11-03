@@ -264,6 +264,7 @@ model Client {
   bookkeepingAccounts   BookkeepingAccount[]
   bookkeepingBilling    BookkeepingBilling?
   squareBillings        SquareBillingMember[]
+  ledgerBook            LedgerBook?
   nonprofitProfile      NonprofitProfile?
   nonprofitPortfolio    NonprofitPortfolio?
   chargeAuthorizations  RecurringChargeAuthorization[]
@@ -3310,4 +3311,155 @@ model ManualBillingPayment {
   voidReason   String?
 
   @@index([clientId, paidOn])
+}
+
+// ===========================================================================
+// CLIENT BOOKKEEPING LEDGER — double-entry books, one set per client.
+// Every query is scoped to one client; nothing here is shared between clients
+// or with the Owner's Office. Amounts are integer cents.
+// ===========================================================================
+
+model LedgerBook {
+  clientId             String               @id
+  client               Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // CASH | ACCRUAL — the basis this client's statements use by default.
+  basis                String               @default("CASH")
+  fiscalYearStartMonth Int                  @default(1)
+  // Opening balances are posted once, as of this date. Nothing may be dated before it.
+  openingDate          DateTime?            @db.Date
+  // Closed (approved) through this date: entries dated on or before it can't be posted or reversed.
+  lockedThrough        DateTime?            @db.Date
+  lockedById           String?
+  lockedAt             DateTime?
+  createdById          String
+  createdAt            DateTime             @default(now())
+  accounts             LedgerAccount[]
+  entries              JournalEntry[]
+  bankTransactions     BankTransaction[]
+  reconciliations      BankReconciliation[]
+}
+
+model LedgerAccount {
+  id               String               @id @default(cuid())
+  clientId         String
+  book             LedgerBook           @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  code             String
+  name             String
+  // ASSET | LIABILITY | EQUITY | INCOME | EXPENSE
+  type             String
+  // BANK | CREDIT_CARD | AR | AP | OWNER_DRAW | OWNER_CONTRIBUTION | RETAINED_EARNINGS | OPENING_BALANCE | COGS | OTHER_INCOME | OTHER_EXPENSE | SUSPENSE
+  subtype          String?
+  description      String?
+  institution      String?
+  last4            String?
+  active           Boolean              @default(true)
+  createdAt        DateTime             @default(now())
+  lines            JournalLine[]
+  bankTransactions BankTransaction[]
+  reconciliations  BankReconciliation[]
+
+  @@unique([clientId, code])
+  @@index([clientId, type])
+}
+
+model JournalEntry {
+  id               String            @id @default(cuid())
+  clientId         String
+  book             LedgerBook        @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  date             DateTime          @db.Date
+  memo             String
+  // MANUAL | OPENING | BANK | ADJUSTMENT | REVERSAL (later: INVOICE | PAYMENT | PAYOUT)
+  source           String
+  // The same source (opening balances, a bank transaction, later an invoice or payment) is never posted twice.
+  sourceKey        String?
+  // BOTH | CASH_ONLY | ACCRUAL_ONLY — which basis of statements includes this entry.
+  basis            String            @default("BOTH")
+  // Corrections never edit an entry: a reversal is posted instead, and both stay in the history.
+  reversalOfId     String?           @unique
+  reversalOf       JournalEntry?     @relation("Reversal", fields: [reversalOfId], references: [id])
+  reversedBy       JournalEntry?     @relation("Reversal")
+  reason           String?
+  createdById      String?
+  createdAt        DateTime          @default(now())
+  lines            JournalLine[]
+  bankTransactions BankTransaction[]
+
+  @@unique([clientId, sourceKey])
+  @@index([clientId, date])
+}
+
+model JournalLine {
+  id          String        @id @default(cuid())
+  entryId     String
+  entry       JournalEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     LedgerAccount @relation(fields: [accountId], references: [id])
+  debitCents  Int           @default(0)
+  creditCents Int           @default(0)
+  description String?
+
+  @@index([entryId])
+  @@index([accountId])
+}
+
+model BankImport {
+  id           String            @id @default(cuid())
+  clientId     String
+  accountId    String
+  fileName     String
+  fileSha256   String
+  rows         Int
+  added        Int
+  duplicates   Int
+  firstDate    DateTime?         @db.Date
+  lastDate     DateTime?         @db.Date
+  createdById  String
+  createdAt    DateTime          @default(now())
+  transactions BankTransaction[]
+
+  @@index([clientId, accountId])
+}
+
+model BankTransaction {
+  id             String        @id @default(cuid())
+  clientId       String
+  book           LedgerBook    @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  accountId      String
+  account        LedgerAccount @relation(fields: [accountId], references: [id])
+  importId       String?
+  import         BankImport?   @relation(fields: [importId], references: [id])
+  date           DateTime      @db.Date
+  // Money in is positive, money out negative, as the statement shows it.
+  amountCents    Int
+  description    String
+  // Same date + amount + description + occurrence: a row seen in an overlapping statement is skipped.
+  fingerprint    String
+  // UNREVIEWED | POSTED | EXCLUDED
+  status         String        @default("UNREVIEWED")
+  journalEntryId String?
+  journalEntry   JournalEntry? @relation(fields: [journalEntryId], references: [id])
+  postings       Int           @default(0)
+  excludedReason String?
+  reviewedById   String?
+  reviewedAt     DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@unique([accountId, fingerprint])
+  @@index([clientId, status])
+  @@index([accountId, date])
+}
+
+model BankReconciliation {
+  id                    String        @id @default(cuid())
+  clientId              String
+  book                  LedgerBook    @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  accountId             String
+  account               LedgerAccount @relation(fields: [accountId], references: [id])
+  statementDate         DateTime      @db.Date
+  statementBalanceCents Int
+  ledgerBalanceCents    Int
+  completedById         String
+  createdAt             DateTime      @default(now())
+
+  @@unique([accountId, statementDate])
 }
