@@ -8,7 +8,7 @@ import { requireClientAccess } from "@/lib/portal/access";
 import type { PortalActor } from "@/lib/portal/session";
 import { filingGroup } from "@/lib/document-types";
 import { clientReceivableWhere } from "./documents";
-import { normalizeEmail } from "@/lib/normalize";
+import { normalizeEmail, normalizePhone } from "@/lib/normalize";
 import { ValidationError } from "./clients";
 import { assertNotDuplicate, portalVerified, retentionDate, sha256Of, storeDocumentFile } from "./documents";
 import { jotformConfig } from "./contracts";
@@ -130,7 +130,7 @@ export async function questionnaireUrl(clientId: string, clientType: string, tax
 type JotAnswer = { name?: string; text?: string; type?: string; answer?: unknown; prettyFormat?: string };
 export type JotSubmission = { id?: string; form_id?: string; created_at?: string; answers?: Record<string, JotAnswer> };
 
-async function fetchSubmission(submissionId: string): Promise<JotSubmission> {
+export async function fetchSubmission(submissionId: string): Promise<JotSubmission> {
   const c = jotformConfig();
   if (!c.apiKey) throw new ValidationError("Jotform isn't connected yet (JOTFORM_API_KEY), so the submission can't be read.");
   if (!/^\d{6,25}$/.test(submissionId)) throw new ValidationError("Enter the numeric Jotform submission ID.");
@@ -149,6 +149,7 @@ export function summarize(sub: JotSubmission) {
   const emails: string[] = [];
   const names: string[] = [];
   const files: string[] = [];
+  const phones: string[] = [];
   for (const a of answers) {
     const v = a.answer;
     if (v == null || v === "") continue;
@@ -159,10 +160,14 @@ export function summarize(sub: JotSubmission) {
     const text = a.prettyFormat || (typeof v === "string" ? v : typeof v === "object" ? Object.values(v as Record<string, unknown>).filter((x) => typeof x === "string" && x).join(" ") : String(v));
     if (a.type === "control_email" && typeof v === "string" && normalizeEmail(v)) emails.push(normalizeEmail(v)!);
     if (a.type === "control_fullname") names.push(text.trim());
+    if (a.type === "control_phone") {
+      const p = normalizePhone(text);
+      if (p) phones.push(p);
+    }
     if (a.name === jotformConfig().refField) continue;
     if (text) pairs.push({ q: (a.text || a.name || "Question").slice(0, 300), a: text.slice(0, 4000) });
   }
-  return { pairs, emails, names, files };
+  return { pairs, emails, names, files, phones };
 }
 
 async function clientEmails(clientId: string) {
@@ -248,7 +253,7 @@ async function importFiles(urls: string[], ctx: { clientId: string; taxYear: num
  * is checked against the client's email addresses; anything else needs the
  * staff member to confirm and say how they verified it.
  */
-export async function linkSubmission(actor: Actor, input: { clientId: string; taxYear: number; submissionId: string; confirmed: boolean; matchNote?: string; signedRef?: boolean }) {
+export async function linkSubmission(actor: Actor, input: { clientId: string; taxYear: number; submissionId: string; confirmed: boolean; matchNote?: string; signedRef?: boolean; staffApproved?: boolean; fileIndexes?: number[] }) {
   const submissionId = input.submissionId.trim();
   if (!Number.isInteger(input.taxYear) || input.taxYear < 2000 || input.taxYear > currentYear() + 1) throw new ValidationError("Choose the tax year.");
   const taken = await prisma.questionnaireSubmission.findUnique({ where: { submissionId } });
@@ -263,10 +268,10 @@ export async function linkSubmission(actor: Actor, input: { clientId: string; ta
     if (!/^\d{6,25}$/.test(submissionId)) throw new ValidationError("Enter the numeric Jotform submission ID.");
     source = "staff_verified";
   }
-  const s = sub ? summarize(sub) : { pairs: [], emails: [], names: [], files: [] };
+  const s = sub ? summarize(sub) : { pairs: [], emails: [], names: [], files: [], phones: [] };
   const emailMatch = s.emails.some((e) => emails.has(e));
   // A valid signed questionnaire link for this exact client and year counts as a match.
-  if (!emailMatch && !input.signedRef) {
+  if (!emailMatch && !input.signedRef && !input.staffApproved) {
     if (!input.confirmed || !input.matchNote?.trim()) {
       throw new ValidationError(
         sub
@@ -276,7 +281,9 @@ export async function linkSubmission(actor: Actor, input: { clientId: string; ta
     }
   }
   const q = sub ? await prisma.taxQuestionnaire.findFirst({ where: { jotformFormId: sub.form_id } }) : null;
-  const files = sub ? await importFiles(s.files, { clientId: client.id, taxYear: input.taxYear, staff: actor, visibility: "STAFF_ONLY" }) : { ids: [], skipped: [] };
+  // Only the attachments staff approved (all of them when not specified).
+  const chosen = input.fileIndexes ? s.files.filter((_, i) => input.fileIndexes!.includes(i)) : s.files;
+  const files = sub ? await importFiles(chosen, { clientId: client.id, taxYear: input.taxYear, staff: actor, visibility: "STAFF_ONLY" }) : { ids: [], skipped: [] };
   const row = await prisma.questionnaireSubmission.create({
     data: {
       clientId: client.id,
@@ -287,7 +294,7 @@ export async function linkSubmission(actor: Actor, input: { clientId: string; ta
       submittedAt: sub?.created_at ? new Date(sub.created_at.replace(" ", "T") + "Z") : null,
       source,
       answersEnc: s.pairs.length ? encryptSecret(JSON.stringify(s.pairs)) : null,
-      matchNote: emailMatch ? `Email matched (${s.emails.filter((e) => emails.has(e)).join(", ")})` : input.signedRef ? "Signed client link (filed by staff from the review inbox)" : input.matchNote!.trim().slice(0, 300),
+      matchNote: emailMatch ? `Email matched (${s.emails.filter((e) => emails.has(e)).join(", ")})` : input.signedRef ? "Signed client link (filed by staff from the review inbox)" : (input.matchNote?.trim() || "Client and tax year approved by staff in the Questionnaire Inbox").slice(0, 300),
       linkedById: actor.id,
       documentIds: files.ids,
     },

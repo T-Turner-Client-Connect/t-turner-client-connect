@@ -5,7 +5,7 @@ import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { ValidationError } from "@/lib/services/clients";
 import { jotformConfig } from "@/lib/services/contracts";
-import { currentYear, linkSubmission, parseQuestionnaireRef, questionnaireFor, questionnaireUrl, recordQuestionnaireWebhook, submissionAnswers, summarize, type JotSubmission } from "@/lib/services/tax-center";
+import { currentYear, fetchSubmission, linkSubmission, parseQuestionnaireRef, questionnaireFor, questionnaireUrl, recordQuestionnaireWebhook, submissionAnswers, summarize, type JotSubmission } from "@/lib/services/tax-center";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createDocumentRequest } from "@/lib/services/bookkeeping";
@@ -293,16 +293,28 @@ export async function setJotformAutoFile(actor: Actor, on: boolean) {
   await audit(prisma, { actorId: actor.id, action: on ? "jotform.autofile_on" : "jotform.autofile_off", entityType: "IntegrationSettings", entityId: "default" });
 }
 
+/** Identifiers kept on an inbox item (no answers) — used only to suggest a client. */
+function inboxFacts(sub: JotSubmission) {
+  const sum = summarize(sub);
+  return {
+    emails: sum.emails.slice(0, 5),
+    phones: sum.phones.slice(0, 5),
+    names: sum.names.map((n) => n.slice(0, 120)).slice(0, 5),
+    submittedAt: sub.created_at ? new Date(sub.created_at.replace(" ", "T") + "Z") : null,
+  };
+}
+
 /**
  * A verified questionnaire webhook (the submission was re-read from the
- * Jotform API). Files it automatically only when the owner's switch is on AND
- * it carries a valid signed link for an existing client and that year's form;
- * everything else waits in the staff review inbox. Never imports twice.
+ * Jotform API). Every submission lands in the central Questionnaire Inbox
+ * first. Only when the owner's switch is ON and it carries a valid signed
+ * link for an existing client and that year's form is it filed straight
+ * away — and then it's still listed in the inbox as Assigned. Never twice.
  */
-export async function routeQuestionnaireWebhook(sub: JotSubmission, ref: string | null): Promise<string> {
+export async function routeQuestionnaireWebhook(sub: JotSubmission, ref: string | null, arrivedVia: "WEBHOOK" | "IMPORT" = "WEBHOOK"): Promise<string> {
   if (!sub.id || !sub.form_id) return "Missing submission; ignored";
-  if (await prisma.questionnaireSubmission.findUnique({ where: { submissionId: sub.id } })) return "Already recorded";
-  if (await prisma.jotformInbox.findUnique({ where: { submissionId: sub.id } })) return "Already in staff review";
+  if (await prisma.jotformInbox.findUnique({ where: { submissionId: sub.id } })) return "Already in the inbox";
+  const alreadyFiled = await prisma.questionnaireSubmission.findUnique({ where: { submissionId: sub.id } });
   const forms = await prisma.taxQuestionnaire.findMany({ where: { jotformFormId: sub.form_id } });
   const parsed = ref ? parseQuestionnaireRef(ref) : null;
   let reason: string;
@@ -314,57 +326,130 @@ export async function routeQuestionnaireWebhook(sub: JotSubmission, ref: string 
     taxYear = parsed.taxYear;
     const client = await prisma.client.findUnique({ where: { id: parsed.clientId }, select: { id: true } });
     if (!client) reason = "CLIENT_NOT_FOUND";
-    else if (!forms.some((f) => f.taxYear === parsed.taxYear)) {
-      reason = "FORM_YEAR_MISMATCH";
+    else {
       suggestedClientId = client.id;
-    } else {
-      suggestedClientId = client.id;
-      if (await jotformAutoFileOn()) return recordQuestionnaireWebhook(sub, ref!);
-      reason = "HELD";
+      reason = forms.some((f) => f.taxYear === parsed.taxYear) ? "HELD" : "FORM_YEAR_MISMATCH";
     }
   }
-  if (!forms.length && reason !== "HELD") return "Not one of our questionnaire forms; ignored";
-  const row = await prisma.jotformInbox.create({
-    data: {
-      submissionId: sub.id,
-      formId: sub.form_id,
-      questionnaireId: forms.find((f) => f.taxYear === taxYear)?.id ?? null,
-      taxYear,
-      suggestedClientId,
-      reason,
-      emails: summarize(sub).emails.slice(0, 5),
-    },
-  });
-  await audit(prisma, { actorId: null, action: "questionnaire.held_for_review", entityType: "JotformInbox", entityId: row.id, clientId: suggestedClientId, details: { reason, taxYear } });
+  if (!forms.length && !parsed) return "Not one of our questionnaire forms; ignored";
+  const facts = inboxFacts(sub);
+  const base = { submissionId: sub.id, formId: sub.form_id, questionnaireId: forms.find((f) => f.taxYear === taxYear)?.id ?? null, taxYear, suggestedClientId, reason, arrivedVia, ...facts };
+  if (alreadyFiled) {
+    // Filed earlier (e.g. linked before the inbox existed): list it as Assigned.
+    await prisma.jotformInbox.create({ data: { ...base, status: "FILED", filedClientId: alreadyFiled.clientId, resolvedAt: alreadyFiled.createdAt } });
+    return "Already recorded";
+  }
+  if (reason === "HELD" && (await jotformAutoFileOn())) {
+    const result = await recordQuestionnaireWebhook(sub, ref!);
+    await prisma.jotformInbox.create({ data: { ...base, status: "FILED", filedClientId: suggestedClientId, resolvedAt: new Date() } });
+    return result;
+  }
+  const row = await prisma.jotformInbox.create({ data: base });
+  await audit(prisma, { actorId: null, action: "questionnaire.received", entityType: "JotformInbox", entityId: row.id, clientId: suggestedClientId, details: { reason, taxYear, arrivedVia } });
   return `Held for staff review (${reason})`;
 }
 
-export const INBOX_REASON: Record<string, string> = {
-  HELD: "Signed link verified — waiting for staff to file (automatic filing is off)",
-  NO_REFERENCE: "No client link — submitted from the public form",
-  BAD_REFERENCE: "Client link didn't verify",
-  FORM_YEAR_MISMATCH: "Form isn't that tax year's questionnaire",
-  CLIENT_NOT_FOUND: "Linked client no longer exists",
-};
-
-/** Candidate clients for an inbox item (by the submission's email addresses). */
-export async function inboxCandidates(emails: string[]) {
-  if (!emails.length) return [];
-  return prisma.client.findMany({
-    where: { archivedAt: null, OR: [{ emailNormalized: { in: emails } }, { contacts: { some: { emailNormalized: { in: emails } } } }] },
-    select: { id: true, displayName: true },
-    take: 5,
-  });
+/**
+ * Pulls recent submissions of every configured questionnaire form into the
+ * inbox (e.g. ones sent before the webhook existed). Staff never search
+ * Jotform by hand. Nothing is filed; duplicates are skipped.
+ */
+export async function importRecentSubmissions(actor: Actor) {
+  const c = jotformConfig();
+  if (!c.apiKey) throw new ValidationError("Jotform isn't connected (JOTFORM_API_KEY).");
+  const forms = await prisma.taxQuestionnaire.findMany({ where: { jotformFormId: { not: null } } });
+  if (!forms.length) throw new ValidationError("No questionnaire forms are set up yet (News & Countdowns → Tax questionnaires).");
+  let added = 0;
+  let seen = 0;
+  for (const formId of Array.from(new Set(forms.map((f) => f.jotformFormId!)))) {
+    const res = await fetch(`${c.apiBase}/form/${encodeURIComponent(formId)}/submissions?limit=200&orderby=created_at`, { headers: { APIKEY: c.apiKey } }).catch(() => null);
+    if (!res?.ok) throw new ValidationError(`Jotform API error${res ? ` (HTTP ${res.status})` : ""}.`);
+    const subs = (((await res.json()) as { content?: JotSubmission[] }).content ?? []).filter((x) => x.id && (x as { status?: string }).status !== "DELETED");
+    for (const sub of subs) {
+      seen++;
+      const ref = Object.values(sub.answers ?? {}).find((a) => a.name === c.refField)?.answer;
+      const r = await routeQuestionnaireWebhook({ ...sub, form_id: sub.form_id ?? formId }, typeof ref === "string" && ref ? ref : null, "IMPORT");
+      if (r.startsWith("Held")) added++;
+    }
+  }
+  await audit(prisma, { actorId: actor.id, action: "questionnaire.inbox_imported", entityType: "JotformInbox", details: { seen, added } });
+  return { seen, added };
 }
 
-/** Staff file an inbox item to a client and tax year (answers re-read from Jotform). */
-export async function fileInboxItem(actor: Actor, inboxId: string, input: { clientId: string; taxYear: number; confirmed: boolean; matchNote?: string }) {
+export const INBOX_REASON: Record<string, string> = {
+  HELD: "Came from the client's personal Client Connect link (verified)",
+  NO_REFERENCE: "Came from the public Jotform link",
+  BAD_REFERENCE: "Personal link didn't verify",
+  FORM_YEAR_MISMATCH: "Form isn't that tax year's questionnaire",
+  CLIENT_NOT_FOUND: "The linked client no longer exists",
+};
+
+export type InboxState = "NEW" | "REVIEWED" | "ASSIGNED" | "COMPLETED" | "DISMISSED";
+export const INBOX_STATE: Record<InboxState, { label: string; tone: "gold" | "navy" | "amber" | "green" | "gray" }> = {
+  NEW: { label: "New", tone: "gold" },
+  REVIEWED: { label: "Reviewed", tone: "navy" },
+  ASSIGNED: { label: "Assigned — answers to review", tone: "amber" },
+  COMPLETED: { label: "Completed", tone: "green" },
+  DISMISSED: { label: "Dismissed", tone: "gray" },
+};
+
+export function inboxState(item: { status: string; previewedAt: Date | null }, filed?: { reviewStatus: string } | null): InboxState {
+  if (item.status === "DISMISSED") return "DISMISSED";
+  if (item.status === "FILED") return filed?.reviewStatus === "REVIEWED" ? "COMPLETED" : "ASSIGNED";
+  return item.previewedAt ? "REVIEWED" : "NEW";
+}
+
+/**
+ * Coetha's suggestions: only verified information counts — the client's
+ * signed personal link, or an email / phone already on the client's record.
+ * A name alone is shown as "name only" and is never pre-selected.
+ */
+export async function suggestClients(item: { suggestedClientId: string | null; reason: string; emails: string[]; phones: string[]; names: string[] }) {
+  const out = new Map<string, { id: string; displayName: string; email: string | null; phone: string | null; why: string[]; verified: boolean }>();
+  const add = (c: { id: string; displayName: string; email: string | null; phone: string | null }, why: string, verified: boolean) => {
+    const e = out.get(c.id) ?? { ...c, why: [], verified: false };
+    e.why.push(why);
+    e.verified ||= verified;
+    out.set(c.id, e);
+  };
+  const sel = { id: true, displayName: true, email: true, phone: true } as const;
+  if (item.suggestedClientId && item.reason === "HELD") {
+    const c = await prisma.client.findUnique({ where: { id: item.suggestedClientId }, select: sel });
+    if (c) add(c, "Personal Client Connect link", true);
+  }
+  if (item.emails.length) {
+    for (const c of await prisma.client.findMany({ where: { archivedAt: null, OR: [{ emailNormalized: { in: item.emails } }, { contacts: { some: { emailNormalized: { in: item.emails } } } }] }, select: sel, take: 5 })) add(c, "Same email", true);
+  }
+  if (item.phones.length) {
+    for (const c of await prisma.client.findMany({ where: { archivedAt: null, OR: [{ phoneNormalized: { in: item.phones } }, { contacts: { some: { phoneNormalized: { in: item.phones } } } }] }, select: sel, take: 5 })) add(c, "Same phone", true);
+  }
+  for (const n of item.names) {
+    for (const c of await prisma.client.findMany({ where: { archivedAt: null, displayName: { equals: n, mode: "insensitive" } }, select: sel, take: 5 })) {
+      if (!out.has(c.id)) add(c, "Name only — verify before assigning", false);
+    }
+  }
+  return [...out.values()].sort((a, b) => Number(b.verified) - Number(a.verified));
+}
+
+export async function markPreviewed(actor: Actor, inboxId: string) {
+  await prisma.jotformInbox.updateMany({ where: { id: inboxId, previewedAt: null }, data: { previewedAt: new Date(), previewedById: actor.id } });
+}
+
+/**
+ * Staff approve the client and tax year in the inbox. Answers are re-read
+ * from Jotform; only the attachments staff tick go to that year's vault.
+ */
+export async function fileInboxItem(actor: Actor, inboxId: string, input: { clientId: string; taxYear: number; yearConfirmed: boolean; fileIndexes?: number[]; note?: string }) {
   const item = await prisma.jotformInbox.findUniqueOrThrow({ where: { id: inboxId } });
   if (item.status !== "PENDING") throw new ValidationError("This submission was already handled.");
+  if (!input.yearConfirmed) throw new ValidationError("Confirm the tax year before assigning.");
+  if (!input.clientId) throw new ValidationError("Choose the client.");
+  const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { id: true, archivedAt: true } });
+  if (!client || client.archivedAt) throw new ValidationError("Choose an active client.");
   const signedRef = item.reason === "HELD" && item.suggestedClientId === input.clientId && item.taxYear === input.taxYear;
-  const r = await linkSubmission(actor, { clientId: input.clientId, taxYear: input.taxYear, submissionId: item.submissionId, confirmed: input.confirmed, matchNote: input.matchNote, signedRef });
-  await prisma.jotformInbox.update({ where: { id: item.id }, data: { status: "FILED", resolvedAt: new Date(), resolvedById: actor.id, filedClientId: input.clientId } });
-  await audit(prisma, { actorId: actor.id, action: "questionnaire.filed_from_inbox", entityType: "JotformInbox", entityId: item.id, clientId: input.clientId, details: { taxYear: input.taxYear, signedRef } });
+  const r = await linkSubmission(actor, { clientId: input.clientId, taxYear: input.taxYear, submissionId: item.submissionId, confirmed: true, signedRef, staffApproved: true, fileIndexes: input.fileIndexes, matchNote: input.note });
+  await prisma.jotformInbox.update({ where: { id: item.id }, data: { status: "FILED", resolvedAt: new Date(), resolvedById: actor.id, filedClientId: input.clientId, previewedAt: item.previewedAt ?? new Date(), previewedById: item.previewedById ?? actor.id } });
+  await audit(prisma, { actorId: actor.id, action: "questionnaire.assigned_from_inbox", entityType: "JotformInbox", entityId: item.id, clientId: input.clientId, details: { taxYear: input.taxYear, signedRef, files: r.imported } });
   return r;
 }
 

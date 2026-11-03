@@ -3402,6 +3402,16 @@ model JotformInbox {
   // HELD (auto-filing off) | NO_REFERENCE | BAD_REFERENCE | FORM_YEAR_MISMATCH | CLIENT_NOT_FOUND
   reason            String
   emails            String[]  @default([])
+  // Normalized phones and names from the submission, used only to suggest a
+  // client (names alone never count as a match).
+  phones            String[]  @default([])
+  names             String[]  @default([])
+  submittedAt       DateTime?
+  // How it arrived: WEBHOOK | IMPORT (pulled from Jotform by staff)
+  arrivedVia        String    @default("WEBHOOK")
+  // First time a staff member opened the preview ("Reviewed" in the inbox).
+  previewedAt       DateTime?
+  previewedById     String?
   // PENDING | FILED | DISMISSED
   status            String    @default("PENDING")
   receivedAt        DateTime  @default(now())
