@@ -55,6 +55,9 @@ export async function selfServiceAvailable() {
   return emailProviderConfigured() && !!(await authSettings()).emailDeliveryVerifiedAt;
 }
 
+const RECENT_LINK_MS = 15 * 60_000;
+const ACTIVATION_REVIEW_SUBJECT = "Portal activation request needs review";
+
 async function limited(key: string, max: number, windowMs: number) {
   const n = await prisma.loginAttempt.count({ where: { email: key, success: false, createdAt: { gte: new Date(Date.now() - windowMs) } } });
   if (n >= max) throw new ValidationError("Too many attempts. Please wait an hour and try again, or call our office.");
@@ -323,12 +326,26 @@ export async function submitOnboarding(user: PortalActor) {
   const app = await openApplication(user);
   if (!app.servicesRequested.length) throw new ValidationError("Save your details first.");
   const portalUser = await prisma.portalUser.findUniqueOrThrow({ where: { id: user.id } });
-  const matches = await possibleMatches(app, portalUser.email);
-  if (matches.length) {
-    await prisma.onboardingApplication.update({ where: { id: app.id }, data: { status: "NEEDS_REVIEW", possibleMatchIds: matches, submittedAt: new Date() } });
-    await audit(prisma, { actorId: null, action: "portal.onboarding_needs_review", entityType: "OnboardingApplication", entityId: app.id });
-    return "NEEDS_REVIEW" as const;
+  // The email was proved with a code at sign-up. If it's on exactly one client record, this IS
+  // that client: connect them straight away (same proof as an emailed activation link).
+  const byEmail = await (async () => {
+    const [c, k] = await Promise.all([
+      prisma.client.findMany({ where: { emailNormalized: portalUser.email, archivedAt: null }, select: { id: true } }),
+      prisma.contact.findMany({ where: { emailNormalized: portalUser.email, client: { archivedAt: null } }, select: { clientId: true } }),
+    ]);
+    return [...new Set([...c.map((x) => x.id), ...k.map((x) => x.clientId)])];
+  })();
+  if (byEmail.length === 1) {
+    const claimed = await prisma.onboardingApplication.updateMany({ where: { id: app.id, status: "IN_PROGRESS" }, data: { status: "LINKED_EXISTING", clientId: byEmail[0], submittedAt: new Date() } });
+    if (claimed.count !== 1) throw new ValidationError("Your details were already submitted.");
+    await audit(prisma, { actorId: null, action: "portal.signup_linked_by_verified_email", entityType: "OnboardingApplication", entityId: app.id, clientId: byEmail[0] });
+    await finishLink(app.id, byEmail[0], user.id, null);
+    return "APPROVED_NEW" as const;
   }
+  // Name/phone look-alikes are never shown or connected (they could be someone else's confidential
+  // record). The person gets their own new account right away; staff are alerted to check for a
+  // duplicate and merge if it's the same person.
+  const matches = await possibleMatches(app, portalUser.email);
   const client = await prisma.$transaction(async (tx) => {
     const claimed = await tx.onboardingApplication.updateMany({ where: { id: app.id, status: "IN_PROGRESS" }, data: { status: "APPROVED_NEW", submittedAt: new Date() } });
     if (claimed.count !== 1) throw new ValidationError("Your details were already submitted.");
@@ -358,6 +375,15 @@ export async function submitOnboarding(user: PortalActor) {
     return c;
   });
   await finishLink(app.id, client.id, user.id, null);
+  if (matches.length) {
+    await prisma.onboardingApplication.update({ where: { id: app.id }, data: { possibleMatchIds: matches } });
+    const convoId = await prisma.$transaction(async (tx) => {
+      const convo = await tx.conversation.create({ data: { clientId: client.id, subject: "Possible duplicate client record — please check", awaitingStaff: true, unreadByStaff: true } });
+      await tx.message.create({ data: { conversationId: convo.id, channel: "INTERNAL_NOTE", direction: "OUTBOUND", status: "DELIVERED", body: `This new self-service account looks similar (name, phone or business) to ${matches.length} existing record(s): ${matches.map((id) => `/clients/${id}`).join(", ")}. Nothing was shared or linked. If it's the same person, merge the records with the client merge tool; otherwise no action is needed.` } });
+      return convo.id;
+    });
+    await queueStaffAlert({ conversationId: convoId });
+  }
   return "APPROVED_NEW" as const;
 }
 
@@ -548,20 +574,89 @@ export async function requestActivation(input: { email: string; name: string; ph
     prisma.contact.findMany({ where: { emailNormalized: email, client: { archivedAt: null } }, select: { clientId: true } }),
   ]);
   const matched = [...new Set([...clients.map((c) => c.id), ...contacts.map((c) => c.clientId)])];
-  const record = (status: "INVITE_SENT" | "ALREADY_ACTIVE" | "NEEDS_STAFF" | "EMAIL_FAILED") =>
+  const record = (status: "INVITE_SENT" | "ALREADY_ACTIVE" | "NEEDS_STAFF" | "EMAIL_FAILED" | "RESOLVED") =>
     prisma.activationRequest.create({ data: { emailNormalized: email, name: input.name.trim().slice(0, 120) || null, phone: input.phone.trim().slice(0, 30) || null, ipHash: ip, status, matchedClientIds: matched } });
 
-  if (matched.length !== 1 || !(await selfServiceAvailable())) return void (await record("NEEDS_STAFF"));
+  // The page always shows the same neutral answer (so it can't be used to test which emails are
+  // clients). The real outcome goes to the server log — no address, name or client details.
+  const outcome = (result: string, detail?: string) => console.info(`Activation request: ${result}${detail ? ` (${detail})` : ""}; matching records: ${matched.length}`);
+  // Exceptional identity cases only (several records share this email): staff get a staff-only
+  // note on each record (audit trail; never visible in the portal), the dashboard count, and the
+  // assigned staff member an email. One alert per record per day, however often someone retries.
+  const toStaff = async (why: string, notify: boolean) => {
+    await record("NEEDS_STAFF");
+    if (!notify) return;
+    for (const clientId of matched) {
+      const recent = await prisma.conversation.findFirst({ where: { clientId, subject: ACTIVATION_REVIEW_SUBJECT, createdAt: { gte: new Date(Date.now() - 24 * 3600_000) } } });
+      if (recent) continue;
+      const convoId = await prisma.$transaction(async (tx) => {
+        const convo = await tx.conversation.create({ data: { clientId, subject: ACTIVATION_REVIEW_SUBJECT, awaitingStaff: true, unreadByStaff: true } });
+        await tx.message.create({ data: { conversationId: convo.id, channel: "INTERNAL_NOTE", direction: "OUTBOUND", status: "DELIVERED", body: `Someone asked to activate the client portal with an email on this client's record. No email was sent: ${why}. Review it in Clients → Portal sign-ups to review (/clients/onboarding).` } });
+        return convo.id;
+      });
+      await queueStaffAlert({ conversationId: convoId });
+      const assigned = await prisma.client.findUnique({ where: { id: clientId }, select: { assignedTo: { select: { email: true, active: true } } } });
+      if (assigned?.assignedTo?.active && assigned.assignedTo.email) {
+        const r = await sendEmail({
+          to: assigned.assignedTo.email,
+          subject: "A portal activation request needs your review",
+          text: `A client assigned to you asked to activate their portal and it needs staff review.\n\nReview it: ${appUrl()}/clients/onboarding`,
+          idempotencyKey: `activation-review/${convoId}`,
+          tags: { category: "staff_alert" },
+        });
+        console.info(`Activation request: assigned staff ${r.ok ? "notified" : "notification FAILED"}`);
+      }
+    }
+  };
+  if (!(await selfServiceAvailable())) {
+    const why = emailProviderConfigured() ? "email delivery not yet confirmed in Settings → Client sign-in" : "RESEND_API_KEY or EMAIL_FROM_ADDRESS not available to the server";
+    outcome("held, no email", why);
+    // A setup problem, not an identity question: shown on the staff dashboard, no per-request alerts.
+    return void (await toStaff(`self-service activation is paused (${why})`, false));
+  }
+  if (matched.length === 0) {
+    // Not a client yet: email them the way to create an account (the page answer stays the same).
+    const body = mail("Create your client account", ["We couldn't find a client account with this email address. You can create your account in a few minutes — you'll confirm your email with a code and go straight to your portal.", "If you're already a client and use a different email with our office, request activation with that address instead."], { label: "Create my account", url: `${appUrl()}/client/signup` });
+    const r = await sendEmail({ to: email, subject: `Create your ${BUSINESS.platformName} account`, ...body, tags: { category: "client_account" } });
+    outcome(r.ok ? "no record on file — sign-up link emailed" : "no record on file — sign-up email FAILED", r.ok ? undefined : r.detail);
+    return void (await record(r.ok ? "RESOLVED" : "EMAIL_FAILED"));
+  }
+  if (matched.length > 1) {
+    outcome("sent to staff review, no email", "more than one client record has this email");
+    return void (await toStaff("more than one client record has this email", true));
+  }
+  // A repeat request (double click, impatient retry) must not cancel a link we just sent.
+  const recentLink = await prisma.portalInvite.findFirst({ where: { email, clientId: matched[0], acceptedAt: null, revokedAt: null, sentByEmail: true, emailStatus: { not: "FAILED" }, emailSentAt: { gte: new Date(Date.now() - RECENT_LINK_MS) }, expiresAt: { gt: new Date() } } });
+  if (recentLink) {
+    outcome("activation link already emailed in the last 15 minutes — still valid, not replaced");
+    return void (await record("INVITE_SENT"));
+  }
+  if (await staffWithAddress(email)) console.info("Activation request: this address also belongs to a staff login — the portal login stays separate from the staff login");
   const existing = await prisma.portalUser.findUnique({ where: { email }, include: { access: { where: { revokedAt: null } } } });
-  if (existing) {
-    if (!existing.access.some((a) => a.clientId === matched[0])) return void (await record("NEEDS_STAFF"));
+  if (existing?.access.some((a) => a.clientId === matched[0])) {
     const body = mail("Your portal is already active", ["Your client portal is already active. Sign in with your email and password, or use “Forgot your password?” to choose a new one."], { label: "Sign in", url: `${appUrl()}/client/login` });
-    await sendEmail({ to: email, subject: `Your ${BUSINESS.platformName} portal`, ...body, tags: { category: "client_account" } });
-    return void (await record("ALREADY_ACTIVE"));
+    const r = await sendEmail({ to: email, subject: `Your ${BUSINESS.platformName} portal`, ...body, tags: { category: "client_account" } });
+    outcome(r.ok ? "already active — sign-in reminder emailed" : "already active — reminder email FAILED", r.ok ? undefined : r.detail);
+    return void (await record(r.ok ? "ALREADY_ACTIVE" : "EMAIL_FAILED"));
   }
   const name = input.name.trim() || clients[0]?.displayName || "there";
+  // An existing login with this address (proved when it signed up) gets this account added;
+  // otherwise a one-time activation link goes to the address on file.
   const sent = await emailActivationInvite(matched[0], email, name, null);
+  if (sent.ok && sent.grantedExisting) {
+    const body = mail("Your account was added to your portal", ["This account is now available in your client portal. Sign in with your usual email and password."], { label: "Sign in", url: `${appUrl()}/client/login` });
+    await sendEmail({ to: email, subject: `Your ${BUSINESS.platformName} portal`, ...body, tags: { category: "client_account" } });
+  }
+  outcome(sent.ok ? (sent.grantedExisting ? "existing login — account added, sign-in email sent" : "activation link emailed") : "activation email FAILED", sent.ok ? undefined : sent.detail);
   await record(sent.ok ? "INVITE_SENT" : "EMAIL_FAILED");
+}
+
+/** Why a waiting activation request got no email — shown to staff. */
+export function activationWaitingReason(r: { status: string; matchedClientIds: string[] }, selfService: boolean) {
+  if (r.status === "EMAIL_FAILED") return "The email was attempted but the provider refused or couldn't be reached.";
+  if (!selfService) return "No email was sent: self-service activation is paused until email delivery is confirmed in Settings → Client sign-in.";
+  if (r.matchedClientIds.length > 1) return "No email was sent: more than one client record has this email — confirm which person this is.";
+  return "No email was sent: self-service activation was paused when this request arrived. Send the link now.";
 }
 
 /** Staff verified the person and send an activation link to the email on file for the chosen client. */

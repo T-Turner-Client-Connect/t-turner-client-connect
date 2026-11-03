@@ -1,3 +1,4 @@
+import { PreviewBanner } from "@/components/preview-banner";
 import { PublicFooter } from "@/components/legal-links";
 import { Suspense } from "react";
 import { PortalNav } from "@/components/portal/portal-nav";
@@ -32,6 +33,7 @@ export default async function PortalLayout({ children }: { children: React.React
   });
   return (
     <div className="lux-page min-h-dvh">
+      <PreviewBanner />
       <Suspense>
         <PortalNav accounts={accounts} name={user.name} unread={unread} signOut={portalLogoutAction} />
       </Suspense>

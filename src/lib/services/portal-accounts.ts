@@ -57,9 +57,19 @@ export async function invitePortalUser(
   return { token };
 }
 
+/**
+ * Looks up an invitation WITHOUT using it: opening or previewing the link (or
+ * an email security scanner fetching it) never consumes it — only completing
+ * the password step does. When a link isn't valid, the server log says why
+ * (never the token or address).
+ */
 export async function findOpenPortalInvite(token: string) {
   const invite = await prisma.portalInvite.findUnique({ where: { tokenHash: hashToken(token) }, include: { client: { select: { displayName: true, archivedAt: true } } } });
-  if (!invite || invite.acceptedAt || invite.revokedAt || invite.expiresAt < new Date() || invite.client.archivedAt) return null;
+  const why = !invite ? "not found in this site's database (sent from another site, e.g. a preview, or mistyped)" : invite.acceptedAt ? "already used" : invite.revokedAt ? "replaced by a newer invitation" : invite.expiresAt < new Date() ? "expired" : invite.client.archivedAt ? "client archived" : null;
+  if (why) {
+    console.info(`Portal invitation link not valid: ${why}`);
+    return null;
+  }
   return invite;
 }
 

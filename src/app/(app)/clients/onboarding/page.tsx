@@ -3,7 +3,8 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Field, Notice, PageHeader } from "@/components/ui";
 import { activationStepAction, reviewStepAction } from "@/app/actions/signup";
 import { requireUser } from "@/lib/auth/session";
-import { reviewQueue } from "@/lib/services/client-signup";
+import { activationWaitingReason, reviewQueue, selfServiceAvailable } from "@/lib/services/client-signup";
+import { emailProviderConfigured } from "@/lib/auth/client-auth";
 import { fmtDateTime } from "@/lib/format";
 
 export const metadata = { title: "Portal sign-ups" };
@@ -11,9 +12,19 @@ export const metadata = { title: "Portal sign-ups" };
 export default async function OnboardingReviewPage() {
   await requireUser();
   const { applications, activations, clients } = await reviewQueue();
+  const selfService = await selfServiceAvailable();
   return (
     <>
       <PageHeader title="Portal sign-ups to review" subtitle="New sign-ups that might match an existing client, and activation requests we couldn't match automatically." />
+      {!selfService && (
+        <div className="mb-4" data-testid="activation-paused">
+          <Notice tone="error" title="Self-service activation is paused — clients who ask for an activation link get NO email">
+            {emailProviderConfigured()
+              ? <>Email is set up but delivery hasn&apos;t been confirmed yet. An Admin opens <Link className="underline" href="/settings">Settings → Client sign-in</Link>, clicks “Email me a code”, and enters the code. Until then, every request waits below for staff.</>
+              : <>The server can&apos;t see RESEND_API_KEY and EMAIL_FROM_ADDRESS. Check them in Netlify (Functions scope, Production) and redeploy.</>}
+          </Notice>
+        </div>
+      )}
       <div className="mb-4">
         <Notice>
           Never connect a login to an existing client just because the email or name matches. Verify the person first (for example, call the phone number already on file), then
@@ -68,6 +79,7 @@ export default async function OnboardingReviewPage() {
                 <li key={r.id} className="py-3">
                   <p className="font-semibold">{r.name ?? "No name given"} <span className="font-normal text-slate-600">· {r.emailNormalized} · {r.phone ?? "no phone"} · {fmtDateTime(r.createdAt)}</span> {r.status === "EMAIL_FAILED" && <Badge tone="red">Email failed</Badge>}</p>
                   <p className="text-sm text-slate-700">{r.matchedClientIds.length === 0 ? "No client has this email on file." : `${r.matchedClientIds.length} record(s) have this email on file.`}</p>
+                  <p className="text-sm font-semibold text-red-800" data-testid="activation-reason">{activationWaitingReason(r, selfService)}</p>
                   <div className="mt-2 flex flex-wrap items-end gap-2">
                     <ActionForm action={activationStepAction.bind(null, r.id, "send")} className="flex flex-wrap items-end gap-2">
                       <Field label="Send activation link to the email on file for">

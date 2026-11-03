@@ -14,6 +14,12 @@ const nextConfig: NextConfig = {
   // page from an older deploy talks to a newer one, Next.js reloads the page
   // instead of calling a form action that no longer exists.
   deploymentId: process.env.DEPLOY_ID || undefined,
+  // Which Netlify deploy this build is (production, deploy-preview, branch-deploy)
+  // and its own address — fixed at build time so the server always knows.
+  env: {
+    BUILD_CONTEXT: process.env.CONTEXT ?? "",
+    BUILD_DEPLOY_URL: process.env.DEPLOY_PRIME_URL ?? "",
+  },
   experimental: {
     // Mapped import rows and uploads go through Server Actions (Netlify caps bodies at ~6 MB).
     serverActions: { bodySizeLimit: "6mb" },
