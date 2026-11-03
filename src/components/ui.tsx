@@ -31,7 +31,7 @@ export function LinkButton({ variant = "primary", className, ...props }: Compone
 
 export function Card({ className, children, title, actions }: { className?: string; children: ReactNode; title?: ReactNode; actions?: ReactNode }) {
   return (
-    <section className={clsx("rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_1px_2px_rgba(0,20,82,0.04),0_8px_24px_-12px_rgba(0,20,82,0.12)] sm:p-6", className)}>
+    <section className={clsx("rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_1px_2px_rgba(10,26,68,0.04),0_8px_24px_-12px_rgba(10,26,68,0.12)] sm:p-6", className)}>
       {(title || actions) && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           {title && <h2 className="text-lg font-semibold">{title}</h2>}
@@ -110,7 +110,7 @@ export function Stat({ label, value, hint, href }: { label: string; value: React
       {hint && <p className="mt-1 text-xs text-slate-600">{hint}</p>}
     </>
   );
-  const cls = "block rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_1px_2px_rgba(0,20,82,0.04),0_8px_24px_-12px_rgba(0,20,82,0.12)] relative overflow-hidden before:absolute before:inset-x-0 before:top-0 before:h-1 before:bg-gradient-to-r before:from-gold-500 before:to-gold-300";
+  const cls = "block rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_1px_2px_rgba(10,26,68,0.04),0_8px_24px_-12px_rgba(10,26,68,0.12)] relative overflow-hidden before:absolute before:inset-x-0 before:top-0 before:h-1 before:bg-gradient-to-r before:from-gold-500 before:to-gold-300";
   return href ? (
     <Link href={href} className={clsx(cls, "hover:border-navy-700")}>
       {body}
