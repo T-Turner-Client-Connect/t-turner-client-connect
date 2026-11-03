@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
-import { commitImport, discardImport, setRowDecision, stageImport, type StageInput } from "@/lib/services/imports";
+import { commitImport, discardImport, setRowApprovals, setRowDecision, stageImport, type StageInput } from "@/lib/services/imports";
 
 export async function stageImportAction(input: StageInput): Promise<{ error?: string; ok?: string; batchId?: string } | null> {
   const actor = await requireUser();
@@ -25,7 +25,8 @@ export async function setRowDecisionAction(rowId: string, decision: string): Pro
 export async function commitImportAction(batchId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   const result = await run(async () => {
-    await commitImport(actor, batchId, str(fd, "mode") === "overwrite" ? "overwrite" : "fill_blanks");
+    // Values already on file change only where staff approved them in the comparison.
+    await commitImport(actor, batchId, "fill_blanks");
   });
   if (result?.ok) {
     revalidatePath("/clients");
@@ -41,4 +42,13 @@ export async function discardImportAction(batchId: string, _prev: ActionState): 
   });
   if (result?.ok) redirect("/imports");
   return result;
+}
+
+export async function setRowApprovalsAction(rowId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const fields = await setRowApprovals(actor, rowId, fd.getAll("field").map(String));
+    revalidatePath("/imports");
+    return fields.length ? `Approved: ${fields.length} correction(s).` : "No corrections approved — Client Connect keeps its values.";
+  });
 }

@@ -25,6 +25,12 @@ import { saveUpload } from "@/lib/services/files";
 function clientInput(fd: FormData): ClientInput {
   return {
     firstName: str(fd, "firstName"),
+    middleName: str(fd, "middleName"),
+    spouseFirstName: str(fd, "spouseFirstName"),
+    spouseMiddleName: str(fd, "spouseMiddleName"),
+    spouseLastName: str(fd, "spouseLastName"),
+    spouseEmail: str(fd, "spouseEmail"),
+    spousePhone: str(fd, "spousePhone"),
     preferredName: str(fd, "preferredName"),
     lastName: str(fd, "lastName"),
     businessName: str(fd, "businessName"),

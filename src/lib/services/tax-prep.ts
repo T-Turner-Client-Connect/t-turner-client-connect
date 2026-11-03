@@ -45,24 +45,33 @@ function checkYear(taxYear: number) {
 export async function syncHouseholdName(db: Db, clientId: string) {
   const client = await db.client.findUniqueOrThrow({ where: { id: clientId } });
   const latest = await db.taxPrepCase.findFirst({ where: { clientId }, orderBy: { taxYear: "desc" } });
-  if (!latest) return null;
   const data: Prisma.ClientUpdateInput = {};
   let first = client.firstName;
+  let middle = client.middleName;
   let last = client.lastName;
-  if (looksCombined(client) && (latest.primaryFirstName || latest.primaryLastName)) {
-    first = [latest.primaryFirstName, latest.primaryMiddleName].filter(Boolean).join(" ") || null;
+  if (looksCombined(client) && latest && (latest.primaryFirstName || latest.primaryLastName)) {
+    first = latest.primaryFirstName;
+    middle = latest.primaryMiddleName;
     last = latest.primaryLastName;
-    data.firstName = first;
-    data.lastName = last;
+    Object.assign(data, { firstName: first, middleName: middle, lastName: last });
   }
-  // Household name for a joint return — and while the return type is still
-  // to be selected but the file named both taxpayers together.
-  const joint = (isJointReturn(latest.returnType) || !latest.returnType) && (latest.spouseFirstName || latest.spouseLastName);
+  // The spouse profile on the client record; the latest joint case fills it in when blank.
+  const spouse = {
+    first: client.spouseFirstName ?? latest?.spouseFirstName ?? null,
+    middle: client.spouseMiddleName ?? (client.spouseFirstName ? null : latest?.spouseMiddleName ?? null),
+    last: client.spouseLastName ?? latest?.spouseLastName ?? null,
+  };
+  if (!client.spouseFirstName && !client.spouseLastName && (spouse.first || spouse.last) && latest && (!latest.returnType || isJointReturn(latest.returnType))) {
+    Object.assign(data, { spouseFirstName: spouse.first, spouseMiddleName: spouse.middle, spouseLastName: spouse.last });
+    if (!client.spouseEmail && latest.spouseEmail) data.spouseEmail = latest.spouseEmail;
+    if (!client.spousePhone && latest.spousePhone) Object.assign(data, { spousePhone: latest.spousePhone, spousePhoneNormalized: normalizePhone(latest.spousePhone) });
+  }
+  const joint = (spouse.first || spouse.last) && (!latest || !latest.returnType || isJointReturn(latest.returnType));
   const display =
     client.clientType === "INDIVIDUAL"
       ? joint
-        ? householdName({ first, last }, { first: [latest.spouseFirstName, latest.spouseMiddleName].filter(Boolean).join(" ") || null, last: latest.spouseLastName })
-        : buildDisplayName({ firstName: first, lastName: last, businessName: client.businessName })
+        ? householdName({ first: [first, middle].filter(Boolean).join(" ") || null, last }, { first: [spouse.first, spouse.middle].filter(Boolean).join(" ") || null, last: spouse.last })
+        : buildDisplayName({ firstName: [first, middle].filter(Boolean).join(" ") || null, lastName: last, businessName: client.businessName })
       : client.displayName;
   if (display && display !== client.displayName) data.displayName = display;
   if (Object.keys(data).length === 0) return null;
@@ -183,6 +192,8 @@ export type ImportCaseInput = {
   otherReturnForm: string | null;
   primary: PersonName | null;
   spouse: PersonName | null;
+  spouseEmail?: string | null;
+  spousePhone?: string | null;
 };
 
 /**
@@ -202,6 +213,11 @@ export async function caseFromImport(tx: Prisma.TransactionClient, actorId: stri
     spouseFirstName: input.spouse?.first ?? null,
     spouseMiddleName: input.spouse?.middle ?? null,
     spouseLastName: input.spouse?.last ?? null,
+    // The spouse's own contact details stay on the joint tax case — they are
+    // not copied onto the client record, so the primary's email/phone (and
+    // their messaging permissions) are never mixed up with the spouse's.
+    spouseEmail: input.spouse ? input.spouseEmail ?? null : null,
+    spousePhone: input.spouse ? input.spousePhone ?? null : null,
   };
   const before = await tx.taxPrepCase.findUnique({ where: { clientId_taxYear: { clientId, taxYear: input.taxYear } } });
   const data: Record<string, unknown> = {};
