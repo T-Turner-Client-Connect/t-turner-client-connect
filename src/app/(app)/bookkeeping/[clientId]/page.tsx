@@ -117,6 +117,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
         actions={
           <div className="flex flex-wrap gap-2">
             <LinkButton href={`/bookkeeping/${clientId}/profile`} variant="secondary" data-testid="business-profile-button">Business profile</LinkButton>
+            <LinkButton href={`/bookkeeping/${clientId}/books`} variant="secondary" data-testid="books-button">Books &amp; Ledger</LinkButton>
             <LinkButton href="#upload-financials" data-testid="upload-financials-button">Upload Monthly Financials</LinkButton>
           </div>
         }

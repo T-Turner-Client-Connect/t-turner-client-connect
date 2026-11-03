@@ -3337,6 +3337,10 @@ model LedgerBook {
   entries              JournalEntry[]
   bankTransactions     BankTransaction[]
   reconciliations      BankReconciliation[]
+  rules                CategorizationRule[]
+  customers            InvoiceCustomer[]
+  invoices             ClientInvoice[]
+  recurringInvoices    RecurringInvoice[]
 }
 
 model LedgerAccount {
@@ -3462,4 +3466,147 @@ model BankReconciliation {
   createdAt             DateTime      @default(now())
 
   @@unique([accountId, statementDate])
+}
+
+/// A staff-approved rule ("descriptions containing X → account Y"). Rules and past postings only
+/// SUGGEST a category; a person still posts each transaction.
+model CategorizationRule {
+  id          String     @id @default(cuid())
+  clientId    String
+  book        LedgerBook @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  // Upper-case words to look for in the bank description.
+  matchText   String
+  // IN (money in) | OUT (money out) | ANY
+  direction   String     @default("ANY")
+  accountId   String
+  active      Boolean    @default(true)
+  createdById String
+  createdAt   DateTime   @default(now())
+
+  @@unique([clientId, matchText, direction])
+}
+
+// ===========================================================================
+// CLIENT INVOICING (foundation) — a bookkeeping client's own invoices to THEIR
+// customers. Separate from the office's Square billing. Payments are recorded
+// through a clearing account so a later bank deposit is never counted twice.
+// Stripe Connect runs in TEST mode only until Tabitha approves live payments.
+// ===========================================================================
+
+model StripeConnectAccount {
+  clientId        String   @id
+  // The client's OWN connected account (acct_…). Payments go to it, never the office.
+  stripeAccountId String   @unique
+  // Always false until live payments are approved.
+  livemode        Boolean  @default(false)
+  chargesEnabled  Boolean  @default(false)
+  payoutsEnabled  Boolean  @default(false)
+  createdById     String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model InvoiceCustomer {
+  id        String             @id @default(cuid())
+  clientId  String
+  book      LedgerBook         @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  active    Boolean            @default(true)
+  createdAt DateTime           @default(now())
+  invoices  ClientInvoice[]
+  recurring RecurringInvoice[]
+
+  @@index([clientId])
+}
+
+model ClientInvoice {
+  id              String                 @id @default(cuid())
+  clientId        String
+  book            LedgerBook             @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  customerId      String
+  customer        InvoiceCustomer        @relation(fields: [customerId], references: [id])
+  // INV-1001, INV-1002 … per client
+  number          String
+  issueDate       DateTime               @db.Date
+  dueDate         DateTime               @db.Date
+  // DRAFT | OPEN | PARTIALLY_PAID | PAID | VOID
+  status          String                 @default("DRAFT")
+  totalCents      Int
+  paidCents       Int                    @default(0)
+  memo            String?
+  // Days after the due date to remind the customer (sending is a later phase).
+  reminderDays    Int[]                  @default([3, 7, 14])
+  recurringId     String?
+  recurring       RecurringInvoice?      @relation(fields: [recurringId], references: [id])
+  stripeInvoiceId String?                @unique
+  issuedAt        DateTime?
+  voidedAt        DateTime?
+  voidReason      String?
+  createdById     String
+  createdAt       DateTime               @default(now())
+  lines           ClientInvoiceLine[]
+  payments        ClientInvoicePayment[]
+
+  @@unique([clientId, number])
+  @@index([clientId, status])
+}
+
+model ClientInvoiceLine {
+  id              String        @id @default(cuid())
+  invoiceId       String
+  invoice         ClientInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description     String
+  quantity        Int           @default(1)
+  unitCents       Int
+  amountCents     Int
+  incomeAccountId String
+}
+
+model ClientInvoicePayment {
+  id                    String        @id @default(cuid())
+  clientId              String
+  invoiceId             String
+  invoice               ClientInvoice @relation(fields: [invoiceId], references: [id])
+  amountCents           Int
+  // Processing fee kept by the processor (Stripe), recorded as an expense.
+  feeCents              Int           @default(0)
+  receivedOn            DateTime      @db.Date
+  // STRIPE_TEST | CHECK | CASH | ACH | ZELLE | OTHER
+  method                String
+  reference             String?
+  // One Stripe payment is recorded once.
+  stripePaymentIntentId String?       @unique
+  // R-0001 … per client
+  receiptNumber         String
+  createdById           String
+  createdAt             DateTime      @default(now())
+
+  @@unique([clientId, receiptNumber])
+  @@index([invoiceId])
+}
+
+/// Creates DRAFT invoices on a schedule. Drafts are reviewed before they're issued; nothing is sent automatically.
+model RecurringInvoice {
+  id          String          @id @default(cuid())
+  clientId    String
+  book        LedgerBook      @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  customerId  String
+  customer    InvoiceCustomer @relation(fields: [customerId], references: [id])
+  // MONTHLY | QUARTERLY | YEARLY
+  cadence     String
+  // Periods are counted from the start date, so month-end schedules don't drift (Jan 31 → Feb 28 → Mar 31).
+  startDate   DateTime        @db.Date
+  periods     Int             @default(0)
+  nextDate    DateTime        @db.Date
+  dueDays     Int             @default(15)
+  // [{ description, quantity, unitCents, incomeAccountId }]
+  lines       Json
+  memo        String?
+  active      Boolean         @default(true)
+  createdById String
+  createdAt   DateTime        @default(now())
+  invoices    ClientInvoice[]
 }

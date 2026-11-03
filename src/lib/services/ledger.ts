@@ -27,6 +27,7 @@ export type AccountType = keyof typeof ACCOUNT_TYPES;
 export const SUBTYPES: Record<string, { label: string; type: AccountType }> = {
   BANK: { label: "Bank account", type: "ASSET" },
   AR: { label: "Accounts receivable", type: "ASSET" },
+  CLEARING: { label: "Payments in transit (clearing)", type: "ASSET" },
   CREDIT_CARD: { label: "Credit card", type: "LIABILITY" },
   AP: { label: "Accounts payable", type: "LIABILITY" },
   OWNER_CONTRIBUTION: { label: "Owner contributions", type: "EQUITY" },
@@ -44,6 +45,7 @@ const DEBIT_NORMAL = new Set<string>(["ASSET", "EXPENSE"]);
 export const DEFAULT_CHART: { code: string; name: string; type: AccountType; subtype?: string }[] = [
   { code: "1000", name: "Business Checking", type: "ASSET", subtype: "BANK" },
   { code: "1100", name: "Accounts Receivable", type: "ASSET", subtype: "AR" },
+  { code: "1200", name: "Payments in Transit (Undeposited)", type: "ASSET", subtype: "CLEARING" },
   { code: "1500", name: "Equipment", type: "ASSET" },
   { code: "2000", name: "Accounts Payable", type: "LIABILITY", subtype: "AP" },
   { code: "2100", name: "Business Credit Card", type: "LIABILITY", subtype: "CREDIT_CARD" },
@@ -105,13 +107,13 @@ export async function canUseLedger(actor: Actor, clientId: string) {
   const c = await prisma.client.findUnique({ where: { id: clientId }, select: { assignedToId: true } });
   return c?.assignedToId === actor.id;
 }
-async function assertLedger(actor: Actor, clientId: string) {
+export async function assertLedger(actor: Actor, clientId: string) {
   if (!(await canUseLedger(actor, clientId))) throw new ForbiddenError("Only Admins and the staff member assigned to this client can work in its books.");
 }
 async function assertOwner(actor: Actor, what: string) {
   if (!(await isReportApprover(actor))) throw new ForbiddenError(`Only Tabitha can ${what}.`);
 }
-async function bookOf(clientId: string, db: Tx | typeof prisma = prisma) {
+export async function bookOf(clientId: string, db: Tx | typeof prisma = prisma) {
   const b = await db.ledgerBook.findUnique({ where: { clientId } });
   if (!b) throw new ValidationError("Set up this client's books first.");
   return b;
@@ -186,6 +188,9 @@ function assertOpenDate(book: { openingDate: Date | null; lockedThrough: Date | 
 }
 
 /** The one place entries are written. Validates balance, accounts, dates and duplicates inside the caller's transaction. */
+export async function postEntryTx(tx: Tx, actor: Actor, clientId: string, input: PostInput) {
+  return post(tx, actor, clientId, input);
+}
 async function post(tx: Tx, actor: Actor, clientId: string, input: PostInput) {
   const book = await bookOf(clientId, tx);
   // Saves for one client's books run one at a time.
@@ -361,7 +366,7 @@ export function parseBankCsv(text: string): { rows: ParsedRow[]; problems: strin
   return { rows, problems };
 }
 
-const normDesc = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+export const normDesc = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
 /** Identical rows on the same day (two $38.50 fees) are kept apart by their order in the statement. */
 export function fingerprints(rows: ParsedRow[]) {
   const seen = new Map<string, number>();
@@ -613,7 +618,7 @@ export async function setBasis(actor: Actor, clientId: string, basis: Basis) {
 
 const DRAW_WORDS = /\b(OWNER DRAW|DRAW|TRANSFER TO .*(SAVINGS|PERSONAL)|ZELLE TO|VENMO|CASH APP|ATM WITHDRAWAL)\b/;
 
-export type Flag = { kind: "UNREVIEWED" | "CLOSED_PERIOD" | "MISSING_STATEMENT" | "UNRECONCILED" | "SUSPENSE" | "POSSIBLE_DRAW" | "NO_OPENING"; severity: "HIGH" | "MEDIUM"; message: string };
+export type Flag = { kind: "UNREVIEWED" | "CLOSED_PERIOD" | "MISSING_STATEMENT" | "UNRECONCILED" | "SUSPENSE" | "POSSIBLE_DRAW" | "NO_OPENING" | "POSSIBLE_DUPLICATE_INCOME" | "UNDEPOSITED"; severity: "HIGH" | "MEDIUM"; message: string };
 
 export async function ledgerFlags(actor: Actor, clientId: string, today = todayCentral()) {
   await assertLedger(actor, clientId);
@@ -650,6 +655,16 @@ export async function ledgerFlags(actor: Actor, clientId: string, today = todayC
   // Bank rows that look like owner draws but were posted to an expense account.
   const posted = await prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED", amountCents: { lt: 0 } }, select: { description: true, journalEntry: { select: { lines: { select: { account: { select: { type: true, subtype: true } } } } } } } });
   const drawLike = posted.filter((t) => DRAW_WORDS.test(normDesc(t.description)) && t.journalEntry?.lines.some((l) => l.account.type === "EXPENSE" && l.account.subtype !== "SUSPENSE")).length;
+  // Processor payouts (Stripe, Square, PayPal) posted straight to income: invoice payments already recorded
+  // that income, so the payout belongs to Payments in Transit. Counting both would double the income.
+  const payouts = await prisma.bankTransaction.count({ where: { clientId, status: "POSTED", amountCents: { gt: 0 }, description: { contains: "STRIPE", mode: "insensitive" }, journalEntry: { lines: { some: { account: { type: "INCOME" } } } } } });
+  if (payouts && (await prisma.clientInvoicePayment.count({ where: { clientId } }))) flags.push({ kind: "POSSIBLE_DUPLICATE_INCOME", severity: "HIGH", message: `${payouts} Stripe deposit${payouts === 1 ? " was" : "s were"} posted to income while invoice payments are also recorded. Post payouts to Payments in Transit so income isn't counted twice.` });
+  const clearing = await prisma.ledgerAccount.findFirst({ where: { clientId, subtype: "CLEARING" } });
+  if (clearing) {
+    const old = toDate(ymdOf(new Date(toDate(today).getTime() - 10 * 86_400_000)));
+    const waiting = natural("ASSET", (await balancesBy(clientId, { date: { lte: old }, basis: basisFilter("CASH") })).get(clearing.id));
+    if (waiting > 0) flags.push({ kind: "UNDEPOSITED", severity: "MEDIUM", message: `${usd(waiting)} in Payments in Transit is more than 10 days old and hasn't been matched to a bank deposit.` });
+  }
   if (drawLike) flags.push({ kind: "POSSIBLE_DRAW", severity: "MEDIUM", message: `${drawLike} withdrawal${drawLike === 1 ? "" : "s"} that look like owner draws or personal transfers were posted as expenses. Owner draws belong in equity unless Tabitha approved an exception.` });
   return flags;
 }
