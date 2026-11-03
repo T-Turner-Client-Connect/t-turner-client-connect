@@ -35,7 +35,11 @@ export const FIELD_LABELS: Record<string, string> = {
 
 export type PlannedChange = { field: string; from: string | null; to: string; kind: "fill" | "replace" | "add" | "repair" };
 
-type Current = Pick<Client, (typeof SCALAR_FIELDS)[number] | "displayName" | "services" | "tags" | "notes">;
+type Current = Pick<Client, (typeof SCALAR_FIELDS)[number] | "displayName" | "services" | "tags" | "notes"> & { assignedToId?: string | null };
+
+/** Fields staff may approve to replace after the side-by-side comparison. */
+export const REPLACEABLE_FIELDS = [...SCALAR_FIELDS, "assignedToId"] as const;
+FIELD_LABELS.assignedToId = "Assigned staff";
 
 const has = (v: unknown) => v !== null && v !== undefined && v !== "";
 
@@ -54,19 +58,27 @@ export function mergeList(current: string[], incoming: string[]): string[] {
  * ("Allison R Stockton & Jonathan" / "Scoggins"), which is repaired into the
  * primary taxpayer when the file names both taxpayer and spouse.
  */
-export function plannedChanges(current: Current, row: CleanRow, mode: "fill_blanks" | "overwrite", extraServices: string[] = []): PlannedChange[] {
+export function plannedChanges(
+  current: Current,
+  row: CleanRow,
+  mode: "fill_blanks" | "overwrite",
+  extraServices: string[] = [],
+  opts: { approved?: string[]; assignedToId?: string | null } = {},
+): PlannedChange[] {
   const out: PlannedChange[] = [];
+  const approved = new Set(opts.approved ?? []);
   const repairName = !!row.spouse && looksCombined(current) && !!(row.firstName || row.lastName);
-  for (const field of SCALAR_FIELDS) {
-    const incoming = row[field];
+  const incomingOf = (f: (typeof REPLACEABLE_FIELDS)[number]) => (f === "assignedToId" ? opts.assignedToId ?? null : row[f]);
+  for (const field of REPLACEABLE_FIELDS) {
+    const incoming = incomingOf(field);
     if (!has(incoming)) continue;
-    const existing = current[field];
+    const existing = current[field as keyof Current] as string | null | undefined;
     if (existing === incoming) continue;
     if ((field === "firstName" || field === "lastName") && repairName) {
       out.push({ field, from: existing as string | null, to: String(incoming), kind: "repair" });
       continue;
     }
-    if (has(existing) && mode === "fill_blanks") continue;
+    if (has(existing) && mode === "fill_blanks" && !approved.has(field)) continue;
     out.push({ field, from: (existing as string | null) ?? null, to: String(incoming), kind: has(existing) ? "replace" : "fill" });
   }
   const services = mergeList(current.services, [...row.services, ...extraServices]);
@@ -75,4 +87,26 @@ export function plannedChanges(current: Current, row: CleanRow, mode: "fill_blan
   if (tags.length !== current.tags.length) out.push({ field: "tags", from: null, to: tags.slice(current.tags.length).join(", "), kind: "add" });
   if (row.notes && !current.notes?.includes(row.notes)) out.push({ field: "notes", from: null, to: row.notes, kind: "add" });
   return out;
+}
+
+export type Comparison = { field: string; label: string; taxact: string | null; connect: string | null; outcome: "same" | "fill" | "differs" | "approved" | "not_in_file" };
+
+/**
+ * The side-by-side TaxAct vs Client Connect view for one matched client.
+ * "differs" values are kept unless staff tick them (then "approved").
+ */
+export function compareFields(current: Current, row: CleanRow, opts: { approved?: string[]; assignedToId?: string | null; labelFor?: (field: string, v: string | null) => string | null } = {}): Comparison[] {
+  const approved = new Set(opts.approved ?? []);
+  const show = (f: string, v: string | null | undefined) => (v === null || v === undefined || v === "" ? null : opts.labelFor ? opts.labelFor(f, String(v)) : String(v));
+  return REPLACEABLE_FIELDS.map((field) => {
+    const taxact = field === "assignedToId" ? opts.assignedToId ?? null : (row[field] as string | null);
+    const connect = (current[field as keyof Current] as string | null | undefined) ?? null;
+    const norm = (v: string | null) => v?.trim().toLowerCase() ?? "";
+    let outcome: Comparison["outcome"];
+    if (!has(taxact)) outcome = "not_in_file";
+    else if (!has(connect)) outcome = "fill";
+    else if (norm(taxact) === norm(connect)) outcome = "same";
+    else outcome = approved.has(field) ? "approved" : "differs";
+    return { field, label: FIELD_LABELS[field] ?? field, taxact: show(field, taxact), connect: show(field, connect), outcome };
+  });
 }

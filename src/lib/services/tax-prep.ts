@@ -183,6 +183,8 @@ export type ImportCaseInput = {
   otherReturnForm: string | null;
   primary: PersonName | null;
   spouse: PersonName | null;
+  spouseEmail?: string | null;
+  spousePhone?: string | null;
 };
 
 /**
@@ -202,6 +204,11 @@ export async function caseFromImport(tx: Prisma.TransactionClient, actorId: stri
     spouseFirstName: input.spouse?.first ?? null,
     spouseMiddleName: input.spouse?.middle ?? null,
     spouseLastName: input.spouse?.last ?? null,
+    // The spouse's own contact details stay on the joint tax case — they are
+    // not copied onto the client record, so the primary's email/phone (and
+    // their messaging permissions) are never mixed up with the spouse's.
+    spouseEmail: input.spouse ? input.spouseEmail ?? null : null,
+    spousePhone: input.spouse ? input.spousePhone ?? null : null,
   };
   const before = await tx.taxPrepCase.findUnique({ where: { clientId_taxYear: { clientId, taxYear: input.taxYear } } });
   const data: Record<string, unknown> = {};

@@ -4,13 +4,14 @@ import type { ImportMatch } from "@prisma/client";
 import { ActionForm } from "@/components/action-form";
 import { DecisionSelect } from "@/components/decision-select";
 import { Badge, Button, buttonClass, Card, Notice, PageHeader } from "@/components/ui";
-import { commitImportAction, discardImportAction } from "@/app/actions/imports";
+import { commitImportAction, discardImportAction, setRowApprovalsAction } from "@/app/actions/imports";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import type { CleanRow } from "@/lib/import/rows";
 import { formatPhone } from "@/lib/normalize";
 import { fmtDateTime } from "@/lib/format";
-import { FIELD_LABELS, plannedChanges } from "@/lib/import/plan";
+import { compareFields, FIELD_LABELS, plannedChanges } from "@/lib/import/plan";
+import { classification } from "@/lib/import/rows";
 import type { ImportSummary } from "@/lib/services/imports";
 import { joinName, returnTypeLabel } from "@/lib/tax/return-types";
 
@@ -44,6 +45,7 @@ export default async function ImportReviewPage({ params, searchParams }: { param
     (await prisma.client.findMany({ where: { id: { in: candidateIds } } })).map((c) => [c.id, c]),
   );
   const summary = batch.summary as unknown as ImportSummary | null;
+  const staffNames = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const res = summary?.result;
   const attentionIds = res ? Array.from(new Set([...res.needsReturnType, ...res.needsConfirmation, ...res.namesRepaired])) : [];
   const attentionNames = new Map((await prisma.client.findMany({ where: { id: { in: attentionIds } }, select: { id: true, displayName: true } })).map((c) => [c.id, c.displayName]));
@@ -151,25 +153,45 @@ export default async function ImportReviewPage({ params, searchParams }: { param
                     Return type: <strong>{d.returnType ? returnTypeLabel(d.returnType, d.otherReturnForm) : "to be selected by staff"}</strong>
                   </p>
                 )}
-                {open && d && r.decision?.startsWith("update:") && candidates.get(r.decision.slice(7)) && (() => {
-                  const plan = plannedChanges(candidates.get(r.decision!.slice(7))!, d, "fill_blanks", batch.batchServices);
+                {d && <p className="mt-1 text-xs"><Badge tone="navy">{classification(d)}</Badge></p>}
+                {d && r.decision?.startsWith("update:") && candidates.get(r.decision.slice(7)) && (() => {
+                  const cur = candidates.get(r.decision!.slice(7))!;
+                  const rows = compareFields(cur, d, { approved: r.approvedFields, assignedToId: batch.batchAssignedToId, labelFor: (f, v) => (f === "assignedToId" ? staffNames.get(v ?? "") ?? v : v) });
+                  const plan = plannedChanges(cur, d, "fill_blanks", batch.batchServices, { approved: r.approvedFields, assignedToId: batch.batchAssignedToId });
+                  const differs = rows.filter((x) => x.outcome === "differs" || x.outcome === "approved");
+                  const OUT = { same: ["Same", "green"], fill: ["Will fill blank", "navy"], differs: ["Different — kept", "amber"], approved: ["Approved to replace", "gold"], not_in_file: ["Not in file", "gray"] } as const;
                   return (
-                    <div className="mt-2 rounded-md border border-navy-100 bg-ivory-50 p-2 text-sm" data-testid="row-plan">
-                      <p className="font-semibold text-navy-900">Preview — changes to {candidates.get(r.decision!.slice(7))!.displayName} (only blank fields are filled)</p>
-                      {plan.length === 0 ? (
-                        <p className="text-slate-600">No changes — the record already has everything in this row.</p>
-                      ) : (
-                        <ul className="mt-1 space-y-0.5">
-                          {plan.map((c) => (
-                            <li key={c.field}>
-                              <span className="font-medium">{FIELD_LABELS[c.field] ?? c.field}:</span>{" "}
-                              {c.kind === "fill" && <>blank → <strong>{c.to}</strong></>}
-                              {c.kind === "add" && <>add <strong>{c.to}</strong></>}
-                              {c.kind === "repair" && <>“{c.from}” → <strong>{c.to}</strong> <Badge tone="gold">joint-name repair</Badge></>}
-                              {c.kind === "replace" && <>“{c.from}” → <strong>{c.to}</strong></>}
-                            </li>
+                    <div className="mt-2 rounded-md border border-navy-100 bg-ivory-50 p-2 text-sm" data-testid="row-compare">
+                      <p className="font-semibold text-navy-900">TaxAct vs Client Connect — {cur.displayName}</p>
+                      <div className="mt-1 overflow-x-auto">
+                        <table className="w-full min-w-[520px] text-xs">
+                          <thead><tr className="text-left text-slate-600"><th className="py-1 pr-2">Field</th><th className="py-1 pr-2">TaxAct file</th><th className="py-1 pr-2">Client Connect now</th><th className="py-1">Result</th></tr></thead>
+                          <tbody className="divide-y divide-navy-100">
+                            {rows.filter((x) => x.outcome !== "not_in_file" || x.connect).map((x) => (
+                              <tr key={x.field}>
+                                <td className="py-1 pr-2 font-medium">{x.label}</td>
+                                <td className="py-1 pr-2">{x.taxact ?? "—"}</td>
+                                <td className="py-1 pr-2">{x.connect ?? "—"}</td>
+                                <td className="py-1"><Badge tone={OUT[x.outcome][1]}>{OUT[x.outcome][0]}</Badge></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {plan.some((c) => c.kind === "repair") && <p className="mt-1"><Badge tone="gold">joint-name repair</Badge> The name holds two people; it will be split into taxpayer and spouse.</p>}
+                      {plan.filter((c) => c.kind === "add").map((c) => <p key={c.field} className="mt-1">{FIELD_LABELS[c.field] ?? c.field}: add <strong>{c.to}</strong></p>)}
+                      {open && differs.length > 0 && (
+                        <ActionForm action={setRowApprovalsAction.bind(null, r.id)} className="mt-2 rounded border border-gold-300 bg-white p-2">
+                          <p className="font-semibold text-navy-900">Approve corrections (optional)</p>
+                          <p className="text-xs text-slate-600">Client Connect keeps its value unless you tick the field.</p>
+                          {differs.map((x) => (
+                            <label key={x.field} className="mt-1 flex items-start gap-2">
+                              <input type="checkbox" name="field" value={x.field} defaultChecked={x.outcome === "approved"} className="mt-0.5 accent-navy-900" />
+                              <span>Replace <strong>{x.label}</strong> “{x.connect}” with “{x.taxact}”</span>
+                            </label>
                           ))}
-                        </ul>
+                          <Button type="submit" variant="secondary" className="mt-2">Save approvals</Button>
+                        </ActionForm>
                       )}
                     </div>
                   );
@@ -221,8 +243,7 @@ export default async function ImportReviewPage({ params, searchParams }: { param
               <ActionForm action={commitImportAction.bind(null, id)} className="space-y-3" showSuccess={false}>
                 <fieldset className="space-y-2 text-sm">
                   <legend className="mb-1 font-semibold text-navy-900">When updating existing clients</legend>
-                  <label className="flex items-start gap-2"><input type="radio" name="mode" value="fill_blanks" defaultChecked className="mt-1 accent-navy-900" /> Only fill in blank fields (safest)</label>
-                  <label className="flex items-start gap-2"><input type="radio" name="mode" value="overwrite" className="mt-1 accent-navy-900" /> Replace with values from the file</label>
+                  <label className="flex items-start gap-2"><input type="radio" name="mode" value="fill_blanks" defaultChecked className="mt-1 accent-navy-900" /> Fill in blank fields, and replace only the fields you approved in the comparison</label>
                 </fieldset>
                 <p className="text-xs text-slate-600">Tags, services and groups are added, never removed. Opt-outs and permission history are never changed by an import. The preview on each matched row shows exactly what “Only fill in blank fields” will change.</p>
                 <Button type="submit" disabled={undecided > 0} className="w-full">Import {total - countOf("ERROR")} rows</Button>

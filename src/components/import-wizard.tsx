@@ -38,13 +38,15 @@ async function readFile(file: File): Promise<Sheet> {
   return { fileName: file.name, headers, rows };
 }
 
-export function ImportWizard() {
+export function ImportWizard({ staff = [], groups = [] }: { staff?: { id: string; name: string }[]; groups?: { id: string; name: string }[] }) {
   const router = useRouter();
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [mapping, setMapping] = useState<Record<number, ImportField | "">>({});
   const [source, setSource] = useState("TaxAct");
   const [taxDerived, setTaxDerived] = useState(true);
   const [batchService, setBatchService] = useState("");
+  const [assignTo, setAssignTo] = useState("");
+  const [groupIds, setGroupIds] = useState<string[]>([]);
   const [taxYear, setTaxYear] = useState(String(new Date().getFullYear() - 1));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -98,6 +100,8 @@ export function ImportWizard() {
       rows: buildRows(),
       headers: sheet.headers,
       batchService: batchService || null,
+      batchAssignedToId: assignTo || null,
+      batchGroupIds: groupIds,
       taxYear: needsYear ? Number(taxYear) : null,
     });
     if (result?.batchId) {
@@ -180,6 +184,25 @@ export function ImportWizard() {
                   {BATCH_SERVICE_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </Field>
+              <Field label="Assign every client to" hint="Fills the assigned staff member where it's blank. If someone else is already assigned, you'll see it in the comparison and can approve the change.">
+                <select className="input" value={assignTo} onChange={(e) => setAssignTo(e.target.value)} aria-label="Assign every client to">
+                  <option value="">Don&apos;t change assignments</option>
+                  {staff.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </Field>
+              {groups.length > 0 && (
+                <fieldset className="sm:col-span-2">
+                  <legend className="mb-1 text-sm font-semibold text-navy-900">Add every client to these groups</legend>
+                  <div className="grid gap-1 sm:grid-cols-2">
+                    {groups.map((g) => (
+                      <label key={g.id} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" className="accent-navy-900" checked={groupIds.includes(g.id)} onChange={(e) => setGroupIds(e.target.checked ? [...groupIds, g.id] : groupIds.filter((x) => x !== g.id))} /> {g.name}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-600">Groups are only added, never removed. Choosing Tax Preparation never adds Bookkeeping.</p>
+                </fieldset>
+              )}
               {needsYear && (
                 <Field label="Tax year (required)" hint="Each client gets one tax-preparation case for this year. Return type / filing status from the file is prefilled; otherwise staff select it.">
                   <input className="input" inputMode="numeric" value={taxYear} onChange={(e) => setTaxYear(e.target.value)} aria-label="Tax year" required />

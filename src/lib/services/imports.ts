@@ -6,7 +6,7 @@ import type { Actor } from "@/lib/auth/actor";
 import { IMPORT_FIELD_KEYS, isImportField, isSensitiveHeader, MAX_IMPORT_ROWS } from "@/lib/import/fields";
 import { classifyRow, cleanRow, type CleanRow, type MatchCandidate } from "@/lib/import/rows";
 import { IMPORT_FIELDS } from "@/lib/import/fields";
-import { mergeList, plannedChanges } from "@/lib/import/plan";
+import { mergeList, plannedChanges, REPLACEABLE_FIELDS } from "@/lib/import/plan";
 import { caseFromImport } from "@/lib/services/tax-prep";
 import { householdName } from "@/lib/normalize";
 
@@ -28,6 +28,9 @@ export type StageInput = {
   // Tax year the return types belong to (required with Tax Preparation or
   // a return-type / filing-status column).
   taxYear?: number | null;
+  // Staff member assigned to every client in the batch, and groups added.
+  batchAssignedToId?: string | null;
+  batchGroupIds?: string[];
 };
 
 export const BATCH_SERVICES = ["Tax Preparation", "Bookkeeping", "Payroll", "Business Tax Preparation", "Nonprofit Services", "Consulting"] as const;
@@ -81,6 +84,10 @@ export async function stageImport(actor: Actor, input: StageInput) {
   const wantsCase = (batchService && TAX_SERVICES.has(batchService.toLowerCase())) || mappedFields.has("returnType") || mappedFields.has("filingStatus");
   if (taxYear !== null && (!Number.isInteger(taxYear) || taxYear < 2000 || taxYear > new Date().getFullYear() + 1)) throw new ImportError("Choose a valid tax year.");
   if (wantsCase && !taxYear && !mappedFields.has("taxYear")) throw new ImportError("Choose the tax year these returns are for.");
+  const batchAssignedToId = input.batchAssignedToId || null;
+  if (batchAssignedToId && !(await prisma.user.count({ where: { id: batchAssignedToId, active: true } }))) throw new ImportError("Choose an active staff member to assign.");
+  const batchGroupIds = Array.from(new Set(input.batchGroupIds ?? [])).slice(0, 20);
+  if (batchGroupIds.length && (await prisma.group.count({ where: { id: { in: batchGroupIds } } })) !== batchGroupIds.length) throw new ImportError("One of the chosen groups no longer exists.");
 
   const cleaned = input.rows.map((raw) => {
     // Drop anything that isn't both allow-listed and actually mapped.
@@ -173,6 +180,8 @@ export async function stageImport(actor: Actor, input: StageInput) {
       data: {
         batchServices: batchService ? [batchService] : [],
         taxYear,
+        batchAssignedToId,
+        batchGroupIds,
         summary: summary as unknown as Prisma.InputJsonValue,
         source: input.source.slice(0, 100) || "Spreadsheet",
         fileName: input.fileName.slice(0, 200),
@@ -207,6 +216,18 @@ export async function setRowDecision(actor: Actor, rowId: string, decision: stri
     if (!exists) throw new ImportError("That client no longer exists.");
   }
   await prisma.importRow.update({ where: { id: rowId }, data: { decision } });
+}
+
+/** Staff approve replacing specific fields on the matched client (after the comparison). */
+export async function setRowApprovals(actor: Actor, rowId: string, fields: string[]) {
+  const row = await prisma.importRow.findUnique({ where: { id: rowId }, include: { batch: true } });
+  if (!row || row.batch.status !== "REVIEW") throw new ImportError("This import is no longer open.");
+  if (!row.decision?.startsWith("update:")) throw new ImportError("Choose which existing client this row updates first.");
+  const allowed = new Set<string>(REPLACEABLE_FIELDS);
+  const approved = Array.from(new Set(fields.filter((f) => allowed.has(f))));
+  await prisma.importRow.update({ where: { id: rowId }, data: { approvedFields: approved } });
+  await audit(prisma, { actorId: actor.id, action: "import.fields_approved", entityType: "ImportRow", entityId: rowId, details: { batchId: row.batchId, fields: approved } });
+  return approved;
 }
 
 type UpdateMode = "fill_blanks" | "overwrite";
@@ -281,6 +302,7 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
               postalCode: row.postalCode,
               clientType: row.clientType ?? "INDIVIDUAL",
               services: mergeList(row.services, extraServices),
+              assignedToId: batch.batchAssignedToId,
               tags: row.tags,
               notes: row.notes,
               taxReturnDerived,
@@ -297,13 +319,14 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
             skipped++;
             continue;
           }
-          const plan = plannedChanges(current, row, mode, extraServices);
+          const plan = plannedChanges(current, row, mode, extraServices, { approved: r.approvedFields, assignedToId: batch.batchAssignedToId });
           const data: Prisma.ClientUpdateInput = {};
           const changed: string[] = plan.map((c) => c.field);
           for (const c of plan) {
             if (c.field === "services") data.services = mergeList(current.services, [...row.services, ...extraServices]);
             else if (c.field === "tags") data.tags = mergeList(current.tags, row.tags);
             else if (c.field === "notes") data.notes = current.notes ? `${current.notes}\n\n${row.notes}` : row.notes;
+            else if (c.field === "assignedToId") data.assignedTo = { connect: { id: batch.batchAssignedToId! } };
             else (data as Record<string, unknown>)[c.field] = row[c.field as keyof CleanRow];
           }
           if (changed.includes("email")) data.emailNormalized = row.emailNormalized;
@@ -332,13 +355,13 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
         // spouses stay on this one case, never a second client or return.
         const year = row.taxYear ?? batch.taxYear;
         if (wantsCase && year) {
-          const res = await caseFromImport(tx, actor.id, clientId, { taxYear: year, returnType: row.returnType ?? null, otherReturnForm: row.otherReturnForm ?? null, primary: row.primary ?? null, spouse: row.spouse ?? null }, batchId);
+          const res = await caseFromImport(tx, actor.id, clientId, { taxYear: year, returnType: row.returnType ?? null, otherReturnForm: row.otherReturnForm ?? null, primary: row.primary ?? null, spouse: row.spouse ?? null, spouseEmail: row.spouseEmail ?? null, spousePhone: row.spousePhone ?? null }, batchId);
           if (res.created) casesCreated++;
           else if (res.filled.length) casesFilled++;
           if (res.filled.includes("returnType")) returnTypesPrefilled++;
         }
-        if (row.groups.length) {
-          const ids = await groupIds(row.groups);
+        if (row.groups.length || batch.batchGroupIds.length) {
+          const ids = Array.from(new Set([...(row.groups.length ? await groupIds(row.groups) : []), ...batch.batchGroupIds]));
           await tx.clientGroup.createMany({ data: ids.map((groupId) => ({ clientId, groupId })), skipDuplicates: true });
         }
         await tx.importRow.update({ where: { id: r.id }, data: { resultClientId: clientId } });

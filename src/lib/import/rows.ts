@@ -46,6 +46,22 @@ function parseClientType(value: string | undefined): ClientType | null {
   return null;
 }
 
+function typeFromReturn(code: ReturnTypeCode | null): ClientType | null {
+  if (!code) return null;
+  if (code === "1065" || code === "1120S" || code === "1120") return "BUSINESS";
+  if (code === "990") return "NONPROFIT";
+  if (code.startsWith("1040")) return "INDIVIDUAL";
+  return null;
+}
+
+/** "Individual", "Joint return (individual)", "Business" or "Nonprofit" — shown in the preview. */
+export function classification(row: Pick<CleanRow, "clientType" | "returnType" | "spouse" | "businessName">): string {
+  if (row.clientType === "BUSINESS") return "Business";
+  if (row.clientType === "NONPROFIT") return "Nonprofit";
+  if (row.returnType === "1040_MFJ" || (row.spouse && row.returnType !== "1040_MFS")) return "Joint return (individual)";
+  return row.clientType === "INDIVIDUAL" || !row.businessName ? "Individual" : "Business";
+}
+
 export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -107,9 +123,20 @@ export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors:
   if (spouse) warnings.push(`Joint taxpayers: ${joinName(primary)} (taxpayer) and ${joinName(spouse)} (spouse) — kept on one client record`);
   // The client record's name is the primary taxpayer; the middle name/initial
   // stays with the first name so "Allison R Stockton" reads as written.
-  const firstName = primary ? [primary.first, primary.middle].filter(Boolean).join(" ") || null : null;
-  const lastName = primary?.last ?? null;
-  const businessName = get("businessName");
+  let firstName = primary ? [primary.first, primary.middle].filter(Boolean).join(" ") || null : null;
+  let lastName = primary?.last ?? null;
+  // On a business or nonprofit return TaxAct's name column is the entity's
+  // name, not a person: keep it as the business name.
+  const rtEarly = parseReturnType(get("returnType"), get("filingStatus")).code;
+  const entityReturn = rtEarly === "1065" || rtEarly === "1120S" || rtEarly === "1120" || rtEarly === "990" || rtEarly === "1041";
+  const bizName = get("businessName") ?? (entityReturn && !firstCell && !lastCell && fullName ? fullName : null);
+  if (entityReturn && !get("businessName") && bizName) {
+    primary = null;
+    spouse = null;
+    firstName = null;
+    lastName = null;
+  }
+  const businessName = bizName;
 
   const email = get("email");
   const emailNormalized = normalizeEmail(email);
@@ -179,7 +206,9 @@ export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors:
     city,
     state: state?.toUpperCase() ?? null,
     postalCode,
-    clientType: clientType ?? (businessName && !firstName && !lastName ? "BUSINESS" : null),
+    // Classification: the file's client type wins; otherwise the return type
+    // decides (1065 / 1120-S / 1120 → Business, 990 → Nonprofit, 1040 → Individual).
+    clientType: clientType ?? typeFromReturn(rt.code) ?? (bizName && !firstName && !lastName ? "BUSINESS" : null),
     services: splitList(get("services")),
     tags: splitList(get("tags")),
     groups: splitList(get("groups")),

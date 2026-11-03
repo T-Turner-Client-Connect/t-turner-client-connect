@@ -231,3 +231,77 @@ describe("Tax Return Type on the case", () => {
     await expect(saveTaxPrepCase(other, c.id, { taxYear: 2025, returnType: "1040_SINGLE" })).rejects.toBeInstanceOf(ForbiddenError);
   });
 });
+
+describe("Importer review improvements", () => {
+  it("compares TaxAct with Client Connect, keeps existing values unless staff approve each correction", async () => {
+    const daria = await makeUser("STAFF", "Daria");
+    const c = await prisma.client.create({ data: { firstName: "Marisol", lastName: "Vance", displayName: "Marisol Vance", email: "marisol.vance@example.com", emailNormalized: "marisol.vance@example.com", city: "Birmingham", postalCode: "35203", clientType: "INDIVIDUAL" } });
+    const { compareFields } = await import("@/lib/import/plan");
+    const { setRowApprovals } = await import("@/lib/services/imports");
+    const batch = await stageImport(daria, { fileName: "t.csv", source: "TaxAct", taxReturnDerived: true, mapping: MAPPING, rows: [FILE[1]], batchService: "Tax Preparation", taxYear: 2025 });
+    const row = await prisma.importRow.findFirstOrThrow({ where: { batchId: batch.id } });
+    expect(row.decision).toBe(`update:${c.id}`);
+    const cmp = compareFields(c, row.data as never);
+    const by = Object.fromEntries(cmp.map((x) => [x.field, x.outcome]));
+    expect(by).toMatchObject({ firstName: "same", city: "differs", postalCode: "differs", phone: "fill", addressLine1: "fill", email: "same" });
+
+    await setRowApprovals(daria, row.id, ["city", "notARealField"]);
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: row.id } })).approvedFields).toEqual(["city"]);
+    await commitImport(daria, batch.id, "fill_blanks");
+    const after = await prisma.client.findUniqueOrThrow({ where: { id: c.id } });
+    expect(after.city).toBe("Bessemer"); // approved correction
+    expect(after.postalCode).toBe("35203"); // different but not approved → kept
+    expect(after.phone).toBe("(205) 555-0101"); // blank filled
+    expect(await prisma.auditLog.count({ where: { action: "import.fields_approved" } })).toBe(1);
+  });
+
+  it("assigns every client to Daria and adds groups; an existing different assignee is kept unless approved", async () => {
+    const tab = await makeUser("ADMIN");
+    const daria = await makeUser("STAFF", "Daria");
+    const other = await makeUser("STAFF", "Other");
+    const g = await prisma.group.create({ data: { name: "Individual Tax Clients" } });
+    const kept = await prisma.client.create({ data: { firstName: "Marisol", lastName: "Vance", displayName: "Marisol Vance", email: "marisol.vance@example.com", emailNormalized: "marisol.vance@example.com", clientType: "INDIVIDUAL", assignedToId: other.id, services: ["Bookkeeping"] } });
+    const batch = await stageImport(tab, { fileName: "t.csv", source: "TaxAct", taxReturnDerived: true, mapping: MAPPING, rows: FILE, batchService: "Tax Preparation", taxYear: 2025, batchAssignedToId: daria.id, batchGroupIds: [g.id] });
+    await commitImport(tab, batch.id, "fill_blanks");
+    const created = await prisma.client.findFirstOrThrow({ where: { lastName: "Stockton" }, include: { groups: true } });
+    expect(created.assignedToId).toBe(daria.id);
+    expect(created.groups.map((x) => x.groupId)).toEqual([g.id]);
+    expect(created.services).toEqual(["Tax Preparation"]); // never Bookkeeping
+    const k = await prisma.client.findUniqueOrThrow({ where: { id: kept.id }, include: { groups: true } });
+    expect(k.assignedToId).toBe(other.id); // kept — not approved
+    expect(k.services).toEqual(["Bookkeeping", "Tax Preparation"]); // existing service kept, tax added
+    expect(k.groups).toHaveLength(1);
+    await expect(stageImport(tab, { fileName: "t.csv", source: "TaxAct", taxReturnDerived: true, mapping: MAPPING, rows: FILE, batchAssignedToId: "nope" })).rejects.toThrow(/active staff/);
+  });
+
+  it("stores spouse email and phone on the joint tax case, not on the client record", async () => {
+    const tab = await makeUser("ADMIN");
+    const batch = await stageImport(tab, {
+      fileName: "t.csv",
+      source: "TaxAct",
+      taxReturnDerived: true,
+      mapping: { ...MAPPING, "Spouse Email": "spouseEmail", "Spouse Phone": "spousePhone" },
+      rows: [{ ...FILE[0], email: "allison.s@example.com", spouseEmail: "jonathan.s@example.com", spousePhone: "(205)555-0123 M" }],
+      batchService: "Tax Preparation",
+      taxYear: 2025,
+    });
+    await commitImport(tab, batch.id, "fill_blanks");
+    const c = await prisma.client.findFirstOrThrow();
+    expect(c.email).toBe("allison.s@example.com");
+    const kase = await prisma.taxPrepCase.findFirstOrThrow({ where: { clientId: c.id } });
+    expect([kase.spouseEmail, kase.spousePhone]).toEqual(["jonathan.s@example.com", "(205) 555-0123"]);
+  });
+
+  it("classifies business, nonprofit, individual and joint-return clients from the return type", async () => {
+    const { classification } = await import("@/lib/import/rows");
+    const biz = cleanRow({ fullName: "Harbor Example Co LLC", returnType: "1120S" }).row;
+    expect([biz.clientType, biz.businessName, biz.firstName, biz.displayName]).toEqual(["BUSINESS", "Harbor Example Co LLC", null, "Harbor Example Co LLC"]);
+    expect(classification(biz)).toBe("Business");
+    const np = cleanRow({ fullName: "Fictional Hope Foundation", returnType: "990-EZ" }).row;
+    expect([np.clientType, classification(np)]).toEqual(["NONPROFIT", "Nonprofit"]);
+    const joint = cleanRow({ fullName: "John & Jane Doe", returnType: "1040", filingStatus: "MFJ" }).row;
+    expect([joint.clientType, classification(joint)]).toEqual(["INDIVIDUAL", "Joint return (individual)"]);
+    const single = cleanRow({ fullName: "Marisol Vance", returnType: "1040", filingStatus: "Single" }).row;
+    expect(classification(single)).toBe("Individual");
+  });
+});
