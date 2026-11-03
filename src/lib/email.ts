@@ -1,5 +1,10 @@
 import "server-only";
 
+/** Where client replies go: EMAIL_REPLY_TO, else the office inbox. */
+export function replyToAddress() {
+  return (process.env.EMAIL_REPLY_TO || "info@tturnerassociates.com").trim();
+}
+
 export type EmailResult = { ok: true; providerId: string | null } | { ok: false; reason: "not_configured" | "rejected" | "network"; detail: string };
 
 /**
@@ -31,6 +36,8 @@ export async function sendEmail(input: {
       body: JSON.stringify({
         from,
         to: [input.to],
+        // Replies go to a monitored mailbox (the sending address may have none).
+        reply_to: [replyToAddress()],
         subject: input.subject,
         text: input.text,
         ...(input.html ? { html: input.html } : {}),
