@@ -499,11 +499,11 @@ async function assertOneOwnerGroup(clientIds: string[]) {
 async function assertClientsFree(clientIds: string[], exceptArrangementId?: string) {
   const ids = [...new Set(clientIds.filter(Boolean))];
   if (!ids.length) throw new ValidationError("Choose the client(s) this Square bill covers.");
-  const clients = await prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, displayName: true, businessName: true, archivedAt: true, squareBilling: { include: { arrangement: { select: { seriesKey: true, active: true } } } } } });
+  const clients = await prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, displayName: true, businessName: true, archivedAt: true, squareBillings: { select: { arrangementId: true } } } });
   if (clients.length !== ids.length || clients.some((c) => c.archivedAt)) throw new ValidationError("One of those clients wasn't found.");
-  // A link to a series that has ended in Square doesn't block linking the client's current series.
-  const taken = clients.find((c) => c.squareBilling && c.squareBilling.arrangement.active && c.squareBilling.arrangementId !== exceptArrangementId);
-  if (taken) throw new ValidationError(`${nameOf(taken)} is already linked to Square billing series ${taken.squareBilling!.arrangement.seriesKey}. A client can be on only one Square bill, so it's never billed twice. Remove that link first if it's wrong.`);
+  // A client may be on several Square series (each its own recurring bill), but never twice on the same one.
+  const twice = exceptArrangementId ? clients.find((c) => c.squareBillings.some((m) => m.arrangementId === exceptArrangementId)) : undefined;
+  if (twice) throw new ValidationError(`${nameOf(twice)} is already on this Square bill.`);
   return clients;
 }
 
@@ -528,14 +528,7 @@ export async function linkSquareBilling(actor: Actor, input: { customerId: strin
   const decision = await prisma.squareSeriesReview.findUnique({ where: { squareLocationId_seriesKey: { squareLocationId: s.locationId, seriesKey: input.seriesKey } } });
   const status = seriesStatus(check.activity, decision);
   if (status !== "ACTIVE") throw new ValidationError(`Series ${input.seriesKey} isn't verified as active (${SERIES_STATUS_LABELS[status]}), so it isn't linked: ${check.activity.reason}${status === "NEEDS_REVIEW" ? " The owner can review it first." : ""} Its invoices stay in Square's history.`);
-  // A client still on a series that has since ended moves to the current one; the ended link is kept as history.
-  for (const c of clients) {
-    const old = await prisma.squareBillingMember.findUnique({ where: { clientId: c.id }, include: { arrangement: { select: { id: true, active: true, seriesKey: true, formerClientIds: true } } } });
-    if (!old || old.arrangement.active) continue;
-    await prisma.squareBillingMember.delete({ where: { id: old.id } });
-    await prisma.squareBillingArrangement.update({ where: { id: old.arrangement.id }, data: { formerClientIds: [...new Set([...old.arrangement.formerClientIds, c.id])] } });
-    await audit(prisma, { actorId: actor.id, action: "square_billing.moved_from_ended_series", entityType: "SquareBillingArrangement", entityId: old.arrangement.id, clientId: c.id, details: { endedSeriesKey: old.arrangement.seriesKey, newSeriesKey: input.seriesKey } });
-  }
+  // Other series the client is on (current or ended) stay as they are: each is its own Square bill.
   const a = await prisma.squareBillingArrangement.create({
     data: { squareCustomerId: input.customerId, squareLocationId: s.locationId, seriesKey: input.seriesKey, linkedById: actor.id, members: { create: clients.map((c) => ({ clientId: c.id, addedById: actor.id })) } },
   });
@@ -586,14 +579,7 @@ export async function addClientToSquareBilling(actor: Actor, arrangementId: stri
   const a = await prisma.squareBillingArrangement.findUnique({ where: { id: arrangementId } });
   if (!a) throw new ValidationError("Square billing link not found.");
   if (!a.active) throw new ValidationError("That Square series has ended, so no one can be added to it. Link the client's current series instead.");
-  const [c] = await assertClientsFree([clientId], arrangementId);
-  const current = await prisma.squareBillingMember.findUnique({ where: { clientId }, include: { arrangement: { select: { active: true } } } });
-  if (current?.arrangementId === arrangementId) throw new ValidationError(`${nameOf(c)} is already on this Square bill.`);
-  if (current && !current.arrangement.active) {
-    // Leaving an ended series for this current one; the ended link is kept as history.
-    await prisma.squareBillingMember.delete({ where: { id: current.id } });
-    await prisma.squareBillingArrangement.update({ where: { id: current.arrangementId }, data: { formerClientIds: { push: clientId } } });
-  }
+  await assertClientsFree([clientId], arrangementId);
   const members = await prisma.squareBillingMember.findMany({ where: { arrangementId }, select: { clientId: true } });
   await assertOneOwnerGroup([...members.map((m) => m.clientId), clientId]);
   await prisma.squareBillingMember.create({ data: { arrangementId, clientId, addedById: actor.id } });
@@ -731,19 +717,21 @@ export async function setSquareBillingExpected(actor: Actor, clientId: string, e
 // --- Reading what's linked -----------------------------------------------------------
 
 export async function squareBillingFor(clientId: string) {
-  const [member, profile] = await Promise.all([
-    prisma.squareBillingMember.findUnique({ where: { clientId }, include: { arrangement: { include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } }, orderBy: { createdAt: "asc" } } } } } }),
+  const [links, profile] = await Promise.all([
+    prisma.squareBillingMember.findMany({ where: { clientId, arrangement: { active: true } }, orderBy: { createdAt: "asc" }, include: { arrangement: { include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } }, orderBy: { createdAt: "asc" } } } } } }),
     prisma.bookkeepingProfile.findUnique({ where: { clientId }, select: { squareBillingExpected: true } }),
   ]);
-  // Only a series still running in Square is current billing; an ended one is history.
-  const a = member?.arrangement.active ? member.arrangement : null;
+  // Only series still running in Square are current billing; ended ones are history. A client can
+  // have several (for example separate services, each its own Square series), shown oldest first.
+  const arrangements = links.map((l) => l.arrangement);
+  const a = arrangements[0] ?? null;
   const ended = await prisma.squareBillingArrangement.findMany({
     where: { active: false, OR: [{ members: { some: { clientId } } }, { formerClientIds: { has: clientId } }] },
     select: { id: true, seriesKey: true, title: true, amountCents: true, cadence: true, lastDueDate: true, endedAt: true, endedReason: true, squareCustomerId: true, needsReview: true },
     orderBy: { endedAt: "desc" },
   });
-  const state = a ? (a.authorizationVerifiedAt ? "VERIFIED" : a.syncedAt ? "SYNCED" : "LINKED") : profile?.squareBillingExpected ? "NOT_SYNCED" : "NONE";
-  return { arrangement: a, ended: ended.filter((e) => !e.needsReview), review: ended.filter((e) => e.needsReview), state: state as SquareState, expected: !!profile?.squareBillingExpected };
+  const state = a ? (arrangements.every((x) => x.authorizationVerifiedAt) ? "VERIFIED" : arrangements.every((x) => x.syncedAt) ? "SYNCED" : "LINKED") : profile?.squareBillingExpected ? "NOT_SYNCED" : "NONE";
+  return { arrangement: a, arrangements, ended: ended.filter((e) => !e.needsReview), review: ended.filter((e) => e.needsReview), state: state as SquareState, expected: !!profile?.squareBillingExpected };
 }
 
 /**
@@ -765,12 +753,13 @@ export async function squareBillingOverview(actor: Actor) {
   await assertBilling(actor);
   const profiles = await prisma.bookkeepingProfile.findMany({
     where: { active: true, client: { archivedAt: null } },
-    select: { clientId: true, squareBillingExpected: true, client: { select: { displayName: true, businessName: true, squareBilling: { include: { arrangement: { include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } } } } } } } } } },
+    select: { clientId: true, squareBillingExpected: true, client: { select: { displayName: true, businessName: true, squareBillings: { where: { arrangement: { active: true } }, orderBy: { createdAt: "asc" }, include: { arrangement: { include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } } } } } } } } } },
     orderBy: { client: { displayName: "asc" } },
   });
   return profiles.map((p) => {
-    const a = p.client.squareBilling?.arrangement.active ? p.client.squareBilling.arrangement : null;
-    return { clientId: p.clientId, name: nameOf(p.client), expected: p.squareBillingExpected, arrangement: a, state: (a ? (a.authorizationVerifiedAt ? "VERIFIED" : a.syncedAt ? "SYNCED" : "LINKED") : p.squareBillingExpected ? "NOT_SYNCED" : "NONE") as SquareState };
+    const arrangements = p.client.squareBillings.map((m) => m.arrangement);
+    const a = arrangements[0] ?? null;
+    return { clientId: p.clientId, name: nameOf(p.client), expected: p.squareBillingExpected, arrangement: a, arrangements, state: (a ? (a.authorizationVerifiedAt ? "VERIFIED" : a.syncedAt ? "SYNCED" : "LINKED") : p.squareBillingExpected ? "NOT_SYNCED" : "NONE") as SquareState };
   });
 }
 
@@ -813,27 +802,35 @@ export async function squareRevenueSummary(now = new Date()) {
   };
 }
 
-/** What the client sees. Authorization is mentioned only once Tabitha has verified it. */
+/** What the client sees: every current Square series for this account. Authorization is mentioned only once Tabitha has verified it. */
 export async function portalSquareBilling(user: PortalActor, clientId: string) {
   await requireClientAccess(user.id, clientId, "billing");
-  const { arrangement: a, state } = await squareBillingFor(clientId);
-  if (!a) return { state, view: null };
+  const { arrangements, state } = await squareBillingFor(clientId);
+  if (!arrangements.length) return { state, view: null, views: [], unsynced: 0 };
   const mine = await prisma.portalAccess.findMany({ where: { portalUserId: user.id, revokedAt: null }, select: { clientId: true } });
   const visible = new Set(mine.map((m) => m.clientId));
-  const others = a.members.filter((m) => m.clientId !== clientId);
-  return {
-    state,
-    view: a.syncedAt
-      ? {
-          title: a.title, amountCents: a.amountCents, schedule: scheduleText(a), nextDueDate: a.nextDueDate, status: paymentStatus(a),
-          card: a.autopay && a.cardLast4 ? { brand: a.cardBrand ?? "Card", last4: a.cardLast4, expMonth: a.cardExpMonth, expYear: a.cardExpYear } : null,
-          autopay: a.autopay, authorizationVerified: !!a.authorizationVerifiedAt, syncedAt: a.syncedAt,
-          // This series only: each invoice's amount, due date, Square-confirmed paid date and receipt.
-          invoices: ((a.seriesInvoices as SeriesInvoice[] | null) ?? []).map((i) => ({ number: i.number, due: i.due, status: i.status, amountCents: i.amountCents, paidCents: i.status === "PARTIALLY_PAID" ? i.paidCents : null, paidAt: i.status === "PAID" ? i.paidAt : null, receiptUrl: i.status === "PAID" ? i.receiptUrl : null, invoiceUrl: i.invoiceUrl })),
-          outstandingCents: a.outstandingCents ?? 0, overdueCents: a.overdueCents ?? 0, overdueCount: a.overdueCount ?? 0,
-          alsoCovers: others.filter((m) => visible.has(m.clientId)).map((m) => nameOf(m.client)),
-          otherAccounts: others.filter((m) => !visible.has(m.clientId)).length,
-        }
-      : null,
-  };
+  const views = arrangements.filter((a) => a.syncedAt).map((a) => {
+    const others = a.members.filter((m) => m.clientId !== clientId);
+    return {
+      id: a.id, seriesKey: a.seriesKey,
+      title: a.title, amountCents: a.amountCents, schedule: scheduleText(a), nextDueDate: a.nextDueDate, status: paymentStatus(a),
+      card: a.autopay && a.cardLast4 ? { brand: a.cardBrand ?? "Card", last4: a.cardLast4, expMonth: a.cardExpMonth, expYear: a.cardExpYear } : null,
+      autopay: a.autopay, authorizationVerified: !!a.authorizationVerifiedAt, syncedAt: a.syncedAt,
+      // This series only: each invoice's amount, due date, Square-confirmed paid date and receipt.
+      invoices: ((a.seriesInvoices as SeriesInvoice[] | null) ?? []).map((i) => ({ number: i.number, due: i.due, status: i.status, amountCents: i.amountCents, paidCents: i.status === "PARTIALLY_PAID" ? i.paidCents : null, paidAt: i.status === "PAID" ? i.paidAt : null, receiptUrl: i.status === "PAID" ? i.receiptUrl : null, invoiceUrl: i.invoiceUrl })),
+      outstandingCents: a.outstandingCents ?? 0, overdueCents: a.overdueCents ?? 0, overdueCount: a.overdueCount ?? 0,
+      alsoCovers: others.filter((m) => visible.has(m.clientId)).map((m) => nameOf(m.client)),
+      otherAccounts: others.filter((m) => !visible.has(m.clientId)).length,
+    };
+  });
+  return { state, view: views[0] ?? null, views, unsynced: arrangements.length - views.length };
+}
+
+/** Re-reads every current Square series linked to one client (read only). */
+export async function syncClientSquareBilling(actor: Actor, clientId: string) {
+  await assertBilling(actor);
+  requireSquare();
+  const { arrangements } = await squareBillingFor(clientId);
+  for (const a of arrangements) await syncSquareBilling(actor, a.id);
+  return arrangements.length;
 }

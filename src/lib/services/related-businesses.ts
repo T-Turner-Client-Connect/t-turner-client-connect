@@ -124,9 +124,9 @@ export async function linkImpact(personClientId: string, businessClientId: strin
   const sharedAccess = personLogins.length
     ? await prisma.portalAccess.findMany({ where: { clientId: businessClientId, revokedAt: null, portalUserId: { in: personLogins.map((l) => l.portalUserId) } }, include: { portalUser: { select: { email: true } } } })
     : [];
-  const member = await prisma.squareBillingMember.findUnique({ where: { clientId: businessClientId }, include: { arrangement: { include: { members: { select: { clientId: true } } } } } });
+  const bills = await prisma.squareBillingMember.findMany({ where: { clientId: businessClientId }, include: { arrangement: { include: { members: { select: { clientId: true } } } } } });
   const personGroup = new Set([personClientId, ...(await prisma.clientRelationship.findMany({ where: { personClientId }, select: { businessClientId: true } })).map((r) => r.businessClientId)]);
-  const sharedBill = !!member && member.arrangement.members.some((m) => m.clientId !== businessClientId && personGroup.has(m.clientId));
+  const sharedBill = bills.some((b) => b.arrangement.members.some((m) => m.clientId !== businessClientId && personGroup.has(m.clientId)));
   // The original (first) owner link, or the only one, is the organization's own ownership record.
   const isPrimary = owners[0]?.id === rel.id;
   const flags = [

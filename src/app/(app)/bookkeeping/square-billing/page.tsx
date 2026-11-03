@@ -145,11 +145,11 @@ export default async function SquareBillingPage({ searchParams }: { searchParams
           <table className="w-full text-sm" data-testid="square-overview">
             <thead className="text-left text-slate-600"><tr><th className="py-1">Client</th><th>Square billing</th><th>Amount</th><th>Schedule</th><th>Next invoice</th><th>Payment status</th><th>One bill with</th></tr></thead>
             <tbody className="divide-y divide-navy-100">
-              {rows.map((r) => {
-                const a = r.arrangement;
+              {rows.flatMap((r) => (r.arrangements.length ? r.arrangements : [null]).map((a, i, list) => {
+                // A client on several Square series gets one row per series (each its own bill).
                 return (
-                  <tr key={r.clientId}>
-                    <td className="py-2"><Link className="underline" href={`/bookkeeping/${r.clientId}/profile`}>{r.name}</Link></td>
+                  <tr key={`${r.clientId}:${a?.id ?? "none"}`}>
+                    <td className="py-2"><Link className="underline" href={`/bookkeeping/${r.clientId}/profile`}>{r.name}</Link>{list.length > 1 && <span className="block text-xs text-slate-600">Series {a!.seriesKey} · {i + 1} of {list.length}</span>}</td>
                     <td><SquareStateBadge state={r.state} /></td>
                     <td>{a?.syncedAt ? usd(a.amountCents) : "—"}</td>
                     <td>{a?.syncedAt ? CADENCE_LABELS[(a.cadence ?? "UNKNOWN") as keyof typeof CADENCE_LABELS] : "—"}</td>
@@ -158,7 +158,7 @@ export default async function SquareBillingPage({ searchParams }: { searchParams
                     <td>{a && a.members.length > 1 ? a.members.filter((m) => m.clientId !== r.clientId).map((m) => nameOf(m.client)).join(", ") : "—"}</td>
                   </tr>
                 );
-              })}
+              }))}
             </tbody>
           </table>
         </div>
