@@ -45,11 +45,6 @@ export async function markMonthsPaidAction(clientId: string, _prev: ActionState,
       note: str(fd, "note"),
     });
     refresh();
-    const label = (m: string) => new Date(`${m}-15T12:00:00Z`).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-    return [
-      `Recorded ${r.recorded.length} month${r.recorded.length === 1 ? "" : "s"}.`,
-      r.skipped.length ? `Skipped ${r.skipped.length} already paid.` : "",
-      r.partial.length ? `Not changed — partly paid: ${r.partial.map(label).join(", ")}. Record the remaining amount with Record a Payment.` : "",
-    ].filter(Boolean).join(" ");
+    return `Marked ${r.recorded.length} month${r.recorded.length === 1 ? "" : "s"} paid${r.skipped.length ? `; skipped ${r.skipped.length} already paid` : ""}.`;
   });
 }

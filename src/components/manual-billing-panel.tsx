@@ -163,7 +163,7 @@ export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { cl
             <details className="rounded-2xl border border-ivory-200 bg-white p-4 shadow-sm" data-testid="mark-months">
               <summary className="flex cursor-pointer items-center gap-2 text-lg font-bold text-navy-900"><CalendarCheck aria-hidden className="size-5 text-gold-600" /> Mark Months Paid</summary>
               <p className="mt-1 text-xs text-slate-600">For catching up past payments: pick a year, tick the months (or Whole year), enter the amount once.</p>
-              <MarkMonthsPaid clientId={clientId} feeCents={billing.monthlyFeeCents} paidMonths={view.paidMonths} partialMonths={view.partialMonths} methods={PAY_METHODS} defaultMethod={lastPayment?.method ?? "CASH_APP"} thisYear={Number(today().slice(0, 4))} />
+              <MarkMonthsPaid clientId={clientId} feeCents={billing.monthlyFeeCents} paidMonths={view.paidMonths} methods={PAY_METHODS} defaultMethod={lastPayment?.method ?? "CASH_APP"} thisYear={Number(today().slice(0, 4))} />
             </details>
           ) : null}
 

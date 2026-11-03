@@ -13,7 +13,7 @@ import { VerifyEmailCard } from "@/components/verification";
 import { clientEmailCodesAction, confirmVerifyEmailAction, sendVerifyEmailAction } from "@/app/actions/verification";
 import { authSettings, clientEmailCodesActive, emailProviderConfigured } from "@/lib/auth/client-auth";
 import { maskEmail } from "@/lib/services/mfa";
-import { resetStaffMfaAction, retentionAction, sendTestTextAction, staffAlertSettingsAction } from "@/app/actions/workspace";
+import { attachInboundAction, clientTextingAction, resetStaffMfaAction, retentionAction, sendTestTextAction, staffAlertSettingsAction } from "@/app/actions/workspace";
 import { testResults } from "@/lib/services/staff-alerts";
 import { twilioConfigured } from "@/lib/twilio";
 import { CATEGORY_LABELS } from "@/lib/services/documents";
@@ -69,6 +69,7 @@ export default async function SettingsPage() {
     prisma.smsConsentSubmission.findMany({ orderBy: { createdAt: "desc" }, take: 25 }),
     prisma.inboundSms.findMany({ where: { matchedClientId: null }, orderBy: { receivedAt: "desc" }, take: 25 }),
   ]);
+  const attachClients = isAdmin && unmatchedTexts.length ? await prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true }, orderBy: { displayName: "asc" }, take: 2000 }) : [];
   const consentClients = new Map(
     (await prisma.client.findMany({ where: { id: { in: consentSubs.flatMap((c) => c.matchedClientIds) } }, select: { id: true, displayName: true } })).map((c) => [c.id, c.displayName]),
   );
@@ -370,6 +371,18 @@ export default async function SettingsPage() {
                   <p>Delivery status (HTTP POST): <code className="break-all">{appUrl()}/api/webhooks/twilio/status</code> — included automatically with every text this app sends; you may also enter it as the service&apos;s Delivery Status Callback.</p>
                   <p className="text-xs text-slate-600">These must match the live site address exactly (APP_URL), or Twilio&apos;s signature check fails and the request is refused.</p>
                 </div>
+                <div className="rounded-lg border border-navy-100 bg-white p-3" data-testid="client-texting-switch">
+                  <p className="font-semibold">
+                    Client texting (staff → client SMS): {t.settings.clientTextingEnabled ? <Badge tone="green">On</Badge> : <Badge tone="gray">Off</Badge>}
+                  </p>
+                  <p className="text-slate-700">When on, staff can deliberately choose <strong>Send Text Message (SMS)</strong> in a client&apos;s Communication History. Texts go only to numbers with service-text consent and no STOP. Portal messages are never sent as texts.</p>
+                  {t.settings.clientTextingChangedAt && <p className="text-xs text-slate-600">Last changed {fmtDateTime(t.settings.clientTextingChangedAt)}</p>}
+                  {isTabitha ? (
+                    <ActionForm action={clientTextingAction.bind(null, !t.settings.clientTextingEnabled)} className="mt-2">
+                      <Button type="submit" variant={t.settings.clientTextingEnabled ? "secondary" : "primary"} disabled={!configured && !t.settings.clientTextingEnabled}>{t.settings.clientTextingEnabled ? "Turn client texting off" : "Turn client texting on"}</Button>
+                    </ActionForm>
+                  ) : <p className="mt-1 text-xs text-slate-600">Only Tabitha can turn this on or off.</p>}
+                </div>
                 {isAdmin && (
                   <>
                     <ActionForm action={staffAlertSettingsAction} className="grid gap-2 sm:grid-cols-4">
@@ -427,6 +440,7 @@ export default async function SettingsPage() {
             </ul>
           )}
           <h3 className="mb-2 font-semibold">Incoming texts not matched to a client</h3>
+          <p className="mb-2 text-xs text-slate-600">Texts from a number no client uses, or a number shared by more than one client, are never attached automatically. Attaching one adds it to that client&apos;s text history; it doesn&apos;t change the phone number on file.</p>
           {unmatchedTexts.length === 0 ? (
             <p className="text-sm text-slate-600">None.</p>
           ) : (
@@ -435,6 +449,17 @@ export default async function SettingsPage() {
                 <li key={t.id} className="py-2">
                   <span className="font-semibold">{formatPhone(t.fromNormalized)}</span> {t.keyword && <Badge tone={t.keyword === "STOP" ? "red" : "gray"}>{t.keyword}</Badge>} · {fmtDateTime(t.receivedAt)}
                   <p className="text-slate-700">{t.body}</p>
+                  {isAdmin && (
+                    <ActionForm action={attachInboundAction.bind(null, t.id)} className="mt-1 flex flex-wrap items-end gap-2">
+                      <Field label="Add to client (only after confirming who sent it)">
+                        <select className="input" name="clientId" defaultValue="" required>
+                          <option value="" disabled>Choose client…</option>
+                          {attachClients.map((c) => <option key={c.id} value={c.id}>{c.displayName}</option>)}
+                        </select>
+                      </Field>
+                      <Button type="submit" variant="secondary">Add to conversation</Button>
+                    </ActionForm>
+                  )}
                 </li>
               ))}
             </ul>
