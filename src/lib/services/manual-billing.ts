@@ -15,7 +15,7 @@ import { squareBillingFor, todayCentral } from "./square-billing";
  * from those records — never typed in, and never presented as Square-verified. Corrections void a
  * payment with a reason; nothing is deleted.
  */
-export const PAY_METHODS = { CASH: "Cash", CHECK: "Check", ZELLE: "Zelle", ACH: "Bank transfer (ACH)", CARD: "Card (outside Square)", OTHER: "Other" } as const;
+export const PAY_METHODS = { CASH: "Cash", CHECK: "Check", ZELLE: "Zelle", ACH: "Bank transfer (ACH)", SQUARE: "Square (entered by our office)", CARD: "Card (outside Square)", OTHER: "Other" } as const;
 export type PayMethod = keyof typeof PAY_METHODS;
 
 const ym = (d: string) => d.slice(0, 7);
@@ -35,8 +35,9 @@ export function manualLedger(input: { feeCents: number | null; billingDay: numbe
   if (!feeCents || !billingDay) return null;
   const thisMonth = ym(today);
   const earliestPaid = payments.map((p) => p.periodMonth).sort()[0];
+  // Billing is owed from the start date. Payments for earlier months stay in the history
+  // but never create "past due" months before billing started.
   let first = input.startDate ? input.startDate.toISOString().slice(0, 7) : earliestPaid ?? thisMonth;
-  if (earliestPaid && earliestPaid < first) first = earliestPaid;
   const floor = addMonths(thisMonth, -23);
   if (first < floor) first = floor;
   const periods: { month: string; due: string; paidCents: number; owedCents: number; state: PeriodState }[] = [];
@@ -54,6 +55,11 @@ export function manualLedger(input: { feeCents: number | null; billingDay: numbe
     overdueCount: overdue.length,
     overdueCents: overdue.reduce((n, p) => n + p.owedCents, 0),
     next: next ? { due: next.due, amountCents: next.owedCents, month: next.month } : null,
+    // Months a payment can be recorded for: the last two years through two months ahead.
+    monthChoices: Array.from({ length: 26 }, (_, i) => addMonths(thisMonth, 2 - i)).map((m) => {
+      const p = periods.find((x) => x.month === m);
+      return { month: m, state: p?.state ?? ("BEFORE_START" as const), owedCents: p?.owedCents ?? null };
+    }),
     // The month a new payment applies to by default: the oldest one still owed.
     defaultPeriod: (overdue[0] ?? next ?? periods.at(-1)!).month,
     status:

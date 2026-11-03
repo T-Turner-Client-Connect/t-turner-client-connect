@@ -23,7 +23,7 @@ export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { cl
   const recorded = payments;
   const shown = recorded.slice(0, 6);
   const rest = recorded.slice(6);
-  const periodOptions = ledger ? [...ledger.periods].reverse() : [];
+  const periodOptions = ledger ? ledger.monthChoices : [];
   const row = (p: View["payments"][number]) => (
     <tr key={p.id} className={p.voidedAt ? "text-slate-400 line-through decoration-slate-300" : ""} data-payment={p.id}>
       <td className="whitespace-nowrap px-2 py-2">{fmtDate(p.paidOn)}</td>
@@ -150,8 +150,8 @@ export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { cl
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field label="Amount received ($)"><input className="input" name="amount" inputMode="decimal" defaultValue={((ledger.next?.amountCents ?? billing?.monthlyFeeCents ?? 0) / 100).toFixed(2)} /></Field>
                   <Field label="Date received"><input className="input" type="date" name="paidOn" max={today()} defaultValue={today()} /></Field>
-                  <Field label="For billing month"><select className="input" name="periodMonth" defaultValue={ledger.defaultPeriod}>{periodOptions.map((p) => <option key={p.month} value={p.month}>{monthLabel(p.month)}{p.state === "PAID" ? " (paid)" : p.owedCents < (billing?.monthlyFeeCents ?? 0) ? ` (${usd(p.owedCents)} left)` : ""}</option>)}</select></Field>
-                  <Field label="Method"><select className="input" name="method" defaultValue="CHECK">{Object.entries(PAY_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+                  <Field label="For billing month"><select className="input" name="periodMonth" defaultValue={ledger.defaultPeriod}>{periodOptions.map((p) => <option key={p.month} value={p.month}>{monthLabel(p.month)}{p.state === "PAID" ? " (paid)" : p.state === "BEFORE_START" ? " (before billing start)" : p.owedCents != null && p.owedCents < (billing?.monthlyFeeCents ?? 0) ? ` (${usd(p.owedCents)} left)` : ""}</option>)}</select></Field>
+                  <Field label="Method"><select className="input" name="method" defaultValue={lastPayment?.method ?? "CHECK"}>{Object.entries(PAY_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
                 </div>
                 <Field label="Check # or reference (optional)"><input className="input" name="reference" autoComplete="off" /></Field>
                 <Field label="Note (optional)"><input className="input" name="note" /></Field>
