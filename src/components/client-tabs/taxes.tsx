@@ -12,6 +12,7 @@ import { downloadToken } from "@/lib/services/documents";
 import { AMENDMENT_LABELS, FILING_LABELS, filingStatusLabel, filingTitle, PREP_LABELS } from "@/lib/tax/normalize";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { TaxCenterStaff } from "./tax-center-staff";
+import { TaxPrepCases } from "./tax-prep-cases";
 
 const DOC_TYPE = { OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Agency notice", CORRESPONDENCE: "Correspondence", FIRM_SUMMARY: "Our summary" } as const;
 
@@ -35,6 +36,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
 
   return (
     <div className="space-y-4">
+      <TaxPrepCases clientId={clientId} user={user} />
       <TaxCenterStaff clientId={clientId} user={user} />
       <Card title="Completed returns (Tax Return Delivery)">
         <ActionForm action={fileReturnAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-6" resetOnSuccess data-testid="file-return">

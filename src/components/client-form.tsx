@@ -23,6 +23,7 @@ export function ClientForm({
     <ActionForm action={action} className="space-y-6" showSuccess={false}>
       <section className="grid gap-4 sm:grid-cols-2">
         <Field label="First name"><input className="input" name="firstName" defaultValue={v("firstName")} autoComplete="off" /></Field>
+        <Field label="Middle name / initial"><input className="input" name="middleName" defaultValue={v("middleName")} autoComplete="off" /></Field>
         <Field label="Preferred first name" hint="Used to greet them in the portal"><input className="input" name="preferredName" defaultValue={v("preferredName")} autoComplete="off" /></Field>
         <Field label="Last name"><input className="input" name="lastName" defaultValue={v("lastName")} autoComplete="off" /></Field>
         <Field label="Business name" className="sm:col-span-2" hint="For a business, add the people you work with as contacts after saving.">
@@ -31,6 +32,15 @@ export function ClientForm({
         <Field label="Email"><input className="input" type="email" name="email" defaultValue={v("email")} autoComplete="off" /></Field>
         <Field label="Mobile phone" hint="10-digit US number, or international starting with +"><input className="input" type="tel" name="phone" defaultValue={v("phone")} autoComplete="off" /></Field>
       </section>
+      <fieldset className="grid gap-4 rounded-xl border border-gold-300 bg-gold-100/30 p-4 sm:grid-cols-3" data-testid="spouse-section">
+        <legend className="px-1 text-sm font-semibold text-navy-900">Spouse (joint return)</legend>
+        <p className="text-xs text-slate-600 sm:col-span-3">For a married couple filing jointly: one client record for both of you. Leave blank for single filers. The spouse&apos;s contact details are kept separate from the client&apos;s.</p>
+        <Field label="Spouse first name"><input className="input" name="spouseFirstName" defaultValue={v("spouseFirstName")} autoComplete="off" /></Field>
+        <Field label="Spouse middle name / initial"><input className="input" name="spouseMiddleName" defaultValue={v("spouseMiddleName")} autoComplete="off" /></Field>
+        <Field label="Spouse last name"><input className="input" name="spouseLastName" defaultValue={v("spouseLastName")} autoComplete="off" /></Field>
+        <Field label="Spouse email" className="sm:col-span-2"><input className="input" type="email" name="spouseEmail" defaultValue={v("spouseEmail")} autoComplete="off" /></Field>
+        <Field label="Spouse mobile phone"><input className="input" type="tel" name="spousePhone" defaultValue={v("spousePhone")} autoComplete="off" /></Field>
+      </fieldset>
       <section className="grid gap-4 sm:grid-cols-6">
         <Field label="Mailing address" className="sm:col-span-6"><input className="input" name="addressLine1" defaultValue={v("addressLine1")} autoComplete="off" /></Field>
         <Field label="Address line 2" className="sm:col-span-6"><input className="input" name="addressLine2" defaultValue={v("addressLine2")} autoComplete="off" /></Field>

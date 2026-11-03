@@ -51,6 +51,8 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
             </LinkButton>
             <LinkButton href="/clients/onboarding" variant={signupsToReview ? "gold" : "secondary"}>Portal sign-ups{signupsToReview ? ` (${signupsToReview})` : ""}</LinkButton>
             <LinkButton href="/groups" variant="secondary">Groups</LinkButton>
+            <LinkButton href="/clients/duplicates" variant="secondary">Possible duplicates</LinkButton>
+            <LinkButton href="/imports/check" variant="secondary">Imported data check</LinkButton>
             <LinkButton href="/imports" variant="secondary">Import contacts</LinkButton>
             <LinkButton href="/clients/new">Add client</LinkButton>
           </>

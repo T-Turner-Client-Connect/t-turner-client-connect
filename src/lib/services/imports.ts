@@ -5,6 +5,11 @@ import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { IMPORT_FIELD_KEYS, isImportField, isSensitiveHeader, MAX_IMPORT_ROWS } from "@/lib/import/fields";
 import { classifyRow, cleanRow, type CleanRow, type MatchCandidate } from "@/lib/import/rows";
+import { IMPORT_FIELDS } from "@/lib/import/fields";
+import { mergeList, plannedChanges, REPLACEABLE_FIELDS } from "@/lib/import/plan";
+import { caseFromImport } from "@/lib/services/tax-prep";
+import { normalizePhone } from "@/lib/normalize";
+import { clientDisplayName } from "@/lib/services/clients";
 
 export class ImportError extends Error {}
 
@@ -16,6 +21,43 @@ export type StageInput = {
   mapping: Record<string, string>;
   // Rows keyed by CRM field. Built in the browser from mapped columns only.
   rows: Record<string, unknown>[];
+  // Every column header in the file (names only, never cells) so the summary
+  // can say what wasn't imported.
+  headers?: string[];
+  // Service added to every client in this batch, e.g. "Tax Preparation".
+  batchService?: string | null;
+  // Tax year the return types belong to (required with Tax Preparation or
+  // a return-type / filing-status column).
+  taxYear?: number | null;
+  // Staff member assigned to every client in the batch, and groups added.
+  batchAssignedToId?: string | null;
+  batchGroupIds?: string[];
+};
+
+export const BATCH_SERVICES = ["Tax Preparation", "Bookkeeping", "Payroll", "Business Tax Preparation", "Nonprofit Services", "Consulting"] as const;
+const TAX_SERVICES = new Set(["tax preparation", "business tax preparation"]);
+
+export type ImportSummary = {
+  mappedColumns: { header: string; field: string }[];
+  unmappedColumns: string[];
+  blockedColumns: string[];
+  rows: number;
+  missing: Record<string, number>;
+  attention: { joint: number[]; phoneInvalid: number[]; emailInvalid: number[]; returnTypeNeeded: number[]; returnTypeUnrecognized: number[]; noContact: number[] };
+  result?: {
+    created: number;
+    updated: number;
+    skipped: number;
+    unchanged: number;
+    duplicatesPrevented?: number;
+    casesCreated: number;
+    casesFilled: number;
+    returnTypesPrefilled: number;
+    // Client ids still needing a return-type selection or confirmation.
+    needsReturnType: string[];
+    needsConfirmation: string[];
+    namesRepaired: string[];
+  };
 };
 
 /**
@@ -38,6 +80,16 @@ export async function stageImport(actor: Actor, input: StageInput) {
   }
   if (Object.keys(mapping).length === 0) throw new ImportError("Map at least one column.");
   const mappedFields = new Set(Object.values(mapping));
+  const batchService = input.batchService ? BATCH_SERVICES.find((b) => b === input.batchService) ?? null : null;
+  if (input.batchService && !batchService) throw new ImportError("Choose a service from the list.");
+  const taxYear = input.taxYear ? Number(input.taxYear) : null;
+  const wantsCase = (batchService && TAX_SERVICES.has(batchService.toLowerCase())) || mappedFields.has("returnType") || mappedFields.has("filingStatus");
+  if (taxYear !== null && (!Number.isInteger(taxYear) || taxYear < 2000 || taxYear > new Date().getFullYear() + 1)) throw new ImportError("Choose a valid tax year.");
+  if (wantsCase && !taxYear && !mappedFields.has("taxYear")) throw new ImportError("Choose the tax year these returns are for.");
+  const batchAssignedToId = input.batchAssignedToId || null;
+  if (batchAssignedToId && !(await prisma.user.count({ where: { id: batchAssignedToId, active: true } }))) throw new ImportError("Choose an active staff member to assign.");
+  const batchGroupIds = Array.from(new Set(input.batchGroupIds ?? [])).slice(0, 20);
+  if (batchGroupIds.length && (await prisma.group.count({ where: { id: { in: batchGroupIds } } })) !== batchGroupIds.length) throw new ImportError("One of the chosen groups no longer exists.");
 
   const cleaned = input.rows.map((raw) => {
     // Drop anything that isn't both allow-listed and actually mapped.
@@ -48,17 +100,30 @@ export async function stageImport(actor: Actor, input: StageInput) {
 
   const emails = cleaned.map((c) => c.row.emailNormalized).filter((v): v is string => !!v);
   const phones = cleaned.map((c) => c.row.phoneNormalized).filter((v): v is string => !!v);
+  const names = Array.from(new Set(cleaned.flatMap((c) => [c.row.displayName, [c.row.firstName, c.row.lastName].filter(Boolean).join(" ")]).filter((v) => v && v !== "Unnamed client")));
+  const lastNames = Array.from(new Set(cleaned.flatMap((c) => [c.row.lastName, c.row.spouse?.last]).filter((v): v is string => !!v)));
   const existing = await prisma.client.findMany({
     where: {
       OR: [
         { emailNormalized: { in: emails } },
         { phoneNormalized: { in: phones } },
         { contacts: { some: { OR: [{ emailNormalized: { in: emails } }, { phoneNormalized: { in: phones } }] } } },
+        // Name-based fallback (confirmed against the address in classifyRow).
+        ...names.map((n) => ({ displayName: { equals: n, mode: "insensitive" as const } })),
+        ...(lastNames.length ? [{ lastName: { in: lastNames, mode: "insensitive" as const } }, { spouseLastName: { in: lastNames, mode: "insensitive" as const } }] : []),
+        ...lastNames.map((l) => ({ displayName: { contains: l, mode: "insensitive" as const } })),
+        ...(emails.length ? [{ spouseEmail: { in: emails, mode: "insensitive" as const } }] : []),
+        ...(phones.length ? [{ spousePhoneNormalized: { in: phones } }] : []),
       ],
     },
     select: {
       id: true,
       displayName: true,
+      firstName: true,
+      spouseFirstName: true,
+      spouseLastName: true,
+      addressLine1: true,
+      postalCode: true,
       lastName: true,
       businessName: true,
       emailNormalized: true,
@@ -89,9 +154,42 @@ export async function stageImport(actor: Actor, input: StageInput) {
     };
   });
 
+  // Completion summary: column names and row numbers only — no cell data.
+  const headers = (input.headers ?? Object.keys(input.mapping)).map((h) => String(h).slice(0, 200)).slice(0, 300);
+  const missingOf = (pick: (r: CleanRow) => unknown) => cleaned.filter((c) => !pick(c.row)).length;
+  const at = (pred: (c: (typeof cleaned)[number]) => boolean) => rows.filter((_, i) => pred(cleaned[i])).map((r) => r.rowNumber);
+  const summary: ImportSummary = {
+    mappedColumns: Object.entries(mapping).map(([header, field]) => ({ header, field: IMPORT_FIELDS[field as keyof typeof IMPORT_FIELDS] ?? field })),
+    unmappedColumns: headers.filter((h) => !mapping[h] && !isSensitiveHeader(h)),
+    blockedColumns: headers.filter((h) => isSensitiveHeader(h)),
+    rows: rows.length,
+    missing: {
+      Email: missingOf((r) => r.emailNormalized),
+      Phone: missingOf((r) => r.phoneNormalized),
+      "Mailing address": missingOf((r) => r.addressLine1),
+      City: missingOf((r) => r.city),
+      State: missingOf((r) => r.state),
+      ZIP: missingOf((r) => r.postalCode),
+      ...(wantsCase ? { "Return type / filing status": missingOf((r) => r.returnType) } : {}),
+    },
+    attention: {
+      joint: at((c) => !!c.row.spouse),
+      phoneInvalid: at((c) => c.warnings.some((w) => w.startsWith("Phone ") || w.startsWith("Spouse phone"))),
+      emailInvalid: at((c) => c.warnings.some((w) => w.startsWith("Email ") || w.startsWith("Spouse email"))),
+      returnTypeNeeded: wantsCase ? at((c) => !c.row.returnType && !c.row.returnTypeText) : [],
+      returnTypeUnrecognized: at((c) => !!c.row.returnTypeText && !c.row.returnType),
+      noContact: at((c) => !c.row.emailNormalized && !c.row.phoneNormalized),
+    },
+  };
+
   const batch = await prisma.$transaction(async (tx) => {
     const created = await tx.importBatch.create({
       data: {
+        batchServices: batchService ? [batchService] : [],
+        taxYear,
+        batchAssignedToId,
+        batchGroupIds,
+        summary: summary as unknown as Prisma.InputJsonValue,
         source: input.source.slice(0, 100) || "Spreadsheet",
         fileName: input.fileName.slice(0, 200),
         mapping,
@@ -127,21 +225,19 @@ export async function setRowDecision(actor: Actor, rowId: string, decision: stri
   await prisma.importRow.update({ where: { id: rowId }, data: { decision } });
 }
 
-type UpdateMode = "fill_blanks" | "overwrite";
+/** Staff approve replacing specific fields on the matched client (after the comparison). */
+export async function setRowApprovals(actor: Actor, rowId: string, fields: string[]) {
+  const row = await prisma.importRow.findUnique({ where: { id: rowId }, include: { batch: true } });
+  if (!row || row.batch.status !== "REVIEW") throw new ImportError("This import is no longer open.");
+  if (!row.decision?.startsWith("update:")) throw new ImportError("Choose which existing client this row updates first.");
+  const allowed = new Set<string>(REPLACEABLE_FIELDS);
+  const approved = Array.from(new Set(fields.filter((f) => allowed.has(f))));
+  await prisma.importRow.update({ where: { id: rowId }, data: { approvedFields: approved } });
+  await audit(prisma, { actorId: actor.id, action: "import.fields_approved", entityType: "ImportRow", entityId: rowId, details: { batchId: row.batchId, fields: approved } });
+  return approved;
+}
 
-const SCALAR_FIELDS = [
-  "firstName",
-  "lastName",
-  "businessName",
-  "email",
-  "phone",
-  "addressLine1",
-  "addressLine2",
-  "city",
-  "state",
-  "postalCode",
-  "clientType",
-] as const;
+type UpdateMode = "fill_blanks" | "overwrite";
 
 /**
  * Applies staff decisions. Never writes consent records or suppressions, and
@@ -156,12 +252,23 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
   }
   const taxReturnDerived = batch.updateMode.endsWith(";tax");
   const source = `Import: ${batch.source} (${batch.fileName})`;
+  const extraServices = batch.batchServices;
+  const mapped = new Set(Object.values(batch.mapping as Record<string, string>));
+  const wantsCase = extraServices.some((s) => TAX_SERVICES.has(s.toLowerCase())) || mapped.has("returnType") || mapped.has("filingStatus");
+  const summary = (batch.summary as unknown as ImportSummary | null) ?? null;
 
   return prisma.$transaction(
     async (tx) => {
       let created = 0;
       let updated = 0;
       let skipped = 0;
+      let unchanged = 0;
+      let duplicatesPrevented = 0;
+      let casesCreated = 0;
+      let casesFilled = 0;
+      let returnTypesPrefilled = 0;
+      const touched: string[] = [];
+      const namesRepaired: string[] = [];
       const groupCache = new Map<string, string>();
       const groupIds = async (names: string[]) => {
         const ids: string[] = [];
@@ -186,10 +293,36 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
         }
         let clientId: string;
         if (r.decision === "create") {
+          // Last check before creating: never create a second record for an
+          // email/phone already on file (e.g. added since this import was checked).
+          const clash = await tx.client.findFirst({
+            where: {
+              archivedAt: null,
+              OR: [
+                ...(row.emailNormalized ? [{ emailNormalized: row.emailNormalized }, { spouseEmail: { equals: row.emailNormalized, mode: "insensitive" as const } }] : []),
+                ...(row.phoneNormalized ? [{ phoneNormalized: row.phoneNormalized }, { spousePhoneNormalized: row.phoneNormalized }] : []),
+              ],
+            },
+            select: { id: true },
+          });
+          // Staff saw (and overrode) the records listed for this row; anything
+          // else is a record added since — never create a second file for it.
+          if ((row.emailNormalized || row.phoneNormalized) && clash && !r.candidateIds.includes(clash.id)) {
+            duplicatesPrevented++;
+            skipped++;
+            continue;
+          }
           const client = await tx.client.create({
             data: {
               firstName: row.firstName,
+              middleName: row.middleName ?? null,
               lastName: row.lastName,
+              spouseFirstName: row.spouseFirstName ?? null,
+              spouseMiddleName: row.spouseMiddleName ?? null,
+              spouseLastName: row.spouseLastName ?? null,
+              spouseEmail: row.spouseEmail ?? null,
+              spousePhone: row.spousePhone ?? null,
+              spousePhoneNormalized: normalizePhone(row.spousePhone ?? null),
               businessName: row.businessName,
               displayName: row.displayName,
               email: row.email,
@@ -202,7 +335,8 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
               state: row.state,
               postalCode: row.postalCode,
               clientType: row.clientType ?? "INDIVIDUAL",
-              services: row.services,
+              services: mergeList(row.services, extraServices),
+              assignedToId: batch.batchAssignedToId,
               tags: row.tags,
               notes: row.notes,
               taxReturnDerived,
@@ -219,36 +353,23 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
             skipped++;
             continue;
           }
+          const plan = plannedChanges(current, row, mode, extraServices, { approved: r.approvedFields, assignedToId: batch.batchAssignedToId });
           const data: Prisma.ClientUpdateInput = {};
-          const changed: string[] = [];
-          for (const field of SCALAR_FIELDS) {
-            const incoming = row[field];
-            if (incoming === null || incoming === undefined) continue;
-            const existing = current[field];
-            if (mode === "fill_blanks" && existing !== null && existing !== "") continue;
-            if (existing === incoming) continue;
-            (data as Record<string, unknown>)[field] = incoming;
-            changed.push(field);
+          const changed: string[] = plan.map((c) => c.field);
+          for (const c of plan) {
+            if (c.field === "services") data.services = mergeList(current.services, [...row.services, ...extraServices]);
+            else if (c.field === "tags") data.tags = mergeList(current.tags, row.tags);
+            else if (c.field === "notes") data.notes = current.notes ? `${current.notes}\n\n${row.notes}` : row.notes;
+            else if (c.field === "assignedToId") data.assignedTo = { connect: { id: batch.batchAssignedToId! } };
+            else (data as Record<string, unknown>)[c.field] = row[c.field as keyof CleanRow];
           }
           if (changed.includes("email")) data.emailNormalized = row.emailNormalized;
           if (changed.includes("phone")) data.phoneNormalized = row.phoneNormalized;
-          if (changed.some((f) => ["firstName", "lastName", "businessName"].includes(f))) {
+          if (changed.includes("spousePhone")) data.spousePhoneNormalized = normalizePhone(row.spousePhone ?? null);
+          if (plan.some((c) => c.kind === "repair")) namesRepaired.push(clientId);
+          if (changed.some((f) => ["firstName", "middleName", "lastName", "businessName", "spouseFirstName", "spouseMiddleName", "spouseLastName"].includes(f))) {
             const next = { ...current, ...(data as object) } as typeof current;
-            data.displayName = next.firstName || next.lastName ? [next.firstName, next.lastName].filter(Boolean).join(" ") : next.businessName ?? current.displayName;
-          }
-          const services = Array.from(new Set([...current.services, ...row.services]));
-          const tags = Array.from(new Set([...current.tags, ...row.tags]));
-          if (services.length !== current.services.length) {
-            data.services = services;
-            changed.push("services");
-          }
-          if (tags.length !== current.tags.length) {
-            data.tags = tags;
-            changed.push("tags");
-          }
-          if (row.notes && !current.notes?.includes(row.notes)) {
-            data.notes = current.notes ? `${current.notes}\n\n${row.notes}` : row.notes;
-            changed.push("notes");
+            data.displayName = clientDisplayName({ ...next, clientType: next.clientType });
           }
           if (taxReturnDerived && !current.taxReturnDerived) {
             data.taxReturnDerived = true;
@@ -258,28 +379,61 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
           if (changed.length) {
             await tx.client.update({ where: { id: clientId }, data });
             await audit(tx, { actorId: actor.id, action: "client.updated_by_import", entityType: "Client", entityId: clientId, clientId, details: { batchId, fields: changed } });
-          }
-          updated++;
+            updated++;
+          } else unchanged++;
         }
-        if (row.groups.length) {
-          const ids = await groupIds(row.groups);
+        touched.push(clientId);
+        // Tax preparation: one case per client for the tax year — joint
+        // spouses stay on this one case, never a second client or return.
+        const year = row.taxYear ?? batch.taxYear;
+        if (wantsCase && year) {
+          const res = await caseFromImport(tx, actor.id, clientId, { taxYear: year, returnType: row.returnType ?? null, otherReturnForm: row.otherReturnForm ?? null, primary: row.primary ?? null, spouse: row.spouse ?? null, spouseEmail: row.spouseEmail ?? null, spousePhone: row.spousePhone ?? null }, batchId);
+          if (res.created) casesCreated++;
+          else if (res.filled.length) casesFilled++;
+          if (res.filled.includes("returnType")) returnTypesPrefilled++;
+        }
+        if (row.groups.length || batch.batchGroupIds.length) {
+          const ids = Array.from(new Set([...(row.groups.length ? await groupIds(row.groups) : []), ...batch.batchGroupIds]));
           await tx.clientGroup.createMany({ data: ids.map((groupId) => ({ clientId, groupId })), skipDuplicates: true });
         }
         await tx.importRow.update({ where: { id: r.id }, data: { resultClientId: clientId } });
       }
 
+      const cases = wantsCase ? await tx.taxPrepCase.findMany({ where: { clientId: { in: touched }, taxYear: batch.taxYear ?? undefined }, select: { clientId: true, returnType: true, returnTypeConfirmedAt: true } }) : [];
+      const result: ImportSummary["result"] = {
+        created,
+        updated,
+        skipped,
+        unchanged,
+        duplicatesPrevented,
+        casesCreated,
+        casesFilled,
+        returnTypesPrefilled,
+        needsReturnType: cases.filter((c) => !c.returnType).map((c) => c.clientId),
+        needsConfirmation: cases.filter((c) => c.returnType && !c.returnTypeConfirmedAt).map((c) => c.clientId),
+        namesRepaired,
+      };
+
       // Keep the decision summary, drop the staged contact data.
       await tx.importRow.updateMany({ where: { batchId }, data: { data: Prisma.DbNull } });
       const done = await tx.importBatch.update({
         where: { id: batchId },
-        data: { status: "COMMITTED", committedAt: new Date(), createdCount: created, updatedCount: updated, skippedCount: skipped, updateMode: mode + (taxReturnDerived ? ";tax" : "") },
+        data: {
+          status: "COMMITTED",
+          committedAt: new Date(),
+          createdCount: created,
+          updatedCount: updated,
+          skippedCount: skipped,
+          updateMode: mode + (taxReturnDerived ? ";tax" : ""),
+          ...(summary ? { summary: { ...summary, result } as unknown as Prisma.InputJsonValue } : {}),
+        },
       });
       await audit(tx, {
         actorId: actor.id,
         action: "import.committed",
         entityType: "ImportBatch",
         entityId: batchId,
-        details: { created, updated, skipped, mode },
+        details: { created, updated, skipped, unchanged, mode, casesCreated, casesFilled, returnTypesPrefilled, services: extraServices, taxYear: batch.taxYear },
       });
       return done;
     },

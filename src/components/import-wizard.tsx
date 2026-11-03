@@ -8,6 +8,9 @@ import { Badge, Button, Field, Notice } from "@/components/ui";
 import { guessField, IMPORT_FIELDS, isSensitiveHeader, MAX_IMPORT_ROWS, type ImportField } from "@/lib/import/fields";
 import { stageImportAction } from "@/app/actions/imports";
 
+// Mirrors BATCH_SERVICES on the server (which re-checks the choice).
+const BATCH_SERVICE_OPTIONS = ["Tax Preparation", "Bookkeeping", "Payroll", "Business Tax Preparation", "Nonprofit Services", "Consulting"];
+
 type Sheet = { fileName: string; headers: string[]; rows: string[][] };
 
 function cellToString(v: unknown): string {
@@ -35,12 +38,16 @@ async function readFile(file: File): Promise<Sheet> {
   return { fileName: file.name, headers, rows };
 }
 
-export function ImportWizard() {
+export function ImportWizard({ staff = [], groups = [] }: { staff?: { id: string; name: string }[]; groups?: { id: string; name: string }[] }) {
   const router = useRouter();
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [mapping, setMapping] = useState<Record<number, ImportField | "">>({});
   const [source, setSource] = useState("TaxAct");
   const [taxDerived, setTaxDerived] = useState(true);
+  const [batchService, setBatchService] = useState("");
+  const [assignTo, setAssignTo] = useState("");
+  const [groupIds, setGroupIds] = useState<string[]>([]);
+  const [taxYear, setTaxYear] = useState(String(new Date().getFullYear() - 1));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -73,6 +80,10 @@ export function ImportWizard() {
 
   const mappedCols = sheet ? sheet.headers.map((h, i) => ({ h, i, field: mapping[i] })).filter((c) => c.field && !isSensitiveHeader(c.h)) : [];
 
+  const mappedSet = new Set(mappedCols.map((c) => c.field));
+  const needsYear = /tax/i.test(batchService) || mappedSet.has("returnType") || mappedSet.has("filingStatus");
+  const unmapped = sheet ? sheet.headers.filter((h, i) => !mapping[i] && !isSensitiveHeader(h)) : [];
+
   function buildRows() {
     return sheet!.rows.map((r) => Object.fromEntries(mappedCols.map((c) => [c.field, r[c.i] ?? ""])));
   }
@@ -87,6 +98,11 @@ export function ImportWizard() {
       taxReturnDerived: taxDerived,
       mapping: Object.fromEntries(mappedCols.map((c) => [c.h, c.field as string])),
       rows: buildRows(),
+      headers: sheet.headers,
+      batchService: batchService || null,
+      batchAssignedToId: assignTo || null,
+      batchGroupIds: groupIds,
+      taxYear: needsYear ? Number(taxYear) : null,
     });
     if (result?.batchId) {
       setSheet(null); // drop the parsed file from memory
@@ -123,7 +139,7 @@ export function ImportWizard() {
             <p className="text-sm text-slate-600">
               {sheet.rows.length} data row{sheet.rows.length === 1 ? "" : "s"} in <strong>{sheet.fileName}</strong>. Columns set to &quot;Don&apos;t import&quot; are discarded.
             </p>
-            <Notice tone="warn" title="Never imported">SSNs, taxpayer IDs, birth dates, income, bank details, dependents and return data are blocked automatically.</Notice>
+            <Notice tone="warn" title="Never imported">SSNs, taxpayer IDs, birth dates, income, bank details, dependents and return figures are blocked automatically. Only the return type / filing status and tax year are read, to open the right tax-preparation case.</Notice>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[560px] text-sm">
                 <thead><tr className="text-left text-slate-600"><th className="py-2 pr-3">Column in file</th><th className="py-2 pr-3">Sample</th><th className="py-2">CRM field</th></tr></thead>
@@ -160,7 +176,46 @@ export function ImportWizard() {
           </section>
 
           <section className="space-y-3 rounded-xl border border-navy-100 bg-white p-4 sm:p-5">
-            <h2 className="text-lg font-semibold">3. Preview</h2>
+            <h2 className="text-lg font-semibold">3. Options for every client in this file</h2>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Service for all selected clients" hint="Added to each created or updated client. Choosing Tax Preparation does not add Bookkeeping.">
+                <select className="input" value={batchService} onChange={(e) => setBatchService(e.target.value)} aria-label="Service for all selected clients">
+                  <option value="">No service — keep what each row says</option>
+                  {BATCH_SERVICE_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+              <Field label="Assign every client to" hint="Fills the assigned staff member where it's blank. If someone else is already assigned, you'll see it in the comparison and can approve the change.">
+                <select className="input" value={assignTo} onChange={(e) => setAssignTo(e.target.value)} aria-label="Assign every client to">
+                  <option value="">Don&apos;t change assignments</option>
+                  {staff.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </Field>
+              {groups.length > 0 && (
+                <fieldset className="sm:col-span-2">
+                  <legend className="mb-1 text-sm font-semibold text-navy-900">Add every client to these groups</legend>
+                  <div className="grid gap-1 sm:grid-cols-2">
+                    {groups.map((g) => (
+                      <label key={g.id} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" className="accent-navy-900" checked={groupIds.includes(g.id)} onChange={(e) => setGroupIds(e.target.checked ? [...groupIds, g.id] : groupIds.filter((x) => x !== g.id))} /> {g.name}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-600">Groups are only added, never removed. Choosing Tax Preparation never adds Bookkeeping.</p>
+                </fieldset>
+              )}
+              {needsYear && (
+                <Field label="Tax year (required)" hint="Each client gets one tax-preparation case for this year. Return type / filing status from the file is prefilled; otherwise staff select it.">
+                  <input className="input" inputMode="numeric" value={taxYear} onChange={(e) => setTaxYear(e.target.value)} aria-label="Tax year" required />
+                </Field>
+              )}
+            </div>
+            {unmapped.length > 0 && (
+              <p className="text-sm text-slate-600">Not imported (no CRM field chosen): {unmapped.join(", ")}</p>
+            )}
+          </section>
+
+          <section className="space-y-3 rounded-xl border border-navy-100 bg-white p-4 sm:p-5">
+            <h2 className="text-lg font-semibold">4. Preview</h2>
             {mappedCols.length === 0 ? (
               <p className="text-sm text-slate-600">Map at least one column to see a preview.</p>
             ) : (

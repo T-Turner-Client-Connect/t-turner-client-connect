@@ -80,17 +80,17 @@ export function brandedNoticeHtml(heading: string, line: string, buttonLabel: st
 
 export function brandedEmailHtml(input: { heading: string; paragraphs: string[]; button: { label: string; url: string }; note?: string; footer?: string }): string {
   const { heading, paragraphs, button, note, footer = "TTurner & Associates Group, LLC" } = input;
-  return `<!doctype html><html><body style="margin:0;background:#f8f4ea;font-family:Arial,Helvetica,sans-serif;color:#1c2333">
+  return `<!doctype html><html><body style="margin:0;background:#fcfaf4;font-family:Arial,Helvetica,sans-serif;color:#0a1a44">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:28px 12px">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #efe8d8">
-<tr><td style="background:#001452;padding:20px 28px;font-family:Georgia,serif;font-size:19px;letter-spacing:2px;color:#ffffff">TTURNER <span style="color:#d2a43f;font-size:13px;letter-spacing:3px">CLIENT CONNECT</span></td></tr>
-<tr><td style="height:3px;background:#d2a43f"></td></tr>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #f6efdd">
+<tr><td style="background:#0a1a44;padding:20px 28px;font-family:Georgia,serif;font-size:19px;letter-spacing:2px;color:#ffffff">TTURNER <span style="color:#c89d29;font-size:13px;letter-spacing:3px">CLIENT CONNECT</span></td></tr>
+<tr><td style="height:3px;background:#c89d29"></td></tr>
 <tr><td style="padding:28px">
-<h1 style="margin:0 0 12px;font-family:Georgia,serif;font-size:22px;color:#001452">${esc(heading)}</h1>
+<h1 style="margin:0 0 12px;font-family:Georgia,serif;font-size:22px;color:#0a1a44">${esc(heading)}</h1>
 ${paragraphs.map((p) => `<p style="margin:0 0 14px;font-size:16px;line-height:1.55">${esc(p)}</p>`).join("\n")}
-<p style="margin:22px 0 0"><a href="${esc(button.url)}" style="display:inline-block;background:#001452;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:8px">${esc(button.label)}</a></p>
+<p style="margin:22px 0 0"><a href="${esc(button.url)}" style="display:inline-block;background:#0a1a44;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:8px">${esc(button.label)}</a></p>
 ${note ? `<p style="margin:22px 0 0;font-size:13px;color:#5b6475">${esc(note)}</p>` : ""}
 </td></tr>
-<tr><td style="padding:16px 28px;border-top:1px solid #efe8d8;font-size:12px;color:#5b6475">${esc(footer)}</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #f6efdd;font-size:12px;color:#5b6475">${esc(footer)}</td></tr>
 </table></td></tr></table></body></html>`;
 }
