@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Field, Notice } from "@/components/ui";
-import { ChevronRight, Mail, MessageCircleMore, MessagesSquare, Phone } from "lucide-react";
+import { ChevronRight, Mail, MessageCircleMore, Phone, Send } from "lucide-react";
 import { NavyCard, PageBanner } from "@/components/portal/luxury";
 import { MessageComposer } from "@/components/portal/message-composer";
 import { BUSINESS } from "@/lib/business";
@@ -19,7 +19,7 @@ export const metadata = { title: "Messages" };
 export default async function PortalMessages({ searchParams }: { searchParams: Promise<{ account?: string; c?: string; new?: string; view?: string }> }) {
   const user = await requirePortalUser();
   const sp = await searchParams;
-  const { current } = await resolveAccount(user.id, sp.account);
+  const { current, accounts } = await resolveAccount(user.id, sp.account);
   if (!current) return null;
   if (!current.canMessage) return <Notice>Messaging isn&apos;t enabled for your access to this account.</Notice>;
   const q = `?account=${current.clientId}`;
@@ -56,11 +56,11 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
     // Text uses the firm's Twilio business number only once it is connected.
     const textNumber = from.length === 11 && from.startsWith("1") && process.env.TWILIO_ACCOUNT_SID ? { tel: `+${from}`, display: `${from.slice(1, 4)}-${from.slice(4, 7)}-${from.slice(7)}` } : null;
     const office = "info@tturnerassociates.com";
-    const row = "flex items-center gap-4 rounded-xl border border-gold-300 bg-gradient-to-r from-white to-gold-50 px-4 py-3 hover:border-gold-500";
+    const row = "flex items-center gap-4 rounded-xl border border-gold-300 bg-gold-50/70 px-4 py-3 shadow-sm hover:border-gold-500 hover:bg-gold-50";
     return (
       <>
         {banner}
-        <div className="grid items-start gap-6 lg:grid-cols-[0.85fr_1.6fr]" data-testid="message-center">
+        <div className="grid items-start gap-6 grid-cols-1 lg:grid-cols-[0.7fr_1.6fr]" data-testid="message-center">
           <div className="min-w-0 space-y-6">
             <NavyCard icon={Mail} title="Contact Our Office">
               <div className="space-y-3">
@@ -107,8 +107,8 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
             </NavyCard>
           </div>
           <section className="min-w-0 rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] sm:p-6">
-            <h2 className="mb-4 flex items-center gap-3 font-serif text-2xl font-bold text-navy-900 sm:text-[1.9rem]"><MessagesSquare className="size-7 text-gold-600" aria-hidden />Send a Message</h2>
-            <p className="mb-4 text-xs text-slate-600" data-testid="message-target">Sending about: <strong className="text-navy-900">{current.client.businessName || current.client.displayName}</strong></p>
+            <h2 className="mb-4 flex items-center gap-3 font-serif text-2xl font-bold text-navy-900 sm:text-[1.9rem]"><Send className="size-7 text-gold-600" aria-hidden />Send a Message</h2>
+            {accounts.length > 1 && <p className="mb-4 text-xs text-slate-600" data-testid="message-target">Sending about: <strong className="text-navy-900">{current.client.businessName || current.client.displayName}</strong></p>}
             <MessageComposer action={portalMessageAction.bind(null, current.clientId)} canUpload={current.canUpload} textNumber={textNumber} email={office} defaultSubject={appointment ? "Appointment request" : undefined} uploadLabel={MAX_UPLOAD_LABEL} />
           </section>
         </div>
