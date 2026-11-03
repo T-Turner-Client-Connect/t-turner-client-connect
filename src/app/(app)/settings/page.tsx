@@ -1,3 +1,4 @@
+import { resetActivationLimitAction } from "@/app/actions/signup";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader } from "@/components/ui";
 import { addSuppressionAction, liftSuppressionAction } from "@/app/actions/clients";
@@ -253,6 +254,15 @@ export default async function SettingsPage() {
                 </div>
               );
             })()}
+          </Card>
+        )}
+        {isTabitha && (
+          <Card title="Reset a client's activation limit (owner only)">
+            <p className="mb-2 text-sm text-slate-600">If someone is told to wait before requesting another activation or sign-up email, clear the limit for their address only. Other addresses and protections are unchanged; the reset is recorded in the audit log. To send a fresh activation link instead, open the client&apos;s record → Portal tab → Send activation link (the public form&apos;s limit doesn&apos;t apply there).</p>
+            <ActionForm action={resetActivationLimitAction.bind(null, "")} className="flex flex-wrap items-end gap-2" resetOnSuccess>
+              <Field label="Client's email address"><input className="input" type="email" name="email" required /></Field>
+              <Button type="submit" variant="secondary">Reset limit</Button>
+            </ActionForm>
           </Card>
         )}
         {isAdmin && (

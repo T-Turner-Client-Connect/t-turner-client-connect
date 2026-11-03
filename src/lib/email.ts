@@ -1,4 +1,5 @@
 import "server-only";
+import { BUSINESS } from "@/lib/business";
 import { isPreviewDeploy } from "@/lib/integrations";
 
 /** Where client replies go: EMAIL_REPLY_TO, else the office inbox. */
@@ -93,7 +94,7 @@ export function brandedNoticeHtml(heading: string, line: string, buttonLabel: st
 }
 
 export function brandedEmailHtml(input: { heading: string; paragraphs: string[]; button: { label: string; url: string }; note?: string; footer?: string }): string {
-  const { heading, paragraphs, button, note, footer = "TTurner & Associates Group, LLC" } = input;
+  const { heading, paragraphs, button, note, footer = BUSINESS.legalName } = input;
   return `<!doctype html><html><body style="margin:0;background:#fcfaf4;font-family:Arial,Helvetica,sans-serif;color:#0a1a44">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:28px 12px">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #f6efdd">

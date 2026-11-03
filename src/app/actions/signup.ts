@@ -8,6 +8,7 @@ import { run, str, type ActionState } from "@/lib/action";
 import { clientIp, requireUser } from "@/lib/auth/session";
 import { createPortalSession, markPortalMfaPassed, requirePortalUser } from "@/lib/portal/session";
 import { ValidationError } from "@/lib/services/clients";
+import { BUSINESS } from "@/lib/business";
 import {
   approveAsNewClient,
   completeSignup,
@@ -113,14 +114,17 @@ export async function submitOnboardingAction(_prev: ActionState): Promise<Action
   if (!result?.ok) return result;
   if (outcome === "APPROVED_NEW") redirect("/client?welcome=1");
   revalidatePath("/client/start");
-  return { ok: "Thank you! Our team will finish setting up your account and email you.", at: Date.now() };
+  return { ok: "Thank you! Your account is being set up — you can sign in now.", at: Date.now() };
 }
 
 export async function requestActivationAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   return run(async () => {
-    await requestActivation({ email: str(fd, "email"), name: str(fd, "name"), phone: str(fd, "phone"), ip: await clientIp(), honeypot: str(fd, "company_website") });
-    // Same answer whatever happened, so nobody learns whether an email is on file.
-    return "Thank you. If we can match your request to your client record, we'll email a secure activation link to the address we have on file. Otherwise our office will contact you to verify your identity. Please allow one business day.";
+    const r = await requestActivation({ email: str(fd, "email"), name: str(fd, "name"), phone: str(fd, "phone"), ip: await clientIp(), honeypot: str(fd, "company_website") });
+    // Paused is site-wide, so saying so reveals nothing about any email address.
+    if (r === "PAUSED") throw new ValidationError(`Online activation isn't available right now, so no email was sent. Our office has been alerted. Please email info@tturnerassociates.com or call ${BUSINESS.officePhoneDisplay}.`);
+    if (r === "FAILED") throw new ValidationError("We couldn't send the email just now — nothing went out. Please try again in a few minutes, or email info@tturnerassociates.com.");
+    // Otherwise the same answer whatever happened, so nobody learns whether an email is on file.
+    return "Thank you. Check your inbox in the next few minutes: if this email is on your client record, we've sent a secure activation link; if it isn't, we've sent you a link to create your account. Check your spam or junk folder too. Nothing after 10 minutes? Email info@tturnerassociates.com.";
   });
 }
 
@@ -160,7 +164,7 @@ export async function resetActivationLimitAction(clientId: string, _prev: Action
   const actor = await requireUser();
   return run(async () => {
     const n = await resetActivationLimit(actor, str(fd, "email"));
-    revalidatePath(`/clients/${clientId}`);
+    revalidatePath(clientId ? `/clients/${clientId}` : "/settings");
     return n ? `Cleared ${n} recent attempt${n === 1 ? "" : "s"} for this address only. Other limits are unchanged.` : "No recent attempts to clear for this address.";
   });
 }

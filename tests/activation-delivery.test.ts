@@ -82,14 +82,29 @@ describe("client activation (local Resend stub — not live delivery)", () => {
     await expect(acceptPortalInvite(token, "Client-Pass-12345")).rejects.toThrow();
   });
 
-  it("the one-hour limit can be cleared for one address only", async () => {
+  it("short limits instead of a one-hour lockout: held and failed requests don't count; only the owner can reset one address", async () => {
     const tabitha = await makeUser("ADMIN", "Tabitha");
-    for (let i = 0; i < 3; i++) await requestActivation({ email: "client@fictional.example", name: "", phone: "", ip: null });
-    await expect(requestActivation({ email: "client@fictional.example", name: "", phone: "", ip: null })).rejects.toThrow(/Too many attempts/);
-    for (let i = 0; i < 3; i++) await requestActivation({ email: "other@fictional.example", name: "", phone: "", ip: null });
-    expect(await resetActivationLimit(tabitha, "client@fictional.example")).toBe(3);
-    await requestActivation({ email: "client@fictional.example", name: "", phone: "", ip: null });
-    await expect(requestActivation({ email: "other@fictional.example", name: "", phone: "", ip: null })).rejects.toThrow(/Too many attempts/);
+    await prisma.ownerAccess.create({ data: { userId: tabitha.id, isPrimary: true } });
+    const otherAdmin = await makeUser("ADMIN", "Other Admin");
+    await createClient(tabitha, { firstName: "Fictional", lastName: "Client", email: "client@fictional.example", clientType: "INDIVIDUAL", status: "ACTIVE" });
+    const ask = (email = "client@fictional.example") => requestActivation({ email, name: "", phone: "", ip: null });
+    // Sign-up not confirmed yet: every request is held — and none uses up the allowance.
+    for (let i = 0; i < 8; i++) expect(await ask()).toBe("PAUSED");
+    await prisma.authSettings.upsert({ where: { id: "default" }, create: { id: "default", emailDeliveryVerifiedAt: new Date() }, update: { emailDeliveryVerifiedAt: new Date() } });
+    // Provider failure: shown honestly, and doesn't count either.
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ message: "temporarily unavailable" }), { status: 503 }));
+    for (let i = 0; i < 6; i++) expect(await ask()).toBe("FAILED");
+    vi.stubGlobal("fetch", realFetch);
+    // Five emails per 15 minutes per address (the first sends the link; repeats keep it valid).
+    for (let i = 0; i < 5; i++) expect(await ask()).toBe("DONE");
+    await expect(ask()).rejects.toThrow(/try again in 1[0-5] minutes/);
+    for (let i = 0; i < 5; i++) await ask("other@fictional.example");
+    // Owner-only reset, for one address.
+    await expect(resetActivationLimit(otherAdmin, "client@fictional.example")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await resetActivationLimit(tabitha, "client@fictional.example")).toBe(5);
+    expect(await ask()).toBe("DONE");
+    await expect(ask("other@fictional.example")).rejects.toThrow(/try again in/);
   });
 
   it("Resend's testing sender gives a clear error instead of implying delivery", async () => {

@@ -26,7 +26,7 @@ const HOOKS: Record<ContentCategory, string[]> = {
   BUSINESS_SETUP: ["Starting a business?", "Thinking about launching your business?", "New business owners:"],
   NONPROFIT: ["Running a nonprofit?", "For nonprofit leaders:", "Supporting nonprofits:"],
   OFFICE_ANNOUNCEMENT: ["Office update:", "Please note:", "An update from our office:"],
-  HOLIDAY: ["Warm wishes from our team.", "From all of us at TTurner & Associates Group:", "Happy holidays from our office."],
+  HOLIDAY: ["Warm wishes from our team.", "From all of us at T. Turner & Associates:", "Happy holidays from our office."],
 };
 
 const BASE_TAGS: Record<ContentCategory, string[]> = {

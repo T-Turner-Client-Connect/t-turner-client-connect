@@ -27,7 +27,7 @@ export default async function StartPage() {
       <>
         <PageHeader title="Thank you!" />
         <Notice title="Our team is finishing your setup">
-          We received your details{app.files.length ? ` and ${app.files.length} document(s)` : ""}. A team member will finish connecting your account and email you — usually within one business day.
+          We received your details{app.files.length ? ` and ${app.files.length} document(s)` : ""}. Your account is set up — sign in to continue.
           Questions? Call {BUSINESS.officePhoneDisplay}.
         </Notice>
       </>
