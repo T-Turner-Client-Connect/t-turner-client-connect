@@ -95,6 +95,9 @@ export async function attachInboundToClient(actor: Actor, inboundId: string, cli
 }
 
 const FAILED = new Set(["failed", "undelivered"]);
+// Twilio's callbacks can arrive out of order; a final status is never replaced by an earlier one.
+const FINAL = ["delivered", "undelivered", "failed", "read"];
+const notFinal = { OR: [{ deliveryStatus: null }, { deliveryStatus: { notIn: FINAL } }] };
 
 /** Delivery-status callback: updates the notice/message with Twilio's result. */
 export async function handleStatusCallback(params: Record<string, string>) {
@@ -102,12 +105,13 @@ export async function handleStatusCallback(params: Record<string, string>) {
   const status = (params.MessageStatus || params.SmsStatus || "").toLowerCase();
   if (!sid || !status) return;
   const detail = params.ErrorCode ? `Twilio ${status} (error ${params.ErrorCode})` : `Twilio ${status}`;
+  const early = !FINAL.includes(status);
   await prisma.notification.updateMany({
-    where: { providerSid: sid },
+    where: { providerSid: sid, ...(early ? notFinal : {}) },
     data: { deliveryStatus: status, statusDetail: detail, ...(FAILED.has(status) ? { status: "FAILED" } : {}) },
   });
   await prisma.staffAlert.updateMany({
-    where: { providerSid: sid },
+    where: { providerSid: sid, ...(early ? notFinal : {}) },
     data: { deliveryStatus: status, statusDetail: detail, ...(FAILED.has(status) ? { status: "FAILED" } : {}) },
   });
   await prisma.message.updateMany({

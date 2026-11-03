@@ -91,8 +91,8 @@ describe("staff text alerts", () => {
   it("records Twilio's delivery status for alerts and the controlled test, and shows office replies", async () => {
     const { tab } = await clientWithPortal();
     const daria = await makeUser("STAFF");
-    await expect(sendTestText(daria)).rejects.toBeInstanceOf(ForbiddenError);
-    await sendTestText(tab);
+    await expect(sendTestText(daria, "+12056595448")).rejects.toBeInstanceOf(ForbiddenError);
+    await sendTestText(tab, "+12056595448");
     expect(texts[0]).toMatchObject({ to: "+12056595448" });
     expect(texts[0].body).toMatch(/Reply YES/);
     let r = await testResults();
@@ -102,15 +102,33 @@ describe("staff text alerts", () => {
     r = await testResults();
     expect(r.tests[0].deliveryStatus).toBe("delivered");
     expect(r.replies.map((x) => x.body)).toEqual(["YES"]);
-    await sendTestText(tab);
-    await sendTestText(tab);
-    await expect(sendTestText(tab)).rejects.toThrow(/Three test texts/);
+    await sendTestText(tab, "+12056595448");
+    await sendTestText(tab, "+12056595448");
+    await expect(sendTestText(tab, "+12056595448")).rejects.toThrow(/Three test texts/);
+  });
+
+  it("sends the test only to the SAVED number the page showed; an unsaved or out-of-date number sends nothing", async () => {
+    const { tab } = await clientWithPortal();
+    // The page showed the saved office number, but the person expected their cell (typed, not saved).
+    await expect(sendTestText(tab, "(555) 010-0177")).rejects.toThrow(/Nothing was sent/);
+    await expect(sendTestText(tab, "")).rejects.toThrow(/confirm the number/);
+    expect(texts).toHaveLength(0);
+    expect(await prisma.staffAlert.count()).toBe(0);
+    // After saving the cell (fictional), the test goes to exactly that number, and the change is in the history.
+    await updateStaffAlertSettings(tab, { smsEnabled: false, phone: "(555) 010-0177", windowStart: "08:00", windowEnd: "17:00" });
+    expect(await prisma.auditLog.findFirstOrThrow({ where: { action: "staff_alerts.phone_changed" } })).toMatchObject({ details: { from: "…5448", to: "…0177" } });
+    await sendTestText(tab, "5550100177");
+    expect(texts.map((t) => t.to)).toEqual(["+15550100177"]);
+    expect((await prisma.staffAlert.findFirstOrThrow()).to).toBe("+15550100177");
+    // A page still showing the old office number can't send to it anymore.
+    await expect(sendTestText(tab, "+12056595448")).rejects.toThrow(/Nothing was sent/);
+    expect(texts).toHaveLength(1);
   });
 
   it("refuses the test without Twilio settings", async () => {
     vi.stubEnv("TWILIO_AUTH_TOKEN", "");
     const tab = await makeUser("ADMIN");
-    await expect(sendTestText(tab)).rejects.toThrow(/isn't connected/);
+    await expect(sendTestText(tab, "+12056595448")).rejects.toThrow(/isn't connected/);
   });
 });
 
