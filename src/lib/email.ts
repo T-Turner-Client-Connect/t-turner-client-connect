@@ -5,6 +5,12 @@ export function replyToAddress() {
   return (process.env.EMAIL_REPLY_TO || "info@tturnerassociates.com").trim();
 }
 
+export const CONTACT_LINE = "Questions? Email us at info@tturnerassociates.com.";
+/** Every automated email names the office inbox to contact. */
+export function withContact(text: string) {
+  return /info@tturnerassociates\.com/i.test(text) ? text : `${text.trimEnd()}\n\n${CONTACT_LINE}`;
+}
+
 export type EmailResult = { ok: true; providerId: string | null } | { ok: false; reason: "not_configured" | "rejected" | "network"; detail: string };
 
 /**
@@ -39,7 +45,7 @@ export async function sendEmail(input: {
         // Replies go to a monitored mailbox (the sending address may have none).
         reply_to: [replyToAddress()],
         subject: input.subject,
-        text: input.text,
+        text: withContact(input.text),
         ...(input.html ? { html: input.html } : {}),
         ...(input.tags ? { tags: Object.entries(input.tags).map(([name, value]) => ({ name, value })) } : {}),
       }),
@@ -98,6 +104,6 @@ ${paragraphs.map((p) => `<p style="margin:0 0 14px;font-size:16px;line-height:1.
 <p style="margin:22px 0 0"><a href="${esc(button.url)}" style="display:inline-block;background:#0a1a44;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:8px">${esc(button.label)}</a></p>
 ${note ? `<p style="margin:22px 0 0;font-size:13px;color:#5b6475">${esc(note)}</p>` : ""}
 </td></tr>
-<tr><td style="padding:16px 28px;border-top:1px solid #f6efdd;font-size:12px;color:#5b6475">${esc(footer)}</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #f6efdd;font-size:12px;color:#5b6475">${esc(footer)}<br>Questions? Email us at <a href="mailto:info@tturnerassociates.com" style="color:#0A1A44">info@tturnerassociates.com</a>.</td></tr>
 </table></td></tr></table></body></html>`;
 }
