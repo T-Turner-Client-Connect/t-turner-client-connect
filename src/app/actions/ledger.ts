@@ -9,6 +9,8 @@ import {
   reconcileAccount, reopenBooks, reverseEntry, setupLedger, updateAccount, usd, type Basis,
 } from "@/lib/services/ledger";
 import { addRule } from "@/lib/services/ledger-review";
+import { clearBankFlag } from "@/lib/services/ledger";
+import { completeBankLink, disconnectBank, mapBankAccount, retrieveNow, startBankLink } from "@/lib/services/banking";
 import { addCustomer, addRecurringInvoice, createInvoice, generateRecurringDrafts, issueInvoice, recordInvoicePayment, voidInvoice } from "@/lib/services/client-invoicing";
 
 const refresh = (clientId: string) => revalidatePath(`/bookkeeping/${clientId}/books`);
@@ -214,5 +216,61 @@ export async function generateDraftsAction(clientId: string, _prev: ActionState)
     const made = await generateRecurringDrafts(actor, clientId);
     refresh(clientId);
     return made.length ? `Created draft${made.length === 1 ? "" : "s"} ${made.join(", ")}.` : "No recurring invoices are due.";
+  });
+}
+
+// --- Daily bank retrieval (sandbox) ---
+
+export async function bankLinkTokenAction(clientId: string): Promise<{ token?: string; error?: string }> {
+  const actor = await requireUser();
+  try {
+    return { token: (await startBankLink(actor, clientId)).link_token };
+  } catch (e) {
+    return { error: e instanceof Error && (e.name === "PlaidError" || e.name === "ValidationError" || e.name === "ForbiddenError") ? e.message : "Couldn't start the bank connection." };
+  }
+}
+
+export async function completeBankLinkAction(clientId: string, publicToken: string, institutionName: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const c = await completeBankLink(actor, clientId, { publicToken, institutionName, authorizedByName: str(fd, "authorizedByName"), authorizationMethod: str(fd, "method") as "CLIENT_PRESENT" | "CLIENT_PORTAL" | "WRITTEN_AUTHORIZATION", confirmed: fd.get("confirm") === "on" });
+    refresh(clientId);
+    return `Connected (sandbox): ${c.accounts.length} account${c.accounts.length === 1 ? "" : "s"}. Choose which ledger account each one feeds.`;
+  });
+}
+
+export async function mapBankAccountAction(clientId: string, connectionAccountId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await mapBankAccount(actor, clientId, connectionAccountId, str(fd, "ledgerAccountId") || null);
+    refresh(clientId);
+    return "Saved.";
+  });
+}
+
+export async function retrieveNowAction(clientId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const r = await retrieveNow(actor, clientId);
+    refresh(clientId);
+    return `Retrieved: ${r.added} new, ${r.matched} already imported from statements (linked, not added), ${r.skipped} skipped (pending or unmapped)${r.flagged ? `, ${r.flagged} flagged for review` : ""}. Nothing was posted.`;
+  });
+}
+
+export async function disconnectBankAction(clientId: string, connectionId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await disconnectBank(actor, clientId, connectionId, str(fd, "reason"));
+    refresh(clientId);
+    return "Disconnected. Retrieved transactions stay in the books' history.";
+  });
+}
+
+export async function clearBankFlagAction(clientId: string, txnId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await clearBankFlag(actor, clientId, txnId, str(fd, "note"));
+    refresh(clientId);
+    return "Flag cleared with your note.";
   });
 }

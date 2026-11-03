@@ -10,7 +10,11 @@ import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ACCOUNT_TYPES, SUBTYPES, balanceSheet, canUseLedger, ledgerFlags, ledgerOverview, profitAndLoss, todayCentral, ymdOf, type Basis, type ReportRow } from "@/lib/services/ledger";
 import { closeChecklist, suggestCategories } from "@/lib/services/ledger-review";
 import { receivablesAging, stripeMode } from "@/lib/services/client-invoicing";
+import { BANK_CONSENT_TEXT, bankConnectionsView } from "@/lib/services/banking";
+import { BankConnect } from "@/components/bank-connect";
+import { fmtDateTime } from "@/lib/format";
 import {
+  clearBankFlagAction, disconnectBankAction, mapBankAccountAction, retrieveNowAction,
   addAccountAction, addCustomerAction, addRecurringAction, addRuleAction, categorizeAction, closeBooksAction, createInvoiceAction, excludeAction, generateDraftsAction, importBankAction, includeAction,
   issueInvoiceAction, journalEntryAction, openingBalancesAction, reconcileAction, recordInvoicePaymentAction, reopenBooksAction, reverseEntryAction, setupLedgerAction, toggleAccountAction, voidInvoiceAction,
 } from "@/app/actions/ledger";
@@ -146,12 +150,52 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
   }
 
   async function BankTab() {
-    const suggestions = await suggestCategories(user, clientId);
+    const [suggestions, bv] = await Promise.all([suggestCategories(user, clientId), bankConnectionsView(user, clientId)]);
+    const FLAG_LABEL: Record<string, string> = { POSSIBLE_DUPLICATE: "Possible duplicate", CHANGED_AFTER_POSTING: "Changed by the bank after posting", REMOVED_AFTER_POSTING: "Removed by the bank after posting" };
     const toReview = bank.filter((t) => t.status === "UNREVIEWED");
     const done = bank.filter((t) => t.status !== "UNREVIEWED");
     const name = new Map(accounts.map((a) => [a.id, acctLabel(a)]));
     return (
       <div className="space-y-4">
+        <Card title="Daily bank retrieval (read-only)">
+          <div data-testid="bank-connections" className="space-y-3 text-sm">
+            <p className="text-slate-700">Once the client authorizes a read-only connection, new transactions are retrieved every day into the review list below. Coetha recognizes rows already imported, suggests categories and flags anything unclear — she never posts, reconciles or approves. {bv.mode === "SANDBOX" ? <strong>Sandbox (test data) only.</strong> : bv.mode === "LIVE_BLOCKED" ? <strong className="text-red-700">A non-sandbox Plaid setting is present — real bank connections stay off until Tabitha approves them.</strong> : <strong>Plaid isn&apos;t set up yet.</strong>}</p>
+            {bv.connections.length === 0 && <p className="text-slate-600">No bank connected yet.</p>}
+            {bv.connections.map((c) => (
+              <div key={c.id} className="rounded-lg border border-ivory-200 p-3">
+                <p className="flex flex-wrap items-center gap-2"><strong>{c.institutionName ?? "Bank"}</strong>
+                  <Badge tone={c.status === "ACTIVE" ? "green" : c.status === "DISCONNECTED" ? "gray" : "red"}>{c.status === "NEEDS_REAUTH" ? "Client must sign in again" : c.status.toLowerCase()}</Badge>
+                  <Badge tone="navy">{c.environment.toLowerCase()}</Badge>
+                  <span data-testid="bank-last-sync">Last successful retrieval: {c.lastSuccessAt ? fmtDateTime(c.lastSuccessAt) : "not yet"}</span>
+                </p>
+                <p className="text-xs text-slate-600">Authorized by {c.authorizedByName} ({c.authorizationMethod.replaceAll("_", " ").toLowerCase()}) · consent {c.consentVersion}{c.lastError ? ` · Last problem: ${c.lastError}` : ""}</p>
+                <ul className="mt-2 space-y-1">
+                  {c.accounts.map((a) => (
+                    <li key={a.id} className="flex flex-wrap items-center gap-2">
+                      <span className="w-56">{a.name}{a.mask ? ` ····${a.mask}` : ""} <span className="text-xs text-slate-500">({a.subtype ?? a.type})</span></span>
+                      <ActionForm action={mapBankAccountAction.bind(null, clientId, a.id)} className="flex items-center gap-1" showSuccess={false}>
+                        <select className="input py-1 text-xs" name="ledgerAccountId" defaultValue={a.ledgerAccountId ?? ""}><option value="">Not retrieved</option>{options(banks)}</select>
+                        <Button type="submit" variant="ghost" className="px-2 py-1 text-xs">Save</Button>
+                      </ActionForm>
+                    </li>
+                  ))}
+                </ul>
+                {c.runs.length > 0 && <p className="mt-1 text-xs text-slate-500">Recent: {c.runs.map((r) => `${fmtDateTime(r.startedAt)} ${r.trigger.toLowerCase()} ${r.status === "OK" ? `+${r.added}, ${r.matched} linked` : `failed (${r.errorCode})`}`).join(" · ")}</p>}
+                {c.status !== "DISCONNECTED" && user.role === "ADMIN" && (
+                  <details className="mt-1 text-xs"><summary className="cursor-pointer underline">Disconnect</summary>
+                    <ActionForm action={disconnectBankAction.bind(null, clientId, c.id)} className="mt-1 flex gap-1"><input className="input py-1 text-xs" name="reason" placeholder="Why?" required /><Button type="submit" variant="ghost" className="px-2 py-1 text-xs">Disconnect</Button></ActionForm>
+                  </details>
+                )}
+              </div>
+            ))}
+            <div className="flex flex-wrap items-center gap-3">
+              {bv.mode === "SANDBOX" && <BankConnect clientId={clientId} consentText={BANK_CONSENT_TEXT} />}
+              {bv.connections.some((c) => c.status === "ACTIVE" || c.status === "ERROR") && (
+                <ActionForm action={retrieveNowAction.bind(null, clientId)}><Button type="submit" variant="gold" data-testid="bank-retrieve">Retrieve now</Button></ActionForm>
+              )}
+            </div>
+          </div>
+        </Card>
         <div className="grid gap-4 lg:grid-cols-3">
           <Card title="Import a statement (CSV)">
             {banks.length === 0 ? <p className="text-sm">Add a bank or credit card account first.</p> : (
@@ -204,6 +248,7 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
                             <Button type="submit" variant="secondary" className="px-2 py-1 text-xs">Post</Button>
                           </ActionForm>
                           {s && <span className="block text-[11px] text-slate-500">Suggested: {s.why}</span>}
+                          {t.flag && <span className="block text-[11px] font-semibold text-red-700">{FLAG_LABEL[t.flag] ?? t.flag}: {t.flagNote}</span>}
                         </td>
                         <td>
                           <details className="text-xs"><summary className="cursor-pointer underline">Exclude</summary>
@@ -225,7 +270,12 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
                 const cat = t.journalEntry?.lines.find((l) => l.accountId !== t.accountId)?.accountId;
                 return (
                   <li key={t.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
-                    <span>{ymdOf(t.date)} · {t.description} · {money(t.amountCents)}</span>
+                    <span>{ymdOf(t.date)} · {t.description} · {money(t.amountCents)} {t.source === "PLAID" && <Badge tone="navy">daily</Badge>}{t.flag && <span className="ml-1 text-xs font-semibold text-red-700">{FLAG_LABEL[t.flag] ?? t.flag}: {t.flagNote}</span>}</span>
+                    {t.flag && t.status === "POSTED" && (
+                      <details className="text-xs"><summary className="cursor-pointer underline">Checked — clear flag</summary>
+                        <ActionForm action={clearBankFlagAction.bind(null, clientId, t.id)} className="mt-1 flex gap-1"><input className="input py-1 text-xs" name="note" placeholder="What you checked" required /><Button type="submit" variant="ghost" className="px-2 py-1 text-xs">Clear</Button></ActionForm>
+                      </details>
+                    )}
                     <span className="text-xs">{t.status === "POSTED" ? <>→ {cat ? name.get(cat) : "posted"}</> : <><Badge tone="gray">Excluded</Badge> {t.excludedReason} <ActionForm action={includeAction.bind(null, clientId, t.id)} className="inline"><Button type="submit" variant="ghost" className="px-1 py-0 text-xs">Include again</Button></ActionForm></>}</span>
                   </li>
                 );

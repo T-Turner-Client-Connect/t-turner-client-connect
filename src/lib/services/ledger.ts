@@ -246,7 +246,7 @@ export async function reverseEntry(actor: Actor, clientId: string, entryId: stri
       lines: e.lines.map((l) => ({ accountId: l.accountId, debit: l.creditCents ? (l.creditCents / 100).toFixed(2) : undefined, credit: l.debitCents ? (l.debitCents / 100).toFixed(2) : undefined, description: l.description ?? undefined })),
     });
     // The bank row(s) behind it are reviewed again, so the transaction is never lost or doubled.
-    const back = await tx.bankTransaction.updateMany({ where: { clientId, journalEntryId: e.id }, data: { status: "UNREVIEWED", journalEntryId: null, reviewedById: null, reviewedAt: null } });
+    const back = await tx.bankTransaction.updateMany({ where: { clientId, journalEntryId: e.id }, data: { status: "UNREVIEWED", journalEntryId: null, reviewedById: null, reviewedAt: null, flag: null, flagNote: null } });
     await audit(tx, { actorId: actor.id, action: "ledger.entry_reversed", entityType: "JournalEntry", entityId: e.id, clientId, details: { reversalId: r.id, reason: reason.slice(0, 300), bankRowsReopened: back.count } });
     return r;
   });
@@ -393,19 +393,66 @@ export async function importBankCsv(actor: Actor, clientId: string, accountId: s
   const prints = fingerprints(rows);
   const sha = createHash("sha256").update(input.text).digest("hex");
   return prisma.$transaction(async (tx) => {
+    // Imports and daily retrieval for one client run one at a time.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"bank-rows:" + clientId}))`;
     const dates = rows.map((r) => r.date).sort();
     const imp = await tx.bankImport.create({ data: { clientId, accountId, fileName: input.fileName.slice(0, 200), fileSha256: sha, rows: rows.length, added: 0, duplicates: 0, firstDate: toDate(dates[0]), lastDate: toDate(dates.at(-1)!), createdById: actor.id } });
-    const res = await tx.bankTransaction.createMany({
-      data: rows.map((r, i) => ({ clientId, accountId, importId: imp.id, date: toDate(r.date), amountCents: r.amountCents, description: r.description, fingerprint: prints[i] })),
-      skipDuplicates: true,
-    });
+    const seen = new Set(
+      (await tx.bankTransaction.findMany({ where: { accountId, OR: [{ fingerprint: { in: prints } }, { statementFingerprint: { in: prints } }] }, select: { fingerprint: true, statementFingerprint: true } }))
+        .flatMap((r) => [r.fingerprint, r.statementFingerprint]).filter((x): x is string => !!x),
+    );
+    let added = 0, duplicates = 0, matched = 0, flagged = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (seen.has(prints[i])) { duplicates++; continue; }
+      // Already brought in by daily retrieval? Confirm that row instead of adding a second one.
+      const m = await crossSourceMatch(tx, accountId, r, "CSV");
+      if (m.match) {
+        await tx.bankTransaction.update({ where: { id: m.match.id }, data: { statementFingerprint: prints[i] } });
+        matched++;
+        continue;
+      }
+      await tx.bankTransaction.create({
+        data: { clientId, accountId, importId: imp.id, date: toDate(r.date), amountCents: r.amountCents, description: r.description, fingerprint: prints[i], source: "CSV", ...(m.ambiguous ? { flag: "POSSIBLE_DUPLICATE", flagNote: "Looks like more than one row retrieved from the bank. Check before posting." } : {}) },
+      });
+      added++;
+      if (m.ambiguous) flagged++;
+      seen.add(prints[i]);
+    }
     // Rows before the opening date are already inside the opening balances: kept, but excluded with that reason.
     const book = await bookOf(clientId, tx);
     if (book.openingDate) await tx.bankTransaction.updateMany({ where: { importId: imp.id, status: "UNREVIEWED", date: { lt: book.openingDate } }, data: { status: "EXCLUDED", excludedReason: "Before the opening balances date (already included in the opening balance)" } });
-    const updated = await tx.bankImport.update({ where: { id: imp.id }, data: { added: res.count, duplicates: rows.length - res.count } });
-    await audit(tx, { actorId: actor.id, action: "ledger.bank_imported", entityType: "BankImport", entityId: imp.id, clientId, details: { account: account.code, rows: rows.length, added: res.count, duplicates: rows.length - res.count, skipped: problems.length } });
-    return { ...updated, problems };
+    const updated = await tx.bankImport.update({ where: { id: imp.id }, data: { added, duplicates: duplicates + matched } });
+    await audit(tx, { actorId: actor.id, action: "ledger.bank_imported", entityType: "BankImport", entityId: imp.id, clientId, details: { account: account.code, rows: rows.length, added, duplicates, matchedToRetrieved: matched, flagged, skipped: problems.length } });
+    return { ...updated, matched, flagged, problems };
   });
+}
+
+export const MATCH_WINDOW_DAYS = 3;
+const words = (s: string) => new Set(normDesc(s).split(" ").filter((w) => w.length > 2 && !/^\d+$/.test(w)));
+
+/**
+ * The one existing row from the OTHER source (statement vs. daily retrieval) that is the same
+ * transaction: same account, same amount, dated within a few days. Several equally good
+ * candidates are "ambiguous" — nothing is merged; the new row is flagged for staff instead.
+ */
+export async function crossSourceMatch(tx: Tx, accountId: string, row: { date: string; amountCents: number; description: string }, incoming: "CSV" | "PLAID") {
+  const d = toDate(row.date).getTime();
+  const candidates = await tx.bankTransaction.findMany({
+    where: {
+      accountId, amountCents: row.amountCents,
+      date: { gte: new Date(d - MATCH_WINDOW_DAYS * 86_400_000), lte: new Date(d + MATCH_WINDOW_DAYS * 86_400_000) },
+      ...(incoming === "PLAID" ? { providerId: null } : { providerId: { not: null }, statementFingerprint: null }),
+    },
+  });
+  if (!candidates.length) return { match: null, ambiguous: false };
+  const mine = words(row.description);
+  const score = (c: (typeof candidates)[number]) => (ymdOf(c.date) === row.date ? 2 : 0) + ([...words(c.description)].some((w) => mine.has(w)) ? 1 : 0) - Math.abs(c.date.getTime() - d) / 86_400_000 / 10;
+  const ranked = candidates.map((c) => ({ c, s: score(c) })).sort((a, b) => b.s - a.s);
+  // Identical rows (two $38.50 fees the same day) are interchangeable: link them one for one.
+  const same = (x: (typeof candidates)[number], y: (typeof candidates)[number]) => x.date.getTime() === y.date.getTime() && normDesc(x.description) === normDesc(y.description);
+  if (ranked.length > 1 && ranked[0].s - ranked[1].s < 0.5 && !same(ranked[0].c, ranked[1].c)) return { match: null, ambiguous: true };
+  return { match: ranked[0].c, ambiguous: false };
 }
 
 const TRANSFER_WINDOW_DAYS = 5;
@@ -428,7 +475,7 @@ export async function categorizeBankTransaction(actor: Actor, clientId: string, 
     const amt = (Math.abs(t.amountCents) / 100).toFixed(2);
     const date = ymdOf(t.date);
     // Claim the row first, so two people can't post it at the same moment.
-    const claimed = await tx.bankTransaction.updateMany({ where: { id: t.id, status: "UNREVIEWED" }, data: { status: "POSTED", postings: { increment: 1 }, reviewedById: actor.id, reviewedAt: new Date() } });
+    const claimed = await tx.bankTransaction.updateMany({ where: { id: t.id, status: "UNREVIEWED" }, data: { status: "POSTED", postings: { increment: 1 }, reviewedById: actor.id, reviewedAt: new Date(), flag: null, flagNote: null } });
     if (!claimed.count) throw new ValidationError("That transaction was just posted by someone else.");
     const lines: LineInput[] = t.amountCents > 0 ? [{ accountId: t.accountId, debit: amt }, { accountId: cat.id, credit: amt }] : [{ accountId: cat.id, debit: amt }, { accountId: t.accountId, credit: amt }];
     const e = await post(tx, actor, clientId, { date, memo: (input.memo?.trim() || t.description).slice(0, 300), lines, source: "BANK", sourceKey: `bank:${t.id}:${t.postings + 1}` });
@@ -453,9 +500,19 @@ export async function categorizeBankTransaction(actor: Actor, clientId: string, 
 export async function excludeBankTransaction(actor: Actor, clientId: string, txnId: string, reason: string) {
   await assertLedger(actor, clientId);
   if (reason.trim().length < 3) throw new ValidationError("Record why this transaction is excluded.");
-  const r = await prisma.bankTransaction.updateMany({ where: { id: txnId, clientId, status: "UNREVIEWED" }, data: { status: "EXCLUDED", excludedReason: reason.trim().slice(0, 200), reviewedById: actor.id, reviewedAt: new Date() } });
+  const r = await prisma.bankTransaction.updateMany({ where: { id: txnId, clientId, status: "UNREVIEWED" }, data: { status: "EXCLUDED", excludedReason: reason.trim().slice(0, 200), reviewedById: actor.id, reviewedAt: new Date(), flag: null, flagNote: null } });
   if (!r.count) throw new ValidationError("Only an unreviewed transaction can be excluded. Reverse a posted one instead.");
   await audit(prisma, { actorId: actor.id, action: "ledger.bank_excluded", entityType: "BankTransaction", entityId: txnId, clientId, details: { reason: reason.trim().slice(0, 200) } });
+}
+
+/** A person confirms a flagged, already-posted row is fine as it is (recorded with their note). */
+export async function clearBankFlag(actor: Actor, clientId: string, txnId: string, note: string) {
+  await assertLedger(actor, clientId);
+  if (note.trim().length < 5) throw new ValidationError("Note what you checked.");
+  const t = await prisma.bankTransaction.findFirst({ where: { id: txnId, clientId, flag: { not: null } } });
+  if (!t) throw new ValidationError("That transaction isn't flagged.");
+  await prisma.bankTransaction.update({ where: { id: t.id }, data: { flag: null, flagNote: null } });
+  await audit(prisma, { actorId: actor.id, action: "ledger.bank_flag_cleared", entityType: "BankTransaction", entityId: t.id, clientId, details: { flag: t.flag, note: note.trim().slice(0, 300) } });
 }
 
 export async function includeBankTransaction(actor: Actor, clientId: string, txnId: string) {
@@ -618,7 +675,7 @@ export async function setBasis(actor: Actor, clientId: string, basis: Basis) {
 
 const DRAW_WORDS = /\b(OWNER DRAW|DRAW|TRANSFER TO .*(SAVINGS|PERSONAL)|ZELLE TO|VENMO|CASH APP|ATM WITHDRAWAL)\b/;
 
-export type Flag = { kind: "UNREVIEWED" | "CLOSED_PERIOD" | "MISSING_STATEMENT" | "UNRECONCILED" | "SUSPENSE" | "POSSIBLE_DRAW" | "NO_OPENING" | "POSSIBLE_DUPLICATE_INCOME" | "UNDEPOSITED"; severity: "HIGH" | "MEDIUM"; message: string };
+export type Flag = { kind: "UNREVIEWED" | "CLOSED_PERIOD" | "MISSING_STATEMENT" | "UNRECONCILED" | "SUSPENSE" | "POSSIBLE_DRAW" | "NO_OPENING" | "POSSIBLE_DUPLICATE_INCOME" | "UNDEPOSITED" | "BANK_ROW_FLAGGED" | "BANK_CONNECTION"; severity: "HIGH" | "MEDIUM"; message: string };
 
 export async function ledgerFlags(actor: Actor, clientId: string, today = todayCentral()) {
   await assertLedger(actor, clientId);
@@ -626,6 +683,16 @@ export async function ledgerFlags(actor: Actor, clientId: string, today = todayC
   const flags: Flag[] = [];
   if (!book.openingDate) flags.push({ kind: "NO_OPENING", severity: "HIGH", message: "Opening balances haven't been entered, so the Balance Sheet can't tie to the bank yet." });
   const unreviewed = await prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED" }, select: { date: true }, orderBy: { date: "asc" } });
+  const rowFlags = await prisma.bankTransaction.groupBy({ by: ["flag"], where: { clientId, flag: { not: null }, status: { not: "EXCLUDED" } }, _count: true });
+  const FLAG_TEXT: Record<string, string> = { POSSIBLE_DUPLICATE: "may be duplicates between a statement import and daily retrieval", CHANGED_AFTER_POSTING: "were changed by the bank after they were posted", REMOVED_AFTER_POSTING: "were removed by the bank after they were posted" };
+  for (const f of rowFlags) flags.push({ kind: "BANK_ROW_FLAGGED", severity: "HIGH", message: `${f._count} bank transaction${f._count === 1 ? "" : "s"} ${FLAG_TEXT[f.flag!] ?? "need a closer look"}.` });
+  const conns = await prisma.bankConnection.findMany({ where: { clientId, status: { not: "DISCONNECTED" } }, select: { institutionName: true, status: true, lastSuccessAt: true } });
+  for (const c of conns) {
+    const name = c.institutionName ?? "Bank connection";
+    if (c.status === "NEEDS_REAUTH") flags.push({ kind: "BANK_CONNECTION", severity: "HIGH", message: `${name}: the client needs to sign in to the bank again before daily retrieval can continue.` });
+    else if (c.status === "ERROR") flags.push({ kind: "BANK_CONNECTION", severity: "HIGH", message: `${name}: the last daily retrieval failed.` });
+    else if (!c.lastSuccessAt || Date.now() - c.lastSuccessAt.getTime() > 36 * 3600_000) flags.push({ kind: "BANK_CONNECTION", severity: "MEDIUM", message: `${name}: no successful retrieval in the last 36 hours.` });
+  }
   if (unreviewed.length) flags.push({ kind: "UNREVIEWED", severity: "HIGH", message: `${unreviewed.length} bank transaction${unreviewed.length === 1 ? "" : "s"} not yet reviewed (oldest ${ymdOf(unreviewed[0].date)}).` });
   if (book.lockedThrough) {
     const late = unreviewed.filter((u) => u.date <= book.lockedThrough!).length;

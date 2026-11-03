@@ -36,7 +36,7 @@ export async function setRuleActive(actor: Actor, clientId: string, ruleId: stri
   await audit(prisma, { actorId: actor.id, action: active ? "ledger.rule_on" : "ledger.rule_off", entityType: "CategorizationRule", entityId: ruleId, clientId });
 }
 
-export type Suggestion = { accountId: string; source: "RULE" | "HISTORY"; why: string };
+export type Suggestion = { accountId: string; source: "TRANSFER" | "RULE" | "HISTORY"; why: string };
 
 /**
  * A suggested category for each unreviewed bank row, from (1) staff rules, longest match first,
@@ -46,7 +46,7 @@ export type Suggestion = { accountId: string; source: "RULE" | "HISTORY"; why: s
 export async function suggestCategories(actor: Actor, clientId: string): Promise<Map<string, Suggestion>> {
   await assertLedger(actor, clientId);
   const [rows, rules, history] = await Promise.all([
-    prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED" }, select: { id: true, accountId: true, amountCents: true, description: true } }),
+    prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED" }, select: { id: true, accountId: true, amountCents: true, description: true, date: true } }),
     prisma.categorizationRule.findMany({ where: { clientId, active: true } }),
     prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED", journalEntryId: { not: null } }, select: { accountId: true, amountCents: true, description: true, journalEntry: { select: { reversedBy: { select: { id: true } }, lines: { select: { accountId: true } } } } } }),
   ]);
@@ -62,6 +62,12 @@ export async function suggestCategories(actor: Actor, clientId: string): Promise
   }
   const out = new Map<string, Suggestion>();
   for (const r of rows) {
+    // Money out of one of the client's accounts and the same amount into another within 5 days: a likely transfer.
+    const pair = rows.filter((o) => o.accountId !== r.accountId && o.amountCents === -r.amountCents && Math.abs(o.date.getTime() - r.date.getTime()) <= 5 * 86_400_000);
+    if (pair.length === 1 && active.has(pair[0].accountId)) {
+      out.set(r.id, { accountId: pair[0].accountId, source: "TRANSFER", why: "Possible transfer between this client's accounts (matching amount on the other account)" });
+      continue;
+    }
     const desc = normDesc(r.description);
     const dir = r.amountCents > 0 ? "IN" : "OUT";
     const rule = rules
