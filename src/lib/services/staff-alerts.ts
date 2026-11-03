@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { assertAdmin, type Actor } from "@/lib/auth/actor";
+import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { normalizeEmail, normalizePhone } from "@/lib/normalize";
 import { sendSms, twilioConfigured } from "@/lib/twilio";
 import { chicagoLocalToUtc, chicagoParts } from "@/lib/tz";
@@ -41,6 +41,21 @@ export async function updateStaffAlertSettings(actor: Actor, input: { smsEnabled
     data: { smsEnabled: input.smsEnabled, phone, windowStart: input.windowStart, windowEnd: input.windowEnd, ...(input.emailEnabled !== undefined ? { emailEnabled: input.emailEnabled } : {}), ...(email ? { email } : {}), updatedById: actor.id },
   });
   await prisma.auditLog.create({ data: { actorId: actor.id, action: input.smsEnabled ? "staff_alerts.sms_on" : "staff_alerts.sms_off", entityType: "StaffAlertSettings", entityId: "default" } });
+}
+
+/** Whether staff may text clients from their conversations (Tabitha's switch in Settings; off by default). */
+export async function clientTextingOn() {
+  return (await staffAlertSettings()).clientTextingEnabled;
+}
+
+/** Owner only: turn staff → client texting on or off. Audited. */
+export async function setClientTexting(actor: Actor, on: boolean) {
+  const { isReportApprover } = await import("./bookkeeping-clients");
+  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can turn client texting on or off.");
+  if (on && !twilioConfigured()) throw new ValidationError("Connect Twilio first (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID).");
+  await staffAlertSettings();
+  await prisma.staffAlertSettings.update({ where: { id: "default" }, data: { clientTextingEnabled: on, clientTextingChangedAt: new Date(), clientTextingChangedBy: actor.id } });
+  await prisma.auditLog.create({ data: { actorId: actor.id, action: on ? "client_texting.on" : "client_texting.off", entityType: "StaffAlertSettings", entityId: "default" } });
 }
 
 const WEEKDAYS = new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]);

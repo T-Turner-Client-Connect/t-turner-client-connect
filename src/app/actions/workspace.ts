@@ -14,7 +14,8 @@ import { invitePortalUser, updatePortalAccess } from "@/lib/services/portal-acco
 import { assignContract, attachContractPdf, staffVerifyContract } from "@/lib/services/contracts";
 import { createSignatureRequest, recordOfflineSigned, sendSignatureRequest } from "@/lib/services/signatures";
 import { resetMfa } from "@/lib/services/mfa";
-import { sendTestText, updateStaffAlertSettings } from "@/lib/services/staff-alerts";
+import { sendTestText, setClientTexting, updateStaffAlertSettings } from "@/lib/services/staff-alerts";
+import { attachInboundToClient } from "@/lib/services/inbound-sms";
 import { isTaxDocType } from "@/lib/document-types";
 import { appUrl } from "@/lib/integrations";
 import { prisma } from "@/lib/prisma";
@@ -330,6 +331,27 @@ export async function staffAlertSettingsAction(_prev: ActionState, fd: FormData)
     });
     revalidatePath("/settings");
     return "Staff alert settings saved.";
+  });
+}
+
+export async function clientTextingAction(on: boolean, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await setClientTexting(actor, on);
+    revalidatePath("/settings");
+    return on ? "Client texting is ON. Staff can now choose Send Text Message in a client's Communication History." : "Client texting is OFF. No texts can be sent to clients.";
+  });
+}
+
+export async function attachInboundAction(inboundId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const clientId = str(fd, "clientId");
+    if (!clientId) throw new ValidationError("Choose the client who sent this text.");
+    await attachInboundToClient(actor, inboundId, clientId);
+    revalidatePath("/settings");
+    revalidatePath(`/clients/${clientId}`);
+    return "Text added to the client's text conversation.";
   });
 }
 

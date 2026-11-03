@@ -31,7 +31,7 @@ const STATUS_TEXT = { GRANTED: "Yes", REVOKED: "Opted out", UNKNOWN: "Unknown" }
 
 const TABS = [
   { key: "overview", label: "Overview" },
-  { key: "messages", label: "Messages" },
+  { key: "messages", label: "Communication History" },
   { key: "documents", label: "Documents" },
   { key: "bookkeeping", label: "Bookkeeping" },
   { key: "taxes", label: "Taxes" },

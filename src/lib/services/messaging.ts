@@ -7,7 +7,9 @@ import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { ineligibilityReason } from "@/lib/consent";
 import { sendTransactionalEmail } from "@/lib/email";
-import { queueStaffAlert } from "./staff-alerts";
+import { clientTextingOn, queueStaffAlert } from "./staff-alerts";
+import { smsSendAllowed } from "./sms-consent";
+import { sendSms } from "@/lib/twilio";
 import { integrationStatus } from "@/lib/integrations";
 import { activeSuppressionsFor, ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
@@ -15,15 +17,30 @@ import { clientMayReceive } from "./documents";
 
 const MAX_BODY = 10_000;
 
-export function channelAvailability() {
+export const SMS_MAX = 1000;
+export const SMS_OPT_OUT_FOOTER = "Reply STOP to opt out, HELP for help.";
+
+/** `textingOn` is Tabitha's Client texting switch (see clientTextingOn). */
+export function channelAvailability(textingOn: boolean) {
   const i = integrationStatus();
   return {
     PORTAL: { available: true, note: "Private and secure. The client gets a sign-in notice." },
     EMAIL: { available: i.email && i.liveSendingFlag, note: i.email ? (i.liveSendingFlag ? "Sends a plain email. Don't include tax or account details." : "Live sending is turned off.") : "Setup required: email provider." },
-    // Two-way texting (inbound webhooks, delivery receipts) arrives with the messaging stage.
-    SMS: { available: false, note: i.twilio ? "Direct texting is enabled in the next stage." : "Setup required: Twilio." },
+    SMS: {
+      available: i.twilio && textingOn,
+      note: !i.twilio ? "Setup required: Twilio." : textingOn ? "Sends a text to the client's mobile. Only to numbers with text consent. Don't include tax or account details." : "Client texting is off. Tabitha can turn it on in Settings.",
+    },
     INTERNAL_NOTE: { available: true, note: "Visible to staff only. Never shown to the client." },
   } satisfies Record<MessageChannel, { available: boolean; note: string }>;
+}
+
+/** "SMS" when the conversation holds texts, "PORTAL" when it holds portal or email messages, null when only notes. */
+export async function conversationKind(conversationId: string): Promise<"SMS" | "PORTAL" | null> {
+  const [sms, other] = await Promise.all([
+    prisma.message.count({ where: { conversationId, channel: "SMS" } }),
+    prisma.message.count({ where: { conversationId, channel: { in: ["PORTAL", "EMAIL"] } } }),
+  ]);
+  return sms ? "SMS" : other ? "PORTAL" : null;
 }
 
 async function existingByKey(key?: string | null) {
@@ -32,7 +49,8 @@ async function existingByKey(key?: string | null) {
 
 async function notifyMessage(clientId: string, messageId: string) {
   const grants = await prisma.portalAccess.findMany({ where: { clientId, revokedAt: null, canMessage: true } });
-  for (const g of grants) await queuePortalNotification(g.portalUserId, "NEW_MESSAGE", `NEW_MESSAGE:${messageId}`);
+  // A portal message is never sent as a text: the client gets an email notice (no contents) only.
+  for (const g of grants) await queuePortalNotification(g.portalUserId, "NEW_MESSAGE", `NEW_MESSAGE:${messageId}`, ["EMAIL"]);
 }
 
 /**
@@ -44,9 +62,10 @@ export async function staffSendMessage(
   actor: Actor,
   input: { clientId: string; conversationId?: string | null; subject?: string; body: string; channel: MessageChannel; attachmentIds?: string[]; periodId?: string | null; idempotencyKey?: string },
 ) {
-  const body = input.body.trim();
+  let body = input.body.trim();
   if (!body) throw new ValidationError("Write a message first.");
   if (body.length > MAX_BODY) throw new ValidationError("That message is too long.");
+  if (input.channel === "SMS" && body.length > SMS_MAX) throw new ValidationError(`Texts are limited to ${SMS_MAX} characters. Use the portal for longer messages.`);
   const dup = await existingByKey(input.idempotencyKey);
   if (dup) return dup;
   const client = await prisma.client.findUnique({ where: { id: input.clientId }, include: { consentRecords: true } });
@@ -57,6 +76,13 @@ export async function staffSendMessage(
   if (conversationId) {
     const convo = await prisma.conversation.findFirst({ where: { id: conversationId, clientId: input.clientId } });
     if (!convo) throw new ValidationError("Conversation not found.");
+    // Portal conversations and text conversations stay separate.
+    const kind = await conversationKind(conversationId);
+    if (input.channel === "SMS" && kind === "PORTAL") throw new ValidationError("Texts go in the client's Text Messages (SMS) conversation, not a portal conversation.");
+    if ((input.channel === "PORTAL" || input.channel === "EMAIL") && kind === "SMS") throw new ValidationError("This is a text (SMS) conversation. Start a new portal conversation for portal messages.");
+  } else if (input.channel === "SMS") {
+    // One running text thread per client, so replies always land in the same place.
+    conversationId = (await prisma.conversation.findFirst({ where: { clientId: input.clientId, closedAt: null, messages: { some: { channel: "SMS" } } }, orderBy: { lastMessageAt: "desc" }, select: { id: true } }))?.id ?? null;
   }
   const attachmentIds = input.attachmentIds ?? [];
   if (attachmentIds.length) {
@@ -74,7 +100,7 @@ export async function staffSendMessage(
   const isNote = input.channel === "INTERNAL_NOTE";
 
   if (input.channel === "EMAIL" || input.channel === "SMS") {
-    const availability = channelAvailability()[input.channel];
+    const availability = channelAvailability(input.channel === "SMS" ? await clientTextingOn() : false)[input.channel];
     if (!availability.available) throw new ValidationError(availability.note);
     const address = input.channel === "EMAIL" ? client.emailNormalized : client.phoneNormalized;
     const suppressions = address ? (await activeSuppressionsFor([{ channel: input.channel, address }])).get(`${input.channel}:${address}`) ?? [] : [];
@@ -89,12 +115,20 @@ export async function staffSendMessage(
       suppressions,
     });
     if (reason) throw new ValidationError(`Can't send: ${reason}.`);
+    if (input.channel === "SMS") {
+      // The phone consent ledger (web form / portal opt-in, STOP) is the final word for texts.
+      const gate = await smsSendAllowed(address!, "SERVICE");
+      if (!gate.ok) throw new ValidationError(`Can't text this client: ${gate.reason}.`);
+      // The first text to a number carries the opt-out instructions; the message is saved exactly as sent.
+      const earlier = await prisma.message.count({ where: { channel: "SMS", direction: "OUTBOUND", status: { in: ["PROVIDER_ACCEPTED", "DELIVERED"] }, conversation: { clientId: input.clientId } } });
+      if (!earlier && !/reply stop/i.test(body)) body = `${body}\n\n${SMS_OPT_OUT_FOOTER}`;
+    }
   }
 
   const message = await prisma.$transaction(async (tx) => {
     if (!conversationId) {
       const convo = await tx.conversation.create({
-        data: { clientId: input.clientId, subject: input.subject?.trim().slice(0, 200) || "Message from TTurner & Associates Group", assignedToId: actor.id, periodId: input.periodId ?? null },
+        data: { clientId: input.clientId, subject: input.channel === "SMS" ? "Text messages" : input.subject?.trim().slice(0, 200) || "Message from TTurner & Associates Group", assignedToId: actor.id, periodId: input.periodId ?? null },
       });
       conversationId = convo.id;
     }
@@ -132,9 +166,14 @@ export async function staffSendMessage(
     const ok = await sendTransactionalEmail(client.emailNormalized!, input.subject?.trim() || "A message from TTurner & Associates Group", body);
     await prisma.message.update({ where: { id: message.id }, data: ok ? { status: "PROVIDER_ACCEPTED" } : { status: "FAILED", errorDetail: "Email provider rejected the message" } });
   } else {
-    // Text replies go through the campaign/messaging queue in the next stage;
-    // until then they are not attempted.
-    await prisma.message.update({ where: { id: message.id }, data: { status: "FAILED", errorDetail: "Direct texting is enabled in the next stage" } });
+    // Text: Twilio accepts it now; the delivery receipt (status webhook) later marks it Delivered or Failed.
+    const r = await sendSms(client.phoneNormalized!, body).catch(() => ({ ok: false, sid: undefined, detail: "Couldn't reach Twilio" }));
+    const updated = await prisma.message.update({
+      where: { id: message.id },
+      data: r.ok ? { status: "PROVIDER_ACCEPTED", providerId: r.sid ?? null, errorDetail: null } : { status: "FAILED", errorDetail: r.detail },
+    });
+    await audit(prisma, { actorId: actor.id, action: r.ok ? "message.sms_sent" : "message.sms_failed", entityType: "Message", entityId: message.id, clientId: input.clientId, details: { detail: r.detail } });
+    return updated;
   }
   return message;
 }
