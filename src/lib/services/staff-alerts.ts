@@ -33,7 +33,7 @@ export async function updateStaffAlertSettings(actor: Actor, input: { smsEnabled
   if (!phone) throw new ValidationError("Enter a valid US phone number for staff alerts.");
   if (!/^\d{2}:\d{2}$/.test(input.windowStart) || !/^\d{2}:\d{2}$/.test(input.windowEnd) || input.windowStart >= input.windowEnd) throw new ValidationError("Choose a start time before the end time.");
   if (input.smsEnabled && !twilioConfigured()) throw new ValidationError("Connect Twilio first (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID).");
-  await staffAlertSettings();
+  const before = await staffAlertSettings();
   const email = input.email !== undefined ? normalizeEmail(input.email) : undefined;
   if (input.email !== undefined && !email) throw new ValidationError("Enter a valid email address for staff alerts.");
   await prisma.staffAlertSettings.update({
@@ -41,6 +41,8 @@ export async function updateStaffAlertSettings(actor: Actor, input: { smsEnabled
     data: { smsEnabled: input.smsEnabled, phone, windowStart: input.windowStart, windowEnd: input.windowEnd, ...(input.emailEnabled !== undefined ? { emailEnabled: input.emailEnabled } : {}), ...(email ? { email } : {}), updatedById: actor.id },
   });
   await prisma.auditLog.create({ data: { actorId: actor.id, action: input.smsEnabled ? "staff_alerts.sms_on" : "staff_alerts.sms_off", entityType: "StaffAlertSettings", entityId: "default" } });
+  // A change of the receiving phone is recorded on its own (last four digits), so the history shows when it changed.
+  if (before.phone !== phone) await prisma.auditLog.create({ data: { actorId: actor.id, action: "staff_alerts.phone_changed", entityType: "StaffAlertSettings", entityId: "default", details: { from: `…${before.phone.slice(-4)}`, to: `…${phone.slice(-4)}` } } });
 }
 
 /** Whether staff may text clients from their conversations (Tabitha's switch in Settings; off by default). */
@@ -200,10 +202,18 @@ export async function dispatchStaffAlerts(now = new Date()) {
  * delivery result comes from Twilio's status callback and the reply arrives
  * through the inbound webhook — both shown in Settings.
  */
-export async function sendTestText(actor: Actor) {
+/**
+ * One controlled test text to the SAVED office phone. `expectedTo` is the number the page showed
+ * on the button; if the saved number is different (an unsaved edit, or the page is out of date),
+ * nothing is sent.
+ */
+export async function sendTestText(actor: Actor, expectedTo?: string | null) {
   assertAdmin(actor);
   if (!twilioConfigured()) throw new ValidationError("Twilio isn't connected yet. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_MESSAGING_SERVICE_SID in Netlify and redeploy.");
   const s = await staffAlertSettings();
+  const expected = expectedTo ? normalizePhone(expectedTo) : null;
+  if (!expected) throw new ValidationError("Refresh the page and confirm the number before sending a test.");
+  if (expected !== s.phone) throw new ValidationError("Nothing was sent: the saved office phone is different from the number on this page. Save the number you want first, then refresh and try again.");
   const recent = await prisma.staffAlert.count({ where: { reason: "TEST", createdAt: { gte: new Date(Date.now() - 3600_000) } } });
   if (recent >= 3) throw new ValidationError("Three test texts were sent in the last hour. Wait before sending another.");
   const alert = await prisma.staffAlert.create({ data: { reason: "TEST", to: s.phone, body: TEST_TEXT, conversationIds: [], notBefore: new Date(), sentAt: new Date(), createdById: actor.id } });
