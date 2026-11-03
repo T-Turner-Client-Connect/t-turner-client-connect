@@ -1,107 +1,97 @@
 import Link from "next/link";
-import { ActionForm } from "@/components/action-form";
-import { Button, Card, Field, Notice, PageHeader } from "@/components/ui";
-import { CLIENT_DOC_TYPES } from "@/lib/document-types";
+import { FolderLock } from "lucide-react";
+import { Notice } from "@/components/ui";
+import { PageBanner } from "@/components/portal/luxury";
+import { BenefitStrip, CategorySidebar, DocumentsTable, isVaultCat, UploadPanel, VAULT_CATEGORIES, vaultData, VaultReminders, type VaultCat } from "@/components/portal/vault-page";
+import { portalUploadAction } from "@/app/actions/portal";
 import { allowedCategories } from "@/lib/portal/access";
 import { isPortalVerified, vaultYears } from "@/lib/services/tax-center";
-
-const chip = (on: boolean) => `rounded-full px-3 py-1 text-sm font-semibold ${on ? "bg-navy-900 text-gold-300 ring-2 ring-gold-500" : "bg-white text-navy-900 ring-1 ring-ivory-200 hover:bg-gold-100"}`;
-import { PortalDocumentsView } from "@/components/portal/documents-view";
-import { portalUploadAction } from "@/app/actions/portal";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { loadPortalDocuments } from "@/lib/portal/views";
 import { downloadToken } from "@/lib/services/documents";
+import { portalIdentityOverview } from "@/lib/services/identity";
 import { prisma } from "@/lib/prisma";
 import { UploadReceipt } from "@/components/portal/upload-receipt";
 import { scanConfigured } from "@/lib/scan";
 
-export const metadata = { title: "Documents" };
+export const metadata = { title: "Document Vault" };
 
-export default async function PortalDocuments({ searchParams }: { searchParams: Promise<{ account?: string; year?: string; upload?: string }> }) {
+export default async function PortalDocuments({ searchParams }: { searchParams: Promise<{ account?: string; year?: string; upload?: string; cat?: string }> }) {
   const user = await requirePortalUser();
   const sp = await searchParams;
   const { current } = await resolveAccount(user.id, sp.account);
   if (!current) return null;
   const verified = await isPortalVerified(user.id);
   const yearFilter = sp.year === "none" ? ("none" as const) : Number(sp.year) || null;
-  const [docs, folders] = await Promise.all([
+  const cat: VaultCat = isVaultCat(sp.cat) ? sp.cat : "all";
+  const [docs, folders, overview] = await Promise.all([
     loadPortalDocuments(current.clientId, current, { year: yearFilter, includeHistorical: verified }),
     vaultYears(current.clientId, allowedCategories(current)),
+    // Identity records appear as status-only rows; they open from Identity Documents.
+    current.canViewIdentity ? portalIdentityOverview(user, current.clientId) : Promise.resolve(null),
   ]);
+  // Identity records have no tax year, so a year filter shows yearly documents only.
+  const data = vaultData(docs, yearFilter ? null : overview);
   const q = `?account=${current.clientId}`;
+  const href = (c: VaultCat, y: string | null = yearFilter ? String(yearFilter) : null) => `/client/documents${q}${c !== "all" ? `&cat=${c}` : ""}${y ? `&year=${y}` : ""}`;
   // The client's own recent uploads, including ones still being checked.
-  const mine = await prisma.document.findMany({
-    where: { clientId: current.clientId, uploadedByPortalId: user.id, deletedAt: null, category: { not: "IDENTITY" } },
-    orderBy: { createdAt: "desc" },
-    take: 10,
-    select: { id: true, docType: true, year: true, month: true, reportPeriodType: true, periodStart: true, periodEnd: true, scanStatus: true, scanAttempts: true, lastScanError: true, needsReview: true, createdAt: true, file: { select: { originalName: true } } },
-  });
+  const mine = current.canUpload
+    ? await prisma.document.findMany({
+        where: { clientId: current.clientId, uploadedByPortalId: user.id, deletedAt: null, category: { not: "IDENTITY" } },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: { id: true, docType: true, year: true, month: true, reportPeriodType: true, periodStart: true, periodEnd: true, scanStatus: true, scanAttempts: true, lastScanError: true, needsReview: true, createdAt: true, file: { select: { originalName: true } } },
+      })
+    : [];
   const thisYear = new Date().getFullYear();
+  const linkFor = (id: string) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`;
   return (
     <>
-      <PageHeader title="Document Vault" subtitle="Your documents by tax year — private to you and T. Turner & Associates. Links expire shortly after the page loads." />
-      <nav aria-label="Vault year" className="mb-4 flex flex-wrap gap-2" data-testid="vault-years">
-        <Link href={`/client/documents${q}`} aria-current={!yearFilter ? "page" : undefined} className={chip(!yearFilter)}>All years</Link>
-        {folders.map((f) => (
-          <Link key={f.year ?? "none"} href={`/client/documents${q}&year=${f.year ?? "none"}`} aria-current={(f.year ?? "none") === yearFilter ? "page" : undefined} className={chip((f.year ?? "none") === yearFilter)}>
-            📁 {f.year ?? "Year to confirm"} <span className="opacity-70">({f.count})</span>
-          </Link>
-        ))}
-      </nav>
-      {current.canViewIdentity && (
-        <Link href={`/client/identity${q}`} className="mb-4 flex items-center justify-between gap-3 rounded-2xl border border-gold-500 bg-navy-900 px-5 py-4 text-white shadow-sm hover:bg-navy-800" data-testid="identity-card">
-          <span>
-            <span className="block font-serif text-lg font-bold text-white">Identity Documents</span>
-            <span className="block text-sm text-navy-100">Driver&apos;s licenses, birth certificates and Social Security cards — kept permanently, separate from yearly folders.</span>
-          </span>
-          <span aria-hidden className="text-2xl text-gold-300">→</span>
-        </Link>
-      )}
-      {!verified && (
-        <div className="mb-4">
+      <PageBanner icon={FolderLock} title="Document Vault" subtitle="Your documents by tax year — private to you and T. Turner & Associates." />
+      <div className="space-y-6">
+        <BenefitStrip />
+        {!verified && (
           <Notice tone="info" title="Past-year records are locked until your account is verified">
             Records from {thisYear - 2} and earlier open after you verify your account. <Link className="underline" href={`/client/taxes/filings${q}`}>Verify now</Link>.
           </Notice>
+        )}
+        <div className="grid items-start gap-6 lg:grid-cols-[16rem_minmax(0,1fr)] 2xl:grid-cols-[16rem_minmax(0,1fr)_22rem]">
+          <CategorySidebar data={data} active={cat} href={(c) => href(c)} />
+          <DocumentsTable
+            rows={data[cat]}
+            title={VAULT_CATEGORIES.find((c) => c.key === cat)!.label}
+            years={folders}
+            year={yearFilter}
+            yearHref={(y) => href(cat, y)}
+            linkFor={linkFor}
+            identityHref={`/client/identity${q}`}
+          />
+          <div className="grid gap-6 lg:col-span-2 lg:grid-cols-2 2xl:col-span-1 2xl:grid-cols-1">
+            {current.canUpload && (
+              <UploadPanel
+                action={portalUploadAction.bind(null, current.clientId)}
+                accountName={current.client.businessName || current.client.displayName}
+                defaultYear={Number(sp.upload) >= thisYear - 7 && Number(sp.upload) <= thisYear ? String(sp.upload) : ""}
+              >
+                {mine.length > 0 && (
+                  <div className="mt-5 border-t border-ivory-200 pt-4">
+                    <p className="mb-1 font-semibold text-navy-900">Recently sent</p>
+                    <ul className="divide-y divide-navy-100 text-sm" data-testid="my-uploads">
+                      {mine.map((d) => (
+                        <li key={d.id} className="py-2">
+                          <UploadReceipt d={d} scannerConfigured={scanConfigured()} />
+                          {d.scanStatus === "CLEAN" && <span className="text-xs text-slate-600">{d.needsReview ? "Waiting for our review" : "Reviewed by our office"}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </UploadPanel>
+            )}
+            <VaultReminders />
+          </div>
         </div>
-      )}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2"><PortalDocumentsView docs={docs} linkFor={(id) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`} /></div>
-        {current.canUpload && (
-          <Card title="Send us a document">
-            <p className="mb-2 rounded-lg bg-ivory-50 px-3 py-2 text-sm" data-testid="upload-target">Saving to: <strong>{current.client.businessName || current.client.displayName}</strong> — choose the tax year below. Switch accounts at the top if this isn&apos;t the right one.</p>
-            <ActionForm action={portalUploadAction.bind(null, current.clientId)} className="space-y-3" resetOnSuccess>
-              <Field label="File" hint="PDF, JPG or PNG up to 5 MB."><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required /></Field>
-              <Field label="Kind of document">
-                <select className="input" name="docType" required defaultValue="">
-                  <option value="" disabled>Choose…</option>
-                  {Object.entries(CLIENT_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
-              </Field>
-              <Field label="Short description (optional)"><input className="input" name="title" placeholder="e.g. 1099-NEC from Acme" /></Field>
-              <Field label="Tax year this is for">
-                <select className="input" name="year" required defaultValue={Number(sp.upload) >= thisYear - 7 && Number(sp.upload) <= thisYear ? sp.upload : ""}>
-                  <option value="" disabled>Choose…</option>
-                  {Array.from({ length: 8 }, (_, i) => thisYear - i).map((y) => <option key={y} value={y}>{y}</option>)}
-                  <option value="unsure">Not sure</option>
-                </select>
-              </Field>
-              <Button type="submit">Upload securely</Button>
-            </ActionForm>
-          </Card>
-        )}
-        {mine.length > 0 && (
-          <Card title="Your recent uploads" className="lg:col-span-3">
-            <ul className="divide-y divide-navy-100 text-sm" data-testid="my-uploads">
-              {mine.map((d) => (
-                <li key={d.id} className="py-2">
-                  <UploadReceipt d={d} scannerConfigured={scanConfigured()} />
-                  {d.scanStatus === "CLEAN" && <span className="text-xs text-slate-600">{d.needsReview ? "Waiting for our review" : "Reviewed by our office"}</span>}
-                </li>
-              ))}
-            </ul>
-          </Card>
-        )}
       </div>
     </>
   );

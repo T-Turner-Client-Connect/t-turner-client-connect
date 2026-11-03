@@ -78,7 +78,7 @@ function ViewLink({ href, type, canOpen, mode }: { href: string; type: IdType; c
   );
 }
 
-function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean }) {
+export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean }) {
   const canOpen = mode === "portal" ? !isAdminOnlyType(slot.type) : !!viewerIsAdmin || !isAdminOnlyType(slot.type);
   const t = ID_TYPES[slot.type];
   const { current, pending } = slot;
