@@ -147,3 +147,39 @@ export function PanelHead({ icon: Icon, title, action }: { icon: React.Component
 }
 
 
+
+/**
+ * Light page header from the approved designs: gold outline icon, serif title, subtitle, and a
+ * navy-and-gold swoosh along the right edge.
+ */
+export function PageBanner({ icon: Icon, title, subtitle }: { icon: React.ComponentType<{ className?: string }>; title: string; subtitle: string }) {
+  return (
+    <section className="relative -mx-4 -mt-6 mb-6 overflow-hidden border-b border-ivory-200 bg-gradient-to-r from-ivory-50 via-white to-white px-4 py-6 sm:-mx-6 sm:px-8" data-testid="page-banner">
+      <svg className="pointer-events-none absolute inset-y-0 right-0 hidden h-full w-[48%] md:block" viewBox="0 0 600 130" preserveAspectRatio="none" aria-hidden>
+        <path d="M0 130 C 220 120, 380 70, 600 22 L 600 130 Z" fill="#0A1A44" />
+        <path d="M60 130 C 260 112, 420 58, 600 6" fill="none" stroke="#C89D29" strokeWidth="10" />
+        <path d="M0 126 C 240 116, 400 74, 600 30" fill="none" stroke="#E6C76A" strokeWidth="3" opacity="0.8" />
+      </svg>
+      <div className="relative flex items-center gap-4 sm:gap-5 md:max-w-[60%]">
+        <Icon className="size-12 shrink-0 text-gold-500 sm:size-16" aria-hidden />
+        <div className="min-w-0">
+          <h1 className="font-serif text-3xl font-bold leading-tight text-navy-900 sm:text-[2.6rem]">{title}</h1>
+          <p className="mt-1 text-[15px] text-navy-800 sm:text-lg">{subtitle}</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** Navy-headed card used by the approved designs (Contact Our Office, Recent Messages, …). */
+export function NavyCard({ icon: Icon, title, children, className = "" }: { icon: React.ComponentType<{ className?: string }>; title: string; children: React.ReactNode; className?: string }) {
+  return (
+    <section className={`min-w-0 overflow-hidden rounded-2xl border border-ivory-200 bg-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] ${className}`}>
+      <h2 className="flex items-center gap-3 bg-navy-900 px-5 py-3.5 font-serif text-xl font-bold text-white sm:text-2xl">
+        <Icon className="size-6 shrink-0 text-white" aria-hidden />
+        {title}
+      </h2>
+      <div className="p-4 sm:p-5">{children}</div>
+    </section>
+  );
+}
