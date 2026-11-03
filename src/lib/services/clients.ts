@@ -103,7 +103,10 @@ export async function updateClient(actor: Actor, clientId: string, input: Client
   if (!before) throw new ValidationError("Client not found.");
   const fields = changedFields(before as unknown as Record<string, unknown>, data);
   return prisma.$transaction(async (tx) => {
-    const client = await tx.client.update({ where: { id: clientId }, data });
+    let client = await tx.client.update({ where: { id: clientId }, data });
+    // A joint return keeps its household name ("John & Jane Doe") on edit.
+    const { syncHouseholdName } = await import("@/lib/services/tax-prep");
+    if (await syncHouseholdName(tx, clientId)) client = await tx.client.findUniqueOrThrow({ where: { id: clientId } });
     if (groupIds) {
       const prev = new Set(before.groups.map((g) => g.groupId));
       const next = new Set(groupIds);

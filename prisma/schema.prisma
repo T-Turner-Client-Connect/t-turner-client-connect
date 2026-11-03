@@ -268,6 +268,7 @@ model Client {
   nonprofitPortfolio    NonprofitPortfolio?
   chargeAuthorizations  RecurringChargeAuthorization[]
   businessOnboarding    BusinessOnboarding?
+  taxPrepCases          TaxPrepCase[]
   // A person (Personal record) linked to the businesses they own, and back.
   ownsBusinesses        ClientRelationship[]           @relation("RelPerson")
   ownedBy               ClientRelationship[]           @relation("RelBusiness")
@@ -588,21 +589,28 @@ enum ImportStatus {
 }
 
 model ImportBatch {
-  id           String       @id @default(cuid())
-  source       String
-  fileName     String
-  status       ImportStatus @default(REVIEW)
+  id            String       @id @default(cuid())
+  source        String
+  fileName      String
+  status        ImportStatus @default(REVIEW)
   // Column mapping used (header -> CRM field). No cell data.
-  mapping      Json
-  updateMode   String       @default("fill_blanks")
-  importedById String
-  importedBy   User         @relation(fields: [importedById], references: [id])
-  createdAt    DateTime     @default(now())
-  committedAt  DateTime?
-  createdCount Int          @default(0)
-  updatedCount Int          @default(0)
-  skippedCount Int          @default(0)
-  errorCount   Int          @default(0)
+  mapping       Json
+  updateMode    String       @default("fill_blanks")
+  importedById  String
+  importedBy    User         @relation(fields: [importedById], references: [id])
+  createdAt     DateTime     @default(now())
+  committedAt   DateTime?
+  createdCount  Int          @default(0)
+  updatedCount  Int          @default(0)
+  skippedCount  Int          @default(0)
+  errorCount    Int          @default(0)
+  // Batch-wide options chosen in the wizard: services added to every row
+  // (e.g. ["Tax Preparation"]) and the tax year return types belong to.
+  batchServices String[]     @default([])
+  taxYear       Int?
+  // Completion summary: column names only (never cell data) — unmapped and
+  // blocked columns, rows missing each field, and what needs attention.
+  summary       Json?
 
   rows ImportRow[]
 }
@@ -3310,4 +3318,40 @@ model ManualBillingPayment {
   voidReason   String?
 
   @@index([clientId, paidOn])
+}
+
+// One tax-preparation case per client per tax year. A joint return (Married
+// Filing Jointly) is ONE case on ONE client record: the client record is the
+// primary taxpayer, the spouse is recorded here. Never two records or two
+// returns for the spouses.
+model TaxPrepCase {
+  id                      String    @id @default(cuid())
+  clientId                String
+  client                  Client    @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  taxYear                 Int
+  // 1040_SINGLE | 1040_MFJ | 1040_MFS | 1040_HOH | 1040_QSS | 1065 | 1120S |
+  // 1120 | 990 | 1041 | OTHER. Null = still needs staff to select it.
+  returnType              String?
+  // Form name when returnType = OTHER (e.g. "706", "1040-NR").
+  otherReturnForm         String?
+  // TAXACT_IMPORT (prefilled from the TaxAct file) | STAFF
+  returnTypeSource        String?
+  returnTypeConfirmedAt   DateTime?
+  returnTypeConfirmedById String?
+  // Primary taxpayer as named on the return (the client record holds contact details).
+  primaryFirstName        String?
+  primaryMiddleName       String?
+  primaryLastName         String?
+  // Spouse on a joint (or MFS) return.
+  spouseFirstName         String?
+  spouseMiddleName        String?
+  spouseLastName          String?
+  spouseEmail             String?
+  spousePhone             String?
+  createdById             String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@unique([clientId, taxYear])
+  @@index([taxYear, returnType])
 }
