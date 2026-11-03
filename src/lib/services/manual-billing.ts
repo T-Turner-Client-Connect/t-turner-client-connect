@@ -1,4 +1,5 @@
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
@@ -82,9 +83,9 @@ async function assertOfficeBilled(clientId: string) {
 
 export type RecordPaymentInput = { amount: string; paidOn: string; periodMonth: string; method: string; reference?: string; note?: string };
 
-export async function recordManualPayment(actor: Actor, clientId: string, input: RecordPaymentInput) {
-  await assertBilling(actor);
-  await assertOfficeBilled(clientId);
+type CleanPayment = { amountCents: number; paidOn: string; periodMonth: string; method: string; reference: string | null; note: string | null };
+
+function cleanPayment(input: RecordPaymentInput): CleanPayment {
   const n = Number(String(input.amount).replace(/[$,\s]/g, ""));
   if (!Number.isFinite(n) || n <= 0 || n > 100000) throw new ValidationError("Enter the amount received, e.g. 350.00.");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.paidOn)) throw new ValidationError("Enter the date the payment was received.");
@@ -95,11 +96,35 @@ export async function recordManualPayment(actor: Actor, clientId: string, input:
   const note = input.note?.trim().slice(0, 300) || null;
   if (input.method === "CHECK" && !reference) throw new ValidationError("Enter the check number.");
   if ([reference, note].some((t) => t && /\b(?:\d[ -]?){13,19}\b/.test(t))) throw new ValidationError("Card numbers can't be saved.");
-  const p = await prisma.manualBillingPayment.create({
-    data: { clientId, amountCents: Math.round(n * 100), paidOn: noonUtc(input.paidOn), periodMonth: input.periodMonth, method: input.method, reference, note, recordedById: actor.id },
+  return { amountCents: Math.round(n * 100), paidOn: input.paidOn, periodMonth: input.periodMonth, method: input.method, reference, note };
+}
+
+/** One writer per client at a time: concurrent saves for the same client wait, then re-check. */
+async function lockClient(tx: Prisma.TransactionClient, clientId: string) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"manual-billing:" + clientId}))`;
+}
+
+async function insertPayment(tx: Prisma.TransactionClient, actor: Actor, clientId: string, c: CleanPayment, via: "single" | "bulk") {
+  const p = await tx.manualBillingPayment.create({
+    data: { clientId, amountCents: c.amountCents, paidOn: noonUtc(c.paidOn), periodMonth: c.periodMonth, method: c.method, reference: c.reference, note: c.note, recordedById: actor.id },
   });
-  await audit(prisma, { actorId: actor.id, action: "billing.manual_payment_recorded", entityType: "ManualBillingPayment", entityId: p.id, clientId, details: { amountCents: p.amountCents, paidOn: input.paidOn, periodMonth: p.periodMonth, method: p.method } });
+  await audit(tx, { actorId: actor.id, action: "billing.manual_payment_recorded", entityType: "ManualBillingPayment", entityId: p.id, clientId, details: { amountCents: p.amountCents, paidOn: c.paidOn, periodMonth: p.periodMonth, method: p.method, via } });
   return p;
+}
+
+export async function recordManualPayment(actor: Actor, clientId: string, input: RecordPaymentInput) {
+  await assertBilling(actor);
+  await assertOfficeBilled(clientId);
+  const c = cleanPayment(input);
+  return prisma.$transaction(async (tx) => {
+    await lockClient(tx, clientId);
+    // A double-click or a second person saving the same payment isn't recorded twice.
+    const same = await tx.manualBillingPayment.findFirst({
+      where: { clientId, voidedAt: null, periodMonth: c.periodMonth, amountCents: c.amountCents, method: c.method, paidOn: noonUtc(c.paidOn), reference: c.reference, createdAt: { gte: new Date(Date.now() - 10 * 60_000) } },
+    });
+    if (same) throw new ValidationError("This exact payment was just recorded. If it really is a second payment, change the note or date, or wait a few minutes.");
+    return insertPayment(tx, actor, clientId, c, "single");
+  });
 }
 
 export type MarkMonthsInput = { months: string[]; amountEach: string; method: string; reference?: string; dateMode: "DUE_DATE" | "ONE_DATE"; paidOn?: string; note?: string };
@@ -118,24 +143,37 @@ export async function markMonthsPaid(actor: Actor, clientId: string, input: Mark
   const billing = await prisma.bookkeepingBilling.findUnique({ where: { clientId }, select: { billingDay: true, monthlyFeeCents: true } });
   const day = billing?.billingDay ?? 1;
   const today = todayCentral();
-  const existing = await prisma.manualBillingPayment.groupBy({ by: ["periodMonth"], where: { clientId, voidedAt: null, periodMonth: { in: months } }, _sum: { amountCents: true } });
-  const n = Number(String(input.amountEach).replace(/[$,\s]/g, ""));
-  const cents = Math.round(n * 100);
-  const recorded: string[] = [];
-  const skipped: string[] = [];
-  for (const m of months) {
-    const paid = existing.find((e) => e.periodMonth === m)?._sum.amountCents ?? 0;
-    if (paid > 0 && paid >= (billing?.monthlyFeeCents ?? cents)) {
-      skipped.push(m);
-      continue;
-    }
+  const note = [input.dateMode === "DUE_DATE" ? "Date shown is the month's due date (entered in bulk)" : "Entered in bulk", input.note?.trim()].filter(Boolean).join(" · ");
+  // Validate every month before writing anything: all months are recorded, or none.
+  const rows = months.map((m) => {
     const due = `${m}-${String(day).padStart(2, "0")}`;
-    const paidOn = input.dateMode === "ONE_DATE" ? input.paidOn ?? "" : due <= today ? due : today;
-    const note = [input.dateMode === "DUE_DATE" ? "Date shown is the month's due date (entered in bulk)" : "Entered in bulk", input.note?.trim()].filter(Boolean).join(" · ");
-    await recordManualPayment(actor, clientId, { amount: input.amountEach, paidOn, periodMonth: m, method: input.method, reference: input.reference, note });
-    recorded.push(m);
-  }
-  return { recorded, skipped };
+    return cleanPayment({ amount: input.amountEach, paidOn: input.dateMode === "ONE_DATE" ? input.paidOn ?? "" : due <= today ? due : today, periodMonth: m, method: input.method, reference: input.reference, note });
+  });
+  return prisma.$transaction(async (tx) => {
+    await lockClient(tx, clientId);
+    // Re-read inside the lock, so a second click or a second person can't add the same months again.
+    const existing = await tx.manualBillingPayment.groupBy({ by: ["periodMonth"], where: { clientId, voidedAt: null, periodMonth: { in: months } }, _sum: { amountCents: true } });
+    const fee = billing?.monthlyFeeCents ?? 0;
+    const recorded: string[] = [];
+    const skipped: string[] = [];
+    const partial: string[] = [];
+    for (const row of rows) {
+      const paid = existing.find((e) => e.periodMonth === row.periodMonth)?._sum.amountCents ?? 0;
+      // Already paid: never entered twice. Partly paid: never topped up with a full payment —
+      // the exact remainder is recorded with Record a Payment instead.
+      if (paid > 0 && (!fee || paid >= fee)) {
+        skipped.push(row.periodMonth);
+        continue;
+      }
+      if (paid > 0) {
+        partial.push(row.periodMonth);
+        continue;
+      }
+      await insertPayment(tx, actor, clientId, row, "bulk");
+      recorded.push(row.periodMonth);
+    }
+    return { recorded, skipped, partial };
+  });
 }
 
 /** Owner only: a mistaken entry is voided with a reason and kept in the history. */
@@ -160,7 +198,8 @@ async function viewFor(clientId: string) {
   const byMonth = new Map<string, number>();
   for (const p of live) byMonth.set(p.periodMonth, (byMonth.get(p.periodMonth) ?? 0) + p.amountCents);
   const paidMonths = [...byMonth.entries()].filter(([, c]) => c >= (billing?.monthlyFeeCents ?? 1)).map(([m]) => m);
-  return { billing, payments, live, ledger, lastPayment: live[0] ?? null, paidMonths };
+  const partialMonths = [...byMonth.entries()].filter(([, c]) => c > 0 && c < (billing?.monthlyFeeCents ?? 1)).map(([m]) => m);
+  return { billing, payments, live, ledger, lastPayment: live[0] ?? null, paidMonths, partialMonths };
 }
 
 /** Staff view of office-managed billing (billing access required). */
