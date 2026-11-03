@@ -1,3 +1,4 @@
+import { createFiling, setFilingStatusByStaff } from "@/lib/services/tax";
 import { fileReturn, releaseReturn, submitReturnForRelease } from "@/lib/services/tax-returns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
@@ -119,7 +120,12 @@ describe("Retrieve Tax Filings", () => {
     await confirmPortalIdentity(tab, client.id, user.id, "Called the number on file");
     // Returns reach the client only through Tax Return Delivery: file → review → Tabitha releases.
     if (!(await prisma.ownerAccess.count({ where: { userId: tab.id } }))) await prisma.ownerAccess.create({ data: { userId: tab.id, isPrimary: true } });
+    const accept = async (jurisdiction: string, filingType: "ORIGINAL" | "AMENDED") => {
+      const f = await createFiling(tab, { clientId: client.id, taxYear: 2024, returnType: jurisdiction === "FEDERAL" ? "1040" : "40", jurisdiction, filingType });
+      await setFilingStatusByStaff(tab, f.id, { status: "ACCEPTED", verificationNote: "Fictional ack", submission: { form8879Confirmed: true, overrideReason: "Fictional test without a summary" } });
+    };
     const release = async (jurisdiction: string, filingType: "ORIGINAL" | "AMENDED", name: string) => {
+      await accept(jurisdiction, filingType);
       const d = await fileReturn(tab, { clientId: client.id, taxYear: 2024, returnType: jurisdiction === "FEDERAL" ? "1040" : "40", jurisdiction, filingType, bytes: pdf(), originalName: name });
       await submitReturnForRelease(tab, d.id);
       await releaseReturn(tab, d.id);
@@ -128,6 +134,7 @@ describe("Retrieve Tax Filings", () => {
     const fed = await release("FEDERAL", "ORIGINAL", "1040.pdf");
     await release("AL", "ORIGINAL", "al40.pdf");
     await release("FEDERAL", "AMENDED", "1040x.pdf");
+    await accept("GA", "ORIGINAL");
     const draft = await fileReturn(tab, { clientId: client.id, taxYear: 2024, returnType: "40", jurisdiction: "GA", filingType: "ORIGINAL", bytes: pdf(), originalName: "draft.pdf" });
     const r = await retrieveFilings(user, client.id, 2024);
     expect(r.groups.FEDERAL.map((d) => d.id)).toEqual([fed.id]);

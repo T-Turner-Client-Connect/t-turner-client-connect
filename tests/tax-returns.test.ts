@@ -5,7 +5,15 @@ import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { authorizeDownload, downloadToken, setVisibility, staffUploadDocument } from "@/lib/services/documents";
 import { confirmPortalIdentity, retrieveFilings } from "@/lib/services/tax-center";
-import { setFilingStatusByStaff } from "@/lib/services/tax";
+import { createFiling, setFilingStatusByStaff } from "@/lib/services/tax";
+import type { Actor } from "@/lib/auth/actor";
+
+/** Delivery happens only after acceptance: create the filing and record it Accepted. */
+async function accepted(actor: Actor, clientId: string, taxYear: number, returnType: string, jurisdiction: string) {
+  const f = await createFiling(actor, { clientId, taxYear, returnType, jurisdiction, filingType: "ORIGINAL" });
+  await setFilingStatusByStaff(actor, f.id, { status: "ACCEPTED", verificationNote: "IRS acknowledgment in TaxAct E-file Center (fictional)" });
+  return f;
+}
 import { createAndLinkBusiness, grantOwnerPortalAccess } from "@/lib/services/related-businesses";
 import { bulkUploadReturns, confirmIntake, discardIntake, emailMyCopy, fileReturn, filingLabel, releaseReturn, returnsQueue, submitReturnForRelease } from "@/lib/services/tax-returns";
 
@@ -53,6 +61,12 @@ describe("Tax Return Delivery", () => {
   it("files a single return as a staff-only draft; only Tabitha releases it; revisions and duplicates", async () => {
     const { tabitha, otherAdmin, daria, energy, steven } = await setup();
     const bytes = pdf("energy-1120s-2025");
+    // Not accepted yet → can't be delivered as a completed filing.
+    await expect(fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes, originalName: "1120s.pdf" })).rejects.toThrow(/no filing record/);
+    const filing = await createFiling(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    await setFilingStatusByStaff(daria, filing.id, { status: "SUBMITTED" });
+    await expect(fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes, originalName: "1120s.pdf" })).rejects.toThrow(/hasn't been accepted yet/);
+    await setFilingStatusByStaff(daria, filing.id, { status: "ACCEPTED", verificationNote: "IRS ack (fictional)" });
     const v1 = await fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes, originalName: "1120s.pdf" });
     expect([v1.visibility, v1.reviewStatus, v1.docType, v1.year]).toEqual(["STAFF_ONLY", "DRAFT", "FEDERAL_RETURN", 2025]);
     expect((await retrieveFilings(steven, energy.id, 2025)).total).toBe(0);
@@ -60,8 +74,8 @@ describe("Tax Return Delivery", () => {
     await expect(fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes, originalName: "again.pdf" })).rejects.toThrow(/already saved/);
     await expect(setVisibility(tabitha, v1.id, "PUBLISHED")).rejects.toThrow(/Tabitha releases/);
     await expect(staffUploadDocument(tabitha, { clientId: energy.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/Tabitha releases/);
-    // Release: needs review first; only Tabitha.
-    await expect(releaseReturn(tabitha, v1.id)).rejects.toThrow(/review first/);
+    // Release: only Tabitha (staff ask her; she can also send a draft directly).
+    await expect(releaseReturn(daria, v1.id)).rejects.toBeInstanceOf(ForbiddenError);
     await submitReturnForRelease(daria, v1.id);
     await expect(releaseReturn(daria, v1.id)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(releaseReturn(otherAdmin, v1.id)).rejects.toBeInstanceOf(ForbiddenError);
@@ -72,8 +86,8 @@ describe("Tax Return Delivery", () => {
     const v2 = await fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes: pdf("v2"), originalName: "1120s-corrected.pdf" });
     expect([v2.version, v2.replacesId]).toEqual([2, v1.id]);
     expect((await retrieveFilings(steven, energy.id, 2025)).groups.FEDERAL.map((d) => d.id)).toEqual([v1.id]); // v2 still a draft
-    await submitReturnForRelease(daria, v2.id);
-    await releaseReturn(tabitha, v2.id);
+    await releaseReturn(tabitha, v2.id); // Tabitha sends a draft in one step
+    await expect(releaseReturn(tabitha, v2.id)).rejects.toThrow(/already sent/);
     r = await retrieveFilings(steven, energy.id, 2025);
     expect(r.groups.FEDERAL.map((d) => d.id)).toEqual([v2.id]);
     expect((await prisma.document.findUniqueOrThrow({ where: { id: v1.id } })).supersededAt).not.toBeNull(); // history kept
@@ -99,6 +113,8 @@ describe("Tax Return Delivery", () => {
     expect(by("scan0042").suggestedClientId).toBeNull();
     // Nothing reaches a client before confirmation.
     expect(await prisma.document.count({ where: { filingDocType: "RETURN" } })).toBe(0);
+    await accepted(daria, energy.id, 2025, "1120-S", "FEDERAL");
+    await accepted(daria, drive.id, 2024, "40", "AL");
     const e = await confirmIntake(daria, by("2025 Energy").id, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
     const d = await confirmIntake(daria, by("2024 Drive").id, { clientId: drive.id, taxYear: 2024, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL" });
     await discardIntake(daria, by("scan0042").id, "Not a return");
@@ -112,15 +128,15 @@ describe("Tax Return Delivery", () => {
 
   it("Accepted only from a verified acknowledgment; Email My Copy sends a sign-in link to the verified email; other clients can't open it", async () => {
     const { tabitha, daria, energy, steven, login } = await setup();
-    const doc = await fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes: pdf(), originalName: "r.pdf" });
-    await submitReturnForRelease(daria, doc.id);
-    await releaseReturn(tabitha, doc.id);
-    const filing = await prisma.filingRecord.findUniqueOrThrow({ where: { id: doc.filingId! } });
-    expect(filingLabel(filing.filingStatus)).toBeNull(); // uploading a PDF claims nothing
+    const filing = await createFiling(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    expect(filingLabel(filing.filingStatus)).toBeNull();
     await setFilingStatusByStaff(daria, filing.id, { status: "SUBMITTED", eventAt: new Date(Date.now() - 3_600_000) });
     expect(filingLabel("SUBMITTED")?.label).toBe("Submitted — awaiting acknowledgment");
     await expect(setFilingStatusByStaff(daria, filing.id, { status: "ACCEPTED" })).rejects.toThrow(/acknowledgment/);
     await setFilingStatusByStaff(daria, filing.id, { status: "ACCEPTED", verificationNote: "IRS acknowledgment in TaxAct E-file Center" });
+    const doc = await fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes: pdf(), originalName: "r.pdf" });
+    await submitReturnForRelease(daria, doc.id);
+    await releaseReturn(tabitha, doc.id);
     expect((await retrieveFilings(steven, energy.id, 2025)).groups.FEDERAL[0].filing?.filingStatus).toBe("ACCEPTED");
     expect(filingLabel("REJECTED")?.label).toBe("Rejected");
 

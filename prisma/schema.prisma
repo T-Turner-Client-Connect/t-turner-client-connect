@@ -271,6 +271,7 @@ model Client {
   appointments          Appointment[]
   pipelineCards         PipelineCard[]
   filings               FilingRecord[]
+  taxSummaries          TaxReturnSummary[]
   questionnaires        QuestionnaireSubmission[]
   identityPeople        IdentityPerson[]
   identityDocs          IdentityDocument[]
@@ -3825,4 +3826,172 @@ model IntegrationSettings {
   jotformAutoFileEnabled Boolean  @default(false)
   updatedById            String?
   updatedAt              DateTime @updatedAt
+}
+
+// ===========================================================================
+// Tax Return Summary & Approval (before filing)
+// ===========================================================================
+//
+// Clients never review the full return before filing. The office enters the
+// key figures from the return prepared in TaxAct, sends this summary to the
+// portal, and the client approves it for filing (electronic signature) or
+// requests changes. A joint return needs the spouse's own signature. Figures
+// are locked once sent: any change is a new version, which invalidates every
+// earlier approval. Approval never files anything — only Tabitha submits
+// through TaxAct — and it does not replace Form 8879 or a state e-file
+// authorization. Amounts are whole cents; bank details are last four only.
+
+enum TaxSummaryStatus {
+  DRAFT
+  SENT
+  CHANGES_REQUESTED
+  CLIENT_APPROVED
+  SUPERSEDED
+  WITHDRAWN
+}
+
+model TaxReturnSummary {
+  id                  String                @id @default(cuid())
+  clientId            String
+  client              Client                @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  taxYear             Int
+  // ORIGINAL | AMENDED
+  filingType          String                @default("ORIGINAL")
+  version             Int                   @default(1)
+  replacesId          String?
+  status              TaxSummaryStatus      @default(DRAFT)
+  // SINGLE | MFJ | MFS | HOH | QSS
+  filingStatus        String
+  taxpayerName        String
+  spouseName          String?
+  // [{ name, relationship }] — names only, never SSNs.
+  dependents          Json                  @default("[]")
+  wagesCents          Int                   @default(0)
+  otherIncomeCents    Int                   @default(0)
+  totalIncomeCents    Int                   @default(0)
+  agiCents            Int                   @default(0)
+  // STANDARD | ITEMIZED
+  deductionType       String                @default("STANDARD")
+  deductionCents      Int                   @default(0)
+  taxableIncomeCents  Int                   @default(0)
+  // Positive = refund, negative = amount owed, 0 = even.
+  federalResultCents  Int                   @default(0)
+  // [{ state, resultCents }] — each state separately.
+  stateResults        Json                  @default("[]")
+  depositBankName     String?
+  // CHECKING | SAVINGS
+  depositAccountType  String?
+  depositRoutingLast4 String?
+  depositAccountLast4 String?
+  // Shown to the client with the figures.
+  officeNote          String?
+  // SHA-256 of the figures above; signatures carry the hash they approved.
+  figuresHash         String
+  preparedById        String
+  sentAt              DateTime?
+  sentById            String?
+  changesRequestedAt  DateTime?
+  changesRequestNote  String?
+  changesRequestedBy  String?
+  approvedAt          DateTime?
+  invalidatedAt       DateTime?
+  invalidatedReason   String?
+  // Last four only — full SSNs are never stored here.
+  taxpayerSsnLast4    String?
+  spouseSsnLast4      String?
+  // The prepared return PDF from TaxAct (staff-only document) — the
+  // reference every item is reconciled against before sending.
+  returnDocumentId    String?
+  extractedAt         DateTime?
+  // Figures read from the prepared return (proposals until verified).
+  returnTotals        Json?
+  // What the client flagged: [{ itemId?, label, note }].
+  changesRequestItems Json?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  signatures          TaxSummarySignature[]
+  items               TaxSummaryItem[]
+  checks              TaxSummaryCheck[]
+
+  @@index([clientId, taxYear])
+  @@index([status])
+}
+
+model TaxSummarySignature {
+  id            String           @id @default(cuid())
+  summaryId     String
+  summary       TaxReturnSummary @relation(fields: [summaryId], references: [id], onDelete: Restrict)
+  // TAXPAYER | SPOUSE
+  role          String
+  // Typed full name (the electronic signature).
+  signerName    String
+  portalUserId  String?
+  signedAt      DateTime         @default(now())
+  ipAddress     String?
+  userAgent     String?
+  // The exact statement the signer agreed to.
+  consentText   String
+  figuresHash   String
+  invalidatedAt DateTime?
+
+  @@unique([summaryId, role])
+}
+
+// One entry from the prepared return — each W-2 employer, each 1099 payer,
+// each Schedule C business, each deduction or credit — shown to the client
+// individually. Extracted entries are proposals until staff verify them
+// against the prepared return.
+model TaxSummaryItem {
+  id               String           @id @default(cuid())
+  summaryId        String
+  summary          TaxReturnSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+  // INCOME | ADJUSTMENT | DEDUCTION | CREDIT | PAYMENT | OTHER
+  section          String
+  // W-2, 1099-R, 1099-NEC, SCH-C, 1098, 1098-T, CREDIT, …
+  formType         String
+  payerName        String
+  // TAXPAYER | SPOUSE | JOINT
+  recipient        String           @default("TAXPAYER")
+  // [{ key, label, cents }] read from the uploaded source document (W-2, 1099…).
+  documentAmounts  Json?
+  // [{ key, label, cents }] as entered on the prepared return / TaxAct detail.
+  // Only these — once staff verify them — reach the client's summary.
+  returnAmounts    Json?
+  // RETURN | DOCUMENT | BOTH | STAFF
+  source           String
+  sourceDocumentId String?
+  sourcePage       Int?
+  // Where the return figures were read (page/line) and the text (SSNs and account numbers masked).
+  evidence         String?
+  // VERIFIED | NEEDS_REVIEW | MISSING (on a document, not found on the return) | MISMATCH | EXCLUDED
+  status           String           @default("NEEDS_REVIEW")
+  // Whether the item is reported on the prepared return.
+  onReturn         Boolean          @default(true)
+  note             String?
+  verifiedById     String?
+  verifiedAt       DateTime?
+  sortOrder        Int              @default(0)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([summaryId])
+}
+
+// A reconciliation problem staff must resolve before sending: conflicting
+// amounts, an uploaded document not on the return, a return line without
+// item detail, figures not yet verified.
+model TaxSummaryCheck {
+  id             String           @id @default(cuid())
+  summaryId      String
+  summary        TaxReturnSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+  code           String
+  // BLOCKING | WARNING
+  severity       String           @default("BLOCKING")
+  message        String
+  resolvedAt     DateTime?
+  resolvedById   String?
+  resolutionNote String?
+  createdAt      DateTime         @default(now())
+
+  @@unique([summaryId, code])
 }

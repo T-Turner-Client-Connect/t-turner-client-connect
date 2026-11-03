@@ -13,6 +13,8 @@ import { AMENDMENT_LABELS, FILING_LABELS, filingStatusLabel, filingTitle, PREP_L
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { TaxCenterStaff } from "./tax-center-staff";
 import { TaxPrepCases } from "./tax-prep-cases";
+import { TaxSummaryStaff } from "./tax-summary-staff";
+import { summaryRequirement } from "@/lib/services/tax-summary";
 
 const DOC_TYPE = { OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Agency notice", CORRESPONDENCE: "Correspondence", FIRM_SUMMARY: "Our summary" } as const;
 
@@ -30,6 +32,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
     prisma.document.findMany({ where: { clientId, filingDocType: "RETURN", deletedAt: null }, include: { filing: { select: { filingStatus: true } } }, orderBy: [{ year: "desc" }, { createdAt: "desc" }] }),
     isReportApprover(user),
   ]);
+  const requirements = new Map(await Promise.all(filings.map(async (f) => [f.id, await summaryRequirement(f)] as const)));
   const staffNames = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const years = Array.from(new Set(filings.map((f) => f.taxYear)));
   const thisYear = new Date().getFullYear();
@@ -38,25 +41,30 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
     <div className="space-y-4">
       <TaxPrepCases clientId={clientId} user={user} />
       <TaxCenterStaff clientId={clientId} user={user} />
-      <Card title="Completed returns (Tax Return Delivery)">
-        <ActionForm action={fileReturnAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-6" resetOnSuccess data-testid="file-return">
+      <TaxSummaryStaff clientId={clientId} user={user} />
+      <Card title="Step 2 · Accepted Return Delivery (after IRS/state acceptance)">
+        <p className="mb-3 text-sm text-slate-600">Upload the return only after the IRS or state has <strong>accepted</strong> it (record the acceptance on the filing below first). Draft or unaccepted returns are never delivered as completed filings. Label each by tax year, federal/state, return type and original/amended; the acceptance confirmation is kept separately on the filing.</p>
+        <ActionForm action={fileReturnAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-6" resetOnSuccess>
           <ReturnFields />
-          <Field label="Return PDF"><input className="input" type="file" name="file" accept="application/pdf" required /></Field>
-          <div className="sm:col-span-6"><Button type="submit" variant="secondary">File return (staff-only draft)</Button> <span className="text-xs text-slate-600">For several at once, use <Link className="underline" href="/taxes/returns">Tax returns</Link>. Tabitha releases each copy to the portal.</span></div>
+          <Field label="Accepted return PDF"><input className="input" type="file" name="file" accept="application/pdf" required /></Field>
+          <Field label="Acceptance confirmation (optional)" hint="Kept separately on the filing."><input className="input" type="file" name="ackFile" accept="application/pdf,image/png,image/jpeg" /></Field>
+          <div className="sm:col-span-6"><Button type="submit" variant="secondary">Upload Accepted Return</Button> <span className="text-xs text-slate-600">For several at once, use <Link className="underline" href="/taxes/returns">Tax returns</Link>. {approver ? "Your uploads can be sent to the client right away." : "Tabitha approves each staff upload before the client sees it."}</span></div>
         </ActionForm>
         <ul className="mt-3 divide-y divide-ivory-200 text-sm" data-testid="client-returns">
           {returnDocs.map((d) => {
             const fl = filingLabel(d.filing?.filingStatus);
             const st = RETURN_COPY_STATUS[(d.reviewStatus ?? "DRAFT") as keyof typeof RETURN_COPY_STATUS];
+            const waiting = d.reviewStatus === "DRAFT" || d.reviewStatus === "AWAITING_REVIEW";
             return (
               <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span>{d.title}{d.version && d.version > 1 ? ` · version ${d.version}` : ""}{d.supersededAt ? " · replaced by a newer version" : ""} <Badge tone={st.tone as never}>{st.label}</Badge>{fl && <Badge tone={fl.tone} className="ml-1">{fl.label}</Badge>}</span>
-                {d.reviewStatus === "DRAFT" && <ActionForm action={returnStepAction.bind(null, d.id, "submit")}><Button type="submit" variant="ghost" disabled={d.scanStatus !== "CLEAN"}>Send for review</Button></ActionForm>}
-                {d.reviewStatus === "AWAITING_REVIEW" && (approver ? <ActionForm action={returnStepAction.bind(null, d.id, "release")}><Button type="submit" variant="gold" disabled={d.scanStatus !== "CLEAN"}>Release to client</Button></ActionForm> : <Badge tone="gold">Waiting for Tabitha</Badge>)}
+                <span className="min-w-0">{d.title}{d.version && d.version > 1 ? ` · version ${d.version}` : ""}{d.supersededAt ? " · replaced by a newer version" : ""} <Badge tone={st.tone as never}>{st.label}</Badge>{fl && <Badge tone={fl.tone} className="ml-1">{fl.label}</Badge>}</span>
+                {waiting && approver && <ActionForm action={returnStepAction.bind(null, d.id, "release")}><Button type="submit" variant="gold" disabled={d.scanStatus !== "CLEAN"}>Send to client</Button></ActionForm>}
+                {d.reviewStatus === "DRAFT" && !approver && <ActionForm action={returnStepAction.bind(null, d.id, "submit")}><Button type="submit" variant="ghost" disabled={d.scanStatus !== "CLEAN"}>Ask Tabitha to release</Button></ActionForm>}
+                {d.reviewStatus === "AWAITING_REVIEW" && !approver && <Badge tone="gold">Waiting for Tabitha</Badge>}
               </li>
             );
           })}
-          {returnDocs.length === 0 && <li className="py-2 text-slate-600">No returns filed through Tax Return Delivery yet.</li>}
+          {returnDocs.length === 0 && <li className="py-2 text-slate-600">No accepted returns delivered yet.</li>}
         </ul>
       </Card>
       <div className="grid gap-4 lg:grid-cols-2">
@@ -94,6 +102,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
           <div className="grid gap-4 xl:grid-cols-2">
             {filings.filter((f) => f.taxYear === year).map((f) => {
               const label = filingStatusLabel(f);
+              const req = requirements.get(f.id);
               const accepted = f.filingStatus === "ACCEPTED";
               return (
                 <Card key={f.id} title={filingTitle(f)} actions={<Badge tone={f.filingType === "EXTENSION" ? "gold" : f.filingType === "AMENDED" ? "amber" : "navy"}>{f.filingType === "ORIGINAL" ? "Original" : f.filingType === "EXTENSION" ? "Extension" : "Amended"}{f.method === "PAPER" ? " · paper" : ""}</Badge>}>
@@ -136,6 +145,15 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
                         <Field label="How you verified it" className="sm:col-span-2" hint="Required for Accepted without a document, e.g. “Checked IRS ack in TaxAct E-file Center 4/2”.">
                           <input className="input" name="verificationNote" />
                         </Field>
+                        {f.filingStatus === "NOT_SUBMITTED" && f.filingType !== "EXTENSION" && req?.required && (
+                          <div className="rounded-lg border border-gold-500/50 bg-gold-50 p-3 text-sm sm:col-span-2" data-testid="owner-filing-gate">
+                            <p className="font-semibold">Owner filing — Tabitha only</p>
+                            <p className="text-xs text-slate-700">{req.approved ? `Client approved the ${f.taxYear} summary (version ${req.approved.version}) — ready for owner filing.` : `No client-approved ${f.taxYear} summary yet. Send the summary for approval first.`}</p>
+                            {f.method === "ELECTRONIC" && <label className="mt-2 flex items-start gap-2"><input type="checkbox" name="form8879" className="mt-1 accent-navy-900" /> Signed IRS Form 8879 (and any state e-file authorization) is on file. The summary approval does not replace it.</label>}
+                            {!req.approved && <Field label="Filing without an approved summary? Say why" className="mt-2"><input className="input" name="overrideReason" /></Field>}
+                            {!approver && <p className="mt-1 text-xs font-semibold text-red-800">Only Tabitha can record a return as submitted.</p>}
+                          </div>
+                        )}
                         <Field label="Submission ID / reference"><input className="input" name="filingReference" defaultValue={f.filingReference ?? ""} /></Field>
                         <Field label="Rejection codes"><input className="input" name="rejectionCodes" /></Field>
                         <div><Button type="submit">Record status</Button></div>

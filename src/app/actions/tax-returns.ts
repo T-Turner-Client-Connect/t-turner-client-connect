@@ -5,7 +5,10 @@ import { requireUser } from "@/lib/auth/session";
 import { requirePortalUser } from "@/lib/portal/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
-import { bulkUploadReturns, confirmIntake, discardIntake, emailMyCopy, fileReturn, releaseReturn, submitReturnForRelease } from "@/lib/services/tax-returns";
+import { bulkUploadReturns, confirmIntake, discardIntake, emailMyCopy, fileReturn, releaseReturn, releaseReturns, submitReturnForRelease } from "@/lib/services/tax-returns";
+import { staffUploadDocument } from "@/lib/services/documents";
+import { attachFilingDocument } from "@/lib/services/tax";
+import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 
 const refresh = () => {
   revalidatePath("/taxes/returns");
@@ -24,9 +27,15 @@ export async function fileReturnAction(clientId: string, _prev: ActionState, fd:
   return run(async () => {
     const f = fd.get("file");
     if (!(f instanceof File) || f.size === 0) throw new ValidationError("Choose the return PDF.");
-    await fileReturn(actor, { ...fields(fd, clientId), bytes: new Uint8Array(await f.arrayBuffer()), originalName: f.name });
+    const doc = await fileReturn(actor, { ...fields(fd, clientId), bytes: new Uint8Array(await f.arrayBuffer()), originalName: f.name });
+    const ack = fd.get("ackFile");
+    if (ack instanceof File && ack.size > 0 && doc.filingId) {
+      // The acceptance confirmation is stored separately, on the filing.
+      const a = await staffUploadDocument(actor, { clientId, category: "TAXES", title: `${doc.title} — acceptance confirmation`, year: doc.year, visibility: "STAFF_ONLY", bytes: new Uint8Array(await ack.arrayBuffer()), originalName: ack.name, notify: false });
+      await attachFilingDocument(actor, doc.filingId, a.id, "OFFICIAL_ACK");
+    }
     refresh();
-    return "Filed as a staff-only draft. Send it for review; Tabitha releases it to the client.";
+    return (await isReportApprover(actor)) ? "Accepted return uploaded. Use “Send to client” to deliver it to their vault." : "Accepted return uploaded. Tabitha approves it before the client sees it — use “Ask Tabitha to release”.";
   });
 }
 
@@ -65,7 +74,18 @@ export async function returnStepAction(documentId: string, step: "submit" | "rel
     if (step === "submit") await submitReturnForRelease(actor, documentId);
     else await releaseReturn(actor, documentId);
     refresh();
-    return step === "submit" ? "Sent to Tabitha for review." : "Released to the client's portal.";
+    return step === "submit" ? "Sent to Tabitha for approval." : "Sent to the client's document vault.";
+  });
+}
+
+export async function bulkReleaseAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const ids = fd.getAll("documentId").filter((v): v is string => typeof v === "string");
+    if (!ids.length) throw new ValidationError("Choose the returns to send.");
+    const r = await releaseReturns(actor, ids);
+    refresh();
+    return `${r.done.length} sent to clients${r.skipped.length ? `; ${r.skipped.length} not sent (${r.skipped.map((x) => x.reason).join("; ")})` : ""}.`;
   });
 }
 

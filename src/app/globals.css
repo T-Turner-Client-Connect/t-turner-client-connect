@@ -23,6 +23,12 @@
 
 /* Base styles live in the base layer so utility classes (e.g. text-white) can override them. */
 @layer base {
+  /* Grid cells may shrink below their content's width, so long text truncates
+     instead of pushing the page sideways on phones. Utilities (min-w-*) still win. */
+  .grid > * {
+    min-width: 0;
+  }
+
   html {
     -webkit-text-size-adjust: 100%;
   }

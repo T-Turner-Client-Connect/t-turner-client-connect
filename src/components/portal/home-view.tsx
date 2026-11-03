@@ -18,7 +18,7 @@ export function nextDeadline(data: Home) {
   return pick(lines.filter((l) => l.appliesToYou)) ?? pick(lines) ?? null;
 }
 
-const card = "rounded-2xl border border-ivory-200 bg-white/95 p-5 shadow-[0_1px_2px_rgb(0_20_82/0.05),0_12px_30px_-18px_rgb(0_20_82/0.25)]";
+const card = "min-w-0 rounded-2xl border border-ivory-200 bg-white/95 p-5 shadow-[0_1px_2px_rgb(0_20_82/0.05),0_12px_30px_-18px_rgb(0_20_82/0.25)]";
 const goldBtn = "inline-flex items-center justify-center gap-1 rounded-lg bg-gradient-to-b from-gold-500 to-gold-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:from-gold-600 hover:to-gold-700";
 const outlineBtn = "inline-flex items-center justify-center gap-1 rounded-lg border border-gold-600 bg-white px-5 py-2.5 text-sm font-semibold text-navy-900 hover:bg-gold-100";
 const viewAll = "mt-4 inline-flex items-center gap-1 text-sm font-medium text-navy-900 hover:text-gold-700";
@@ -38,8 +38,10 @@ function CardHead({ icon: Icon, title, sub, badge }: { icon: React.ComponentType
   );
 }
 
-export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; q: string; readOnly?: boolean; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; year?: number }) {
-  const href = (path: string, extra = "") => (readOnly ? "#" : `${path}${q}${extra ? `${q ? "&" : "?"}${extra}` : ""}`);
+export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: { data: Home; q: string; readOnly?: boolean; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; year?: number; previewHref?: (path: string, extra: string) => string }) {
+  // In the owner's View as Client, links open the matching read-only preview page.
+  const href = (path: string, extra = "") => (previewHref ? previewHref(path, extra) : readOnly ? "#" : `${path}${q}${extra ? `${q ? "&" : "?"}${extra}` : ""}`);
+  const browsable = !!previewHref;
   const years = data.questionnaires.map((x) => x.year).sort((a, b) => a - b);
   const thisYear = new Date().getFullYear();
   const selected = year && years.includes(year) ? year : years.includes(thisYear - 1) ? thisYear - 1 : years.at(-1) ?? thisYear;
@@ -92,6 +94,14 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
         </p>
       </section>
 
+      {data.summariesWaiting.length > 0 && (
+        <Link href={href("/client/taxes/summary")} className="flex items-center gap-3 rounded-2xl border-2 border-gold-500 bg-gold-50 px-4 py-3 text-sm font-semibold text-navy-950 hover:bg-gold-100" data-testid="summary-reminder">
+          <span className="size-2 shrink-0 rounded-full bg-gold-600" aria-hidden />
+          <span className="min-w-0 flex-1">Your {data.summariesWaiting.map((s) => s.taxYear).join(" and ")} tax return summary is ready. Please review and approve it so we can file.</span>
+          <ChevronRight className="size-4" aria-hidden />
+        </Link>
+      )}
+
       {data.identityAlerts.length > 0 && (
         <Link href={href("/client/identity")} className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 hover:bg-amber-100" data-testid="identity-reminder">
           <span className="size-2 shrink-0 rounded-full bg-amber-500" aria-hidden />
@@ -109,7 +119,7 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
               <p className="text-sm text-slate-600">Manage your tax documents, filings, and year-specific tasks.</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {!readOnly && <TaxYearSelect years={[...years].reverse()} year={selected} base={`/client${q}${q ? "&" : "?"}`} />}
+              {!readOnly && !browsable && <TaxYearSelect years={[...years].reverse()} year={selected} base={`/client${q}${q ? "&" : "?"}`} />}
               <nav aria-label="Tax year" className="flex flex-wrap gap-1.5" data-testid="year-chips">
                 {years.map((y) => (
                   <Link key={y} href={href("/client", `year=${y}`)} scroll={false} aria-current={y === selected ? "true" : undefined} className={`rounded-full border px-2.5 py-1 text-xs sm:px-3.5 sm:py-1.5 sm:text-sm ${y === selected ? "border-gold-600 bg-gold-600 font-semibold text-white" : "border-ivory-200 bg-white text-navy-900 hover:border-gold-500"}`}>
@@ -122,12 +132,12 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
 
           {readOnly && (
             <p className="mb-3 rounded-lg border border-gold-500 bg-gold-100 px-3 py-2 text-sm text-navy-950" data-testid="preview-note">
-              Staff preview is read-only: these buttons are shown as the client sees them but don&apos;t open here. To upload for the client, use their record&apos;s Documents tab.
+              {browsable ? "View as Client: every button opens the page the client would see, read-only. Nothing can be uploaded, signed or sent from here." : "Staff preview is read-only: these buttons are shown as the client sees them but don't open here."} To upload for the client, use their record&apos;s Documents tab.
             </p>
           )}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {actions.map((a) =>
-              readOnly || !a.href ? (
+              (readOnly && !browsable) || !a.href ? (
                 <div
                   key={a.title}
                   aria-disabled="true"
@@ -145,8 +155,8 @@ export function PortalHomeView({ data, q, readOnly, name, year }: { data: Home; 
               ) : (
               <Link
                 key={a.title}
-                href={a.href}
-                {...(a.external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+                href={browsable && a.external ? href("/client/tax-center") : a.href}
+                {...(a.external && !browsable ? { target: "_blank", rel: "noopener noreferrer" } : {})}
                 className={`group flex items-center gap-4 rounded-xl px-5 py-4 text-white shadow-md transition hover:shadow-lg ${a.tone === "navy" ? "bg-gradient-to-br from-navy-900 to-navy-950" : "bg-gradient-to-br from-gold-500 to-gold-600"}`}
                 data-testid={a.testId}
               >

@@ -56,7 +56,16 @@ export async function setPrepStatus(actor: Actor, filingId: string, status: Prep
 export async function setFilingStatusByStaff(
   actor: Actor,
   filingId: string,
-  input: { status: FilingStatus; eventAt?: Date | null; evidenceDocumentId?: string | null; verificationNote?: string | null; filingReference?: string | null; rejectionCodes?: string | null },
+  input: {
+    status: FilingStatus;
+    eventAt?: Date | null;
+    evidenceDocumentId?: string | null;
+    verificationNote?: string | null;
+    filingReference?: string | null;
+    rejectionCodes?: string | null;
+    // Owner filing: Form 8879 confirmed; reason when filing without an approved summary.
+    submission?: { form8879Confirmed: boolean; overrideReason?: string | null };
+  },
 ) {
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
   const eventAt = input.eventAt ?? new Date();
@@ -70,6 +79,18 @@ export async function setFilingStatusByStaff(
   }
   if (f.method === "PAPER" && input.status === "ACCEPTED" && !input.evidenceDocumentId) {
     throw new ValidationError("Paper filings have no electronic acceptance. Attach the agency notice to record a status.");
+  }
+  // Moving a return out of "Not submitted" means it was filed: for individual
+  // returns that is Tabitha's alone, with the client's approved summary on file.
+  let gateNote: string | null = null;
+  let gateDetails: Record<string, unknown> = {};
+  if (f.filingStatus === "NOT_SUBMITTED" && input.status !== "NOT_SUBMITTED" && f.filingType !== "EXTENSION") {
+    const { summaryRequirement, assertOwnerMaySubmit } = await import("./tax-summary");
+    if ((await summaryRequirement(f)).required) {
+      const g = await assertOwnerMaySubmit(actor, f, input.submission ?? { form8879Confirmed: false });
+      gateNote = g.summaryId ? "Owner filing: client-approved summary on file; Form 8879/state authorization confirmed." : `Owner filing WITHOUT an approved summary: ${g.override}`;
+      gateDetails = { approvedSummaryId: g.summaryId, overrideReason: g.override, form8879Confirmed: !!input.submission?.form8879Confirmed };
+    }
   }
   await prisma.$transaction([
     prisma.filingRecord.update({
@@ -95,12 +116,12 @@ export async function setFilingStatusByStaff(
         source: "STAFF",
         actorId: actor.id,
         evidenceDocumentId: input.evidenceDocumentId ?? null,
-        verificationNote: input.verificationNote?.trim() || null,
+        verificationNote: [input.verificationNote?.trim(), gateNote].filter(Boolean).join(" · ") || null,
         eventAt,
       },
     }),
     prisma.auditLog.create({
-      data: { actorId: actor.id, action: "filing.status_staff_update", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { from: f.filingStatus, to: input.status } },
+      data: { actorId: actor.id, action: "filing.status_staff_update", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { from: f.filingStatus, to: input.status, ...gateDetails } },
     }),
   ]);
 }

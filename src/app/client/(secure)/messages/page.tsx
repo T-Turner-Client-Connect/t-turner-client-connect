@@ -43,7 +43,7 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
     <>
       <PageHeader title="Messages" subtitle="Secure messages with TTurner & Associates Group." />
       <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-2">
+        <div className="min-w-0 space-y-2">
           <Link href={`/client/messages${q}`} className="block rounded-lg border border-navy-100 bg-white px-3 py-2 text-sm font-semibold text-navy-900">+ New message</Link>
           {conversations.length === 0 ? (
             <EmptyState title="No messages yet" />
@@ -61,7 +61,7 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
             </ul>
           )}
         </div>
-        <div className="lg:col-span-2">
+        <div className="min-w-0 lg:col-span-2">
           <Card title={selected ? selected.subject : "New message"}>
             {selected && (
               <ol className="mb-4 space-y-3">
