@@ -1,7 +1,6 @@
 import Link from "next/link";
-import { BellRing, ClipboardList, CloudUpload, FileSearch, FileWarning, IdCard, User, Users, UsersRound } from "lucide-react";
+import { CalendarDays, Check, CircleCheck, ClipboardCheck, CloudUpload, FileCheck2, FolderOpen, IdCard, Mail, Pencil, User, Users, UsersRound } from "lucide-react";
 import { Notice } from "@/components/ui";
-import { luxCard, NavyCard, PageBanner } from "@/components/portal/luxury";
 import { QuestionnaireStart } from "@/components/portal/tax-pages";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
@@ -10,16 +9,24 @@ import { identityChecklist } from "@/lib/services/identity";
 
 export const metadata = { title: "My Tax Center" };
 
-const cardCls = `${luxCard} flex flex-col`;
-const btnNavy = "mt-4 inline-flex w-full items-center justify-center rounded-xl bg-gradient-to-b from-navy-900 to-navy-950 px-4 py-2.5 font-semibold text-white shadow hover:to-navy-900";
+type Icon = React.ComponentType<{ className?: string; strokeWidth?: number }>;
+const cream = "border border-gold-300 bg-gradient-to-b from-white to-ivory-50 text-navy-900";
+const navy = "bg-gradient-to-br from-navy-900 to-navy-950 text-white ring-1 ring-navy-800";
+const btnGold = "inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-b from-gold-300 to-gold-500 px-7 py-2.5 font-bold text-navy-950 shadow hover:to-gold-400";
+const btnOutline = "inline-flex items-center justify-center gap-2 rounded-full border-2 border-gold-400 px-7 py-2.5 font-bold text-white hover:bg-white/10";
 
-function CardHead({ icon: Icon, title, sub }: { icon: React.ComponentType<{ className?: string }>; title: string; sub: string }) {
+/** One of the four action cards: icon beside the title, centered text, button at the bottom. */
+function ActionCard({ tone, icon: I, title, sub, children, testId }: { tone: "cream" | "navy"; icon: Icon; title: string; sub: string; children: React.ReactNode; testId: string }) {
+  const dark = tone === "navy";
   return (
-    <>
-      <span className="mb-3 flex size-14 items-center justify-center rounded-2xl border border-gold-300 bg-gold-50"><Icon className="size-8 text-gold-600" aria-hidden /></span>
-      <h2 className="font-serif text-xl font-bold leading-snug text-navy-900">{title}</h2>
-      <p className="mt-1 text-sm text-slate-600">{sub}</p>
-    </>
+    <section className={`flex min-w-0 flex-col rounded-2xl p-5 shadow-[0_14px_32px_-22px_rgb(10_26_68/0.55)] ${dark ? navy : cream}`} data-testid={testId}>
+      <div className="flex items-center gap-3">
+        <I className={`size-12 shrink-0 ${dark ? "text-gold-400" : "text-gold-600"}`} strokeWidth={1.5} aria-hidden />
+        <h2 className={`font-serif text-2xl font-bold leading-tight ${dark ? "text-white" : "text-navy-900"}`}>{title}</h2>
+      </div>
+      <p className={`mt-3 text-center text-[15px] ${dark ? "text-navy-100" : "text-navy-800"}`}>{sub}</p>
+      <div className="mt-auto pt-4 text-center">{children}</div>
+    </section>
   );
 }
 
@@ -39,70 +46,92 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
     return { people: people.length, onFile: items.filter((i) => i.state === "ON_FILE").length, total: items.length };
   };
   const idRows = [
-    { label: "You", icon: User, ...group(["CLIENT"]) },
+    { label: "You (Taxpayer)", icon: User, ...group(["CLIENT"]) },
     { label: "Spouse", icon: UsersRound, ...group(["SPOUSE"]) },
-    { label: "Dependents", icon: Users, ...group(["DEPENDENT"]) },
+    { label: "Dependents (Children)", icon: Users, ...group(["DEPENDENT"]) },
   ];
 
   return (
     <>
-      <PageBanner icon={ClipboardList} title="My Tax Center" subtitle="Everything you need for your tax return, all in one place." />
-      <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4" data-testid="tax-center">
-        <section className={cardCls} data-testid="tile-questionnaire">
-          <CardHead icon={ClipboardList} title="Complete Tax Questionnaire" sub="Tell us about your year so we can prepare your return." />
-          <div className="mt-4"><QuestionnaireStart options={data.questionnaires} /></div>
-        </section>
-        <section className={cardCls} data-testid="tile-upload">
-          <CardHead icon={CloudUpload} title="Upload Documents" sub="Send W-2s, 1099s, receipts and other tax documents securely." />
-          <span className="flex-1" />
-          <Link href={`/client/tax-center/upload${q}${yq}`} className={btnNavy} data-testid="upload-button">Upload Documents</Link>
-        </section>
-        <section className={cardCls} data-testid="tile-retrieve">
-          <CardHead icon={FileSearch} title="Retrieve Tax Filings" sub="View, download or print returns our office has saved for you." />
-          <span className="flex-1" />
-          <Link href={`/client/taxes/filings${q}${yq}`} className={btnNavy} data-testid="retrieve-button">Retrieve Tax Filings</Link>
-        </section>
-        <section className={cardCls} data-testid="tile-notice">
-          <CardHead icon={FileWarning} title="Upload Audit or Tax Notice" sub="Got a letter from the IRS or state? Send it so we can respond on time." />
-          <span className="flex-1" />
-          <Link href={`/client/tax-center/notice${q}${yq}`} className={btnNavy} data-testid="notice-button">Upload a Notice</Link>
-        </section>
+      {/* Light banner: tax-document icon, thin divider, serif title, navy-and-gold swoosh. */}
+      <section className="relative -mx-4 -mt-6 mb-6 overflow-hidden border-b border-ivory-200 bg-gradient-to-r from-ivory-50 via-white to-white px-4 py-6 sm:-mx-6 sm:px-8" data-testid="page-banner">
+        <svg className="pointer-events-none absolute inset-y-0 right-0 hidden h-full w-[48%] md:block" viewBox="0 0 600 130" preserveAspectRatio="none" aria-hidden>
+          <path d="M0 130 C 220 120, 380 70, 600 22 L 600 130 Z" fill="#0A1A44" />
+          <path d="M60 130 C 260 112, 420 58, 600 6" fill="none" stroke="#C89D29" strokeWidth="10" />
+          <path d="M0 126 C 240 116, 400 74, 600 30" fill="none" stroke="#E6C76A" strokeWidth="3" opacity="0.8" />
+        </svg>
+        <div className="relative flex items-center gap-4 sm:gap-5 md:max-w-[62%]">
+          <FileCheck2 className="size-12 shrink-0 text-gold-500 sm:size-16" strokeWidth={1.5} aria-hidden />
+          <span className="h-14 w-px shrink-0 bg-gold-400 sm:h-16" aria-hidden />
+          <div className="min-w-0">
+            <h1 className="font-serif text-3xl font-bold leading-tight text-navy-900 sm:text-[2.6rem]">My Tax Center</h1>
+            <p className="mt-1 text-[15px] text-navy-800 sm:text-lg">Your tax information, documents, and filings — all in one place.</p>
+          </div>
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" data-testid="tax-center">
+        <ActionCard tone="cream" icon={ClipboardCheck} title="Complete Tax Questionnaire" sub="Tell us about your year so we can prepare your return." testId="tile-questionnaire">
+          <div className="text-left"><QuestionnaireStart options={data.questionnaires} /></div>
+        </ActionCard>
+        <ActionCard tone="navy" icon={CloudUpload} title="Upload Documents" sub="W-2s, 1099s, receipts and letters go into your secure Document Vault." testId="tile-upload">
+          <Link href={`/client/tax-center/upload${q}${yq}`} className={btnOutline} data-testid="upload-button">Upload Documents <span aria-hidden>→</span></Link>
+        </ActionCard>
+        <ActionCard tone="cream" icon={FolderOpen} title="Retrieve Tax Filings" sub="View, download or print current and prior year returns." testId="tile-retrieve">
+          <Link href={`/client/taxes/filings${q}${yq}`} className={btnGold} data-testid="retrieve-button">Retrieve Filings <span aria-hidden>→</span></Link>
+        </ActionCard>
+        <ActionCard tone="navy" icon={Mail} title="Upload Audit or Tax Notice" sub="Received a letter from the IRS or state? Upload it here so we can review and respond." testId="tile-notice">
+          <Link href={`/client/tax-center/notice${q}${yq}`} className={btnOutline} data-testid="notice-button">Upload a Notice <span aria-hidden>→</span></Link>
+        </ActionCard>
       </div>
 
-      <div className="mt-6 grid items-start gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <div className="mt-6 grid grid-cols-1 items-start gap-6 lg:grid-cols-[1.7fr_1fr]">
         {current.canViewIdentity ? (
-          <NavyCard icon={IdCard} title="Identity Documents">
-            <ul className="divide-y divide-ivory-200" data-testid="identity-checklist">
+          <section className={`min-w-0 rounded-2xl p-5 shadow-[0_14px_32px_-22px_rgb(10_26_68/0.45)] ${cream}`} data-testid="identity-summary">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <IdCard className="size-11 shrink-0 text-gold-600" strokeWidth={1.5} aria-hidden />
+                <div>
+                  <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900">Identity Documents</h2>
+                  <p className="text-sm text-navy-800">Upload once and keep on file. Driver&apos;s licenses are only updated when they expire.</p>
+                </div>
+              </div>
+              <Link href={`/client/identity${q}`} className="inline-flex items-center gap-2 rounded-full border border-gold-500 bg-gradient-to-b from-gold-50 to-gold-200 px-5 py-2 text-sm font-bold text-navy-950 shadow-sm hover:to-gold-300">
+                <Pencil className="size-4" aria-hidden /> Manage Documents
+              </Link>
+            </div>
+            <ul className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3 sm:divide-x sm:divide-gold-200" data-testid="identity-checklist">
               {idRows.map((r) => (
-                <li key={r.label} className="flex flex-wrap items-center gap-3 py-3">
-                  <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-navy-900"><r.icon className="size-5 text-gold-400" aria-hidden /></span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-serif text-lg font-bold text-navy-900">{r.label}</span>
-                    <span className="block text-sm text-slate-600">
-                      {r.people === 0 ? "None listed" : `Documents on file: ${r.onFile} of ${r.total}`}
-                      {r.label === "Dependents" && r.people > 0 && ` · ${r.people} ${r.people === 1 ? "dependent" : "dependents"}`}
-                    </span>
-                  </span>
+                <li key={r.label} className="sm:px-4 sm:first:pl-0">
+                  <span className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><r.icon className="size-6 shrink-0 text-gold-600" aria-hidden />{r.label}</span>
+                  {r.onFile > 0 ? (
+                    <span className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-emerald-700"><CircleCheck className="size-5 fill-emerald-600 text-white" aria-hidden />Documents on file</span>
+                  ) : (
+                    <span className="mt-1 block text-sm text-slate-500">Not on file yet</span>
+                  )}
                 </li>
               ))}
             </ul>
-            <Link href={`/client/identity${q}`} className="mt-3 inline-flex rounded-xl border-2 border-gold-500 bg-white px-5 py-2 font-semibold text-navy-900 hover:bg-gold-50">Manage Documents</Link>
-          </NavyCard>
+          </section>
         ) : (
           <span className="hidden lg:block" />
         )}
-        <NavyCard icon={BellRing} title="Quick Reminders">
-          <ul className="space-y-2.5 text-[15px] text-navy-800" data-testid="quick-reminders">
+        <section className={`min-w-0 rounded-2xl p-5 shadow-[0_14px_32px_-22px_rgb(10_26_68/0.45)] ${cream}`} data-testid="quick-reminders">
+          <h2 className="mb-3 flex items-center gap-3 font-serif text-2xl font-bold text-navy-900"><CalendarDays className="size-8 text-gold-600" strokeWidth={1.5} aria-hidden />Quick Reminders</h2>
+          <ul className="space-y-2.5 text-[15px] text-navy-800">
             {[
-              "Upload documents for the correct tax year.",
-              "Identity documents stay on file — no need to send them every year.",
-              "Send any IRS or state letter right away so we can meet its deadline.",
-              "An extension gives you more time to file, not more time to pay.",
+              "Keep your information up to date.",
+              "Upload new tax documents as you receive them.",
+              "Update your driver's license only when it expires.",
+              "Documents are securely stored year to year.",
             ].map((t) => (
-              <li key={t} className="flex gap-2"><span className="mt-2 size-1.5 shrink-0 rounded-full bg-gold-500" aria-hidden />{t}</li>
+              <li key={t} className="flex items-start gap-2.5">
+                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-gold-500"><Check className="size-3.5 text-white" strokeWidth={3} aria-hidden /></span>
+                {t}
+              </li>
             ))}
           </ul>
-        </NavyCard>
+        </section>
       </div>
     </>
   );

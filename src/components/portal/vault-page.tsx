@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Archive, CalendarDays, ChevronDown, CloudUpload, FileText, FolderOpen, IdCard, Landmark, Layers, Lightbulb, Lock, MoreHorizontal, Repeat, Baby, UserRound } from "lucide-react";
+import { Archive, ChevronDown, CloudUpload, FileText, FolderOpen, IdCard, Infinity as InfinityIcon, Info, Layers, Mail, MoreHorizontal, ShieldCheck, Upload, Users, UsersRound } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { CLIENT_DOC_TYPES, ALL_DOC_TYPES } from "@/lib/document-types";
 import { CATEGORY_LABELS } from "@/lib/services/documents";
@@ -7,20 +7,19 @@ import { ID_ROLES, ID_TYPES, type identityOverview, type IdRole, type IdType } f
 import type { loadPortalDocuments } from "@/lib/portal/views";
 import { formatBytes } from "@/lib/files";
 import { fmtDate } from "@/lib/format";
-import { NavyCard } from "./luxury";
 
 type Docs = Awaited<ReturnType<typeof loadPortalDocuments>>;
 type Doc = Docs[number];
 type Overview = Awaited<ReturnType<typeof identityOverview>>;
 
 export const VAULT_CATEGORIES = [
-  { key: "all", label: "All Documents", icon: Layers },
-  { key: "tax", label: "Tax Documents", icon: FileText },
-  { key: "identity", label: "Identity Documents", icon: IdCard },
-  { key: "spouse", label: "Spouse Documents", icon: UserRound },
-  { key: "dependent", label: "Dependent Documents", icon: Baby },
-  { key: "notices", label: "IRS & State Notices", icon: Landmark },
-  { key: "archived", label: "Archived", icon: Archive },
+  { key: "all", label: "All Documents", note: null, icon: Layers },
+  { key: "tax", label: "Tax Documents", note: null, icon: FileText },
+  { key: "identity", label: "Identity Documents", note: "(ID, Social Security, Birth Certificate)", icon: IdCard },
+  { key: "spouse", label: "Spouse Documents", note: null, icon: UsersRound },
+  { key: "dependent", label: "Dependent Documents", note: "(Children)", icon: Users },
+  { key: "notices", label: "IRS & State Notices", note: null, icon: Mail },
+  { key: "archived", label: "Archived Documents", note: null, icon: Archive },
 ] as const;
 export type VaultCat = (typeof VAULT_CATEGORIES)[number]["key"];
 export const isVaultCat = (v: string | undefined): v is VaultCat => VAULT_CATEGORIES.some((c) => c.key === v);
@@ -54,8 +53,8 @@ function identityRows(overview: Overview, filter: (role: string) => boolean, arc
           id: r.id,
           name: `${ID_TYPES[s.type as IdType].label} — ${person.name}`,
           sub: `${ID_ROLES[person.role as IdRole]}${archived ? " · previous version" : ""}`,
-          category: archived ? "Archived" : person.role === "SPOUSE" ? "Spouse" : person.role === "DEPENDENT" ? "Dependent" : "Identity",
-          year: "Permanent",
+          category: archived ? "Archived" : person.role === "SPOUSE" ? "Spouse Document" : person.role === "DEPENDENT" ? "Dependent Document" : "Identity Document",
+          year: "—",
           added: r.createdAt,
           status: archived ? "Replaced" : r.status === "VERIFIED" ? "Verified" : r.status === "EXPIRED" ? "Expired" : "Pending verification",
         });
@@ -65,13 +64,15 @@ function identityRows(overview: Overview, filter: (role: string) => boolean, arc
   return rows;
 }
 
+const BUCKET_LABEL: Record<string, string> = { notices: "IRS & State Notice", tax: "Tax Document", identity: "Identity Document", dependent: "Dependent Document" };
+
 const docRow = (d: Doc): Row => ({
   kind: "doc",
   id: d.id,
   name: d.title,
   sub: `${d.docType ? `${ALL_DOC_TYPES[d.docType] ?? d.docType} · ` : ""}${formatBytes(d.file.sizeBytes)}`,
-  category: bucketOf(d) === "notices" ? "IRS & State Notice" : CATEGORY_LABELS[d.category],
-  year: d.year ? String(d.year) : "Year to confirm",
+  category: BUCKET_LABEL[bucketOf(d) ?? ""] ?? CATEGORY_LABELS[d.category],
+  year: d.year ? String(d.year) : "—",
   added: d.publishedAt ?? d.createdAt,
   doc: d,
 });
@@ -91,21 +92,22 @@ export function vaultData(docs: Docs, overview: Overview | null) {
 }
 
 const BENEFITS = [
-  { icon: Lock, title: "Secure & Private", text: "Encrypted, malware-scanned, and private to you and our office." },
-  { icon: CalendarDays, title: "Year-Round Access", text: "Open your documents any time, every tax year." },
-  { icon: FolderOpen, title: "All in One Place", text: "Tax records, notices and identity documents together." },
-  { icon: Repeat, title: "Keep Once", text: "Upload a document once — it stays on file." },
+  { icon: ShieldCheck, title: "Secure & Private", text: "Encrypted and protected" },
+  { icon: Layers, title: "Year-Round Access", text: "View, download, or print anytime" },
+  { icon: Users, title: "All in One Place", text: "Your tax, identity, and account documents" },
+  { icon: InfinityIcon, title: "Keep Once", text: "Most documents don’t need to be uploaded each year" },
 ];
 
+/** Light cream strip of four promises, gold icons, thin gold dividers (approved design). */
 export function BenefitStrip() {
   return (
-    <section className="grid gap-px overflow-hidden rounded-2xl bg-gold-500/30 ring-1 ring-gold-500/40 sm:grid-cols-2 xl:grid-cols-4" data-testid="vault-benefits">
-      {BENEFITS.map((b) => (
-        <div key={b.title} className="flex items-center gap-3 bg-gradient-to-br from-navy-900 to-navy-950 px-5 py-4 text-white">
-          <b.icon className="size-8 shrink-0 text-gold-400" aria-hidden />
+    <section className="grid grid-cols-1 gap-y-3 rounded-2xl border border-gold-200 bg-gradient-to-b from-white to-ivory-50 px-4 py-4 shadow-[0_10px_24px_-20px_rgb(10_26_68/0.45)] sm:grid-cols-2 xl:grid-cols-4" data-testid="vault-benefits">
+      {BENEFITS.map((b, i) => (
+        <div key={b.title} className={`flex items-center gap-3 px-3 ${i > 0 ? "xl:border-l xl:border-gold-300" : ""} ${i % 2 === 1 ? "sm:border-l sm:border-gold-300" : ""}`}>
+          <b.icon className="size-10 shrink-0 text-gold-600" strokeWidth={1.5} aria-hidden />
           <span className="min-w-0">
-            <span className="block font-serif text-lg font-bold leading-tight text-white">{b.title}</span>
-            <span className="block text-sm text-navy-100">{b.text}</span>
+            <span className="block font-serif text-lg font-bold leading-tight text-navy-900">{b.title}</span>
+            <span className="block text-sm text-navy-800">{b.text}</span>
           </span>
         </div>
       ))}
@@ -113,40 +115,55 @@ export function BenefitStrip() {
   );
 }
 
-export function CategorySidebar({ data, active, href }: { data: Record<VaultCat, Row[]>; active: VaultCat; href: (c: VaultCat) => string }) {
+/** Navy-headed card with a title only (Document Categories, Upload a Document). */
+function HeadCard({ icon: Icon, title, children, testId }: { icon?: React.ComponentType<{ className?: string }>; title: string; children: React.ReactNode; testId?: string }) {
   return (
-    <NavyCard icon={FolderOpen} title="Document Categories">
-      <nav aria-label="Document categories" className="-mx-1 space-y-1" data-testid="vault-categories">
+    <section className="min-w-0 overflow-hidden rounded-2xl border border-ivory-200 bg-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)]" data-testid={testId}>
+      <h2 className="flex items-center gap-3 bg-navy-900 px-5 py-3.5 font-serif text-xl font-bold text-white">
+        {Icon && <Icon className="size-6 shrink-0" aria-hidden />}
+        {title}
+      </h2>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+export function CategorySidebar({ active, href }: { active: VaultCat; href: (c: VaultCat) => string }) {
+  return (
+    <HeadCard title="Document Categories">
+      <nav aria-label="Document categories" data-testid="vault-categories">
         {VAULT_CATEGORIES.map((c) => (
           <Link
             key={c.key}
             href={href(c.key)}
             aria-current={active === c.key ? "page" : undefined}
-            className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-[15px] ${active === c.key ? "bg-gradient-to-b from-gold-300 to-gold-500 font-bold text-navy-950 ring-1 ring-gold-200" : "text-navy-900 hover:bg-gold-50"}`}
+            className={`flex items-center gap-3 px-3 py-3 text-[15px] text-navy-900 ${active === c.key ? "rounded-xl border border-gold-300 bg-gold-50 font-bold" : "border-b border-ivory-200 last:border-b-0 hover:bg-gold-50/60"}`}
           >
-            <c.icon className="size-5 shrink-0" aria-hidden />
-            <span className="min-w-0 flex-1">{c.label}</span>
-            <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${active === c.key ? "bg-navy-900 text-gold-300" : "bg-ivory-100 text-navy-900"}`}>{data[c.key].length}</span>
+            <c.icon className="size-6 shrink-0 text-gold-600" aria-hidden />
+            <span className="min-w-0 flex-1 leading-tight">
+              <span className="block font-semibold">{c.label}</span>
+              {c.note && <span className="block text-xs text-slate-600">{c.note}</span>}
+            </span>
           </Link>
         ))}
       </nav>
-    </NavyCard>
+    </HeadCard>
   );
 }
 
 /** "All Years ▾" — a plain list of year links, no script needed. */
 function YearFilter({ years, current, href }: { years: { year: number | null; count: number }[]; current: number | "none" | null; href: (y: string | null) => string }) {
-  const label = current === null ? "All Years" : current === "none" ? "Year to confirm" : String(current);
+  const label = current === null ? "All Years" : current === "none" ? "No tax year" : String(current);
   return (
     <details className="relative" data-testid="vault-years">
-      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-full border border-gold-500 bg-white px-4 py-1.5 text-sm font-semibold text-navy-900 [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-6 rounded-lg border border-ivory-300 bg-white px-4 py-2 text-sm font-semibold text-navy-900 shadow-sm [&::-webkit-details-marker]:hidden">
         {label} <ChevronDown className="size-4" aria-hidden />
       </summary>
       <div className="absolute right-0 z-20 mt-2 w-48 rounded-xl border border-ivory-200 bg-white p-1.5 text-sm shadow-xl">
         <Link href={href(null)} className="block rounded-lg px-3 py-1.5 text-navy-900 hover:bg-gold-100">All Years</Link>
         {years.map((f) => (
           <Link key={f.year ?? "none"} href={href(f.year ? String(f.year) : "none")} className="flex justify-between rounded-lg px-3 py-1.5 text-navy-900 hover:bg-gold-100">
-            {f.year ?? "Year to confirm"} <span className="text-slate-500">{f.count}</span>
+            {f.year ?? "No tax year"} <span className="text-slate-500">{f.count}</span>
           </Link>
         ))}
       </div>
@@ -174,43 +191,58 @@ function RowActions({ row, linkFor, identityHref }: { row: Row; linkFor: (id: st
   );
 }
 
-export function DocumentsTable({ rows, title, years, year, yearHref, linkFor, identityHref }: { rows: Row[]; title: string; years: { year: number | null; count: number }[]; year: number | "none" | null; yearHref: (y: string | null) => string; linkFor: (id: string) => string; identityHref: string }) {
+/** Small red "PDF" document mark used on every file row (approved design). */
+function PdfIcon() {
   return (
-    <section className="min-w-0 overflow-hidden rounded-2xl border border-ivory-200 bg-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)]" data-testid="vault-table">
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-navy-900 px-5 py-3.5">
-        <h2 className="flex items-center gap-3 font-serif text-xl font-bold text-white sm:text-2xl"><FileText className="size-6 shrink-0" aria-hidden />{title}</h2>
+    <span className="relative flex h-7 w-6 shrink-0 items-end justify-center rounded-[3px] border-2 border-red-700 bg-white pb-0.5" aria-hidden>
+      <span className="text-[7px] font-black leading-none text-red-700">PDF</span>
+    </span>
+  );
+}
+
+export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityHref }: { rows: Row[]; years: { year: number | null; count: number }[]; year: number | "none" | null; yearHref: (y: string | null) => string; linkFor: (id: string) => string; identityHref: string }) {
+  return (
+    <section className="min-w-0 rounded-2xl border border-ivory-200 bg-white p-4 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] sm:p-5" data-testid="vault-table">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <Layers className="size-10 shrink-0 text-gold-600" strokeWidth={1.5} aria-hidden />
+          <div>
+            <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900">All Documents</h2>
+            <p className="text-sm text-navy-800">A complete list of your uploaded documents.</p>
+          </div>
+        </div>
         <YearFilter years={years} current={year} href={yearHref} />
       </div>
       {rows.length === 0 ? (
-        <p className="px-5 py-10 text-center text-slate-600">No documents here yet.</p>
+        <p className="rounded-xl border border-ivory-200 px-5 py-10 text-center text-slate-600">No documents here yet.</p>
       ) : (
-        <div className="relative overflow-x-auto">
-          <table className="w-full min-w-[40rem] text-sm">
+        <div className="relative overflow-x-auto rounded-xl border border-ivory-200">
+          <table className="w-full min-w-[38rem] text-sm">
             <thead>
-              <tr className="border-b border-ivory-200 text-left text-navy-900">
-                <th className="px-5 py-3 font-semibold">Document</th>
+              <tr className="bg-navy-900 text-left text-white">
+                <th className="px-4 py-3 font-semibold">Document Name</th>
                 <th className="px-3 py-3 font-semibold">Category</th>
                 <th className="px-3 py-3 font-semibold">Tax Year</th>
-                <th className="px-3 py-3 font-semibold">Date Added</th>
-                <th className="px-5 py-3 text-right font-semibold"><span className="sr-only">Actions</span></th>
+                <th className="px-3 py-3 font-semibold">Date Uploaded</th>
+                <th className="px-3 py-3 text-right font-semibold"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-ivory-200">
               {rows.map((r) => (
                 <tr key={`${r.kind}-${r.id}`} data-row-kind={r.kind}>
-                  <td className="px-5 py-3">
+                  <td className="px-4 py-3">
                     <span className="flex items-center gap-3">
-                      {r.kind === "doc" ? <FileText className="size-5 shrink-0 text-gold-600" aria-hidden /> : <IdCard className="size-5 shrink-0 text-gold-600" aria-hidden />}
+                      <PdfIcon />
                       <span className="min-w-0">
-                        <span className="block font-semibold text-navy-900 [overflow-wrap:anywhere]">{r.name}</span>
-                        <span className="block text-xs text-slate-600">{r.kind === "id" ? `${r.sub} · ${r.status}` : r.sub}</span>
+                        <span className="block text-navy-900 [overflow-wrap:anywhere]">{r.name}</span>
+                        {r.kind === "id" && <span className="block text-xs text-slate-600">{r.status}</span>}
                       </span>
                     </span>
                   </td>
                   <td className="px-3 py-3 text-navy-800">{r.category}</td>
                   <td className="px-3 py-3 text-navy-800">{r.year}</td>
                   <td className="whitespace-nowrap px-3 py-3 text-navy-800">{fmtDate(r.added)}</td>
-                  <td className="px-5 py-3 text-right"><RowActions row={r} linkFor={linkFor} identityHref={identityHref} /></td>
+                  <td className="px-3 py-3 text-right"><RowActions row={r} linkFor={linkFor} identityHref={identityHref} /></td>
                 </tr>
               ))}
             </tbody>
@@ -223,49 +255,53 @@ export function DocumentsTable({ rows, title, years, year, yearHref, linkFor, id
 
 type State = { error?: string; ok?: string; at?: number } | null;
 
-export function UploadPanel({ action, accountName, defaultYear, children }: { action: (prev: State, fd: FormData) => Promise<State>; accountName: string; defaultYear: string; children?: React.ReactNode }) {
+export function UploadPanel({ action, defaultYear }: { action: (prev: State, fd: FormData) => Promise<State>; defaultYear: string }) {
   const thisYear = new Date().getFullYear();
   return (
-    <NavyCard icon={CloudUpload} title="Upload a Document">
-      <p className="mb-3 text-sm text-slate-600" data-testid="upload-target">Saving to: <strong className="text-navy-900">{accountName}</strong></p>
-      <ActionForm action={action} className="space-y-4" resetOnSuccess>
+    <HeadCard icon={CloudUpload} title="Upload a Document" testId="vault-upload">
+      <ActionForm action={action} className="space-y-3" resetOnSuccess>
         <label className="block">
-          <span className="mb-1.5 block font-semibold text-navy-900">Category</span>
-          <select className="input" name="docType" required defaultValue="">
-            <option value="" disabled>Choose…</option>
+          <span className="mb-1 block text-sm font-semibold text-navy-900">Document Category</span>
+          <select className="input h-10" name="docType" required defaultValue="">
+            <option value="" disabled>Choose a category…</option>
             {Object.entries(CLIENT_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
         </label>
         <label className="block">
-          <span className="mb-1.5 block font-semibold text-navy-900">Tax Year</span>
-          <select className="input" name="year" required defaultValue={defaultYear}>
-            <option value="" disabled>Choose…</option>
+          <span className="mb-1 block text-sm font-semibold text-navy-900">Tax Year (if applicable)</span>
+          <select className="input h-10" name="year" required defaultValue={defaultYear}>
+            <option value="" disabled>Choose year…</option>
             {Array.from({ length: 8 }, (_, i) => thisYear - i).map((y) => <option key={y} value={y}>{y}</option>)}
             <option value="unsure">Not sure</option>
           </select>
         </label>
-        <label className="relative flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-gold-400 bg-gold-50/40 px-4 py-7 text-center hover:bg-gold-50">
-          <CloudUpload className="size-10 text-gold-600" aria-hidden />
+        <label className="relative flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-ivory-300 bg-white px-3 py-5 text-center hover:border-gold-400">
+          <CloudUpload className="size-10 text-navy-900" strokeWidth={1.5} aria-hidden />
           <span className="font-semibold text-navy-900">Drag &amp; drop your file here</span>
-          <span className="text-sm text-slate-600">or click to choose · PDF, JPG or PNG up to 5 MB</span>
-          <input className="mt-1 w-full max-w-full text-sm" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required />
+          <span className="text-sm text-slate-600">or</span>
+          <span className="inline-flex items-center gap-2 rounded-full border border-gold-500 bg-gradient-to-b from-gold-100 to-gold-300 px-5 py-1.5 font-semibold text-navy-950 shadow-sm">
+            <FolderOpen className="size-4" aria-hidden /> Choose File
+          </span>
+          <span className="text-xs text-slate-600">Accepted: PDF, JPG, or PNG (max 5 MB)</span>
+          <input className="absolute inset-0 cursor-pointer opacity-0" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label="Choose a file" />
         </label>
-        <button type="submit" className="w-full rounded-xl bg-gradient-to-b from-navy-900 to-navy-950 px-6 py-3 font-semibold text-white shadow hover:to-navy-900">Upload Securely</button>
+        <button type="submit" className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-navy-900 px-6 py-2.5 font-semibold text-white shadow hover:bg-navy-950">
+          <Upload className="size-4" aria-hidden /> Upload Document
+        </button>
       </ActionForm>
-      {children}
-    </NavyCard>
+    </HeadCard>
   );
 }
 
 export function VaultReminders() {
   return (
-    <NavyCard icon={Lightbulb} title="Helpful Reminders">
-      <ul className="list-disc space-y-1.5 pl-5 text-[15px] text-navy-800" data-testid="vault-reminders">
-        <li>Choose the tax year each document is for — pick &ldquo;Not sure&rdquo; and we&apos;ll sort it.</li>
-        <li>New uploads are checked for viruses, then reviewed by our team.</li>
-        <li>Social Security cards and birth certificates live in Identity Documents and can&apos;t be opened in the portal.</li>
-        <li>Download links expire shortly after the page loads — refresh the page to open a document again.</li>
+    <section className="rounded-2xl border border-ivory-200 bg-white p-4 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)]" data-testid="vault-reminders">
+      <h2 className="mb-2 flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><Info className="size-5 text-gold-600" aria-hidden />Helpful Reminders</h2>
+      <ul className="list-disc space-y-1 pl-5 text-sm text-navy-800">
+        <li>Upload each document once and keep it on file.</li>
+        <li>Only update a driver&apos;s license when it expires.</li>
+        <li>Most other documents are kept permanently.</li>
       </ul>
-    </NavyCard>
+    </section>
   );
 }
