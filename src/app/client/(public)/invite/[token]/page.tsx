@@ -12,7 +12,7 @@ export default async function PortalInvite({ params }: { params: Promise<{ token
   return (
     <>
       <h1 className="mb-2 text-2xl font-bold">Welcome, {invite.name}</h1>
-      <p className="mb-4 text-sm text-slate-600">Create a password for <strong>{invite.email}</strong>. Next, you&apos;ll set up two-step verification with an authenticator app.</p>
+      <p className="mb-4 text-sm text-slate-600">Create a password for <strong>{invite.email}</strong>. Then you&apos;ll continue to your secure portal.</p>
       <ActionForm action={portalAcceptInviteAction.bind(null, token)} className="space-y-4" showSuccess={false}>
         <Field label="Password" hint="At least 12 characters, with letters and numbers or symbols.">
           <input className="input" type="password" name="password" required minLength={12} autoComplete="new-password" />

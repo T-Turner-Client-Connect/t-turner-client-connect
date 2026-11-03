@@ -1,4 +1,5 @@
 import "server-only";
+import { isPreviewDeploy } from "@/lib/integrations";
 
 /** Where client replies go: EMAIL_REPLY_TO, else the office inbox. */
 export function replyToAddress() {
@@ -23,6 +24,12 @@ export async function sendEmail(input: {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.EMAIL_FROM_ADDRESS;
   if (!key || !from) return { ok: false, reason: "not_configured", detail: "Email isn't set up yet (RESEND_API_KEY and EMAIL_FROM_ADDRESS)." };
+  // Preview sites are test copies with their own database: an email sent from one carries links
+  // and codes the real site doesn't know. Only an explicit opt-in allows it.
+  if (isPreviewDeploy() && process.env.EMAIL_IN_PREVIEWS !== "true") {
+    console.info("Email not sent: preview site");
+    return { ok: false, reason: "not_configured", detail: "Emails aren't sent from preview sites — this is a test copy with its own data. Use client.tturnerassociates.com to send real emails." };
+  }
   let res: Response;
   try {
     // RESEND_API_BASE exists only to point automated tests at a local mock.

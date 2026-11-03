@@ -1,3 +1,4 @@
+import { selfServiceAvailable } from "@/lib/services/client-signup";
 import Link from "next/link";
 import { endOfDay, startOfDay } from "date-fns";
 import { Badge, Card, LinkButton, Notice, PageHeader, Stat } from "@/components/ui";
@@ -46,6 +47,10 @@ export default async function Dashboard() {
   const [total, active, openTasks, unread] = totals;
   const integrations = integrationStatus();
   // Private totals: only rendered for the account that holds full owner access.
+  const [pendingActivations, selfService] = await Promise.all([
+    prisma.activationRequest.count({ where: { status: { in: ["NEEDS_STAFF", "EMAIL_FAILED"] } } }),
+    selfServiceAvailable(),
+  ]);
   const ownerAccess = await ownerAccessFor(user.id);
   const owed = ownerAccess?.scope === "FULL" ? await receivables(user) : null;
 
@@ -64,6 +69,12 @@ export default async function Dashboard() {
         }
       />
 
+      {pendingActivations > 0 && (
+        <Link href="/clients/onboarding" className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border-2 border-gold-500 bg-gold-50 px-4 py-3 text-navy-950 hover:bg-gold-100" data-testid="activation-requests-alert">
+          <span className="font-semibold">{pendingActivations} portal activation request{pendingActivations === 1 ? "" : "s"} waiting for staff review{!selfService ? " — self-service activation is paused, so these clients got no email" : ""}</span>
+          <span className="text-sm underline">Review now →</span>
+        </Link>
+      )}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Active clients" value={active} hint={`${total} total`} href="/clients?status=ACTIVE" />
         <Stat label="Unread conversations" value={unread} href="/conversations?filter=unread" />

@@ -1,9 +1,11 @@
+import { PreviewBanner } from "@/components/preview-banner";
 import { LegalLinks } from "@/components/legal-links";
 import Image from "next/image";
 
 export default function PortalPublicLayout({ children }: { children: React.ReactNode }) {
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-gradient-to-b from-ivory-100 to-ivory-50 px-4 py-10">
+    <main className="flex min-h-dvh flex-col items-center justify-center bg-gradient-to-b from-ivory-100 to-ivory-50 px-4 py-10">
+      <PreviewBanner />
       <div className="w-full max-w-md">
         <Image src="/brand/logo-full.png" alt="TTurner Client Connect" width={640} height={545} priority className="mx-auto mb-2 h-auto w-48" />
         <p className="mb-6 text-center text-sm font-semibold tracking-wide text-navy-800">SECURE CLIENT PORTAL</p>

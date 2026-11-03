@@ -5,6 +5,7 @@ import { requireClientAccess } from "@/lib/portal/access";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite } from "@/lib/services/portal-accounts";
 import {
+  activationWaitingReason,
   completeSignup,
   linkToExistingClient,
   requestActivation,
@@ -133,27 +134,37 @@ describe("onboarding and duplicate checks", () => {
     expect(await prisma.conversation.count({ where: { clientId: client.id, awaitingStaff: true } })).toBe(1);
   });
 
-  it("holds possible existing clients for staff; linking needs verified identity; no cross-client access", async () => {
+  it("self-service: a look-alike gets their own account immediately (never another person's record); a verified email on file connects to that record", async () => {
     const tab = await makeUser("ADMIN");
     const existing = await createClient(tab, { firstName: "Nina", lastName: "New", clientType: "INDIVIDUAL", status: "ACTIVE" });
     const other = await createClient(tab, { firstName: "Other", lastName: "Person", clientType: "INDIVIDUAL", status: "ACTIVE" });
+    // Same full name, different email: no staff approval, no access to the existing record.
     const user = await newPortalUser("nina.personal@example.com");
-    await saveOnboardingDetails(user, details({ phone: "" , smsService: false }));
-    expect(await submitOnboarding(user)).toBe("NEEDS_REVIEW"); // same full name on file
-    expect(await prisma.portalAccess.count({ where: { portalUserId: user.id } })).toBe(0);
+    await saveOnboardingDetails(user, details({ phone: "", smsService: false }));
+    expect(await submitOnboarding(user)).toBe("APPROVED_NEW");
     const app = await prisma.onboardingApplication.findFirstOrThrow({ where: { portalUserId: user.id } });
-    expect(app.possibleMatchIds).toEqual([existing.id]);
-    const daria = await makeUser("STAFF");
-    await expect(linkToExistingClient(daria, app.id, existing.id, false)).rejects.toThrow(/verified this person's identity/);
-    await linkToExistingClient(daria, app.id, existing.id, true);
-    await requireClientAccess(user.id, existing.id);
+    await requireClientAccess(user.id, app.clientId!); // in their own portal right away
+    await expect(requireClientAccess(user.id, existing.id)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(requireClientAccess(user.id, other.id)).rejects.toBeInstanceOf(ForbiddenError);
-    expect(await prisma.client.count()).toBe(2); // no duplicate record created
+    expect(app.possibleMatchIds).toEqual([existing.id]);
+    // Staff get a staff-only "possible duplicate" note to check and merge if it's the same person.
+    const note = await prisma.message.findFirstOrThrow({ where: { conversation: { clientId: app.clientId!, subject: { startsWith: "Possible duplicate" } } } });
+    expect(note.channel).toBe("INTERNAL_NOTE");
+
+    // An existing client whose email is on file signs up instead of activating: the code they
+    // entered proves the address, so they're connected to their record — no duplicate created.
+    const ali = await createClient(tab, { firstName: "Ali", lastName: "OnFile", email: "ali.onfile@example.com", clientType: "INDIVIDUAL", status: "ACTIVE" });
+    const before = await prisma.client.count();
+    const aliUser = await newPortalUser("ali.onfile@example.com");
+    await saveOnboardingDetails(aliUser, details({ firstName: "Ali", lastName: "OnFile", phone: "", smsService: false }));
+    await submitOnboarding(aliUser);
+    await requireClientAccess(aliUser.id, ali.id);
+    expect(await prisma.client.count()).toBe(before);
   });
 });
 
 describe("Activate your portal", () => {
-  it("emails a one-time link only to the single record with that email on file; everything else goes to staff", async () => {
+  it("emails a one-time link to the single record with that email on file; unknown emails get a sign-up link; no staff step", async () => {
     await deliveryProven();
     const tab = await makeUser("ADMIN");
     const c = await createClient(tab, { firstName: "Alma", lastName: "Fictional", email: "alma@example.com", clientType: "INDIVIDUAL", status: "ACTIVE" });
@@ -167,26 +178,60 @@ describe("Activate your portal", () => {
     expect(user.emailVerifiedAt).not.toBeNull();
     await requireClientAccess(user.id, c.id);
 
-    // Unknown email: nothing sent, staff review.
+    // A repeat request soon after doesn't cancel the link just sent (double click, impatient retry).
+    const before = sent.length;
+    const c2 = await createClient(tab, { firstName: "Bo", lastName: "Fictional", email: "bo@example.com", clientType: "INDIVIDUAL", status: "ACTIVE" });
+    await requestActivation({ email: "bo@example.com", name: "Bo", phone: "", ip: "203.0.113.9" });
+    const boLink = sent.at(-1)!.text.match(/\/client\/invite\/(\S+)/)![1];
+    await requestActivation({ email: "bo@example.com", name: "Bo", phone: "", ip: "203.0.113.9" });
+    expect(sent.length).toBe(before + 1);
+    const { findOpenPortalInvite } = await import("@/lib/services/portal-accounts");
+    expect(await findOpenPortalInvite(boLink)).not.toBeNull();
+    expect(await prisma.portalInvite.count({ where: { clientId: c2.id } })).toBe(1);
+    expect(await prisma.client.count({ where: { email: "bo@example.com" } })).toBe(1); // never a duplicate record
+
+    // Not on file: they're emailed how to create an account (the page answer stays the same); no staff queue.
     await requestActivation({ email: "stranger@example.com", name: "", phone: "", ip: "203.0.113.2" });
-    expect(sent).toHaveLength(1);
-    expect(await prisma.activationRequest.count({ where: { emailNormalized: "stranger@example.com", status: "NEEDS_STAFF" } })).toBe(1);
+    expect(sent.at(-1)!.to).toBe("stranger@example.com");
+    expect(sent.at(-1)!.text).toMatch(/\/client\/signup/);
+    expect(await prisma.activationRequest.count({ where: { status: { in: ["NEEDS_STAFF", "EMAIL_FAILED"] } } })).toBe(0);
     // Already active: sign-in reminder, no new invite.
     await requestActivation({ email: "alma@example.com", name: "", phone: "", ip: "203.0.113.3" });
     expect(sent.at(-1)!.subject).toMatch(/portal/);
-    expect(await prisma.portalInvite.count()).toBe(1);
+    expect(await prisma.portalInvite.count({ where: { clientId: c.id } })).toBe(1);
   });
 
-  it("goes to staff (no email) before delivery is proven, and when several records share the email", async () => {
+  it("only exceptions reach staff: paused delivery (dashboard only) and an email shared by several records (one alert, assigned staff emailed); the count drops when resolved", async () => {
     const tab = await makeUser("ADMIN");
     await createClient(tab, { firstName: "A", lastName: "One", email: "shared@example.com", clientType: "INDIVIDUAL", status: "ACTIVE" });
+    await prisma.client.updateMany({ data: { assignedToId: tab.id } });
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    // Before the one-time delivery check: held, no email to anyone, no per-request alerts.
     await requestActivation({ email: "shared@example.com", name: "", phone: "", ip: null });
     expect(sent).toHaveLength(0);
+    expect(await prisma.conversation.count()).toBe(0);
+    expect(info.mock.calls.map((c) => c[0])).toContain("Activation request: held, no email (email delivery not yet confirmed in Settings → Client sign-in); matching records: 1");
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(/shared@example\.com/);
+    const held = await prisma.activationRequest.findFirstOrThrow({ where: { status: "NEEDS_STAFF" } });
+    expect(activationWaitingReason(held, await selfServiceAvailable())).toMatch(/paused until email delivery is confirmed/);
+    info.mockRestore();
+
     await deliveryProven();
     await createClient(tab, { firstName: "B", lastName: "Two", email: "shared@example.com", clientType: "INDIVIDUAL", status: "ACTIVE" });
+    // Two records share the email: an identity question — staff decide which person it is.
     await requestActivation({ email: "shared@example.com", name: "", phone: "", ip: null });
-    expect(sent).toHaveLength(0);
-    expect(await prisma.activationRequest.count({ where: { status: "NEEDS_STAFF" } })).toBe(2);
+    await requestActivation({ email: "shared@example.com", name: "", phone: "", ip: null }); // retry: no duplicate alerts
+    expect(sent.filter((m) => m.to === "shared@example.com")).toHaveLength(0);
+    expect(sent.filter((m) => m.to === tab.email)).toHaveLength(1); // only record A is assigned; one alert despite the retry
+    expect(sent.find((m) => m.to === tab.email)!.text).not.toMatch(/shared@example\.com/);
+    expect(await prisma.conversation.count({ where: { subject: "Portal activation request needs review" } })).toBe(2); // one staff-only note per record
+    expect((await prisma.message.findFirstOrThrow({ where: { conversation: { subject: "Portal activation request needs review" } } })).channel).toBe("INTERNAL_NOTE");
+    // Dashboard count = waiting requests; it drops as staff resolve or dismiss them.
+    const waiting = () => prisma.activationRequest.count({ where: { status: { in: ["NEEDS_STAFF", "EMAIL_FAILED"] } } });
+    expect(await waiting()).toBe(3);
+    const { dismissActivation } = await import("@/lib/services/client-signup");
+    for (const r of await prisma.activationRequest.findMany({ where: { status: "NEEDS_STAFF" } })) await dismissActivation(tab, r.id);
+    expect(await waiting()).toBe(0);
   });
 
   it("staff-created invitation links shown on screen don't count as email verification", async () => {
