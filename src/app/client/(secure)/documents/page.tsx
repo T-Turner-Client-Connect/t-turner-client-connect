@@ -40,7 +40,7 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
   const thisYear = new Date().getFullYear();
   return (
     <>
-      <PageHeader title="Document Vault" subtitle="Your documents by tax year — private to you and TTurner & Associates Group. Links expire shortly after the page loads." />
+      <PageHeader title="Document Vault" subtitle="Your documents by tax year — private to you and T. Turner & Associates. Links expire shortly after the page loads." />
       <nav aria-label="Vault year" className="mb-4 flex flex-wrap gap-2" data-testid="vault-years">
         <Link href={`/client/documents${q}`} aria-current={!yearFilter ? "page" : undefined} className={chip(!yearFilter)}>All years</Link>
         {folders.map((f) => (

@@ -54,7 +54,7 @@ describe("staff invitation emails", () => {
     expect(mail.body.from).toContain("TTurner & Associates Group, LLC");
     expect(mail.body.subject).toBe("Your staff invitation to TTurner Client Connect");
     expect(mail.body.html).toContain("Create Your Staff Account");
-    expect(mail.body.html).toContain("TTurner &amp; Associates Group, LLC");
+    expect(mail.body.html).toContain("T. Turner &amp; Associates, LLC");
     expect(mail.body.html).toContain("https://crm.example.com/staff/invite/");
     expect(mail.body.tags).toEqual([{ name: "category", value: "staff_invitation" }]);
     expect(mail.headers["Idempotency-Key"]).toBe(`staff-invite/${out.inviteId}`);
@@ -279,6 +279,6 @@ describe("staff invitation emails", () => {
     expect(mail.html).toContain("Daria &lt;b&gt;");
     expect(mail.html).toContain("Create Your Staff Account");
     expect(mail.text).toContain("November 5, 2026");
-    expect(mail.text).toContain("TTurner & Associates Group, LLC");
+    expect(mail.text).toContain("T. Turner & Associates, LLC");
   });
 });

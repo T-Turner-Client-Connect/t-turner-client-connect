@@ -99,8 +99,8 @@ describe("Create Client Account", () => {
 
   it("rate-limits repeated sign-ups and code guesses, and codes expire", async () => {
     await deliveryProven();
-    for (let i = 0; i < 3; i++) await signup("limit@example.com", `198.51.100.${i}`);
-    await expect(signup("limit@example.com", "198.51.100.99")).rejects.toThrow(/Too many attempts/);
+    for (let i = 0; i < 5; i++) await signup("limit@example.com", `198.51.100.${i}`);
+    await expect(signup("limit@example.com", "198.51.100.99")).rejects.toThrow(/try again in \d+ minutes?/);
     const { token } = await signup("guess@example.com");
     for (let i = 0; i < 5; i++) await expect(completeSignup(token, "000000")).rejects.toThrow();
     await expect(completeSignup(token, codeIn("guess@example.com"))).rejects.toThrow(/Too many wrong codes/);
@@ -206,8 +206,9 @@ describe("Activate your portal", () => {
     await createClient(tab, { firstName: "A", lastName: "One", email: "shared@example.com", clientType: "INDIVIDUAL", status: "ACTIVE" });
     await prisma.client.updateMany({ data: { assignedToId: tab.id } });
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    // Before the one-time delivery check: held, no email to anyone, no per-request alerts.
-    await requestActivation({ email: "shared@example.com", name: "", phone: "", ip: null });
+    // Before the one-time delivery check: held, no email to anyone, no per-request alerts —
+    // and the page is told (no false "thank you").
+    expect(await requestActivation({ email: "shared@example.com", name: "", phone: "", ip: null })).toBe("PAUSED");
     expect(sent).toHaveLength(0);
     expect(await prisma.conversation.count()).toBe(0);
     expect(info.mock.calls.map((c) => c[0])).toContain("Activation request: held, no email (email delivery not yet confirmed in Settings → Client sign-in); matching records: 1");

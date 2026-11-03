@@ -20,7 +20,7 @@ import { isReportApprover } from "./bookkeeping-clients";
 
 export const BANK_CONSENT_VERSION = "2026-11-read-only-v1";
 export const BANK_CONSENT_TEXT =
-  "I authorize TTurner & Associates Group, LLC to retrieve read-only transaction and balance information from the accounts I connect, for bookkeeping. No money can be moved, and I can disconnect at any time.";
+  "I authorize T. Turner & Associates, LLC to retrieve read-only transaction and balance information from the accounts I connect, for bookkeeping. No money can be moved, and I can disconnect at any time.";
 
 // --- Connecting (sandbox only in this phase) ----------------------------------------------------
 

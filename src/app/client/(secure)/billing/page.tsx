@@ -89,7 +89,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
   const methods = new Map((await prisma.invoice.findMany({ where: { id: { in: items.map((i) => i.id) } }, select: { id: true, paymentMethod: true } })).map((i) => [i.id, i.paymentMethod]));
   return (
     <>
-      <PageHeader title="Billing" subtitle="Quotes and invoices from TTurner & Associates Group for this account." />
+      <PageHeader title="Billing" subtitle="Quotes and invoices from T. Turner & Associates for this account." />
       {sq.state !== "NONE" && (!sq.view || sq.unsynced > 0) && (
         <Card className="mb-6" title={sq.view ? "More billing from Square" : "Your monthly billing"}>
           <div data-testid={sq.view ? "portal-square-billing-pending" : "portal-square-billing"}>

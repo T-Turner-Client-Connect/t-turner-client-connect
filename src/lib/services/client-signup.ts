@@ -3,7 +3,8 @@ import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import type { ClientType, OnboardingApplication } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { assertAdmin, type Actor } from "@/lib/auth/actor";
+import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { isReportApprover } from "./bookkeeping-clients";
 import { hashPassword, passwordProblem } from "@/lib/auth/password";
 import { hashToken, newToken } from "@/lib/auth/tokens";
 import { authSettings, emailProviderConfigured } from "@/lib/auth/client-auth";
@@ -58,11 +59,29 @@ export async function selfServiceAvailable() {
 const RECENT_LINK_MS = 15 * 60_000;
 const ACTIVATION_REVIEW_SUBJECT = "Portal activation request needs review";
 
-async function limited(key: string, max: number, windowMs: number) {
-  const n = await prisma.loginAttempt.count({ where: { email: key, success: false, createdAt: { gte: new Date(Date.now() - windowMs) } } });
-  if (n >= max) throw new ValidationError("Too many attempts. Please wait an hour and try again, or call our office.");
+/**
+ * Abuse protection without long lockouts: a short window, and a clear "try again in N minutes".
+ * `check` only reads; `note` records an attempt. Callers record only requests that actually sent
+ * an email, so held requests (sign-up paused) and failed sends never use up anyone's allowance.
+ */
+async function check(key: string, max: number, windowMs: number) {
+  const since = new Date(Date.now() - windowMs);
+  const recent = await prisma.loginAttempt.findMany({ where: { email: key, success: false, createdAt: { gte: since } }, orderBy: { createdAt: "asc" }, select: { createdAt: true } });
+  if (recent.length >= max) {
+    const mins = Math.max(1, Math.ceil((recent[0].createdAt.getTime() + windowMs - Date.now()) / 60_000));
+    throw new ValidationError(`Too many requests for now. Please try again in ${mins} minute${mins === 1 ? "" : "s"}, or email info@tturnerassociates.com.`);
+  }
+}
+async function note(key: string) {
   await prisma.loginAttempt.create({ data: { email: key, success: false } });
 }
+async function limited(key: string, max: number, windowMs: number) {
+  await check(key, max, windowMs);
+  await note(key);
+}
+// Per address: 5 emails per 15 minutes. Per network: 30 requests per 15 minutes (bots).
+const EMAIL_LIMIT = { max: 5, windowMs: 15 * 60_000 };
+const IP_LIMIT = { max: 30, windowMs: 15 * 60_000 };
 
 function mail(heading: string, paragraphs: string[], button: { label: string; url: string }) {
   return {
@@ -96,8 +115,8 @@ export async function startSignup(input: SignupInput) {
   const problem = passwordProblem(input.password);
   if (problem) throw new ValidationError(problem);
   const ip = ipKey(input.ip);
-  if (ip) await limited(`signup-ip:${ip}`, 10, 3600_000);
-  await limited(`signup-email:${email}`, 3, 3600_000);
+  if (ip) await limited(`signup-ip:${ip}`, IP_LIMIT.max, IP_LIMIT.windowMs);
+  await limited(`signup-email:${email}`, EMAIL_LIMIT.max, EMAIL_LIMIT.windowMs);
 
   const available = !(await prisma.portalUser.findUnique({ where: { email } }));
   const token = newToken();
@@ -547,12 +566,12 @@ export async function adminPrivateActivationLink(actor: Actor, clientId: string,
   return { link: `${appUrl()}/client/invite/${res.token}`, message: `Single-use link for ${to}, valid 24 hours. Give it to them in person or read it by phone — never by text or email from your own account. They create their own password; never ask for it or for any code.` };
 }
 
-/** Clears the public activation-request limit for one email address only (Admin, audited). */
+/** Clears the public activation and sign-up limits for one email address only (owner only, audited). */
 export async function resetActivationLimit(actor: Actor, email: string) {
-  assertAdmin(actor);
+  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only the owner can reset a client's activation limit.");
   const e = normalizeEmail(email);
   if (!e) throw new ValidationError("Enter a valid email address.");
-  const { count } = await prisma.loginAttempt.deleteMany({ where: { email: `activate-email:${e}`, success: false } });
+  const { count } = await prisma.loginAttempt.deleteMany({ where: { email: { in: [`activate-email:${e}`, `signup-email:${e}`] }, success: false } });
   await audit(prisma, { actorId: actor.id, action: "portal.activation_limit_reset", entityType: "ActivationRequest", details: { email: e, cleared: count } });
   return count;
 }
@@ -562,20 +581,33 @@ export async function resetActivationLimit(actor: Actor, email: string) {
  * email on file, an activation link is emailed to that address (opening it is
  * the verification). Anything else goes to staff. Same answer every time.
  */
-export async function requestActivation(input: { email: string; name: string; phone: string; ip: string | null; honeypot?: string }) {
+export async function requestActivation(input: ActivationInput): Promise<"DONE" | "FAILED" | "PAUSED"> {
+  const state = { last: "" };
+  const r = await requestActivationInner(input, state);
+  if (r === "PAUSED") return "PAUSED";
+  // A provider failure is shown honestly. It reveals nothing: unknown addresses get an email too.
+  return state.last === "EMAIL_FAILED" ? "FAILED" : "DONE";
+}
+type ActivationInput = { email: string; name: string; phone: string; ip: string | null; honeypot?: string };
+
+async function requestActivationInner(input: ActivationInput, state: { last: string }) {
   if (input.honeypot) return;
   const email = normalizeEmail(input.email);
   if (!email) throw new ValidationError("Enter a valid email address.");
   const ip = ipKey(input.ip);
-  if (ip) await limited(`activate-ip:${ip}`, 10, 3600_000);
-  await limited(`activate-email:${email}`, 3, 3600_000);
+  if (ip) await limited(`activate-ip:${ip}`, IP_LIMIT.max, IP_LIMIT.windowMs);
+  await check(`activate-email:${email}`, EMAIL_LIMIT.max, EMAIL_LIMIT.windowMs);
   const [clients, contacts] = await Promise.all([
     prisma.client.findMany({ where: { emailNormalized: email, archivedAt: null }, select: { id: true, displayName: true } }),
     prisma.contact.findMany({ where: { emailNormalized: email, client: { archivedAt: null } }, select: { clientId: true } }),
   ]);
   const matched = [...new Set([...clients.map((c) => c.id), ...contacts.map((c) => c.clientId)])];
-  const record = (status: "INVITE_SENT" | "ALREADY_ACTIVE" | "NEEDS_STAFF" | "EMAIL_FAILED" | "RESOLVED") =>
-    prisma.activationRequest.create({ data: { emailNormalized: email, name: input.name.trim().slice(0, 120) || null, phone: input.phone.trim().slice(0, 30) || null, ipHash: ip, status, matchedClientIds: matched } });
+  const record = async (status: "INVITE_SENT" | "ALREADY_ACTIVE" | "NEEDS_STAFF" | "EMAIL_FAILED" | "RESOLVED") => {
+    // Only a request that actually emailed someone counts toward the address's allowance.
+    state.last = status;
+    if (status === "INVITE_SENT" || status === "ALREADY_ACTIVE" || status === "RESOLVED") await note(`activate-email:${email}`);
+    return prisma.activationRequest.create({ data: { emailNormalized: email, name: input.name.trim().slice(0, 120) || null, phone: input.phone.trim().slice(0, 30) || null, ipHash: ip, status, matchedClientIds: matched } });
+  };
 
   // The page always shows the same neutral answer (so it can't be used to test which emails are
   // clients). The real outcome goes to the server log — no address, name or client details.
@@ -611,8 +643,10 @@ export async function requestActivation(input: { email: string; name: string; ph
   if (!(await selfServiceAvailable())) {
     const why = emailProviderConfigured() ? "email delivery not yet confirmed in Settings → Client sign-in" : "RESEND_API_KEY or EMAIL_FROM_ADDRESS not available to the server";
     outcome("held, no email", why);
-    // A setup problem, not an identity question: shown on the staff dashboard, no per-request alerts.
-    return void (await toStaff(`self-service activation is paused (${why})`, false));
+    // A setup problem, not an identity question: the person is told plainly (this reveals nothing
+    // about whose email is on file) and the owner sees it on the dashboard.
+    await toStaff(`self-service activation is paused (${why})`, false);
+    return "PAUSED" as const;
   }
   if (matched.length === 0) {
     // Not a client yet: email them the way to create an account (the page answer stays the same).
@@ -649,6 +683,7 @@ export async function requestActivation(input: { email: string; name: string; ph
   }
   outcome(sent.ok ? (sent.grantedExisting ? "existing login — account added, sign-in email sent" : "activation link emailed") : "activation email FAILED", sent.ok ? undefined : sent.detail);
   await record(sent.ok ? "INVITE_SENT" : "EMAIL_FAILED");
+  return "DONE" as const;
 }
 
 /** Why a waiting activation request got no email — shown to staff. */

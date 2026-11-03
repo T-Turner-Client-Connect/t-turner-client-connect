@@ -47,16 +47,16 @@ export function notificationText(kind: string) {
       heading: "Your team has replied",
       line: "Your team has replied to your portal message. Sign in to view it.",
       subject: "Your team has replied — TTurner & Associates",
-      body: `Your team has replied to your portal message in your TTurner & Associates Group client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include messages, account details or tax documents in emails or texts.`,
+      body: `Your team has replied to your portal message in your T. Turner & Associates client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include messages, account details or tax documents in emails or texts.`,
       sms: `TTurner & Associates: Your team has replied to your portal message. Sign in to view it: ${appUrl()}/client Reply STOP to unsubscribe.`,
     };
   }
   return {
     heading: line,
-    line: `${line} in your TTurner & Associates Group client portal.`,
-    subject: `${line} — TTurner & Associates Group`,
-    body: `${line} in your TTurner & Associates Group client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include account details or tax documents in emails or texts.`,
-    sms: `TTurner & Associates Group: ${line} in your client portal. Sign in: ${appUrl()}/client Reply STOP to opt out, HELP for help.`,
+    line: `${line} in your T. Turner & Associates client portal.`,
+    subject: `${line} — T. Turner & Associates`,
+    body: `${line} in your T. Turner & Associates client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include account details or tax documents in emails or texts.`,
+    sms: `T. Turner & Associates: ${line} in your client portal. Sign in: ${appUrl()}/client Reply STOP to opt out, HELP for help.`,
   };
 }
 
