@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
-import { Bell, BookOpen, ChevronDown, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, Menu, MessageCircle, Newspaper, PenLine, Settings, ShieldCheck, Users, X } from "lucide-react";
+import { Bell, BookOpen, CalendarDays, ChevronDown, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, FileText, Folder, HeartHandshake, Home, Landmark, Megaphone, Menu, MessageCircle, Newspaper, PenLine, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { Mountains } from "./mountains";
 
 const MAIN = [
@@ -19,6 +19,15 @@ const MAIN = [
   ["/client/nonprofit", "Nonprofit Portfolio", HeartHandshake],
   ["/client/resources", "Resource Center", BookOpen],
   ["/client/referrals", "Referrals", Users],
+] as const;
+// The five headline destinations shown across the top bar on larger screens.
+// Appointments goes to a prefilled request to the office until online scheduling ships.
+const TOP = [
+  ["/client", "Home", Home],
+  ["/client/tax-center", "My Tax Center", FileText],
+  ["/client/documents", "Documents", Folder],
+  ["/client/messages?new=appointment", "Appointments", CalendarDays],
+  ["/client/news", "News & Updates", Megaphone],
 ] as const;
 const MORE = [
   ["/client/taxes/summary", "Tax Summary & Approval", ClipboardCheck],
@@ -39,7 +48,7 @@ function Wordmark({ small }: { small?: boolean }) {
       {!small && (
         <>
           <span className="mx-auto my-2 block h-px w-28 bg-gradient-to-r from-transparent via-gold-500 to-transparent" />
-          <span className="block text-[9px] font-semibold tracking-[0.28em] text-navy-100">TTURNER &amp; ASSOCIATES</span>
+          <span className="block text-[9px] font-semibold tracking-[0.2em] text-navy-100">T. TURNER &amp; ASSOCIATES, LLC</span>
         </>
       )}
     </span>
@@ -118,12 +127,14 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
   const q = account ? `?account=${account}` : "";
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [more, setMore] = useState(false);
   // Close the drawer and menu after navigating.
   const [seenPath, setSeenPath] = useState(pathname);
   if (seenPath !== pathname) {
     setSeenPath(pathname);
     setOpen(false);
     setMenu(false);
+    setMore(false);
   }
   const initials = name.split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
 
@@ -131,7 +142,7 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
     <div className="relative flex h-full flex-col overflow-hidden bg-gradient-to-b from-navy-950 via-navy-900 to-navy-900 text-white">
       <div className="px-6 pb-6 pt-8">
         <Link href={`/client${q}`} onClick={onNavigate} className="block">
-          <span className="mx-auto mb-3 flex size-11 items-center justify-center rounded-xl bg-white p-1.5 shadow ring-1 ring-gold-300"><Image src="/brand/logo-mark.png" alt="" width={200} height={224} className="h-auto w-7" /></span>
+          <span className="mx-auto mb-3 flex size-12 items-center justify-center rounded-xl bg-white p-1.5 shadow ring-1 ring-gold-300"><Image src="/brand/logo-shield.png" alt="" width={353} height={400} className="h-auto w-8" /></span>
           <Wordmark />
         </Link>
       </div>
@@ -147,50 +158,93 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
     </div>
   );
 
-  const topRight = (
-    <div className="flex items-center gap-3">
-      <Link href={`/client/messages${q}`} className="relative rounded-full p-2 text-navy-900 hover:bg-navy-50" aria-label={unread ? `${unread} unread messages` : "Messages"}>
-        <Bell className="size-5" />
-        {unread > 0 && <span className="absolute right-1 top-1 size-2.5 rounded-full bg-gold-500 ring-2 ring-white" />}
-      </Link>
-      <div className="relative">
-        <button type="button" onClick={() => setMenu((m) => !m)} className="flex items-center gap-2 rounded-full py-1 pl-1 pr-2 hover:bg-navy-50" aria-expanded={menu} aria-haspopup="menu">
-          <span className="flex size-9 items-center justify-center rounded-full bg-navy-900 text-sm font-semibold text-gold-300 ring-2 ring-gold-500/60">{initials}</span>
-          <span className="hidden text-sm font-medium text-navy-900 sm:inline">{name.split(" ")[0]}</span>
-          <ChevronDown className="hidden size-4 text-navy-700 sm:block" />
-        </button>
-        {menu && (
-          <div role="menu" className="absolute right-0 z-40 mt-2 w-64 rounded-xl border border-ivory-200 bg-white p-2 text-sm shadow-xl">
-            {accounts.length > 1 && (
-              <label className="mb-2 block px-2 pt-1">
-                <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Account</span>
-                <select className="input" value={account} onChange={(e) => router.push(`${pathname}?account=${e.target.value}`)} aria-label="Choose account">
-                  {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-              </label>
-            )}
-            <Link href={`/client/account${q}`} className="block rounded-lg px-3 py-2 hover:bg-navy-50" role="menuitem">Account settings</Link>
-            <form action={signOut}><button className="w-full rounded-lg px-3 py-2 text-left hover:bg-navy-50" role="menuitem">Sign out</button></form>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  const isActive = (href: string) => {
+    const path = href.split("?")[0];
+    if (href.includes("new=appointment")) return pathname === "/client/messages" && sp.get("new") === "appointment";
+    return path === "/client" ? pathname === "/client" : pathname === path || (pathname.startsWith(`${path}/`) && path !== "/client/taxes");
+  };
+  const withQ = (href: string) => (href.includes("?") ? `${href}${account ? `&account=${account}` : ""}` : `${href}${q}`);
+  const allMore = [...MAIN.filter(([h]) => !TOP.some(([t]) => t.split("?")[0] === h)), ...MORE];
 
   return (
     <>
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block">{sidebar()}</aside>
-      <header className="sticky top-0 z-20 border-b border-ivory-200 bg-ivory-50/85 backdrop-blur lg:ml-64">
-        <div className="flex items-center justify-between gap-3 px-4 py-2.5 sm:px-8">
-          <div className="flex items-center gap-3 lg:hidden">
-            <button type="button" onClick={() => setOpen(true)} className="rounded-lg p-2 text-navy-900 hover:bg-navy-50" aria-label="Open menu"><Menu className="size-6" /></button>
-            <Link href={`/client${q}`} className="rounded-lg bg-navy-900 px-3 py-1.5"><Wordmark small /></Link>
+      {/* Navy top bar with the firm's shield logo and a thin gold rule. */}
+      <header className="sticky top-0 z-30 border-b-2 border-gold-500 bg-gradient-to-b from-navy-950 to-navy-900 text-white shadow-[0_6px_20px_-12px_rgb(10_26_68/0.6)]" data-testid="portal-topbar">
+        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 sm:px-6">
+          <button type="button" onClick={() => setOpen(true)} className="rounded-lg p-2 text-white hover:bg-white/10 lg:hidden" aria-label="Open menu"><Menu className="size-6" /></button>
+          <Link href={`/client${q}`} className="flex min-w-0 items-center gap-3" aria-label="TTurner Client Connect — home">
+            <Image src="/brand/logo-shield.png" alt="" width={353} height={400} priority className="h-11 w-auto shrink-0 drop-shadow-[0_0_1px_rgb(200_157_41)] rounded-sm bg-white/95 p-1 sm:h-12" />
+            <span className="min-w-0 leading-none">
+              <span className="block whitespace-nowrap font-serif text-lg tracking-[0.08em] text-white sm:text-2xl">TTURNER</span>
+              <span className="mt-0.5 block whitespace-nowrap font-serif text-[11px] tracking-[0.12em] text-white/90 sm:text-sm">CLIENT CONNECT</span>
+            </span>
+          </Link>
+          <span className="mx-2 hidden h-10 w-px shrink-0 bg-gold-500/70 2xl:block" aria-hidden />
+          <span className="hidden shrink-0 whitespace-nowrap leading-none 2xl:block">
+            <span className="block font-serif text-[15px] tracking-[0.12em] text-white">T. TURNER &amp; ASSOCIATES, LLC</span>
+            <span className="mt-1.5 block text-[10px] font-semibold tracking-[0.42em] text-gold-300">SECURE CLIENT PORTAL</span>
+          </span>
+          <nav aria-label="Portal" className="ml-auto hidden items-stretch gap-0.5 lg:flex">
+            {TOP.map(([href, label, Icon]) => (
+              <Link
+                key={href}
+                href={withQ(href)}
+                aria-current={isActive(href) ? "page" : undefined}
+                className={clsx(
+                  "flex flex-col items-center justify-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-[13px] transition-colors xl:px-3.5",
+                  isActive(href) ? "bg-gold-500/20 font-semibold text-white ring-1 ring-gold-500" : "text-navy-100 hover:bg-white/10 hover:text-white",
+                )}
+              >
+                <Icon className="size-5" aria-hidden />
+                {label}
+              </Link>
+            ))}
+            <div className="relative">
+              <button type="button" onClick={() => { setMore((m) => !m); setMenu(false); }} className="flex h-full flex-col items-center justify-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-[13px] text-navy-100 hover:bg-white/10 hover:text-white" aria-expanded={more} aria-haspopup="menu">
+                <ChevronDown className="size-5" aria-hidden />More
+              </button>
+              {more && (
+                <div role="menu" className="absolute right-0 z-40 mt-2 w-64 rounded-xl border border-ivory-200 bg-white p-2 text-sm text-navy-900 shadow-xl">
+                  {allMore.map(([href, label, Icon]) => (
+                    <Link key={href} href={withQ(href)} role="menuitem" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-gold-100">
+                      <Icon className="size-4 text-gold-700" aria-hidden />
+                      <span className="flex-1">{label}</span>
+                      {href === "/client/messages" && unread > 0 && <span className="rounded-full bg-gold-500 px-2 py-0.5 text-[11px] font-bold text-navy-950">{unread}</span>}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          </nav>
+          <div className="ml-auto flex items-center gap-1 lg:ml-2">
+            <Link href={`/client/messages${q}`} className="relative rounded-full p-2 text-white hover:bg-white/10" aria-label={unread ? `${unread} unread messages` : "Messages"}>
+              <Bell className="size-5" />
+              {unread > 0 && <span className="absolute right-1 top-1 size-2.5 rounded-full bg-gold-500 ring-2 ring-navy-950" />}
+            </Link>
+            <div className="relative">
+              <button type="button" onClick={() => { setMenu((m) => !m); setMore(false); }} className="rounded-full p-0.5" aria-expanded={menu} aria-haspopup="menu" aria-label="Your account">
+                <span className="flex size-10 items-center justify-center rounded-full border-2 border-gold-500 font-serif text-base text-gold-300">{initials}</span>
+              </button>
+              {menu && (
+                <div role="menu" className="absolute right-0 z-40 mt-2 w-64 rounded-xl border border-ivory-200 bg-white p-2 text-sm text-navy-900 shadow-xl">
+                  <p className="px-3 pb-2 pt-1 text-xs text-slate-500">Signed in as <strong className="text-navy-900">{name}</strong></p>
+                  {accounts.length > 1 && (
+                    <label className="mb-2 block px-2 pt-1">
+                      <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Account</span>
+                      <select className="input" value={account} onChange={(e) => router.push(`${pathname}?account=${e.target.value}`)} aria-label="Choose account">
+                        {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  <Link href={`/client/account${q}`} className="block rounded-lg px-3 py-2 hover:bg-navy-50" role="menuitem">Account settings</Link>
+                  <form action={signOut}><button className="w-full rounded-lg px-3 py-2 text-left hover:bg-navy-50" role="menuitem">Sign out</button></form>
+                </div>
+              )}
+            </div>
           </div>
-          <span className="hidden lg:block" />
-          {topRight}
         </div>
-        <AccountTabs accounts={accounts} current={account} pathname={pathname} />
       </header>
+      <AccountTabs accounts={accounts} current={account} pathname={pathname} />
       {open && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Menu">
           <button type="button" className="absolute inset-0 bg-navy-950/60" onClick={() => setOpen(false)} aria-label="Close menu" />

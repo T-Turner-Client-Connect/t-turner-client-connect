@@ -1,12 +1,11 @@
 import Link from "next/link";
-import { ChevronRight, ClipboardList, CloudUpload, CreditCard, FileText, Folder, Mail, Megaphone, MessageCircle, MessageSquareText, BookOpen } from "lucide-react";
+import { CalendarDays, ChevronRight, Clock, ClipboardList, CloudUpload, CreditCard, FileText, Folder, Mail, Megaphone, MessageCircle, MessageSquareText, FolderOpen } from "lucide-react";
 import type { loadPortalHome } from "@/lib/portal/views";
-import { STATES } from "@/lib/resources/catalog";
 import { countdownText, fmtIso } from "@/lib/tax/deadlines";
 import { money } from "@/lib/billing/pricing";
 import { fmtChicago } from "@/lib/tz";
-import { TOPICS } from "@/lib/services/news";
-import { AnnouncementCarousel, ResourcePicker, TaxYearSelect, type Slide } from "./home-widgets";
+import { TaxYearSelect } from "./home-widgets";
+import { ActionTiles, CountdownCards, ImportantToKnow, luxCard, NewsList, PanelHead, type Tile } from "./luxury";
 import { Mountains } from "./mountains";
 
 type Home = Awaited<ReturnType<typeof loadPortalHome>>;
@@ -54,44 +53,51 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
 
   // A year without a questionnaire link is "Coming soon" — never another year's form.
   const qAvailable = !!q12?.url && !q12.completed;
-  const actions = [
+  const disabled = readOnly && !browsable ? "Disabled in staff preview" : undefined;
+  const link = (h: string | null) => (readOnly && !browsable ? null : h);
+  const tiles: Tile[] = [
     {
-      title: "Complete Tax Questionnaire",
-      sub: q12?.completed ? `Completed for ${selected}` : qAvailable ? `${selected} questionnaire · secure Jotform` : `${selected} questionnaire coming soon`,
+      title: "Tax Questionnaire",
+      sub: q12?.completed ? `Completed for ${selected}` : qAvailable ? `Complete your ${selected} information` : `${selected} questionnaire coming soon`,
       icon: ClipboardList,
-      href: q12?.completed ? href("/client/tax-center", `year=${selected}`) : qAvailable ? q12!.url! : null,
-      external: qAvailable,
-      tone: "gold",
+      href: link(q12?.completed ? href("/client/tax-center", `year=${selected}`) : qAvailable ? (browsable ? href("/client/tax-center") : q12!.url!) : null),
+      external: qAvailable && !browsable,
       testId: "action-questionnaire",
+      disabledNote: disabled,
     },
-    { title: "Upload Documents", sub: `Send ${selected} tax documents securely`, icon: CloudUpload, href: href("/client/tax-center/upload", `year=${selected}`), external: false, tone: "navy", testId: "upload-button" },
-    { title: "Retrieve Tax Filings", sub: `Available filings · 2020 – ${thisYear}`, icon: FileText, href: href("/client/taxes/filings", `year=${selected}`), external: false, tone: "gold", testId: "retrieve-button" },
-    { title: "Upload Audit or Tax Notice", sub: "IRS, state or local letters", icon: Mail, href: href("/client/tax-center/notice", `year=${selected}`), external: false, tone: "navy", testId: "notice-button" },
+    { title: "Upload Documents", sub: "Send tax documents securely", icon: CloudUpload, href: link(href("/client/tax-center/upload", `year=${selected}`)), testId: "upload-button", disabledNote: disabled },
+    { title: "Retrieve Tax Filings", sub: "Access current and prior year returns", icon: FolderOpen, href: link(href("/client/taxes/filings", `year=${selected}`)), testId: "retrieve-button", disabledNote: disabled },
+    { title: "Appointments", sub: "Schedule or manage your appointment", icon: CalendarDays, href: link(href("/client/messages", "new=appointment")), testId: "appointments-button", disabledNote: disabled },
+    { title: "News & Updates", sub: "Tax updates & office news", icon: Mail, href: link(href("/client/news")), testId: "news-button", disabledNote: disabled },
   ];
-
-  const slides: Slide[] = [
-    ...(next ? [{ kicker: "Next deadline", title: `${next.label} — ${countdownText(next.days!)}`, body: `${fmtIso(next.dueDate!)}. An extension to file generally does not extend the time to pay.`, href: href("/client/news") }] : []),
-    ...data.updates.slice(0, 5).map((a) => ({ kicker: `${a.pinned ? "Pinned · " : ""}${a.clientId ? "For your account" : TOPICS[(a.topic ?? "GENERAL") as keyof typeof TOPICS] ?? "News"}`, title: a.title, body: a.body, href: href("/client/news") })),
-  ];
+  const countdownLines = data.countdowns.cards.flatMap((c) => c.lines);
+  const news = data.updates.map((a) => ({ id: a.id, title: a.title, body: a.body, topic: a.topic, clientId: a.clientId, pinned: a.pinned, at: a.publishedAt ?? a.createdAt }));
 
   return (
     <div className="space-y-6">
       {/* Welcome */}
-      <section className="relative overflow-hidden rounded-3xl border border-ivory-200 bg-ivory-50 shadow-sm" data-testid="hero">
-        <Mountains variant="light" className="absolute bottom-0 right-0 h-1/2 w-full opacity-80 sm:inset-y-0 sm:h-full sm:w-[70%] sm:opacity-100" />
-        <div className="relative px-6 pb-24 pt-8 sm:px-10 sm:py-12">
-          <h1 className="max-w-[16ch] font-serif text-3xl font-bold leading-tight text-navy-900 sm:max-w-none sm:text-[2.6rem]">{name ? `Welcome back, ${name}` : "Welcome back"}</h1>
-          <p className="mt-2 max-w-[24ch] text-base text-navy-800 sm:max-w-none sm:text-lg">Your documents, tax filings, and updates—all in one place.</p>
+      <section className="relative overflow-hidden rounded-[2rem] border border-gold-300/70 bg-gradient-to-br from-white via-ivory-50 to-gold-50 shadow-[0_20px_45px_-28px_rgb(10_26_68/0.45)]" data-testid="hero">
+        {/* Gold swoosh accents (top-left and bottom-right), as in the brand design. */}
+        <svg className="pointer-events-none absolute inset-0 z-[1] h-full w-full" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden>
+          <path d="M0 70 C 60 10, 160 0, 260 4" fill="none" stroke="url(#swoosh)" strokeWidth="6" strokeLinecap="round" />
+          <path d="M560 300 C 760 280, 930 250, 1000 170" fill="none" stroke="url(#swoosh)" strokeWidth="6" strokeLinecap="round" />
+          <defs><linearGradient id="swoosh" x1="0" x2="1"><stop offset="0" stopColor="#E6C76A" /><stop offset="1" stopColor="#C89D29" /></linearGradient></defs>
+        </svg>
+        {/* Artwork sits beside the text on larger screens (never under it), with a soft fade, not a hard edge. */}
+        <Mountains variant="light" className="absolute bottom-0 right-0 h-1/2 w-full opacity-80 [mask-image:linear-gradient(to_bottom,transparent,black_35%)] sm:inset-y-0 sm:h-full sm:w-[50%] sm:opacity-100 sm:[mask-image:linear-gradient(to_right,transparent,black_30%)] lg:w-[54%]" />
+        {/* The text keeps its own column (left of the artwork) and long names wrap onto their own line. */}
+        <div className="relative z-10 px-6 pb-28 pt-8 sm:max-w-[54%] sm:px-10 sm:py-12 lg:max-w-[50%]">
+          <h1 className="font-serif text-[1.65rem] font-bold leading-[1.15] text-navy-900 [overflow-wrap:anywhere] sm:text-3xl lg:text-[2.4rem]" data-testid="hero-heading">
+            Welcome Back{name ? "," : ""}
+            {name && <span className="block text-balance">{name}</span>}
+          </h1>
+          <p className="mt-3 max-w-[34ch] text-[15px] text-navy-800 sm:text-base lg:text-lg">Your documents, tax filings, and updates—all in one secure place.</p>
           {next && (
-            <Link href={href("/client/news")} className="mt-4 inline-flex items-center gap-2 rounded-full border border-gold-500/60 bg-white/80 px-3 py-1 text-xs font-semibold text-navy-900 backdrop-blur hover:bg-white" data-testid="hero-deadline">
-              <span className="size-1.5 rounded-full bg-gold-500" aria-hidden />Next deadline: {countdownText(next.days!)}
+            <Link href={href("/client/news")} className="mt-5 inline-flex items-center gap-2 rounded-full border border-gold-500 bg-gradient-to-b from-gold-100 to-gold-200/70 px-4 py-1.5 text-sm font-semibold text-navy-900 shadow-sm hover:from-gold-200" data-testid="hero-deadline">
+              <CalendarDays className="size-4 text-gold-700" aria-hidden />Next deadline: {countdownText(next.days!)}
             </Link>
           )}
         </div>
-        <p className="absolute right-8 top-1/2 hidden -translate-y-1/2 text-right text-[11px] font-semibold leading-6 tracking-[0.35em] text-navy-800/80 xl:block" aria-hidden>
-          EXPERTISE<br />TODAY.<br />BRIGHTER<br />TOMORROWS<br />TOGETHER.
-          <span className="ml-auto mt-2 block h-px w-8 bg-gold-500" />
-        </p>
       </section>
 
       {data.summariesWaiting.length > 0 && (
@@ -110,12 +116,30 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
         </Link>
       )}
 
+      {readOnly && (
+        <p className="rounded-lg border border-gold-500 bg-gold-100 px-3 py-2 text-sm text-navy-950" data-testid="preview-note">
+          {browsable ? "View as Client: every button opens the page the client would see, read-only. Nothing can be uploaded, signed or sent from here." : "Staff preview is read-only: these buttons are shown as the client sees them but don't open here."} To upload for the client, use their record&apos;s Documents tab.
+        </p>
+      )}
+      <ActionTiles tiles={tiles} />
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className={luxCard} data-testid="announcements">
+          <PanelHead icon={Megaphone} title="News & Announcements" action={<Link href={href("/client/news")} className="inline-flex items-center gap-1 border-b border-gold-500 pb-0.5 text-sm font-semibold text-navy-900 hover:text-gold-700">View All <ChevronRight className="size-4" aria-hidden /></Link>} />
+          <NewsList items={news} href={href("/client/news")} limit={2} />
+        </section>
+        <section className={luxCard} data-testid="countdowns-panel">
+          <PanelHead icon={Clock} title="Tax Countdowns" action={<span className="rounded-full border border-gold-500 px-3 py-1 text-sm font-semibold text-navy-900">Next filing season</span>} />
+          <div className="pt-3"><CountdownCards lines={countdownLines} max={3} /></div>
+        </section>
+      </div>
+
       {/* My Tax Center */}
       {data.perms.canViewTax && (
         <section className={card} data-testid="tax-center">
           <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h2 className="font-serif text-2xl font-bold text-navy-900">My Tax Center</h2>
+              <h2 className="font-serif text-2xl font-bold text-navy-900">My {selected} Tax Progress</h2>
               <p className="text-sm text-slate-600">Manage your tax documents, filings, and year-specific tasks.</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -130,48 +154,7 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
             </div>
           </div>
 
-          {readOnly && (
-            <p className="mb-3 rounded-lg border border-gold-500 bg-gold-100 px-3 py-2 text-sm text-navy-950" data-testid="preview-note">
-              {browsable ? "View as Client: every button opens the page the client would see, read-only. Nothing can be uploaded, signed or sent from here." : "Staff preview is read-only: these buttons are shown as the client sees them but don't open here."} To upload for the client, use their record&apos;s Documents tab.
-            </p>
-          )}
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {actions.map((a) =>
-              (readOnly && !browsable) || !a.href ? (
-                <div
-                  key={a.title}
-                  aria-disabled="true"
-                  title={readOnly ? "Read-only staff preview" : undefined}
-                  className={`flex cursor-not-allowed items-center gap-4 rounded-xl px-5 py-4 text-white opacity-60 shadow-md ${a.tone === "navy" ? "bg-gradient-to-br from-navy-900 to-navy-950" : "bg-gradient-to-br from-gold-500 to-gold-600"}`}
-                  data-testid={a.testId}
-                  data-disabled="true"
-                >
-                  <a.icon className="size-9 shrink-0 opacity-95" aria-hidden />
-                  <span className="flex-1">
-                    <span className="block font-serif text-[17px] font-bold leading-snug">{a.title}</span>
-                    <span className="block text-xs text-white/90">{readOnly ? "Disabled in staff preview" : a.sub}</span>
-                  </span>
-                </div>
-              ) : (
-              <Link
-                key={a.title}
-                href={browsable && a.external ? href("/client/tax-center") : a.href}
-                {...(a.external && !browsable ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-                className={`group flex items-center gap-4 rounded-xl px-5 py-4 text-white shadow-md transition hover:shadow-lg ${a.tone === "navy" ? "bg-gradient-to-br from-navy-900 to-navy-950" : "bg-gradient-to-br from-gold-500 to-gold-600"}`}
-                data-testid={a.testId}
-              >
-                <a.icon className="size-9 shrink-0 opacity-95" aria-hidden />
-                <span className="flex-1">
-                  <span className="block font-serif text-[17px] font-bold leading-snug">{a.title}</span>
-                  <span className="block text-xs text-white/85">{a.sub}</span>
-                </span>
-                <ChevronRight className="size-5 transition group-hover:translate-x-0.5" aria-hidden />
-              </Link>
-              ),
-            )}
-          </div>
-
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2">
             <div className="flex flex-wrap items-center gap-4 rounded-xl border border-ivory-200 p-4" data-testid="service-progress">
               <FileText className="size-8 shrink-0 text-gold-600" aria-hidden />
               <div className="min-w-48 flex-1">
@@ -264,19 +247,6 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
         )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <section className={`${card} lg:col-span-2`} data-testid="resources-panel">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <CardHead icon={BookOpen} title="Client Resource Center" sub="Helpful resources and tools for your business and personal tax needs." />
-            <ResourcePicker states={STATES} initial={data.state} q={q} readOnly={readOnly} />
-          </div>
-        </section>
-        <section className={card} data-testid="announcements">
-          <CardHead icon={Megaphone} title="Announcements" sub="Office updates & helpful reminders." />
-          {slides.length ? <AnnouncementCarousel slides={slides} /> : <p className="text-sm text-slate-600">No announcements right now.</p>}
-          <Link href={href("/client/news")} className={viewAll}>News & tax countdowns <ChevronRight className="size-4" aria-hidden /></Link>
-        </section>
-      </div>
     </div>
   );
 }
