@@ -232,48 +232,49 @@ model Client {
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
-  contacts             Contact[]
-  groups               ClientGroup[]
-  clientNotes          ClientNote[]
-  tasks                Task[]
-  consentRecords       ConsentRecord[]
-  auditLogs            AuditLog[]
-  campaignInclusions   CampaignInclusion[]
-  campaignExclusions   CampaignExclusion[]
-  portalAccess         PortalAccess[]
-  portalInvites        PortalInvite[]
-  conversations        Conversation[]
-  documents            Document[]
-  periods              BookkeepingPeriod[]
-  docRequests          DocumentRequest[]
-  announcements        Announcement[]
-  deadlines            ClientDeadline[]
-  signatureReqs        SignatureRequest[]
-  contracts            ContractAssignment[]
-  installmentPlans     InstallmentPlan[]
-  invoices             Invoice[]
-  clientServices       ClientService[]
-  payments             Payment[]
-  appointments         Appointment[]
-  pipelineCards        PipelineCard[]
-  filings              FilingRecord[]
-  questionnaires       QuestionnaireSubmission[]
-  identityPeople       IdentityPerson[]
-  identityDocs         IdentityDocument[]
-  bookkeepingProfile   BookkeepingProfile?
-  bookkeepingAccounts  BookkeepingAccount[]
-  bookkeepingBilling   BookkeepingBilling?
-  squareBilling        SquareBillingMember?
-  nonprofitProfile     NonprofitProfile?
-  nonprofitPortfolio   NonprofitPortfolio?
-  chargeAuthorizations RecurringChargeAuthorization[]
-  businessOnboarding   BusinessOnboarding?
+  contacts              Contact[]
+  groups                ClientGroup[]
+  clientNotes           ClientNote[]
+  tasks                 Task[]
+  consentRecords        ConsentRecord[]
+  auditLogs             AuditLog[]
+  campaignInclusions    CampaignInclusion[]
+  campaignExclusions    CampaignExclusion[]
+  portalAccess          PortalAccess[]
+  portalInvites         PortalInvite[]
+  conversations         Conversation[]
+  documents             Document[]
+  periods               BookkeepingPeriod[]
+  docRequests           DocumentRequest[]
+  announcements         Announcement[]
+  deadlines             ClientDeadline[]
+  signatureReqs         SignatureRequest[]
+  contracts             ContractAssignment[]
+  installmentPlans      InstallmentPlan[]
+  invoices              Invoice[]
+  clientServices        ClientService[]
+  payments              Payment[]
+  appointments          Appointment[]
+  pipelineCards         PipelineCard[]
+  filings               FilingRecord[]
+  questionnaires        QuestionnaireSubmission[]
+  identityPeople        IdentityPerson[]
+  identityDocs          IdentityDocument[]
+  bookkeepingProfile    BookkeepingProfile?
+  bookkeepingAccounts   BookkeepingAccount[]
+  bookkeepingBilling    BookkeepingBilling?
+  squareBilling         SquareBillingMember?
+  nonprofitProfile      NonprofitProfile?
+  nonprofitPortfolio    NonprofitPortfolio?
+  chargeAuthorizations  RecurringChargeAuthorization[]
+  businessOnboarding    BusinessOnboarding?
   // A person (Personal record) linked to the businesses they own, and back.
-  ownsBusinesses       ClientRelationship[]           @relation("RelPerson")
-  ownedBy              ClientRelationship[]           @relation("RelBusiness")
-  noticeCases          NoticeCase[]
-  businessInfoChanges  BusinessInfoChange[]
-  taxYearProgress      TaxYearProgress[]
+  ownsBusinesses        ClientRelationship[]           @relation("RelPerson")
+  ownedBy               ClientRelationship[]           @relation("RelBusiness")
+  noticeCases           NoticeCase[]
+  businessInfoChanges   BusinessInfoChange[]
+  taxYearProgress       TaxYearProgress[]
+  manualBillingPayments ManualBillingPayment[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -3279,4 +3280,27 @@ model SquareSeriesReview {
   decidedAt        DateTime @default(now())
 
   @@unique([squareLocationId, seriesKey])
+}
+
+// A payment recorded by the office for a client billed outside Square (cash, check, Zelle, ACH…).
+// Never shown as Square-verified. Corrections void a payment with a reason; nothing is deleted.
+model ManualBillingPayment {
+  id           String    @id @default(cuid())
+  clientId     String
+  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  amountCents  Int
+  paidOn       DateTime
+  // The billing month this payment covers ("YYYY-MM").
+  periodMonth  String
+  // CASH | CHECK | ZELLE | ACH | CARD | OTHER
+  method       String
+  reference    String?
+  note         String?
+  recordedById String
+  createdAt    DateTime  @default(now())
+  voidedAt     DateTime?
+  voidedById   String?
+  voidReason   String?
+
+  @@index([clientId, paidOn])
 }
