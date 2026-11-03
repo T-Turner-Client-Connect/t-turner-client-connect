@@ -179,9 +179,9 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
               <span className="mt-0.5 block whitespace-nowrap font-serif text-[11px] tracking-[0.12em] text-white/90 sm:text-sm">CLIENT CONNECT</span>
             </span>
           </Link>
-          <span className="mx-2 hidden h-10 w-px shrink-0 bg-gold-500/70 2xl:block" aria-hidden />
-          <span className="hidden shrink-0 whitespace-nowrap leading-none 2xl:block">
-            <span className="block font-serif text-[15px] tracking-[0.12em] text-white">T. TURNER &amp; ASSOCIATES, LLC</span>
+          <span className="mx-2 hidden h-10 w-px shrink-0 bg-gold-500/70 xl:block" aria-hidden />
+          <span className="hidden shrink-0 whitespace-nowrap leading-none xl:block">
+            <span className="block font-serif text-[15px] tracking-[0.06em] text-white">T. TURNER &amp; ASSOCIATES, LLC</span>
             <span className="mt-1.5 block text-[10px] font-semibold tracking-[0.42em] text-gold-300">SECURE CLIENT PORTAL</span>
           </span>
           <nav aria-label="Portal" className="ml-auto hidden items-stretch gap-0.5 lg:flex">
