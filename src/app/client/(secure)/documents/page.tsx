@@ -56,7 +56,7 @@ export default async function PortalDocuments({ searchParams }: { searchParams: 
             Records from {thisYear - 2} and earlier open after you verify your account. <Link className="underline" href={`/client/taxes/filings${q}`}>Verify now</Link>.
           </Notice>
         )}
-        <div className="grid items-start gap-6 lg:grid-cols-[16rem_minmax(0,1fr)] 2xl:grid-cols-[16rem_minmax(0,1fr)_22rem]">
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[16rem_minmax(0,1fr)] 2xl:grid-cols-[16rem_minmax(0,1fr)_22rem]">
           <CategorySidebar data={data} active={cat} href={(c) => href(c)} />
           <DocumentsTable
             rows={data[cat]}

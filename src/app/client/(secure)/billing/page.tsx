@@ -171,7 +171,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
           {rows.length === 0 ? (
             <p className="p-5 text-sm text-slate-600">Invoices from our office will appear here.</p>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
               <table className="w-full min-w-[40rem] text-sm">
                 <thead className="bg-ivory-50 text-left text-xs font-bold uppercase tracking-wide text-slate-600">
                   <tr><th className="px-5 py-3">Invoice #</th><th className="px-3 py-3">Description</th><th className="px-3 py-3 text-right">Amount</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Date</th><th className="px-5 py-3 text-right">Action</th></tr>
@@ -248,7 +248,7 @@ function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Offi
       title={<>{inv.title} <span className="text-sm font-normal text-slate-600">· {inv.number}</span></>}
       actions={inv.state === "OFFERED" ? <Badge tone="gold">Ready for your review</Badge> : inv.state === "DECLINED" ? <Badge tone="gray">Declined</Badge> : inv.balanceCents === 0 ? <Badge tone="green">Paid in full</Badge> : <Badge tone="navy">Balance {money(inv.balanceCents ?? 0)}</Badge>}
     >
-      <div className="overflow-x-auto">
+      <div className="relative overflow-x-auto">
         <table className="w-full text-sm">
           <tbody className="divide-y divide-navy-100">
             {inv.breakdown.lines.map((l, i) => (
@@ -296,7 +296,7 @@ function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Offi
             </p>
           )}
           <p className="mb-2 text-sm"><strong>{inv.acceptedOption === "PLAN" ? "Payment plan" : "Full payment"}</strong> · Total {money(inv.totalCents ?? 0)}</p>
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-left text-slate-600"><tr><th className="py-1">Payment</th><th>Due</th><th className="text-right">Amount</th><th className="text-right">Remaining</th></tr></thead>
               <tbody className="divide-y divide-navy-100">

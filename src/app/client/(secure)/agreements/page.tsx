@@ -87,7 +87,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
         {list.length === 0 ? (
           <p className="p-5 text-sm text-slate-600">When we prepare a pricing agreement for you, it will appear here.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table className="w-full min-w-[34rem] text-sm">
               <thead className="bg-ivory-50 text-left text-xs font-bold uppercase tracking-wide text-slate-600">
                 <tr><th className="px-5 py-3">Agreement</th><th className="px-3 py-3">Date</th><th className="px-3 py-3">Status</th><th className="px-5 py-3 text-right">Download</th></tr>

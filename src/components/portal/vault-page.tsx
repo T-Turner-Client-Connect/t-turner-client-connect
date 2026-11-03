@@ -184,7 +184,7 @@ export function DocumentsTable({ rows, title, years, year, yearHref, linkFor, id
       {rows.length === 0 ? (
         <p className="px-5 py-10 text-center text-slate-600">No documents here yet.</p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
           <table className="w-full min-w-[40rem] text-sm">
             <thead>
               <tr className="border-b border-ivory-200 text-left text-navy-900">
