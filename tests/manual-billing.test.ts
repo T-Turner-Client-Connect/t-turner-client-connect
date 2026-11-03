@@ -5,7 +5,7 @@ import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { saveBilling } from "@/lib/services/bookkeeping-profile";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
-import { manualBillingView, manualLedger, portalManualBilling, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
+import { manualBillingView, manualLedger, markMonthsPaid, portalManualBilling, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
 
 // Fictional office-billed client ($350 monthly, due on the 5th).
 const TODAY = new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
@@ -65,7 +65,8 @@ describe("recording payments", () => {
     await expect(recordManualPayment(daria, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(0), method: "CHECK" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: "2999-01-01", periodMonth: month(0), method: "CHECK" })).rejects.toThrow(/future/);
     await expect(recordManualPayment(tabitha, rich.id, { amount: "0", paidOn: TODAY, periodMonth: month(0), method: "CHECK" })).rejects.toThrow(/amount/);
-    await expect(recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(0), method: "CHECK", note: "card 4111 1111 1111 1111" })).rejects.toThrow(/Card numbers/);
+    await expect(recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(0), method: "CHECK", reference: "1", note: "card 4111 1111 1111 1111" })).rejects.toThrow(/Card numbers/);
+    await expect(recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(-2), method: "CHECK" })).rejects.toThrow(/check number/);
     const p = await recordManualPayment(tabitha, rich.id, { amount: "$350.00", paidOn: TODAY, periodMonth: month(-2), method: "CHECK", reference: "1042" });
     // A payment first made through Square can be entered by the office too.
     const sq = await recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(-12), method: "SQUARE", reference: "Square invoice 000123" });
@@ -104,5 +105,28 @@ describe("the client's view", () => {
     const { token: t2 } = await invitePortalUser(tabitha, other.id, { email: "x@fictional.example", name: "X", role: "OWNER" });
     const x = await acceptPortalInvite(t2!, "Portal-Pass-123456");
     await expect(portalManualBilling({ id: x.id, name: x.name, email: x.email }, rich.id)).rejects.toThrow();
+  });
+});
+
+describe("marking several months paid at once", () => {
+  it("records one payment per month, skips months already paid, and makes the client current", async () => {
+    const { tabitha, daria, rich } = await setup();
+    const months = [month(-2), month(-1), month(0)];
+    await recordManualPayment(tabitha, rich.id, { amount: "350", paidOn: TODAY, periodMonth: month(-1), method: "ZELLE" });
+    await expect(markMonthsPaid(daria, rich.id, { months, amountEach: "350", method: "CASH_APP", dateMode: "DUE_DATE" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(markMonthsPaid(tabitha, rich.id, { months, amountEach: "350", method: "CHECK", dateMode: "DUE_DATE" })).rejects.toThrow(/check number/);
+    const r = await markMonthsPaid(tabitha, rich.id, { months, amountEach: "350", method: "CASH_APP", dateMode: "DUE_DATE" });
+    expect(r).toEqual({ recorded: [month(-2), month(0)], skipped: [month(-1)] });
+    const v = await manualBillingView(tabitha, rich.id);
+    expect(v.live.filter((p) => p.method === "CASH_APP")).toHaveLength(2);
+    expect(v.live.find((p) => p.periodMonth === month(-2))!.note).toMatch(/due date/);
+    expect(v.ledger!.overdueCount).toBe(0);
+    expect(v.ledger!.status.tone).toBe("green");
+    expect(v.paidMonths.sort()).toEqual(months);
+    // Earlier years can be marked too (e.g. "paid in full for 2025").
+    const lastYear = Array.from({ length: 12 }, (_, i) => `${Number(TODAY.slice(0, 4)) - 1}-${String(i + 1).padStart(2, "0")}`);
+    const y = await markMonthsPaid(tabitha, rich.id, { months: lastYear, amountEach: "350", method: "CASH", dateMode: "DUE_DATE" });
+    expect(y.recorded.length + y.skipped.length).toBe(12);
+    expect((await manualBillingView(tabitha, rich.id)).ledger!.overdueCount).toBe(0);
   });
 });

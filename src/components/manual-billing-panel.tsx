@@ -1,9 +1,11 @@
-import { CalendarDays, CircleCheck, CreditCard, History, Landmark, Plus, Repeat, Settings, Wallet } from "lucide-react";
+import { CalendarCheck, CalendarDays, CircleCheck, CreditCard, History, Landmark, Plus, Repeat, Settings, Wallet } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Field } from "@/components/ui";
 import { recordManualPaymentAction, voidManualPaymentAction } from "@/app/actions/manual-billing";
 import { saveBillingAction } from "@/app/actions/bookkeeping-clients";
 import { PAY_METHODS, type manualBillingView, type PayMethod } from "@/lib/services/manual-billing";
+import { MarkMonthsPaid, MethodFields } from "@/components/manual-billing-forms";
+import { YearTabs } from "@/components/year-tabs";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 
 type View = Awaited<ReturnType<typeof manualBillingView>>;
@@ -21,8 +23,8 @@ const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/
 export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { clientId: string; view: View; owner: boolean; officeStatus: string }) {
   const { billing, payments, ledger, lastPayment } = view;
   const recorded = payments;
-  const shown = recorded.slice(0, 6);
-  const rest = recorded.slice(6);
+  // Payment history by the year of the billing month — click a year to see it.
+  const years = [...new Set(recorded.map((p) => p.periodMonth.slice(0, 4)))].sort().reverse();
   const periodOptions = ledger ? ledger.monthChoices : [];
   const row = (p: View["payments"][number]) => (
     <tr key={p.id} className={p.voidedAt ? "text-slate-400 line-through decoration-slate-300" : ""} data-payment={p.id}>
@@ -110,7 +112,7 @@ export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { cl
 
           {/* Payment history */}
           <div className="rounded-2xl border border-ivory-200 bg-white p-4 shadow-sm" data-testid="manual-payment-history">
-            <p className="mb-2 flex items-center gap-2 text-lg font-bold text-navy-900"><History aria-hidden className="size-5" /> Payment History <span className="text-sm font-normal text-slate-600">(Last {Math.min(6, recorded.length)})</span></p>
+            <p className="mb-2 flex items-center gap-2 text-lg font-bold text-navy-900"><History aria-hidden className="size-5" /> Payment History <span className="text-sm font-normal text-slate-600">(by year)</span></p>
             {recorded.length === 0 && !ledger?.next ? <p className="text-sm text-slate-600">No payments recorded yet.</p> : (
               <div className="overflow-x-auto">
                 <table className="w-full text-[13px]">
@@ -126,15 +128,12 @@ export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { cl
                         <td />
                       </tr>
                     )}
-                    {shown.map(row)}
                   </tbody>
                 </table>
-                {rest.length > 0 && (
-                  <details className="mt-2" data-testid="manual-history-all">
-                    <summary className="cursor-pointer text-sm font-semibold text-navy-900 underline">View all {recorded.length} payments</summary>
-                    <table className="mt-2 w-full text-[13px]"><tbody className="divide-y divide-ivory-200">{rest.map(row)}</tbody></table>
-                  </details>
-                )}
+                <YearTabs testId="manual-years" years={years} panels={Object.fromEntries(years.map((y) => [y, (
+                  <table key={y} className="w-full text-[13px]"><tbody className="divide-y divide-ivory-200">{recorded.filter((p) => p.periodMonth.startsWith(y)).map(row)}</tbody></table>
+                )]))} />
+
               </div>
             )}
             <p className="mt-2 text-xs text-slate-500">Recorded by our office. A mistaken entry is voided with a reason (owner only) — nothing is deleted.</p>
@@ -151,14 +150,22 @@ export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { cl
                   <Field label="Amount received ($)"><input className="input" name="amount" inputMode="decimal" defaultValue={((ledger.next?.amountCents ?? billing?.monthlyFeeCents ?? 0) / 100).toFixed(2)} /></Field>
                   <Field label="Date received"><input className="input" type="date" name="paidOn" max={today()} defaultValue={today()} /></Field>
                   <Field label="For billing month"><select className="input" name="periodMonth" defaultValue={ledger.defaultPeriod}>{periodOptions.map((p) => <option key={p.month} value={p.month}>{monthLabel(p.month)}{p.state === "PAID" ? " (paid)" : p.state === "BEFORE_START" ? " (before billing start)" : p.owedCents != null && p.owedCents < (billing?.monthlyFeeCents ?? 0) ? ` (${usd(p.owedCents)} left)` : ""}</option>)}</select></Field>
-                  <Field label="Method"><select className="input" name="method" defaultValue={lastPayment?.method ?? "CHECK"}>{Object.entries(PAY_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+                  <MethodFields methods={PAY_METHODS} defaultMethod={lastPayment?.method ?? "CHECK"} />
                 </div>
-                <Field label="Check # or reference (optional)"><input className="input" name="reference" autoComplete="off" /></Field>
                 <Field label="Note (optional)"><input className="input" name="note" /></Field>
                 <Button type="submit" variant="gold" className="w-full rounded-xl py-2.5 text-base">Save payment</Button>
               </ActionForm>
             )}
           </div>
+
+          {/* Mark several months paid */}
+          {billing?.monthlyFeeCents ? (
+            <details className="rounded-2xl border border-ivory-200 bg-white p-4 shadow-sm" data-testid="mark-months">
+              <summary className="flex cursor-pointer items-center gap-2 text-lg font-bold text-navy-900"><CalendarCheck aria-hidden className="size-5 text-gold-600" /> Mark Months Paid</summary>
+              <p className="mt-1 text-xs text-slate-600">For catching up past payments: pick a year, tick the months (or Whole year), enter the amount once.</p>
+              <MarkMonthsPaid clientId={clientId} feeCents={billing.monthlyFeeCents} paidMonths={view.paidMonths} methods={PAY_METHODS} defaultMethod={lastPayment?.method ?? "CASH_APP"} thisYear={Number(today().slice(0, 4))} />
+            </details>
+          ) : null}
 
           {/* Billing settings */}
           <details className="rounded-2xl border border-ivory-200 bg-ivory-50 p-4 shadow-sm" open={!ledger} data-testid="manual-settings">

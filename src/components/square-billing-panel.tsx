@@ -4,6 +4,7 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Field } from "@/components/ui";
 import { SquareFindPanel } from "@/components/square-find-panel";
 import { SquareAutoRefresh } from "@/components/square-auto-refresh";
+import { YearTabs } from "@/components/year-tabs";
 import {
   addToSquareBillingAction, removeFromSquareBillingAction, setSquareExpectedAction, syncSquareBillingAction, verifySquareAuthorizationAction,
 } from "@/app/actions/square-billing";
@@ -162,6 +163,7 @@ export function SquareBillingPanel({ clientId, sb, approver, addable, client, au
   // Every invoice in THIS series, newest first; the next scheduled one is shown separately above.
   const all = (a.seriesInvoices as Inv[] | null) ?? [];
   const invs = all.filter((i) => i.status !== "SCHEDULED");
+  const invYears = [...new Set(invs.map((i) => i.due.slice(0, 4)))].sort().reverse();
   // The next scheduled invoice in Square (the upcoming payment), shown first.
   const upcoming = all.filter((i) => i.status === "SCHEDULED").sort((x, y) => x.due.localeCompare(y.due))[0] ?? null;
   const nextAmount = upcoming?.amountCents ?? a.amountCents;
@@ -213,7 +215,7 @@ export function SquareBillingPanel({ clientId, sb, approver, addable, client, au
           </div>
           {/* Payment History — this series only */}
           <div className="rounded-2xl border border-ivory-200 bg-white p-4 shadow-sm" data-testid="square-payment-history">
-            <p className="mb-2 flex items-center gap-2 text-lg font-bold text-navy-900"><History aria-hidden className="size-5 text-navy-900" /> Payment History <span className="text-sm font-normal text-slate-600">(Upcoming + last {Math.min(6, invs.length)}) · Series {a.seriesKey} only</span></p>
+            <p className="mb-2 flex items-center gap-2 text-lg font-bold text-navy-900"><History aria-hidden className="size-5 text-navy-900" /> Payment History <span className="text-sm font-normal text-slate-600">(by year) · Series {a.seriesKey} only</span></p>
             {invs.length === 0 ? <p className="text-sm text-slate-600">No invoices yet in this series.</p> : (
               <div className="overflow-x-auto">
                 <table className="w-full text-[13px]">
@@ -229,7 +231,11 @@ export function SquareBillingPanel({ clientId, sb, approver, addable, client, au
                         <td className="px-2">{upcoming.invoiceUrl ? <a className="underline" href={upcoming.invoiceUrl} target="_blank" rel="noopener noreferrer">Invoice</a> : "—"}</td>
                       </tr>
                     )}
-                    {invs.slice(0, 6).map((i) => (
+                  </tbody>
+                </table>
+                <div className="mt-3">
+                  <YearTabs testId="square-years" years={invYears} panels={Object.fromEntries(invYears.map((y) => [y, (
+                    <table key={y} className="w-full text-[13px]"><tbody className="divide-y divide-ivory-200">{invs.filter((i) => i.due.startsWith(y)).map((i) => (
                       <tr key={i.id} data-invoice={i.number ?? i.id}>
                         <td className="whitespace-nowrap px-2 py-2">{ymd(i.due)}</td>
                         <td className="whitespace-nowrap px-2">{i.number ?? "—"}</td>
@@ -238,28 +244,9 @@ export function SquareBillingPanel({ clientId, sb, approver, addable, client, au
                         <td className="px-2 text-center"><Badge tone={INV_TONE[i.status] ?? "gray"}>{INV_LABEL[i.status] ?? i.status}</Badge></td>
                         <td className="px-2">{i.status === "PAID" && i.receiptUrl ? <a className="underline" href={i.receiptUrl} target="_blank" rel="noopener noreferrer">Receipt</a> : i.invoiceUrl ? <a className="underline" href={i.invoiceUrl} target="_blank" rel="noopener noreferrer">Invoice</a> : "—"}</td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {invs.length > 6 && (
-                  <details className="mt-2" data-testid="square-history-all">
-                    <summary className="cursor-pointer text-sm font-semibold text-navy-900 underline">View all {invs.length} invoices in series {a.seriesKey}</summary>
-                    <table className="mt-2 w-full text-[13px]">
-                      <tbody className="divide-y divide-ivory-200">
-                        {invs.slice(6).map((i) => (
-                          <tr key={i.id} data-invoice={i.number ?? i.id}>
-                            <td className="whitespace-nowrap px-2 py-2">{ymd(i.due)}</td>
-                            <td className="px-2">{i.number ?? "—"}</td>
-                            <td className="px-2 text-right">{usd(i.amountCents)}</td>
-                            <td className="whitespace-nowrap px-2">{i.status === "PAID" ? (i.paidAt ? ymd(i.paidAt) : "Paid — date not provided") : "—"}</td>
-                            <td className="px-2 text-center"><Badge tone={INV_TONE[i.status] ?? "gray"}>{INV_LABEL[i.status] ?? i.status}</Badge></td>
-                            <td className="px-2">{i.status === "PAID" && i.receiptUrl ? <a className="underline" href={i.receiptUrl} target="_blank" rel="noopener noreferrer">Receipt</a> : i.invoiceUrl ? <a className="underline" href={i.invoiceUrl} target="_blank" rel="noopener noreferrer">Invoice</a> : "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </details>
-                )}
+                    ))}</tbody></table>
+                  )]))} />
+                </div>
               </div>
             )}
             <p className="mt-2 text-xs text-slate-500">From Square, read only. “Paid” appears only when Square marks the invoice paid; the paid date and receipt come from Square&apos;s payment record. Other series of this customer aren&apos;t included.</p>
