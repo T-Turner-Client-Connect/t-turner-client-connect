@@ -64,21 +64,22 @@ describe("tax questionnaires", () => {
 
   it("a webhook submission is verified through the API and filed to the right client and year", async () => {
     vi.stubEnv("JOTFORM_API_KEY", "jf_key");
-    vi.stubEnv("JOTFORM_WEBHOOK_SECRET", "hook");
+    vi.stubEnv("JOTFORM_WEBHOOK_SECRET", "fictional-webhook-secret-0123456789abcdef");
+    await prisma.integrationSettings.create({ data: { jotformAutoFileEnabled: true } }); // owner turned automatic filing on
     const { client } = await portal("ana@example.com", "Ana");
     await prisma.taxQuestionnaire.create({ data: { taxYear: 2025, title: "2025", jotformFormId: "241234567890123" } });
     submissions["5551112223334"] = {
       id: "5551112223334", form_id: "241234567890123", created_at: "2026-02-01 10:00:00",
       answers: { 1: { name: "assignment_ref", answer: questionnaireRef(client.id, 2025) }, 2: { type: "control_email", text: "Email", answer: "ana@example.com" }, 3: { type: "control_textbox", text: "Dependents", answer: "2" }, 4: { type: "control_fileupload", answer: ["https://www.jotform.com/uploads/x/w2.pdf", "https://evil.example.com/a.pdf"] } },
     };
-    expect(await handleJotformWebhook("hook", "5551112223334")).toEqual({ status: 200, result: "Recorded" });
+    expect(await handleJotformWebhook("fictional-webhook-secret-0123456789abcdef", "5551112223334")).toEqual({ status: 200, result: "Recorded" });
     const row = await prisma.questionnaireSubmission.findUniqueOrThrow({ where: { submissionId: "5551112223334" } });
     expect(row).toMatchObject({ clientId: client.id, taxYear: 2025, source: "jotform_webhook" });
     expect(row.documentIds).toHaveLength(1); // the non-Jotform link was ignored
     expect(row.answersEnc).not.toContain("Dependents"); // stored encrypted
     expect(submissionAnswers(row)).toContainEqual({ q: "Dependents", a: "2" });
     expect(await prisma.document.findUniqueOrThrow({ where: { id: row.documentIds[0] } })).toMatchObject({ year: 2025, docType: "QUESTIONNAIRE_UPLOAD", needsReview: true });
-    expect((await handleJotformWebhook("hook", "5551112223334")).result).toBe("Already recorded");
+    expect((await handleJotformWebhook("fictional-webhook-secret-0123456789abcdef", "5551112223334")).result).toBe("Already recorded");
   });
 
   it("staff import an existing submission only after the client match is verified", async () => {

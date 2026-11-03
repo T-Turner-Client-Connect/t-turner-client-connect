@@ -269,6 +269,7 @@ model Client {
   chargeAuthorizations  RecurringChargeAuthorization[]
   businessOnboarding    BusinessOnboarding?
   taxPrepCases          TaxPrepCase[]
+  questionnaireRequests QuestionnaireRequest[]
   // A person (Personal record) linked to the businesses they own, and back.
   ownsBusinesses        ClientRelationship[]           @relation("RelPerson")
   ownedBy               ClientRelationship[]           @relation("RelBusiness")
@@ -1266,9 +1267,40 @@ model QuestionnaireSubmission {
   matchNote       String?
   linkedById      String?
   documentIds     String[]
+  // Staff review before anything in the answers changes the client record.
+  // NEEDS_REVIEW | REVIEWED
+  reviewStatus    String            @default("NEEDS_REVIEW")
+  reviewedAt      DateTime?
+  reviewedById    String?
+  // Client fields staff chose to update from the answers (names only).
+  appliedFields   String[]          @default([])
+  // Coetha's follow-up checklist (draft for staff review): [{label, reason, status}]
+  followUp        Json?
   createdAt       DateTime          @default(now())
 
   @@index([clientId, taxYear])
+}
+
+// A tax questionnaire sent to (or opened by) a client for one tax year.
+// One row per client per year: resending updates it, never duplicates it.
+model QuestionnaireRequest {
+  id              String    @id @default(cuid())
+  clientId        String
+  client          Client    @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  taxYear         Int
+  questionnaireId String?
+  // Staff send (null when the client opened it from the portal on their own).
+  sentAt          DateTime?
+  sentById        String?
+  // Recipient address at send time.
+  sentTo          String?
+  sendCount       Int       @default(0)
+  // First time the client opened the form from the portal.
+  openedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([clientId, taxYear])
 }
 
 // Staff-entered progress for one client and tax year. Questionnaire,
@@ -3354,4 +3386,38 @@ model TaxPrepCase {
 
   @@unique([clientId, taxYear])
   @@index([taxYear, returnType])
+}
+
+// Jotform questionnaire submissions waiting for staff: unmatched ones (no or
+// invalid signed reference) and, while automatic filing is off, every one.
+// Only identifiers are kept here; answers are read from Jotform when filed.
+model JotformInbox {
+  id                String    @id @default(cuid())
+  submissionId      String    @unique
+  formId            String
+  questionnaireId   String?
+  taxYear           Int?
+  // From a valid signed reference (client + year); still confirmed by staff.
+  suggestedClientId String?
+  // HELD (auto-filing off) | NO_REFERENCE | BAD_REFERENCE | FORM_YEAR_MISMATCH | CLIENT_NOT_FOUND
+  reason            String
+  emails            String[]  @default([])
+  // PENDING | FILED | DISMISSED
+  status            String    @default("PENDING")
+  receivedAt        DateTime  @default(now())
+  resolvedAt        DateTime?
+  resolvedById      String?
+  filedClientId     String?
+
+  @@index([status, receivedAt])
+}
+
+// Owner switches for integrations (one row, id "default").
+model IntegrationSettings {
+  id                     String   @id @default("default")
+  // Off until Tabitha approves: questionnaire webhooks go to the staff inbox
+  // instead of being filed to client records automatically.
+  jotformAutoFileEnabled Boolean  @default(false)
+  updatedById            String?
+  updatedAt              DateTime @updatedAt
 }
