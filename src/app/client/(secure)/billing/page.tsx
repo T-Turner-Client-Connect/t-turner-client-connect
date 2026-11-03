@@ -22,12 +22,12 @@ const SQ_LABEL: Record<string, [string, BillingRow["tone"]]> = {
 const ordinal = (d: number) => `${d}${d % 10 === 1 && d !== 11 ? "st" : d % 10 === 2 && d !== 12 ? "nd" : d % 10 === 3 && d !== 13 ? "rd" : "th"}`;
 
 /** Square-billed: every figure from Square (this account's linked series only). */
-function squareCard(v: SquareView): MonthlyBilling {
+function squareCard(v: SquareView, many = false): MonthlyBilling {
   const [schedule, due] = v.schedule.split(" · ");
   const upcoming = v.invoices.filter((i) => i.status === "SCHEDULED").sort((x, y) => x.due.localeCompare(y.due)).slice(0, 1);
   const lastPaid = v.invoices.find((i) => i.status === "PAID");
   return {
-    title: `${v.title || "Monthly service"} · billed through Square`,
+    title: `${v.title || "Monthly service"}${many ? ` · Series ${v.seriesKey}` : ""} · billed through Square`,
     amountCents: v.amountCents,
     schedule: schedule ?? "Monthly",
     dueDay: due ? due.replace(/^due/, "Due") : null,
@@ -90,22 +90,23 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
   return (
     <>
       <PageHeader title="Billing" subtitle="Quotes and invoices from TTurner & Associates Group for this account." />
-      {sq.state !== "NONE" && !sq.view && (
-        <Card className="mb-6" title="Your monthly billing">
-          <div data-testid="portal-square-billing">
+      {sq.state !== "NONE" && (!sq.view || sq.unsynced > 0) && (
+        <Card className="mb-6" title={sq.view ? "More billing from Square" : "Your monthly billing"}>
+          <div data-testid={sq.view ? "portal-square-billing-pending" : "portal-square-billing"}>
             <p><Badge tone="amber">{NOT_SYNCED}</Badge></p>
             <p className="mt-2 text-sm text-slate-700">Your recurring billing with our office continues in Square exactly as arranged. There&apos;s nothing to authorize or update here, and nothing new will be charged.</p>
           </div>
         </Card>
       )}
-      {sq.view && (
-        <>
-          <MonthlyBillingCard testId="portal-square-billing" b={squareCard(sq.view)} />
-          {(sq.view.alsoCovers.length > 0 || sq.view.otherAccounts > 0) && (
-            <p className="-mt-3 mb-6 text-sm" data-testid="portal-square-covers">This one bill also covers {[...sq.view.alsoCovers, ...(sq.view.otherAccounts ? [`${sq.view.otherAccounts} other account${sq.view.otherAccounts === 1 ? "" : "s"}`] : [])].join(", ")} — you&apos;re charged once per cycle.</p>
+      {sq.views.length > 1 && <p className="mb-3 text-sm text-slate-700" data-testid="portal-square-count">You have {sq.views.length} recurring bills with our office in Square. Each is shown separately with its own payments.</p>}
+      {sq.views.map((v, i) => (
+        <div key={v.id}>
+          <MonthlyBillingCard testId={i === 0 ? "portal-square-billing" : `portal-square-billing-${i + 1}`} b={squareCard(v, sq.views.length > 1)} showHeading={i === 0} />
+          {(v.alsoCovers.length > 0 || v.otherAccounts > 0) && (
+            <p className="-mt-3 mb-6 text-sm" data-testid="portal-square-covers">This one bill also covers {[...v.alsoCovers, ...(v.otherAccounts ? [`${v.otherAccounts} other account${v.otherAccounts === 1 ? "" : "s"}`] : [])].join(", ")} — you&apos;re charged once per cycle.</p>
           )}
-        </>
-      )}
+        </div>
+      ))}
       {manual && <MonthlyBillingCard testId="portal-manual-billing" b={manualCard(manual)} />}
       {items.length === 0 && sq.state === "NONE" && !manual && <EmptyState title="Nothing here yet">Quotes and invoices we send you will appear here.</EmptyState>}
       <div className="space-y-4">

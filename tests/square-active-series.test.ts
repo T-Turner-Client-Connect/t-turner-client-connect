@@ -4,7 +4,7 @@ import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import {
-  linkSquareBilling, lookupSquareBilling, portalSquareBilling, reviewSquareSeries, seriesActivity, seriesStatus, squareBillingFor, squareBillingOverview, squareRevenueSummary, syncStaleSquareBilling,
+  addClientToSquareBilling, linkSquareBilling, lookupSquareBilling, portalSquareBilling, syncClientSquareBilling, reviewSquareSeries, seriesActivity, seriesStatus, squareBillingFor, squareBillingOverview, squareRevenueSummary, syncStaleSquareBilling,
   type SeriesInvoice, type SqInvoice,
 } from "@/lib/services/square-billing";
 
@@ -173,7 +173,8 @@ describe("a linked series whose status becomes uncertain, then ended", () => {
     expect(sb.arrangement!.seriesKey).toBe("800");
     expect(sb.ended.map((e) => e.seriesKey)).toEqual(["900"]);
     expect((await squareBillingOverview(tabitha)).find((r) => r.clientId === oasis.id)!.arrangement!.seriesKey).toBe("800");
-    expect((await squareRevenueSummary())).toMatchObject({ linked: 1, endedCount: 0, recurringMonthlyCents: 79500 });
+    // The ended series stays on the client as history (counted as ended, never in current totals).
+    expect((await squareRevenueSummary())).toMatchObject({ linked: 1, endedCount: 1, recurringMonthlyCents: 79500 });
     // The old series can't be re-linked over the current one.
     await expect(linkSquareBilling(tabitha, { customerId: CUST, seriesKey: "900", clientIds: [oasis.id] })).rejects.toThrow(/already linked|isn't verified as active/);
     expect(writes()).toEqual([]);
@@ -198,5 +199,43 @@ describe("staff and client see the same records for the linked series", () => {
     expect(view.invoices.find((i) => i.number === "800-R-0099")).toMatchObject({ paidCents: 40000 });
     expect(view).toMatchObject({ outstandingCents: 39500, overdueCents: 39500, overdueCount: 1 });
     expect(view.status.label).toBe("1 invoice overdue in Square");
+  });
+});
+
+describe("a client with more than one active Square series (like Carlos)", () => {
+  it("links each series separately; staff and client see every series with its own payments; totals count each once", async () => {
+    const { tabitha, oasis } = await setup();
+    // A second, separate customer account in Square with its own active monthly series ("610").
+    invoices = [...MONTHLY(), inv("610-R-0001", day(-40), "PAID", 25000, OTHER), inv("610-R-0002", day(-10), "PAID", 25000, OTHER), inv("610-R-0003", day(20), "SCHEDULED", 25000, OTHER)];
+    const first = await linkSquareBilling(tabitha, { customerId: CUST, seriesKey: "800", clientIds: [oasis.id] });
+    const second = await linkSquareBilling(tabitha, { customerId: OTHER, seriesKey: "610", clientIds: [oasis.id] });
+    const sb = await squareBillingFor(oasis.id);
+    expect(sb.arrangements.map((a) => a.seriesKey)).toEqual(["800", "610"]);
+    expect(sb.arrangement!.id).toBe(first.id);
+    expect(sb.state).toBe("SYNCED");
+    expect((await squareBillingOverview(tabitha)).find((r) => r.clientId === oasis.id)!.arrangements).toHaveLength(2);
+    // Each Square bill counted once; nothing summed twice.
+    expect(await squareRevenueSummary()).toMatchObject({ linked: 2, recurringMonthlyCents: 79500 + 25000 });
+    // Never twice on the same series; the same series can't be linked again.
+    await expect(addClientToSquareBilling(tabitha, second.id, oasis.id)).rejects.toThrow(/already on this Square bill/);
+    await expect(linkSquareBilling(tabitha, { customerId: OTHER, seriesKey: "610", clientIds: [oasis.id] })).rejects.toThrow(/already linked/);
+
+    // The client sees both bills, each with only its own invoices.
+    const { token } = await invitePortalUser(tabitha, oasis.id, { email: "carlos@fictional.example", name: "Carlos", role: "OWNER" });
+    const carlos = await acceptPortalInvite(token!, "Portal-Pass-123456");
+    const p = await portalSquareBilling({ id: carlos.id, name: carlos.name, email: carlos.email }, oasis.id);
+    expect(p.views.map((v) => v.seriesKey)).toEqual(["800", "610"]);
+    expect(p.views[0].invoices.every((i) => i.number!.startsWith("800-"))).toBe(true);
+    expect(p.views[1].invoices.map((i) => i.number)).toEqual(["610-R-0003", "610-R-0002", "610-R-0001"]);
+    expect(p.unsynced).toBe(0);
+    // Another client's login sees none of it.
+    const stranger = await createClient(tabitha, { businessName: "Unrelated (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
+    const { token: t2 } = await invitePortalUser(tabitha, stranger.id, { email: "x@fictional.example", name: "X", role: "OWNER" });
+    const x = await acceptPortalInvite(t2!, "Portal-Pass-123456");
+    await expect(portalSquareBilling({ id: x.id, name: x.name, email: x.email }, oasis.id)).rejects.toThrow();
+
+    // Sync Now re-reads both series, read only.
+    expect(await syncClientSquareBilling(tabitha, oasis.id)).toBe(2);
+    expect(writes()).toEqual([]);
   });
 });

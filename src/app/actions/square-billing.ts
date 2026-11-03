@@ -8,7 +8,7 @@ import { paymentStatus, scheduleText } from "@/lib/services/square-billing";
 import { ValidationError } from "@/lib/services/clients";
 import { noteSquareAuthFailure, runSquareHealthCheck } from "@/lib/services/square-health";
 import {
-  addClientToSquareBilling, linkSquareBilling, lookupSquareBilling, reviewSquareSeries, suggestSquareMatches, removeClientFromSquareBilling, setSquareBillingExpected, syncAllSquareBilling, syncSquareBilling, verifyExistingAuthorization,
+  addClientToSquareBilling, linkSquareBilling, lookupSquareBilling, reviewSquareSeries, suggestSquareMatches, removeClientFromSquareBilling, setSquareBillingExpected, syncAllSquareBilling, syncClientSquareBilling, syncSquareBilling, verifyExistingAuthorization,
 } from "@/lib/services/square-billing";
 
 const refresh = () => revalidatePath("/bookkeeping", "layout");
@@ -50,6 +50,15 @@ export async function removeFromSquareBillingAction(arrangementId: string, clien
     await removeClientFromSquareBilling(actor, arrangementId, clientId, str(fd, "reason"));
     refresh();
     return "Link removed in Client Connect. Billing in Square is unchanged.";
+  });
+}
+
+export async function syncClientSquareBillingAction(clientId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const n = await square(() => syncClientSquareBilling(actor, clientId));
+    refresh();
+    return `Synced ${n} Square series from Square (read only). Nothing was changed or charged.`;
   });
 }
 

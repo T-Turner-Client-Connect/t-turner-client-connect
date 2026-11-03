@@ -299,12 +299,14 @@ export async function billingView(actor: Actor, clientId: string) {
   // Card details only as Square returned them, and only while Square is connected.
   const card = connected && billing?.squareCardId && billing.cardLast4 ? { brand: billing.cardBrand ?? "Card", last4: billing.cardLast4, expMonth: billing.cardExpMonth ?? 0, expYear: billing.cardExpYear ?? 0 } : null;
   // Whether the Square customer ID on file is one Square confirmed, or only typed by hand.
-  const linkedId = squareBilling.arrangement?.squareCustomerId ?? null;
+  // A client on several Square series may have more than one verified Square customer.
   const storedId = billing?.squareCustomerId ?? null;
+  const linkedIds = squareBilling.arrangements.map((x) => x.squareCustomerId);
+  const linkedId = storedId && linkedIds.includes(storedId) ? storedId : linkedIds[0] ?? null;
   const customerId = !storedId && !linkedId ? null : {
     id: linkedId ?? storedId!,
     status: (linkedId && storedId === linkedId ? "VERIFIED" : linkedId ? "VERIFIED_LINK_ONLY" : billing?.squareCustomerIdSource === "CLIENT_CONNECT" ? "FROM_CARD_SETUP" : "UNVERIFIED") as "VERIFIED" | "VERIFIED_LINK_ONLY" | "FROM_CARD_SETUP" | "UNVERIFIED",
-    verifiedAt: linkedId && storedId === linkedId ? billing?.squareCustomerIdVerifiedAt ?? squareBilling.arrangement!.createdAt : null,
+    verifiedAt: linkedId && storedId === linkedId ? billing?.squareCustomerIdVerifiedAt ?? squareBilling.arrangements.find((x) => x.squareCustomerId === linkedId)!.createdAt : null,
     // A hand-typed ID that differs from the verified one is shown, never silently dropped.
     previousManual: linkedId && storedId && storedId !== linkedId ? storedId : null,
   };

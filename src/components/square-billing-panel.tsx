@@ -6,7 +6,7 @@ import { SquareFindPanel } from "@/components/square-find-panel";
 import { SquareAutoRefresh } from "@/components/square-auto-refresh";
 import { YearTabs } from "@/components/year-tabs";
 import {
-  addToSquareBillingAction, removeFromSquareBillingAction, setSquareExpectedAction, syncSquareBillingAction, verifySquareAuthorizationAction,
+  addToSquareBillingAction, removeFromSquareBillingAction, setSquareExpectedAction, syncClientSquareBillingAction, verifySquareAuthorizationAction,
 } from "@/app/actions/square-billing";
 import { CADENCE_LABELS, nameOf, NOT_SYNCED, paymentStatus, scheduleText, staleness, syncDue, type SeriesInvoice, type squareBillingFor } from "@/lib/services/square-billing";
 import type { ActionState } from "@/lib/action";
@@ -158,6 +158,26 @@ export function SquareBillingPanel({ clientId, sb, approver, addable, client, au
       </div>
     );
   }
+  const many = sb.arrangements.length > 1;
+  return (
+    <div className="space-y-4" data-testid="square-billing">
+      <BillingHeader health={health} lastSync={sb.arrangements.reduce<Date | null>((d, x) => (x.syncedAt && (!d || x.syncedAt < d) ? x.syncedAt : d), null)} syncAction={syncClientSquareBillingAction.bind(null, clientId)} />
+      {many && <p className="rounded-lg bg-navy-50 p-2 text-sm text-navy-900" data-testid="square-series-count">{sb.arrangements.length} active Square recurring series — each is its own bill, shown separately below.</p>}
+      {sb.arrangements.map((x, i) => <SquareSeriesBlock key={x.id} a={x} clientId={clientId} approver={approver} addable={addable.filter((c) => !x.members.some((m) => m.clientId === c.id))} health={health} notes={notes} notesAction={i === 0 ? notesAction : undefined} many={many} />)}
+      <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="square-link-another">
+        <span className="text-slate-600">Another Square series for this client?</span>
+        <SquareFindPanel owner={approver} client={{ id: clientId, ...client }} coverOptions={[{ id: clientId, name: client.name }, ...addable.filter((c) => c.id !== clientId).map((c) => ({ id: c.id, name: nameOf(c) }))]} />
+      </div>
+      {reviewList}
+      {endedHistory}
+    </div>
+  );
+}
+
+type Arrangement = SB["arrangements"][number];
+
+/** One linked Square series: its card, payment history (this series only), customer and controls. */
+function SquareSeriesBlock({ a, clientId, approver, addable, health, notes, notesAction, many }: { a: Arrangement; clientId: string; approver: boolean; addable: { id: string; displayName: string; businessName?: string | null }[]; health?: Health | null; notes?: string | null; notesAction?: (prev: ActionState, fd: FormData) => Promise<ActionState>; many: boolean }) {
   const st = staleness(a);
   const status = paymentStatus(a);
   // Every invoice in THIS series, newest first; the next scheduled one is shown separately above.
@@ -169,9 +189,8 @@ export function SquareBillingPanel({ clientId, sb, approver, addable, client, au
   const nextAmount = upcoming?.amountCents ?? a.amountCents;
   const owed = (a.outstandingCents ?? 0) - (a.overdueCents ?? 0);
   return (
-    <div className="space-y-4" data-testid="square-billing">
+    <section className={`space-y-4 ${many ? "rounded-2xl border border-ivory-200 p-3" : ""}`} data-testid="square-series" data-series={a.seriesKey}>
       <SquareAutoRefresh arrangementId={a.id} due={syncDue(a)} />
-      <BillingHeader health={health} lastSync={a.syncedAt} syncAction={syncSquareBillingAction.bind(null, a.id)} />
       {st.stale && (
         <p className="rounded bg-amber-50 p-2 text-sm text-amber-900" data-testid="square-stale" role="alert">
           <TriangleAlert aria-hidden className="mr-1 inline size-4" /> Last verified figures — may be out of date. {st.reason} {a.syncedAt ? `Last successful sync: ${fmtDateTime(a.syncedAt)}.` : ""}
@@ -315,8 +334,6 @@ export function SquareBillingPanel({ clientId, sb, approver, addable, client, au
           </ActionForm>
         </details>
       )}
-      {reviewList}
-      {endedHistory}
-    </div>
+    </section>
   );
 }

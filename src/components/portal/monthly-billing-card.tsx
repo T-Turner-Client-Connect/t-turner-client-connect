@@ -24,7 +24,7 @@ const usd = (c: number | null | undefined) => (c == null ? "—" : `$${(c / 100)
 const day = (d: string) => fmtDate(new Date(`${d.slice(0, 10)}T12:00:00Z`));
 
 /** The client's monthly billing, in the same navy/gold design as the staff billing box. Read only. */
-export function MonthlyBillingCard({ b, testId }: { b: MonthlyBilling; testId: string }) {
+export function MonthlyBillingCard({ b, testId, showHeading = true }: { b: MonthlyBilling; testId: string; showHeading?: boolean }) {
   const upcoming = b.rows.filter((r) => r.upcoming);
   const past = b.rows.filter((r) => !r.upcoming);
   // Click a year to see that year's payments.
@@ -40,7 +40,7 @@ export function MonthlyBillingCard({ b, testId }: { b: MonthlyBilling; testId: s
   );
   return (
     <section className="mb-6 space-y-4" data-testid={testId}>
-      <div className="flex items-center gap-3">
+      <div className={`flex items-center gap-3 ${showHeading ? "" : "[&>span]:hidden [&_h2]:sr-only"}`}>
         <span aria-hidden className="grid size-12 place-items-center rounded-2xl border-2 border-gold-500 bg-gold-100/40 text-gold-600"><CreditCard className="size-6" /></span>
         <div>
           <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900">Your Monthly Billing</h2>

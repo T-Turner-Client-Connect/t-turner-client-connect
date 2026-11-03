@@ -114,9 +114,10 @@ describe("existing Square billing (fictional Steven Cox: one bill for two busine
     expect(e.state).toBe("SYNCED");
     expect(await prisma.squareBillingArrangement.count()).toBe(1);
 
-    // No duplicates: the series can't be linked twice and a business can't be on two bills.
+    // No duplicates: the series can't be linked twice, and a business is never twice on one bill.
+    // (A business may be on a second, separate series — but only one Square actually has.)
     await expect(linkSquareBilling(tabitha, { customerId: "CUST_COX", seriesKey: "700", clientIds: [other.id] })).rejects.toThrow(/already linked/);
-    await expect(linkSquareBilling(tabitha, { customerId: "CUST_COX", seriesKey: "999", clientIds: [drive.id] })).rejects.toThrow(/only one Square bill/);
+    await expect(linkSquareBilling(tabitha, { customerId: "CUST_COX", seriesKey: "999", clientIds: [drive.id] })).rejects.toThrow(/no invoices in series 999/);
     await expect(addClientToSquareBilling(tabitha, a.id, energy.id)).rejects.toThrow(/already on this Square bill/);
 
     // Still no new authorization or recurring charge from Client Connect.

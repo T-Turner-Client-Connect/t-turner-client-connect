@@ -263,7 +263,7 @@ model Client {
   bookkeepingProfile    BookkeepingProfile?
   bookkeepingAccounts   BookkeepingAccount[]
   bookkeepingBilling    BookkeepingBilling?
-  squareBilling         SquareBillingMember?
+  squareBillings        SquareBillingMember[]
   nonprofitProfile      NonprofitProfile?
   nonprofitPortfolio    NonprofitPortfolio?
   chargeAuthorizations  RecurringChargeAuthorization[]
@@ -2794,12 +2794,15 @@ model SquareBillingMember {
   id            String                   @id @default(cuid())
   arrangementId String
   arrangement   SquareBillingArrangement @relation(fields: [arrangementId], references: [id], onDelete: Cascade)
-  clientId      String                   @unique
+  // A client can be on several Square series (for example separate services); never twice on one.
+  clientId      String
   client        Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   addedById     String
   createdAt     DateTime                 @default(now())
 
+  @@unique([arrangementId, clientId])
   @@index([arrangementId])
+  @@index([clientId])
 }
 
 /// Annual federal filing setup for a nonprofit client. Each year's return is a
