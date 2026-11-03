@@ -21,6 +21,7 @@ const TEXT: Record<string, string> = {
   CONTRACT_ASSIGNED: "A form is ready for you to complete",
   ACCOUNT_UPDATE: "There's a new update on your account",
   FILING_UPDATE: "A tax filing update is available",
+  TAX_SUMMARY_READY: "Your tax return summary is ready for your review and approval",
   QUOTE_READY: "A quote is ready for your review",
   NEW_INVOICE: "A new invoice is available",
   AGREEMENT_READY: "A pricing agreement is ready for your review and signature",

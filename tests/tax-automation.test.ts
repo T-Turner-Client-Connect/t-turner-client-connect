@@ -43,7 +43,13 @@ describe("tax workspace", () => {
     const il = await createFiling(staff, { clientId: avery.id, taxYear: 2025, returnType: "1040", jurisdiction: "IL", filingType: "ORIGINAL" });
     await setPrepStatus(staff, fed.id, "READY_TO_FILE");
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED" })).rejects.toThrow(/acknowledgment/);
-    await setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center" });
+    // Recording an individual return as filed is the owner's alone, with an approved summary (or a stated reason).
+    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center" })).rejects.toThrow(/Only Tabitha/);
+    await prisma.ownerAccess.create({ data: { userId: staff.id, isPrimary: true } });
+    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: false } })).rejects.toThrow(/8879/);
+    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true } })).rejects.toThrow(/no client-approved/);
+    await setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center", submission: { form8879Confirmed: true, overrideReason: "Prior-year return filed before Client Connect" } });
+    expect((await prisma.filingStatusEvent.findFirstOrThrow({ where: { filingId: fed.id, field: "FILING" } })).verificationNote).toMatch(/WITHOUT an approved summary: Prior-year/);
     const [f, s] = await Promise.all([prisma.filingRecord.findUniqueOrThrow({ where: { id: fed.id } }), prisma.filingRecord.findUniqueOrThrow({ where: { id: il.id } })]);
     expect(f.filingStatus).toBe("ACCEPTED");
     expect(f.prepStatus).toBe("READY_TO_FILE");

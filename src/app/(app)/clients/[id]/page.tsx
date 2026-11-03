@@ -133,8 +133,8 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
             )}
           </Link>
         ))}
-        <Link href={`/clients/${id}/portal-preview`} className="ml-auto whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold text-gold-700 hover:bg-gold-100">
-          Preview portal ↗
+        <Link href={`/clients/${id}/portal-preview`} data-testid="view-as-client" className="ml-auto whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold text-gold-700 hover:bg-gold-100">
+          View as Client ↗
         </Link>
       </nav>
 

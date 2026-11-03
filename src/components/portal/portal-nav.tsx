@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
-import { Bell, BookOpen, ChevronDown, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, Menu, MessageCircle, Newspaper, PenLine, Settings, ShieldCheck, Users, X } from "lucide-react";
+import { Bell, BookOpen, ChevronDown, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, Menu, MessageCircle, Newspaper, PenLine, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { Mountains } from "./mountains";
 
 const MAIN = [
@@ -21,6 +21,7 @@ const MAIN = [
   ["/client/referrals", "Referrals", Users],
 ] as const;
 const MORE = [
+  ["/client/taxes/summary", "Tax Summary & Approval", ClipboardCheck],
   ["/client/taxes/filings", "Tax Filings", FileSearch],
   ["/client/news", "News & Countdowns", Newspaper],
   ["/client/contracts", "Contracts & Signatures", PenLine],

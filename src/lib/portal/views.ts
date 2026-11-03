@@ -89,6 +89,8 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
     progress: progress.length ? progress : statuses.filter((s) => s.year === thisYear - 1),
     statuses,
     identityAlerts: perms.canViewIdentity ? identityAlerts(await identityOverview(clientId)) : [],
+    // Tax return summaries waiting for the client's approval (before filing).
+    summariesWaiting: perms.canViewTax ? await prisma.taxReturnSummary.findMany({ where: { clientId, status: "SENT" }, select: { id: true, taxYear: true }, orderBy: { taxYear: "desc" } }) : [],
     vault,
     questionnaires,
     verified,

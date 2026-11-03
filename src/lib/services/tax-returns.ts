@@ -12,20 +12,21 @@ import { normalizeJurisdiction, normalizeReturnType } from "@/lib/tax/normalize"
 import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { clientMayReceive, notifyClientUsers, readDocumentBytes, staffUploadDocument, storeDocumentFile } from "./documents";
-import { createFiling } from "./tax";
 
 /**
- * Tax Return Delivery. Completed returns exported from TaxAct are filed to a
- * client/business, tax year, return type and jurisdiction (federal or a
- * state), original or amended — never a bookkeeping month. Every copy is a
- * staff-only Draft until staff mark it Ready for review and Tabitha releases
- * it; the malware scan must pass first. "Accepted" comes only from the
- * filing record's verified acknowledgment, never from uploading a PDF.
+ * Accepted Return Delivery — the stage AFTER filing. Clients don't review
+ * full returns before filing (that's the Tax Return Summary & Approval
+ * stage). Once the IRS or state ACCEPTS a return, the accepted return PDF is
+ * uploaded to the client's vault, labeled by tax year, federal/state, return
+ * type and original/amended; the acceptance confirmation is kept separately
+ * on the filing. Draft or unaccepted returns are never delivered as
+ * completed filings. A staff upload waits for Tabitha's release; her own
+ * upload can go straight to the client. The malware scan must pass first.
  */
 export const RETURN_COPY_STATUS = {
-  DRAFT: { label: "Draft (staff only)", tone: "gray" },
-  AWAITING_REVIEW: { label: "Ready for Tabitha's review", tone: "gold" },
-  APPROVED: { label: "Released to the client", tone: "green" },
+  DRAFT: { label: "Uploaded — not sent yet", tone: "gray" },
+  AWAITING_REVIEW: { label: "Waiting for Tabitha's release", tone: "gold" },
+  APPROVED: { label: "Sent to client", tone: "green" },
 } as const;
 
 /** Filing status shown beside a return — from the filing record, never from the PDF. */
@@ -34,6 +35,13 @@ export function filingLabel(status: string | null | undefined) {
   if (status === "REJECTED") return { label: "Rejected", tone: "red" as const };
   if (status === "SUBMITTED" || status === "PENDING_ACKNOWLEDGMENT") return { label: "Submitted — awaiting acknowledgment", tone: "navy" as const };
   return null;
+}
+
+/** Staff-side filing status: always shown, "Not filed" until the filing record says otherwise. */
+export function staffFilingLabel(status: string | null | undefined, amended?: boolean) {
+  const l = filingLabel(status);
+  if (l) return amended ? { ...l, label: `${l.label} (amended)` } : l;
+  return { label: amended ? "Amended — not filed yet" : "Not filed", tone: "gray" as const };
 }
 
 export type ReturnFields = { clientId: string; taxYear: number; returnType: string; jurisdiction: string; filingType: "ORIGINAL" | "AMENDED" };
@@ -57,9 +65,16 @@ export async function fileReturn(actor: Actor, input: ReturnFields & { bytes: Ui
   const f = checkFields(input);
   const client = await prisma.client.findUnique({ where: { id: f.clientId } });
   if (!client || client.archivedAt) throw new ValidationError("Client not found.");
-  const filing =
-    (await prisma.filingRecord.findFirst({ where: { clientId: f.clientId, taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType } })) ??
-    (await createFiling(actor, { clientId: f.clientId, taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType }));
+  const filing = await prisma.filingRecord.findFirst({ where: { clientId: f.clientId, taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType } });
+  // Only accepted returns are delivered as completed filings.
+  if (!filing || filing.filingStatus !== "ACCEPTED") {
+    const where = `${f.taxYear} ${f.returnType} ${f.jurisdiction === "FEDERAL" ? "federal" : f.jurisdiction}${f.filingType === "AMENDED" ? " amended" : ""} return`;
+    throw new ValidationError(
+      filing
+        ? `The ${where} hasn't been accepted yet (it's ${filing.filingStatus.toLowerCase().replace(/_/g, " ")}). Upload the return after the IRS or state accepts it, and record the acceptance first.`
+        : `There's no filing record for the ${where}. Record the filing and its acceptance first, then upload the accepted return.`,
+    );
+  }
   const previous = await prisma.document.findFirst({ where: { filingId: filing.id, filingDocType: "RETURN", deletedAt: null, supersededAt: null }, orderBy: { createdAt: "desc" } });
   // The same file can't be filed twice for a client (checked by content, not name).
   const doc = await staffUploadDocument(actor, { clientId: f.clientId, category: "TAXES", title: `${f.taxYear} ${f.returnType} — ${f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction}${f.filingType === "AMENDED" ? " (amended)" : ""}`, year: f.taxYear, visibility: "STAFF_ONLY", docType: docTypeFor(f), bytes: input.bytes, originalName: input.originalName });
@@ -146,6 +161,22 @@ export async function discardIntake(actor: Actor, intakeId: string, reason: stri
 
 // --- Review and release ------------------------------------------------------------
 
+/** Tabitha releases several returns at once (each one checked like a single release). */
+export async function releaseReturns(actor: Actor, documentIds: string[]) {
+  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can release tax returns to clients.");
+  const done: string[] = [];
+  const skipped: { id: string; reason: string }[] = [];
+  for (const id of Array.from(new Set(documentIds)).slice(0, 100)) {
+    try {
+      await releaseReturn(actor, id);
+      done.push(id);
+    } catch (e) {
+      skipped.push({ id, reason: e instanceof Error ? e.message : "Couldn't release" });
+    }
+  }
+  return { done, skipped };
+}
+
 async function loadReturn(documentId: string) {
   const d = await prisma.document.findUnique({ where: { id: documentId } });
   if (!d || d.deletedAt || d.filingDocType !== "RETURN") throw new ValidationError("Return not found.");
@@ -160,11 +191,16 @@ export async function submitReturnForRelease(actor: Actor, documentId: string) {
   await audit(prisma, { actorId: actor.id, action: "tax.return_submitted", entityType: "Document", entityId: d.id, clientId: d.clientId });
 }
 
-/** Only Tabitha releases a return to the client. A newer released version replaces older ones in the portal. */
+/**
+ * Only Tabitha releases a return to the client. Her own uploads go straight
+ * out (no second review of her own work); a staff upload waits until she
+ * releases it. Releasing never changes the filing status. A newer released
+ * version replaces older ones in the portal.
+ */
 export async function releaseReturn(actor: Actor, documentId: string) {
-  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can release a tax return to the client.");
+  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can release a tax return to the client. Ask her to release it.");
   const d = await loadReturn(documentId);
-  if (d.reviewStatus !== "AWAITING_REVIEW") throw new ValidationError("Send the return for review first.");
+  if (d.reviewStatus !== "AWAITING_REVIEW" && d.reviewStatus !== "DRAFT") throw new ValidationError("This return was already sent to the client.");
   if (d.scanStatus !== "CLEAN") throw new ValidationError("This file hasn't passed the malware scan, so it can't be released.");
   const older = d.filingId ? await prisma.document.findMany({ where: { filingId: d.filingId, filingDocType: "RETURN", id: { not: d.id }, visibility: "PUBLISHED" } }) : [];
   await prisma.$transaction([
