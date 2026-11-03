@@ -39,6 +39,43 @@ export function twilioConfigured() {
   return Boolean(e.TWILIO_ACCOUNT_SID && e.TWILIO_AUTH_TOKEN && (e.TWILIO_MESSAGING_SERVICE_SID || e.TWILIO_FROM_NUMBER));
 }
 
+export type TwilioMessageRecord = {
+  sid: string; to: string | null; from: string | null; messagingServiceSid: string | null; status: string | null;
+  errorCode: number | null; errorMessage: string | null; dateCreated: string | null; dateSent: string | null; dateUpdated: string | null; numSegments: string | null; direction: string | null;
+};
+
+/**
+ * Read-only: Twilio's own record of one message (GET, never sends). Used by the Settings test
+ * history so the destination, sender, final status and error code come straight from Twilio.
+ */
+export async function fetchTwilioMessage(messageSid: string): Promise<{ ok: true; record: TwilioMessageRecord } | { ok: false; detail: string }> {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  if (!sid || !token) return { ok: false, detail: "Twilio not set up" };
+  if (!/^(SM|MM)[0-9a-f]{32}$/i.test(messageSid)) return { ok: false, detail: "Not a Twilio message ID" };
+  try {
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages/${messageSid}.json`, {
+      method: "GET",
+      headers: { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}` },
+      signal: AbortSignal.timeout(5000),
+      cache: "no-store",
+    });
+    if (!res.ok) return { ok: false, detail: `Twilio lookup failed (HTTP ${res.status})` };
+    const j = (await res.json()) as Record<string, unknown>;
+    const s = (k: string) => (typeof j[k] === "string" ? (j[k] as string) : null);
+    return {
+      ok: true,
+      record: {
+        sid: s("sid") ?? messageSid, to: s("to"), from: s("from"), messagingServiceSid: s("messaging_service_sid"), status: s("status"),
+        errorCode: typeof j.error_code === "number" ? j.error_code : j.error_code ? Number(j.error_code) : null, errorMessage: s("error_message"),
+        dateCreated: s("date_created"), dateSent: s("date_sent"), dateUpdated: s("date_updated"), numSegments: s("num_segments"), direction: s("direction"),
+      },
+    };
+  } catch {
+    return { ok: false, detail: "Couldn't reach Twilio for the lookup" };
+  }
+}
+
 /** Sends one text. Returns the Twilio Message SID when Twilio accepts it. */
 export async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; detail: string }> {
   const sid = process.env.TWILIO_ACCOUNT_SID;

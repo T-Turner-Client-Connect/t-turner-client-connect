@@ -400,13 +400,31 @@ export default async function SettingsPage() {
                       <p className="mb-2 text-slate-700">Sends one text to {formatPhone(t.settings.phone)}: &ldquo;TTurner Client Connect test… Reply YES to confirm two-way texting.&rdquo; Results below come from Twilio, not from this page.</p>
                       <ActionForm action={sendTestTextAction}><Button type="submit" variant="secondary" disabled={!configured}>Send test text</Button></ActionForm>
                       {t.tests.length > 0 && (
-                        <ul className="mt-2 space-y-1" data-testid="twilio-tests">
-                          {t.tests.map((x) => (
-                            <li key={x.id}>
-                              {fmtDateTime(x.createdAt)} · {x.status === "FAILED" ? <Badge tone="red">Not accepted</Badge> : <Badge tone={x.deliveryStatus === "delivered" ? "green" : x.deliveryStatus === "undelivered" || x.deliveryStatus === "failed" ? "red" : "gold"}>{x.deliveryStatus === "delivered" ? "Delivered (Twilio confirmed)" : x.deliveryStatus ? `Twilio: ${x.deliveryStatus}` : "Waiting for Twilio"}</Badge>}
-                              {x.statusDetail && <span className="ml-1 text-xs text-slate-600">{x.statusDetail}</span>}
-                            </li>
-                          ))}
+                        <ul className="mt-2 space-y-2" data-testid="twilio-tests">
+                          {t.tests.map((x) => {
+                            const tw = t.twilio[x.id];
+                            const rec = tw?.ok ? tw.record : null;
+                            return (
+                              <li key={x.id} className="rounded-lg border border-ivory-200 bg-white p-2" data-testid="twilio-test-row">
+                                {fmtDateTime(x.createdAt)} · {x.status === "FAILED" ? <Badge tone="red">Not accepted</Badge> : <Badge tone={x.deliveryStatus === "delivered" ? "green" : x.deliveryStatus === "undelivered" || x.deliveryStatus === "failed" ? "red" : "gold"}>{x.deliveryStatus === "delivered" ? "Delivered (Twilio confirmed)" : x.deliveryStatus ? `Twilio: ${x.deliveryStatus}` : "Waiting for Twilio"}</Badge>}
+                                {x.statusDetail && <span className="ml-1 text-xs text-slate-600">{x.statusDetail}</span>}
+                                <dl className="mt-1 grid gap-x-4 text-xs text-slate-700 sm:grid-cols-2">
+                                  <div><dt className="inline font-semibold">Sent to: </dt><dd className="inline">{formatPhone(x.to)} ({x.to})</dd></div>
+                                  <div><dt className="inline font-semibold">Message SID: </dt><dd className="inline break-all font-mono">{x.providerSid ?? "— (Twilio didn't accept it)"}</dd></div>
+                                  {rec ? (
+                                    <>
+                                      <div><dt className="inline font-semibold">Twilio record — to: </dt><dd className="inline">{rec.to ?? "—"}</dd></div>
+                                      <div><dt className="inline font-semibold">From: </dt><dd className="inline">{rec.from ?? "—"}{rec.messagingServiceSid ? ` · Messaging Service ${rec.messagingServiceSid}` : ""}</dd></div>
+                                      <div><dt className="inline font-semibold">Twilio&apos;s final status: </dt><dd className="inline">{rec.status ?? "—"}{rec.errorCode ? ` · error ${rec.errorCode}${rec.errorMessage ? ` (${rec.errorMessage})` : ""}` : " · no error code"}</dd></div>
+                                      <div><dt className="inline font-semibold">Times (Twilio): </dt><dd className="inline">created {rec.dateCreated ?? "—"} · sent {rec.dateSent ?? "—"} · updated {rec.dateUpdated ?? "—"}{rec.numSegments ? ` · ${rec.numSegments} segment(s)` : ""}</dd></div>
+                                    </>
+                                  ) : x.providerSid ? (
+                                    <div className="sm:col-span-2 text-slate-500">Twilio&apos;s record: {tw && !tw.ok ? tw.detail : "not available"}</div>
+                                  ) : null}
+                                </dl>
+                              </li>
+                            );
+                          })}
                         </ul>
                       )}
                       {t.tests.length > 0 && (

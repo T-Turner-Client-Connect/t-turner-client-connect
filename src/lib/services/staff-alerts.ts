@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { normalizeEmail, normalizePhone } from "@/lib/normalize";
-import { sendSms, twilioConfigured } from "@/lib/twilio";
+import { fetchTwilioMessage, sendSms, twilioConfigured } from "@/lib/twilio";
 import { chicagoLocalToUtc, chicagoParts } from "@/lib/tz";
 import { ValidationError } from "./clients";
 import { emailProviderConfigured } from "@/lib/auth/client-auth";
@@ -221,5 +221,9 @@ export async function testResults() {
   const since = tests.at(-1)?.createdAt ?? new Date();
   const replies = await prisma.inboundSms.findMany({ where: { fromNormalized: s.phone, receivedAt: { gte: since } }, orderBy: { receivedAt: "desc" }, take: 10 });
   const recentAlerts = await prisma.staffAlert.findMany({ where: { reason: "CLIENT_MESSAGE" }, orderBy: { createdAt: "desc" }, take: 10 });
-  return { settings: s, tests, replies, recentAlerts };
+  // Twilio's own record for each test (read only, never sends): destination, sender, final status, error code, times.
+  const twilio = twilioConfigured()
+    ? Object.fromEntries(await Promise.all(tests.filter((t) => t.providerSid).map(async (t) => [t.id, await fetchTwilioMessage(t.providerSid!)] as const)))
+    : {};
+  return { settings: s, tests, replies, recentAlerts, twilio };
 }
