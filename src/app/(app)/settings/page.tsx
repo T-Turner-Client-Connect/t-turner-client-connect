@@ -398,7 +398,11 @@ export default async function SettingsPage() {
                     <div>
                       <p className="font-semibold">Controlled test</p>
                       <p className="mb-2 text-slate-700">Sends one text to {formatPhone(t.settings.phone)}: &ldquo;TTurner Client Connect test… Reply YES to confirm two-way texting.&rdquo; Results below come from Twilio, not from this page.</p>
-                      <ActionForm action={sendTestTextAction}><Button type="submit" variant="secondary" disabled={!configured}>Send test text</Button></ActionForm>
+                      <p className="mb-2 text-xs text-slate-600">The test goes to the <strong>saved</strong> office phone. If you just typed a new number above, click Save first — the button below always shows the saved number.</p>
+                      <ActionForm action={sendTestTextAction} confirm={`Send one test text to ${formatPhone(t.settings.phone)}?`}>
+                        <input type="hidden" name="expectedTo" value={t.settings.phone} />
+                        <Button type="submit" variant="secondary" disabled={!configured} data-testid="send-test-text">Send test text to {formatPhone(t.settings.phone)}</Button>
+                      </ActionForm>
                       {t.tests.length > 0 && (
                         <ul className="mt-2 space-y-2" data-testid="twilio-tests">
                           {t.tests.map((x) => {

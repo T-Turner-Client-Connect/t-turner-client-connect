@@ -355,10 +355,10 @@ export async function attachInboundAction(inboundId: string, _prev: ActionState,
   });
 }
 
-export async function sendTestTextAction(_prev: ActionState): Promise<ActionState> {
+export async function sendTestTextAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    await sendTestText(actor);
+    await sendTestText(actor, str(fd, "expectedTo"));
     revalidatePath("/settings");
     return "Twilio accepted the test text. Its delivery result and your reply will appear below — refresh in a minute.";
   });
