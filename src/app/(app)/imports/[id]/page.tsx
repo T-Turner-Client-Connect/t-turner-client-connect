@@ -74,7 +74,7 @@ export default async function ImportReviewPage({ params, searchParams }: { param
               <div>
                 <p className="font-semibold text-navy-900">{batch.status === "COMMITTED" ? "Imported" : "Will be imported"}</p>
                 <ul className="mt-1 space-y-0.5 text-slate-700">
-                  {res && <li>{res.created} created · {res.updated} updated · {res.unchanged} already complete · {res.skipped} skipped</li>}
+                  {res && <li>{res.created} created · {res.updated} updated · {res.unchanged} already complete · {res.skipped} skipped{res.duplicatesPrevented ? ` · ${res.duplicatesPrevented} duplicate(s) prevented` : ""}</li>}
                   {summary.mappedColumns.map((m) => <li key={m.header}>{m.header} → {m.field}</li>)}
                   {batch.batchServices.length > 0 && <li>Service for every client: <strong>{batch.batchServices.join(", ")}</strong></li>}
                   {batch.taxYear && <li>Tax year: <strong>{batch.taxYear}</strong></li>}
@@ -123,10 +123,12 @@ export default async function ImportReviewPage({ params, searchParams }: { param
         <div className="space-y-2 lg:col-span-2">
           {rows.map((r) => {
             const d = r.data as CleanRow | null;
+            // Updating a possible match comes first; creating is last and labelled,
+            // so a duplicate is never one careless click away.
             const opts = [
-              ...(r.match === "ERROR" ? [] : [{ value: "create", label: "Create a new client" }]),
               ...r.candidateIds.map((cid) => ({ value: `update:${cid}`, label: `Update ${candidates.get(cid)?.displayName ?? "existing client"}` })),
               { value: "skip", label: "Skip this row" },
+              ...(r.match === "ERROR" ? [] : [{ value: "create", label: r.candidateIds.length ? "Create a NEW client (I checked — not a duplicate)" : "Create a new client" }]),
             ];
             const result = r.resultClientId ? candidates.get(r.resultClientId) : null;
             return (

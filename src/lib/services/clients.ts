@@ -5,7 +5,7 @@ import type { Channel, ClientStatus, ClientType, ConsentKind, ConsentStatus, Pri
 import { prisma } from "@/lib/prisma";
 import { audit, changedFields } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
-import { buildDisplayName, normalizeEmail, normalizePhone, splitList } from "@/lib/normalize";
+import { buildDisplayName, formatPhone, householdName, normalizeEmail, normalizePhone, splitList } from "@/lib/normalize";
 import { TAX_INFO_KINDS } from "@/lib/consent";
 
 export class ValidationError extends Error {}
@@ -20,6 +20,12 @@ const opt = z
 
 export const clientSchema = z.object({
   firstName: opt,
+  middleName: opt,
+  spouseFirstName: opt,
+  spouseMiddleName: opt,
+  spouseLastName: opt,
+  spouseEmail: opt,
+  spousePhone: opt,
   lastName: opt,
   preferredName: opt,
   businessName: opt,
@@ -41,6 +47,18 @@ export const clientSchema = z.object({
 
 export type ClientInput = z.input<typeof clientSchema>;
 
+/**
+ * "Allison R Stockton", or for a joint household "Allison R Stockton &
+ * Jonathan Scoggins" — one client record for the couple.
+ */
+export function clientDisplayName(v: { firstName?: string | null; middleName?: string | null; lastName?: string | null; businessName?: string | null; spouseFirstName?: string | null; spouseMiddleName?: string | null; spouseLastName?: string | null; clientType?: string }) {
+  const first = [v.firstName, v.middleName].map((x) => x?.trim()).filter(Boolean).join(" ") || null;
+  if ((v.clientType ?? "INDIVIDUAL") === "INDIVIDUAL" && (v.spouseFirstName || v.spouseLastName) && (first || v.lastName)) {
+    return householdName({ first, last: v.lastName ?? null }, { first: [v.spouseFirstName, v.spouseMiddleName].map((x) => x?.trim()).filter(Boolean).join(" ") || null, last: v.spouseLastName ?? null });
+  }
+  return buildDisplayName({ firstName: first, lastName: v.lastName ?? null, businessName: v.businessName ?? null });
+}
+
 function toClientData(input: ClientInput) {
   const parsed = clientSchema.safeParse(input);
   if (!parsed.success) throw new ValidationError(parsed.error.issues[0]?.message ?? "Check the form.");
@@ -50,16 +68,27 @@ function toClientData(input: ClientInput) {
   if (v.email && !emailNormalized) throw new ValidationError("That email address doesn't look right.");
   const phoneNormalized = normalizePhone(v.phone);
   if (v.phone && !phoneNormalized) throw new ValidationError("Enter a 10-digit US phone number, or an international number starting with +.");
+  const spousePhoneNormalized = normalizePhone(v.spousePhone);
+  if (v.spousePhone && !spousePhoneNormalized) throw new ValidationError("The spouse's phone number doesn't look right.");
+  if (v.spouseEmail && !normalizeEmail(v.spouseEmail)) throw new ValidationError("The spouse's email address doesn't look right.");
   return {
     data: {
       firstName: v.firstName ?? null,
+      middleName: v.middleName ?? null,
       lastName: v.lastName ?? null,
+      spouseFirstName: v.spouseFirstName ?? null,
+      spouseMiddleName: v.spouseMiddleName ?? null,
+      spouseLastName: v.spouseLastName ?? null,
+      spouseEmail: v.spouseEmail ?? null,
+      // Stored formatted, e.g. "(205) 555-0123"; typed markers like a trailing "M" are dropped.
+      spousePhone: spousePhoneNormalized ? formatPhone(spousePhoneNormalized) : null,
+      spousePhoneNormalized,
       preferredName: v.preferredName ?? null,
       businessName: v.businessName ?? null,
-      displayName: buildDisplayName(v),
+      displayName: clientDisplayName(v),
       email: v.email ?? null,
       emailNormalized,
-      phone: v.phone ?? null,
+      phone: phoneNormalized ? formatPhone(phoneNormalized) : null,
       phoneNormalized,
       addressLine1: v.addressLine1 ?? null,
       addressLine2: v.addressLine2 ?? null,

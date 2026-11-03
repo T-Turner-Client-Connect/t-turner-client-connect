@@ -77,7 +77,7 @@ describe("TaxAct phone, names and headers", () => {
 
   it("cleans a TaxAct row into one joint household", () => {
     const { row, warnings } = cleanRow({ fullName: "Allison R Stockton & Jonathan Scoggins", phone: "(205)705-0028 M", cityStateZip: "Hoover, AL 35244" });
-    expect(row.firstName).toBe("Allison R");
+    expect([row.firstName, row.middleName]).toEqual(["Allison", "R"]);
     expect(row.lastName).toBe("Stockton");
     expect(row.displayName).toBe("Allison R Stockton & Jonathan Scoggins");
     expect(row.spouse).toEqual({ first: "Jonathan", middle: null, last: "Scoggins" });
@@ -105,7 +105,8 @@ describe("TaxAct client import with Tax Preparation", () => {
 
     const joint = await prisma.client.findFirstOrThrow({ where: { lastName: "Stockton" } });
     expect(joint.displayName).toBe("Allison R Stockton & Jonathan Scoggins");
-    expect(joint.firstName).toBe("Allison R");
+    expect([joint.firstName, joint.middleName]).toEqual(["Allison", "R"]);
+    expect([joint.spouseFirstName, joint.spouseLastName]).toEqual(["Jonathan", "Scoggins"]); // spouse on the same record
     expect(joint.phone).toBe("(205) 705-0028");
     expect(joint.services).toEqual(["Tax Preparation"]);
     expect(await prisma.client.count({ where: { OR: [{ firstName: "Jonathan" }, { lastName: "Scoggins" }] } })).toBe(0); // no separate spouse record
@@ -174,7 +175,8 @@ describe("TaxAct client import with Tax Preparation", () => {
 
     expect(await prisma.client.count()).toBe(2); // no duplicates
     const fixed = await prisma.client.findUniqueOrThrow({ where: { id: old.id } });
-    expect([fixed.firstName, fixed.lastName, fixed.displayName]).toEqual(["Allison R", "Stockton", "Allison R Stockton & Jonathan Scoggins"]);
+    expect([fixed.firstName, fixed.middleName, fixed.lastName, fixed.displayName]).toEqual(["Allison", "R", "Stockton", "Allison R Stockton & Jonathan Scoggins"]);
+    expect([fixed.spouseFirstName, fixed.spouseLastName]).toEqual(["Jonathan", "Scoggins"]);
     expect([fixed.phone, fixed.addressLine1, fixed.postalCode]).toEqual(["(205) 705-0028", "12 Fictional Ridge Rd", "35244"]);
     expect(fixed.services).toEqual(["Tax Preparation"]);
 

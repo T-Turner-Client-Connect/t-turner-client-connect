@@ -4,6 +4,7 @@ import type { CleanRow } from "./rows";
 
 export const SCALAR_FIELDS = [
   "firstName",
+  "middleName",
   "lastName",
   "businessName",
   "email",
@@ -14,10 +15,21 @@ export const SCALAR_FIELDS = [
   "state",
   "postalCode",
   "clientType",
+  "spouseFirstName",
+  "spouseMiddleName",
+  "spouseLastName",
+  "spouseEmail",
+  "spousePhone",
 ] as const;
 
 export const FIELD_LABELS: Record<string, string> = {
   firstName: "First name",
+  middleName: "Middle name / initial",
+  spouseFirstName: "Spouse first name",
+  spouseMiddleName: "Spouse middle name / initial",
+  spouseLastName: "Spouse last name",
+  spouseEmail: "Spouse email",
+  spousePhone: "Spouse phone",
   lastName: "Last name",
   businessName: "Business name",
   email: "Email",

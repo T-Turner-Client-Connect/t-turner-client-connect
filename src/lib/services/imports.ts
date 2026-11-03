@@ -8,7 +8,8 @@ import { classifyRow, cleanRow, type CleanRow, type MatchCandidate } from "@/lib
 import { IMPORT_FIELDS } from "@/lib/import/fields";
 import { mergeList, plannedChanges, REPLACEABLE_FIELDS } from "@/lib/import/plan";
 import { caseFromImport } from "@/lib/services/tax-prep";
-import { householdName } from "@/lib/normalize";
+import { normalizePhone } from "@/lib/normalize";
+import { clientDisplayName } from "@/lib/services/clients";
 
 export class ImportError extends Error {}
 
@@ -48,6 +49,7 @@ export type ImportSummary = {
     updated: number;
     skipped: number;
     unchanged: number;
+    duplicatesPrevented?: number;
     casesCreated: number;
     casesFilled: number;
     returnTypesPrefilled: number;
@@ -108,13 +110,18 @@ export async function stageImport(actor: Actor, input: StageInput) {
         { contacts: { some: { OR: [{ emailNormalized: { in: emails } }, { phoneNormalized: { in: phones } }] } } },
         // Name-based fallback (confirmed against the address in classifyRow).
         ...names.map((n) => ({ displayName: { equals: n, mode: "insensitive" as const } })),
-        ...(lastNames.length ? [{ lastName: { in: lastNames, mode: "insensitive" as const } }] : []),
+        ...(lastNames.length ? [{ lastName: { in: lastNames, mode: "insensitive" as const } }, { spouseLastName: { in: lastNames, mode: "insensitive" as const } }] : []),
+        ...lastNames.map((l) => ({ displayName: { contains: l, mode: "insensitive" as const } })),
+        ...(emails.length ? [{ spouseEmail: { in: emails, mode: "insensitive" as const } }] : []),
+        ...(phones.length ? [{ spousePhoneNormalized: { in: phones } }] : []),
       ],
     },
     select: {
       id: true,
       displayName: true,
       firstName: true,
+      spouseFirstName: true,
+      spouseLastName: true,
       addressLine1: true,
       postalCode: true,
       lastName: true,
@@ -256,6 +263,7 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
       let updated = 0;
       let skipped = 0;
       let unchanged = 0;
+      let duplicatesPrevented = 0;
       let casesCreated = 0;
       let casesFilled = 0;
       let returnTypesPrefilled = 0;
@@ -285,10 +293,36 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
         }
         let clientId: string;
         if (r.decision === "create") {
+          // Last check before creating: never create a second record for an
+          // email/phone already on file (e.g. added since this import was checked).
+          const clash = await tx.client.findFirst({
+            where: {
+              archivedAt: null,
+              OR: [
+                ...(row.emailNormalized ? [{ emailNormalized: row.emailNormalized }, { spouseEmail: { equals: row.emailNormalized, mode: "insensitive" as const } }] : []),
+                ...(row.phoneNormalized ? [{ phoneNormalized: row.phoneNormalized }, { spousePhoneNormalized: row.phoneNormalized }] : []),
+              ],
+            },
+            select: { id: true },
+          });
+          // Staff saw (and overrode) the records listed for this row; anything
+          // else is a record added since — never create a second file for it.
+          if ((row.emailNormalized || row.phoneNormalized) && clash && !r.candidateIds.includes(clash.id)) {
+            duplicatesPrevented++;
+            skipped++;
+            continue;
+          }
           const client = await tx.client.create({
             data: {
               firstName: row.firstName,
+              middleName: row.middleName ?? null,
               lastName: row.lastName,
+              spouseFirstName: row.spouseFirstName ?? null,
+              spouseMiddleName: row.spouseMiddleName ?? null,
+              spouseLastName: row.spouseLastName ?? null,
+              spouseEmail: row.spouseEmail ?? null,
+              spousePhone: row.spousePhone ?? null,
+              spousePhoneNormalized: normalizePhone(row.spousePhone ?? null),
               businessName: row.businessName,
               displayName: row.displayName,
               email: row.email,
@@ -331,13 +365,11 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
           }
           if (changed.includes("email")) data.emailNormalized = row.emailNormalized;
           if (changed.includes("phone")) data.phoneNormalized = row.phoneNormalized;
+          if (changed.includes("spousePhone")) data.spousePhoneNormalized = normalizePhone(row.spousePhone ?? null);
           if (plan.some((c) => c.kind === "repair")) namesRepaired.push(clientId);
-          if (changed.some((f) => ["firstName", "lastName", "businessName"].includes(f))) {
+          if (changed.some((f) => ["firstName", "middleName", "lastName", "businessName", "spouseFirstName", "spouseMiddleName", "spouseLastName"].includes(f))) {
             const next = { ...current, ...(data as object) } as typeof current;
-            const person = [next.firstName, next.lastName].filter(Boolean).join(" ");
-            data.displayName = row.spouse && row.returnType !== "1040_MFS" && !next.businessName
-              ? householdName({ first: next.firstName, last: next.lastName }, { first: [row.spouse.first, row.spouse.middle].filter(Boolean).join(" ") || null, last: row.spouse.last })
-              : person || (next.businessName ?? current.displayName);
+            data.displayName = clientDisplayName({ ...next, clientType: next.clientType });
           }
           if (taxReturnDerived && !current.taxReturnDerived) {
             data.taxReturnDerived = true;
@@ -373,6 +405,7 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
         updated,
         skipped,
         unchanged,
+        duplicatesPrevented,
         casesCreated,
         casesFilled,
         returnTypesPrefilled,

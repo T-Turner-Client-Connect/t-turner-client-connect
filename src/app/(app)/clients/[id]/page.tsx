@@ -21,6 +21,7 @@ import { DocumentsTab } from "@/components/client-tabs/documents";
 import { BookkeepingTab } from "@/components/client-tabs/bookkeeping";
 import { PortalTab } from "@/components/client-tabs/portal";
 import { TaxesTab } from "@/components/client-tabs/taxes";
+import { returnTypeLabel } from "@/lib/tax/return-types";
 import { ServicesTab } from "@/components/client-tabs/services";
 
 export const metadata = { title: "Client" };
@@ -50,6 +51,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       assignedTo: { select: { name: true } },
       contacts: { orderBy: { name: "asc" } },
       groups: { include: { group: true } },
+      taxPrepCases: { orderBy: { taxYear: "desc" }, take: 1 },
       consentRecords: { include: { recordedBy: { select: { name: true } }, evidenceFile: { select: { id: true, originalName: true } }, contact: { select: { name: true } } }, orderBy: { createdAt: "desc" } },
       tasks: { where: { status: "OPEN" }, include: { assignee: { select: { name: true } } }, orderBy: { dueAt: "asc" } },
     },
@@ -90,6 +92,13 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
             <Badge tone={client.status === "ACTIVE" ? "green" : client.status === "PROSPECT" ? "gold" : "gray"}>{CLIENT_STATUS_LABELS[client.status]}</Badge>
             <Badge>{CLIENT_TYPE_LABELS[client.clientType]}</Badge>
             {client.taxReturnDerived && <Badge tone="amber">From tax-prep data</Badge>}
+            <span data-testid="assigned-line">Assigned: <strong>{client.assignedTo?.name ?? "Unassigned"}</strong></span>
+            {client.taxPrepCases[0] && (
+              <Link href={`/clients/${id}?tab=taxes`} className="underline" data-testid="return-line">
+                {client.taxPrepCases[0].taxYear}: {returnTypeLabel(client.taxPrepCases[0].returnType, client.taxPrepCases[0].otherReturnForm)}
+              </Link>
+            )}
+            {(client.spouseFirstName || client.spouseLastName) && <span>Spouse: <strong>{[client.spouseFirstName, client.spouseMiddleName, client.spouseLastName].filter(Boolean).join(" ")}</strong></span>}
             {client.archivedAt && <Badge tone="red">Archived {fmtDate(client.archivedAt)}</Badge>}
           </span>
         }

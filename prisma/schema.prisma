@@ -189,48 +189,62 @@ enum ClientStatus {
 }
 
 model Client {
-  id               String       @id @default(cuid())
-  firstName        String?
-  lastName         String?
+  id                    String       @id @default(cuid())
+  firstName             String?
+  // Middle name or initial, kept separate from the first name.
+  middleName            String?
+  lastName              String?
   // What the client likes to be called ("Liz" for Elizabeth). Used in greetings.
-  preferredName    String?
+  preferredName         String?
   // Display name: "First Last" for individuals, or the business name.
-  displayName      String
-  businessName     String?
-  email            String?
-  emailNormalized  String?
-  phone            String?
+  displayName           String
+  businessName          String?
+  email                 String?
+  emailNormalized       String?
+  phone                 String?
   // E.164 (+15551234567) when the number could be parsed, used for matching.
-  phoneNormalized  String?
-  addressLine1     String?
-  addressLine2     String?
-  city             String?
-  state            String?
-  postalCode       String?
-  clientType       ClientType   @default(INDIVIDUAL)
-  status           ClientStatus @default(ACTIVE)
-  services         String[]
-  tags             String[]
-  notes            String?
+  phoneNormalized       String?
+  // Spouse on a joint return. One client record holds the couple; each tax
+  // year's TaxPrepCase keeps that year's filing details. The spouse's contact
+  // details are separate from the client's own (and their messaging consent).
+  spouseFirstName       String?
+  spouseMiddleName      String?
+  spouseLastName        String?
+  spouseEmail           String?
+  spousePhone           String?
+  spousePhoneNormalized String?
+  addressLine1          String?
+  addressLine2          String?
+  city                  String?
+  state                 String?
+  postalCode            String?
+  clientType            ClientType   @default(INDIVIDUAL)
+  status                ClientStatus @default(ACTIVE)
+  services              String[]
+  tags                  String[]
+  notes                 String?
   // The client's ID in TaxAct (or other tax software), used to match
   // e-file status imports. Never matched by name alone.
-  taxSoftwareId    String?      @unique
+  taxSoftwareId         String?      @unique
   // True when the record (or part of it) came from tax-preparation software
   // such as a TaxAct export. Drives Section 7216 eligibility checks.
-  taxReturnDerived Boolean      @default(false)
+  taxReturnDerived      Boolean      @default(false)
   // Tax entity for deadline cards: SOLE_PROPRIETOR | PARTNERSHIP | S_CORP |
   // C_CORP | NONPROFIT | TRUST_ESTATE. Null = not recorded yet.
-  entityType       String?
+  entityType            String?
   // Month (1–12) the business's tax year ends. Null = calendar year (December).
-  fiscalYearEnd    Int?
+  fiscalYearEnd         Int?
   // Does this owner have a nonprofit? YES | NO | NOT_CONFIRMED (null = not asked yet). Kept on the owner's main record.
-  hasNonprofit     String?
-  source           String?
-  assignedToId     String?
-  assignedTo       User?        @relation("AssignedStaff", fields: [assignedToId], references: [id], onDelete: SetNull)
-  archivedAt       DateTime?
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  hasNonprofit          String?
+  source                String?
+  assignedToId          String?
+  assignedTo            User?        @relation("AssignedStaff", fields: [assignedToId], references: [id], onDelete: SetNull)
+  archivedAt            DateTime?
+  // Set when staff merged this duplicate into another record (it is archived,
+  // never deleted, so its own history stays readable).
+  mergedIntoId          String?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
 
   contacts              Contact[]
   groups                ClientGroup[]

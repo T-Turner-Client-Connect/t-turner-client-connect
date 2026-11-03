@@ -8,6 +8,10 @@ export type MappedRow = Partial<Record<ImportField, string>>;
 /** A cleaned import row: only allow-listed fields, trimmed, normalized. */
 export type CleanRow = {
   firstName: string | null;
+  middleName?: string | null;
+  spouseFirstName?: string | null;
+  spouseMiddleName?: string | null;
+  spouseLastName?: string | null;
   lastName: string | null;
   businessName: string | null;
   displayName: string;
@@ -121,9 +125,10 @@ export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors:
   }
   if (spouse && !spouse.first && !spouse.last) spouse = null;
   if (spouse) warnings.push(`Joint taxpayers: ${joinName(primary)} (taxpayer) and ${joinName(spouse)} (spouse) — kept on one client record`);
-  // The client record's name is the primary taxpayer; the middle name/initial
-  // stays with the first name so "Allison R Stockton" reads as written.
-  let firstName = primary ? [primary.first, primary.middle].filter(Boolean).join(" ") || null : null;
+  // The client record's name is the primary taxpayer, with the middle
+  // name/initial in its own field ("Allison" · "R" · "Stockton").
+  let firstName = primary?.first ?? null;
+  let middleName = primary?.middle ?? null;
   let lastName = primary?.last ?? null;
   // On a business or nonprofit return TaxAct's name column is the entity's
   // name, not a person: keep it as the business name.
@@ -134,6 +139,7 @@ export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors:
     primary = null;
     spouse = null;
     firstName = null;
+    middleName = null;
     lastName = null;
   }
   const businessName = bizName;
@@ -189,13 +195,17 @@ export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors:
 
   const row: CleanRow = {
     firstName,
+    middleName,
+    spouseFirstName: spouse?.first ?? null,
+    spouseMiddleName: spouse?.middle ?? null,
+    spouseLastName: spouse?.last ?? null,
     lastName,
     businessName,
     // Joint return: the household on one record ("Allison R Stockton & Jonathan Scoggins").
     displayName:
       spouse && rt.code !== "1040_MFS" && !businessName
-        ? householdName({ first: firstName, last: lastName }, { first: [spouse.first, spouse.middle].filter(Boolean).join(" ") || null, last: spouse.last })
-        : buildDisplayName({ firstName, lastName, businessName }),
+        ? householdName({ first: [firstName, middleName].filter(Boolean).join(" ") || null, last: lastName }, { first: [spouse.first, spouse.middle].filter(Boolean).join(" ") || null, last: spouse.last })
+        : buildDisplayName({ firstName: [firstName, middleName].filter(Boolean).join(" ") || null, lastName, businessName }),
     email: emailNormalized ? email : null,
     emailNormalized,
     // Stored cleaned, e.g. "(205)705-0028 M" → "(205) 705-0028".
@@ -229,6 +239,8 @@ export type MatchCandidate = {
   id: string;
   displayName: string;
   firstName?: string | null;
+  spouseFirstName?: string | null;
+  spouseLastName?: string | null;
   lastName: string | null;
   addressLine1?: string | null;
   postalCode?: string | null;
@@ -255,6 +267,37 @@ function nameCompatible(row: CleanRow, c: MatchCandidate): boolean {
 }
 
 const norm = (s: string | null | undefined) => s?.toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim() || null;
+
+/**
+ * Name keys for duplicate checks: "first-initial|last" for each person in the
+ * row or record, ignoring middle names/initials, punctuation and order — so
+ * "Allison Stockton", "Allison R Stockton", "Stockton, Allison" and a joint
+ * "Jonathan Scoggins & Allison R Stockton" all share the key "a|stockton".
+ */
+export function personKeys(people: { first?: string | null; last?: string | null }[]): string[] {
+  const out = new Set<string>();
+  for (const p of people) {
+    const first = norm(p.first)?.replace(/&.*/, "").trim().split(/\s+/)[0];
+    const last = norm(p.last)?.split(/\s+/).pop();
+    if (first && last) out.add(`${first[0]}|${last}`);
+  }
+  return [...out];
+}
+
+export function rowKeys(row: CleanRow): string[] {
+  const parsed = !row.firstName && !row.lastName ? null : [{ first: row.firstName, last: row.lastName }];
+  return personKeys([...(parsed ?? []), ...(row.spouse ? [{ first: row.spouse.first, last: row.spouse.last }] : [])]);
+}
+
+export function candidateKeys(c: MatchCandidate): string[] {
+  const people: { first?: string | null; last?: string | null }[] = [{ first: c.firstName, last: c.lastName }, { first: c.spouseFirstName, last: c.spouseLastName }];
+  // Older records hold "Allison R Stockton & Jonathan" / "Scoggins": read the display name too.
+  for (const part of (c.displayName ?? "").split(/\s+(?:&|and|\+)\s+|\s*&\s*/i)) {
+    const w = part.trim().split(/\s+/);
+    if (w.length >= 2) people.push({ first: w[0], last: w[w.length - 1] });
+  }
+  return personKeys(people);
+}
 
 /** Same person or household, allowing for an older combined-name record. */
 export function sameName(row: CleanRow, c: MatchCandidate): boolean {
@@ -286,11 +329,11 @@ export function classifyRow(
   if (errors.length) return { match: "ERROR", candidateIds: [], notes: [] };
   const notes: string[] = [];
 
-  for (const key of [row.emailNormalized && `e:${row.emailNormalized}`, row.phoneNormalized && `p:${row.phoneNormalized}`]) {
+  for (const key of [row.emailNormalized && `e:${row.emailNormalized}`, row.phoneNormalized && `p:${row.phoneNormalized}`, ...rowKeys(row).map((k) => `n:${k}`)]) {
     if (!key) continue;
     const earlier = seenInFile.get(key);
     if (earlier !== undefined && earlier !== rowNumber) {
-      notes.push(`Same ${key.startsWith("e:") ? "email" : "phone"} as row ${earlier} in this file`);
+      notes.push(`Same ${key.startsWith("e:") ? "email" : key.startsWith("p:") ? "phone" : "name"} as row ${earlier} in this file`);
     } else if (earlier === undefined) {
       seenInFile.set(key, rowNumber);
     }
@@ -307,7 +350,10 @@ export function classifyRow(
   if (ids.length === 0) {
     // No email/phone match: fall back to the name plus the address, so a
     // re-imported file finds records that were created without a phone.
-    const byName = candidates.filter((c) => sameName(row, c));
+    // Any record that could be the same person (or their spouse) blocks an
+    // automatic "create" — staff decide.
+    const keys = new Set(rowKeys(row));
+    const byName = candidates.filter((c) => sameName(row, c) || candidateKeys(c).some((k) => keys.has(k)));
     if (byName.length) {
       const withAddress = byName.filter((c) => sameAddress(row, c));
       if (withAddress.length === 1 && byName.length === 1) {
@@ -315,7 +361,7 @@ export function classifyRow(
         notes.push(`Matched ${withAddress[0].displayName} by name and address (no email/phone match)`);
         return { match: inFileDup ? "AMBIGUOUS" : "MATCH", candidateIds: [withAddress[0].id], notes };
       }
-      notes.push(byName.length > 1 ? `Same name as ${byName.length} existing clients` : `Same name as ${byName[0].displayName}, but the address doesn't confirm it`);
+      notes.push(byName.length > 1 ? `Possible duplicate of ${byName.length} existing clients — choose which to update` : `Possible duplicate of ${byName[0].displayName} (same name) — update it unless you're sure this is a different person`);
       return { match: "AMBIGUOUS", candidateIds: byName.map((c) => c.id), notes };
     }
     return { match: notes.length ? "AMBIGUOUS" : "NEW", candidateIds: [], notes };
