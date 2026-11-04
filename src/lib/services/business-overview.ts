@@ -60,7 +60,7 @@ export function nextPayDate(known: string | null, frequency: string | null, toda
   return null;
 }
 
-export type CloseStep = { label: string; done: boolean; state?: string; detail?: string };
+export type CloseStep = { key?: string; label: string; done: boolean; state?: string; detail?: string; pill?: string };
 
 export type Deadline = { date: string; title: string; status: "ON_TRACK" | "DUE_SOON" | "UPCOMING" | "PAST_DUE" };
 
@@ -92,7 +92,7 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
   // (services/monthly-workflow.ts). Annual tax documents are never part of it.
   const wf = await monthlyChecklist(clientId, sy, sm);
   const close: { steps: CloseStep[]; percent: number; reconciled: number; accounts: number } = {
-    steps: wf.items.map((i) => ({ label: i.label, done: i.state === "DONE", state: i.state, detail: i.detail })),
+    steps: wf.items.map((i) => ({ key: i.key, label: i.label, done: i.state === "DONE", state: i.state, detail: i.detail, pill: i.pill })),
     percent: wf.percent,
     reconciled: wf.recon.reconciled,
     accounts: wf.recon.total,

@@ -3,14 +3,21 @@
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
 import { dateOrNull, run, str, type ActionState } from "@/lib/action";
+import { ValidationError } from "@/lib/services/clients";
 import { approveReconciliation, decideSharedCard, enterStatementBalances, monitorConnectionAccount, registerAccount, updateRegistryAccount } from "@/lib/services/bank-accounts";
-import { discardDraftRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest } from "@/lib/services/client-requests";
+import { discardDraftRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, staffUploadForRequest, staffUploadStatement } from "@/lib/services/client-requests";
+
 import { runWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { setTaxClassification } from "@/lib/services/tax-classification";
 import { releaseInterimStatement, revokeInterimStatement } from "@/lib/services/client-statements";
 
+async function optionalFile(fd: FormData, key: string) {
+  const f = fd.get(key);
+  return f instanceof File && f.size > 0 ? { bytes: new Uint8Array(await f.arrayBuffer()), originalName: f.name } : null;
+}
+
 const refresh = (clientId: string) => {
-  for (const p of ["", "/close", "/banking", "/banking/reconciliation", "/records", "/year-end", "/coetha"]) revalidatePath(`/bookkeeping/${clientId}${p}`);
+  for (const p of ["", "/close", "/statements", "/banking", "/banking/reconciliation", "/records", "/year-end", "/coetha"]) revalidatePath(`/bookkeeping/${clientId}${p}`);
   revalidatePath("/owner/coetha-review");
 };
 const intOrNull = (v: string) => (v.trim() ? Number(v) : null);
@@ -148,5 +155,27 @@ export async function taxClassificationAction(clientId: string, _prev: ActionSta
     refresh(clientId);
     revalidatePath(`/bookkeeping/${clientId}/profile`);
     return "Tax classification saved.";
+  });
+}
+
+export async function uploadForRequestAction(clientId: string, requestId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const file = await optionalFile(fd, "file");
+    if (!file) throw new ValidationError("Choose the file to upload.");
+    await staffUploadForRequest(actor, clientId, requestId, file);
+    refresh(clientId);
+    return "Uploaded and filed to that account and period. Coetha will pick it up.";
+  });
+}
+
+export async function uploadStatementAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const file = await optionalFile(fd, "file");
+    if (!file) throw new ValidationError("Choose the statement file.");
+    await staffUploadStatement(actor, clientId, { accountId: str(fd, "accountId"), month: str(fd, "month"), ...file });
+    refresh(clientId);
+    return "Statement uploaded and filed to that account and month.";
   });
 }

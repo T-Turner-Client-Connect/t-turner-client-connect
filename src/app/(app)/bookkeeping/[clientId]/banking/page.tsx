@@ -65,7 +65,7 @@ export default async function BankingPage({ params }: { params: Promise<{ client
       </section>
 
       {/* Connect a financial institution */}
-      <section className={clsx(card, "p-4 sm:p-5")} data-testid="connect-institution">
+      <section className={clsx(card, "scroll-mt-6 p-4 sm:p-5")} id="connect" data-testid="connect-institution">
         <h2 className={h2}><Link2 className="size-5 text-gold-600" aria-hidden /> Connect Financial Institution</h2>
         <p className="mt-1 text-sm text-navy-800">The client signs in to their bank in Plaid&apos;s secure window (Client Connect never sees bank passwords), then you choose which accounts Coetha monitors. Connect as many institutions as the business uses; each card or account is its own account below.</p>
         <p className={clsx("mt-2 text-sm font-semibold", mode === "LIVE" ? "text-emerald-800" : mode === "SANDBOX" ? "text-navy-900" : "text-red-700")} data-testid="bank-mode">{PLAID_MODE_TEXT[mode]}</p>
@@ -121,7 +121,7 @@ export default async function BankingPage({ params }: { params: Promise<{ client
         const rows = reg.rows.filter((r) => g.types.includes(r.accountType));
         if (!rows.length && g.title === "Other accounts") return null;
         return (
-          <section key={g.title} className={clsx(card, "p-4 sm:p-5")} data-testid={`group-${g.types[0]}`}>
+          <section key={g.title} className={clsx(card, "scroll-mt-6 p-4 sm:p-5")} id={`group-${g.types[0]}`} data-testid={`group-${g.types[0]}`}>
             <h2 className={h2}><g.icon className="size-5 text-gold-600" aria-hidden /> {g.title} <span className="rounded-full bg-navy-900 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-300">{rows.length}</span></h2>
             {!rows.length ? <p className="mt-2 text-sm text-slate-600">None registered.</p> : (
               <ul className="mt-3 divide-y divide-ivory-200">

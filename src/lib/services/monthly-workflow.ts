@@ -26,7 +26,7 @@ import { retentionDate, storeDocumentFile } from "./documents";
  */
 
 export type ItemState = "DONE" | "MISSING" | "IN_PROGRESS" | "NOT_DUE" | "NA";
-export type WorkflowItem = { key: string; label: string; state: ItemState; detail: string; href?: string };
+export type WorkflowItem = { key: string; label: string; state: ItemState; detail: string; href?: string; /** Short status for a pill, e.g. "8 of 8 accounts". */ pill?: string };
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const monthEnd = (y: number, m: number) => `${y}-${pad(m)}-${pad(new Date(Date.UTC(y, m, 0)).getUTCDate())}`;
@@ -70,16 +70,16 @@ export async function monthlyChecklist(clientId: string, year: number, month: nu
     prisma.bookkeepingPeriod.findUnique({ where: { clientId_year_month: { clientId, year, month } }, select: { id: true } }),
   ]);
   const items: WorkflowItem[] = [];
-  const syncLine = async (key: string, label: string, list: typeof accounts, none: ItemState): Promise<WorkflowItem> => {
-    if (!list.length) return { key, label, state: none, detail: none === "MISSING" ? "Register the business's accounts in Banking & Reconciliation" : "No accounts of this kind" };
+  const syncLine = async (key: string, label: string, list: typeof accounts, none: ItemState, unit: string): Promise<WorkflowItem> => {
+    if (!list.length) return { key, label, state: none, pill: `0 ${unit}`, detail: none === "MISSING" ? "Register the business's accounts in Banking & Reconciliation" : "No accounts of this kind" };
     const s = await Promise.all(list.map((a) => accountSynced(clientId, a, year, month, today)));
     const missing = s.filter((x) => x.state === "MISSING");
-    if (!due) return { key, label, state: "NOT_DUE", detail: `${list.length} account${list.length === 1 ? "" : "s"} · month in progress` };
-    if (!missing.length) return { key, label, state: "DONE", detail: `${list.length} of ${list.length} account${list.length === 1 ? "" : "s"} synced` };
-    return { key, label, state: "MISSING", detail: `${list.length - missing.length} of ${list.length} synced · ${missing.map((x, i) => `${registryLabel(list[s.indexOf(x)] ?? list[i])}: ${x.detail}`).slice(0, 3).join("; ")}` };
+    if (!due) return { key, label, state: "NOT_DUE", pill: `${list.length} ${unit}`, detail: `${list.length} account${list.length === 1 ? "" : "s"} · month in progress` };
+    if (!missing.length) return { key, label, state: "DONE", pill: `${list.length} of ${list.length} ${unit}`, detail: `${list.length} of ${list.length} account${list.length === 1 ? "" : "s"} synced` };
+    return { key, label, state: "MISSING", pill: `${list.length - missing.length} of ${list.length} ${unit}`, detail: `${list.length - missing.length} of ${list.length} synced · ${missing.map((x, i) => `${registryLabel(list[s.indexOf(x)] ?? list[i])}: ${x.detail}`).slice(0, 3).join("; ")}` };
   };
-  items.push(await syncLine("BANK_SYNC", "Bank transactions synchronized", accounts.filter((a) => BANK_TYPES.includes(a.accountType)), "MISSING"));
-  items.push(await syncLine("CARD_SYNC", "Credit card transactions synchronized", accounts.filter((a) => CARD_TYPES.includes(a.accountType)), "NA"));
+  items.push(await syncLine("BANK_SYNC", "Bank transactions synchronized", accounts.filter((a) => BANK_TYPES.includes(a.accountType)), "MISSING", "accounts"));
+  items.push(await syncLine("CARD_SYNC", "Credit card transactions synchronized", accounts.filter((a) => CARD_TYPES.includes(a.accountType)), "NA", "cards"));
 
   // Receipts / supporting documents: outstanding requests for the month, and amounts parked in Ask My Accountant.
   const receiptReqs = await prisma.documentRequest.count({ where: { clientId, kind: { in: ["SUPPORTING", "MONTHLY", "GENERAL"] }, status: { in: ["DRAFT", "OPEN"] }, OR: [{ periodId: period?.id ?? "-" }, { periodStart: { gte: from, lte: to } }] } });
@@ -87,25 +87,28 @@ export async function monthlyChecklist(clientId: string, year: number, month: nu
   const parkedCents = (parked._sum.debitCents ?? 0) - (parked._sum.creditCents ?? 0);
   items.push({
     key: "RECEIPTS", label: "Missing receipts or supporting documents",
+    pill: receiptReqs ? `${receiptReqs} outstanding` : parkedCents ? "Support needed" : "None outstanding",
     state: receiptReqs || parkedCents ? "MISSING" : due ? "DONE" : "NOT_DUE",
     detail: receiptReqs ? `${receiptReqs} request${receiptReqs === 1 ? "" : "s"} outstanding` : parkedCents ? `${usd(parkedCents)} in Ask My Accountant needs support` : "Nothing outstanding",
   });
 
   if (profile?.payroll) {
-    const pr = await prisma.document.count({ where: { clientId, deletedAt: null, docType: "PAYROLL_REPORT", OR: [{ periodId: period?.id ?? "-" }, { year, month }, { periodStart: { lte: to }, periodEnd: { gte: from } }] } });
-    items.push({ key: "PAYROLL", label: `Payroll data received${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`, state: pr ? "DONE" : due ? "MISSING" : "NOT_DUE", detail: pr ? `${pr} payroll report${pr === 1 ? "" : "s"} received` : "Payroll reports not received" });
+    const prDocs = await prisma.document.findMany({ where: { clientId, deletedAt: null, docType: "PAYROLL_REPORT", OR: [{ periodId: period?.id ?? "-" }, { year, month }, { periodStart: { lte: to }, periodEnd: { gte: from } }] }, select: { createdAt: true }, orderBy: { createdAt: "desc" } });
+    const pr = prDocs.length;
+    items.push({ key: "PAYROLL", label: `Payroll data received${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`, state: pr ? "DONE" : due ? "MISSING" : "NOT_DUE", pill: pr ? `Received ${prDocs[0].createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/Chicago" })}` : due ? "Not received" : "Not due", detail: pr ? `${pr} payroll report${pr === 1 ? "" : "s"} received` : "Payroll reports not received" });
   }
 
   const [rows, open] = await Promise.all([
     prisma.bankTransaction.count({ where: { clientId, date: { gte: from, lte: to }, status: { not: "EXCLUDED" } } }),
     prisma.bankTransaction.count({ where: { clientId, date: { gte: from, lte: to }, status: "UNREVIEWED" } }),
   ]);
-  items.push({ key: "CATEGORIZED", label: "Transactions categorized", state: !rows ? (due ? "MISSING" : "NOT_DUE") : open ? "IN_PROGRESS" : "DONE", detail: !rows ? "No transactions for the month yet" : open ? `${open} of ${rows} still to categorize` : `All ${rows} categorized` });
+  items.push({ key: "CATEGORIZED", label: "Transactions categorized", state: !rows ? (due ? "MISSING" : "NOT_DUE") : open ? "IN_PROGRESS" : "DONE", pill: open ? `${open.toLocaleString("en-US")} to categorize` : `${rows.toLocaleString("en-US")} transactions`, detail: !rows ? "No transactions for the month yet" : open ? `${open} of ${rows} still to categorize` : `All ${rows} categorized` });
 
   const recon = await monthlyAccountProgress({ id: "system:workflow", role: "ADMIN", name: "Coetha", email: "" }, clientId, year, month, { today });
   const reds = recon.rows.filter((r) => r.light === "RED").length;
   items.push({
     key: "RECONCILED", label: "Accounts reconciled",
+    pill: `${recon.reconciled} of ${recon.total} complete`,
     state: !recon.total ? (due ? "MISSING" : "NOT_DUE") : !due ? "NOT_DUE" : recon.reconciled === recon.total ? "DONE" : reds ? "MISSING" : "IN_PROGRESS",
     detail: recon.total ? `${recon.reconciled} of ${recon.total} accounts reconciled and approved${recon.awaitingApproval ? ` · ${recon.awaitingApproval} balanced, awaiting Tabitha` : ""}${reds ? ` · ${reds} with an issue or missing statement` : ""}` : "No accounts to reconcile",
   });
@@ -115,12 +118,12 @@ export async function monthlyChecklist(clientId: string, year: number, month: nu
   if (!reportMonth) {
     items.push({ key: "PREPARED", label: "Financial statements prepared", state: "NA", detail: "Quarterly client: statements at quarter end" });
   } else {
-    items.push({ key: "PREPARED", label: "Financial statements prepared", state: reports.length ? "DONE" : due ? "IN_PROGRESS" : "NOT_DUE", detail: reports.length ? `${reports.length} statement${reports.length === 1 ? "" : "s"} prepared` : "Not prepared yet" });
+    items.push({ key: "PREPARED", label: "Financial statements prepared (P&L / BS)", state: reports.length ? "DONE" : due ? "IN_PROGRESS" : "NOT_DUE", pill: reports.length ? "Prepared" : due ? "In Progress" : "Not Started", detail: reports.length ? `${reports.length} statement${reports.length === 1 ? "" : "s"} prepared` : "Not prepared yet" });
     const waiting = reports.filter((r) => r.reviewStatus === "AWAITING_REVIEW").length;
     const approved = reports.length > 0 && reports.every((r) => r.reviewStatus === "APPROVED" || r.visibility === "PUBLISHED");
-    items.push({ key: "APPROVAL", label: "Awaiting Tabitha's approval", state: approved ? "DONE" : waiting ? "IN_PROGRESS" : "NOT_DUE", detail: approved ? "Approved by Tabitha" : waiting ? `${waiting} statement${waiting === 1 ? "" : "s"} waiting for Tabitha` : "After statements are prepared" });
+    items.push({ key: "APPROVAL", label: "Awaiting Tabitha's approval", state: approved ? "DONE" : waiting ? "IN_PROGRESS" : "NOT_DUE", pill: approved ? "Approved" : "Pending Approval", detail: approved ? "Approved by Tabitha" : waiting ? `${waiting} statement${waiting === 1 ? "" : "s"} waiting for Tabitha` : "After statements are prepared" });
     const released = reports.length > 0 && reports.every((r) => r.visibility === "PUBLISHED");
-    items.push({ key: "RELEASED", label: "Financial statements released to client", state: released ? "DONE" : approved ? "IN_PROGRESS" : "NOT_DUE", detail: released ? "Released to the client portal" : approved ? "Approved — ready to release" : "After Tabitha approves" });
+    items.push({ key: "RELEASED", label: "Statements released to client", state: released ? "DONE" : approved ? "IN_PROGRESS" : "NOT_DUE", pill: released ? "Released" : "Not Released", detail: released ? "Released to the client portal" : approved ? "Approved — ready to release" : "After Tabitha approves" });
   }
   const shown = items.filter((i) => i.state !== "NA");
   const done = shown.filter((i) => i.state === "DONE").length;

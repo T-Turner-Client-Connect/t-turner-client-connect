@@ -64,7 +64,7 @@ describe("client overview", () => {
     // The close is derived from real data: manual check-offs no longer count, and nothing is
     // green without the records behind it (no bank accounts registered, no bank rows, no payroll report).
     const steps = Object.fromEntries(o.close.steps.map((s) => [s.label, s.state]));
-    expect(steps).toMatchObject({ "Bank transactions synchronized": "MISSING", "Missing receipts or supporting documents": "DONE", "Payroll data received (ADP)": "MISSING", "Transactions categorized": "MISSING", "Accounts reconciled": "MISSING", "Financial statements released to client": "NOT_DUE" });
+    expect(steps).toMatchObject({ "Bank transactions synchronized": "MISSING", "Missing receipts or supporting documents": "DONE", "Payroll data received (ADP)": "MISSING", "Transactions categorized": "MISSING", "Accounts reconciled": "MISSING", "Statements released to client": "NOT_DUE" });
     expect(o.close.steps.map((s) => s.label).join(" ")).not.toMatch(/1099|W-2/);
     expect(o.close.percent).toBe(Math.round((1 / 8) * 100));
     expect(o.licenses).toMatchObject({ count: 1, expired: 0 });

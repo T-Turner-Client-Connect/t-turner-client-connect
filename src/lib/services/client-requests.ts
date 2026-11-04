@@ -8,7 +8,7 @@ import { BK_UPLOAD_TYPES } from "@/lib/bk-uploads";
 import { chicagoToday } from "@/lib/dates";
 import { ValidationError } from "./clients";
 import { isYmd, todayCentral, toDate, ymdOf } from "./ledger";
-import { notifyClientUsers } from "./documents";
+import { notifyClientUsers, staffUploadDocument } from "./documents";
 import { assertCanSendClientRequests } from "./bk-permissions";
 import { registryLabel } from "./bank-accounts";
 
@@ -282,4 +282,49 @@ export async function requestsFor(clientId: string) {
 
 export const REQUEST_STATUS_LABEL: Record<string, string> = { REVIEW: "Waiting for Tabitha's review", DRAFT: "Draft — not sent", OPEN: "Waiting on client", SUBMITTED: "Received — Coetha reviewing", ACCEPTED: "Accepted", CANCELLED: "Cancelled" };
 export const docTypeLabel = (t: string | null) => (t ? (BK_UPLOAD_TYPES as Record<string, string>)[t] ?? (YEAR_END_FORMS as Record<string, string>)[t] ?? t : null);
-export { ymdOf };
+
+// --- Staff uploads Coetha asked for (new clients without a feed) --------------------------------
+
+const monthRange = (ym: string) => {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) throw new ValidationError("Choose the statement month.");
+  const [y, m] = ym.split("-").map(Number);
+  return { y, m, start: `${ym}-01`, end: ymdOf(new Date(Date.UTC(y, m, 0))) };
+};
+
+/**
+ * Staff attach a file to one of Coetha's requests (e.g. the client emailed the statement): it is
+ * filed with the request's account, document type and period, staff-only, and the request is marked
+ * received so Coetha resumes her review.
+ */
+export async function staffUploadForRequest(actor: Actor, clientId: string, requestId: string, file: { bytes: Uint8Array; originalName: string }) {
+  await assertCanSendClientRequests(actor, clientId);
+  const req = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, status: { in: ["DRAFT", "OPEN"] } } });
+  if (!req) throw new ValidationError("That request is closed.");
+  const doc = await staffUploadDocument(actor, {
+    clientId, category: "BOOKKEEPING", visibility: "STAFF_ONLY", title: req.title, docType: req.docType ?? "BK_OTHER", bytes: file.bytes, originalName: file.originalName,
+    year: req.periodEnd?.getUTCFullYear() ?? null, month: req.periodStart && req.periodEnd && req.periodStart.getUTCMonth() === req.periodEnd.getUTCMonth() ? req.periodEnd.getUTCMonth() + 1 : null,
+    coverage: req.periodStart && req.periodEnd ? { kind: "RANGE", year: req.periodEnd.getUTCFullYear(), month: null, start: req.periodStart, end: req.periodEnd } : null,
+  });
+  await prisma.document.update({ where: { id: doc.id }, data: { requestId: req.id, bookkeepingAccountId: req.bookkeepingAccountId } });
+  await prisma.documentRequest.update({ where: { id: req.id }, data: { status: "SUBMITTED" } });
+  await audit(prisma, { actorId: actor.id, action: "request.staff_uploaded", entityType: "DocumentRequest", entityId: req.id, clientId, details: { documentId: doc.id } });
+  return doc;
+}
+
+/** Onboarding without a bank feed: a statement for one registered account and month. */
+export async function staffUploadStatement(actor: Actor, clientId: string, input: { accountId: string; month: string; bytes: Uint8Array; originalName: string }) {
+  await assertCanSendClientRequests(actor, clientId);
+  const acct = await prisma.bookkeepingAccount.findFirst({ where: { id: input.accountId, clientId, active: true } });
+  if (!acct) throw new ValidationError("Choose one of this business's registered accounts.");
+  const r = monthRange(input.month);
+  const isBank = acct.accountType === "CHECKING" || acct.accountType === "SAVINGS";
+  const doc = await staffUploadDocument(actor, {
+    clientId, category: "BOOKKEEPING", visibility: "STAFF_ONLY", title: `${isBank ? "Bank" : "Card"} statement — ${registryLabel(acct)} — ${rangeText({ periodStart: toDate(r.start), periodEnd: toDate(r.end) })}`,
+    docType: isBank ? "BANK_STATEMENT" : "CARD_STATEMENT", year: r.y, month: r.m, coverage: { kind: "MONTH", year: r.y, month: r.m, start: toDate(r.start), end: toDate(r.end) }, bytes: input.bytes, originalName: input.originalName,
+  });
+  await prisma.document.update({ where: { id: doc.id }, data: { bookkeepingAccountId: acct.id } });
+  // Answers any open statement request for that account and month.
+  await prisma.documentRequest.updateMany({ where: { clientId, bookkeepingAccountId: acct.id, status: { in: ["DRAFT", "OPEN"] }, periodStart: { lte: toDate(r.end) }, periodEnd: { gte: toDate(r.start) }, kind: "STATEMENT" }, data: { status: "SUBMITTED" } });
+  await audit(prisma, { actorId: actor.id, action: "bookkeeping.statement_uploaded", entityType: "Document", entityId: doc.id, clientId, details: { account: registryLabel(acct), month: input.month } });
+  return doc;
+}

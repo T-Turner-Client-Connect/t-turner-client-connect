@@ -2,10 +2,19 @@
 
 For Tabitha and the office. What changed, where it lives, and the rules behind it.
 
+## The bookkeeping dashboard (staff / admin only)
+
+Bookkeeping → client → **Bookkeeping Management** (`/bookkeeping/<client>/close`) is Tabitha's
+dashboard design: Financial Overview (last bank update, Refresh Data, bank balance, income,
+expenses, net profit), Monthly Progress, the Coetha card with five tiles, Accounts Overview, Recent
+Account Activity, the month strip, and — only when Coetha needs them — "Upload statements Coetha
+requested" (each upload is filed to that request's account and period). Statement approvals,
+release, interim statements and settings moved to `/bookkeeping/<client>/statements` (reached from
+"View Draft", "Review" and "View Full Bookkeeping History"). The client portal is unchanged.
+
 ## The monthly checklist (automatic)
 
-Bookkeeping → client → **Bookkeeping Management** (`/bookkeeping/<client>/close`). Every line is
-derived from real data; nobody checks anything off:
+Every line is derived from real data; nobody checks anything off:
 
 | Line | Comes from |
 |---|---|

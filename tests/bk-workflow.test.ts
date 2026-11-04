@@ -7,7 +7,7 @@ import { categorizeBankTransaction, postJournalEntry, postOpeningBalances, profi
 import { suggestCategories } from "@/lib/services/ledger-review";
 import { completeBankLink, syncConnection } from "@/lib/services/banking";
 import { approveReconciliation, detectSharedCards, enterStatementBalances, monitorConnectionAccount, monthlyAccountProgress, reconMath, registerAccount, decideSharedCard } from "@/lib/services/bank-accounts";
-import { classifyRequest, createClientRequest, DEPOSIT_REVIEW_THRESHOLD_CENTS, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, yearEndWindow } from "@/lib/services/client-requests";
+import { classifyRequest, createClientRequest, DEPOSIT_REVIEW_THRESHOLD_CENTS, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, staffUploadForRequest, staffUploadStatement, yearEndWindow } from "@/lib/services/client-requests";
 import { monthlyChecklist, runWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -249,6 +249,28 @@ describe("request routing: routine requests go out on their own, the rest wait f
     await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
     expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(0);
     expect(await prisma.document.count({ where: { clientId: w.biz.id, bookkeepingAccountId: chk.id, docType: "BANK_STATEMENT", visibility: "STAFF_ONLY" } })).toBe(1);
+  });
+});
+
+describe("staff upload the statements Coetha asks for (new clients without a feed)", () => {
+  it("an upload against a request is filed to its account and period and answers it; a plain statement upload answers the matching request", async () => {
+    const w = await world();
+    const chk = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", nickname: "Operating", last4: "0042" });
+    const sav = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "SAVINGS", nickname: "Reserve", last4: "0043" });
+    await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
+    const [r1, r2] = await prisma.documentRequest.findMany({ where: { clientId: w.biz.id, kind: "STATEMENT" }, orderBy: { title: "asc" } });
+    await expect(staffUploadForRequest(w.eve, w.biz.id, r1.id, { bytes: PDF, originalName: "oct.pdf" })).rejects.toBeInstanceOf(ForbiddenError);
+    const doc = await staffUploadForRequest(w.daria, w.biz.id, r1.id, { bytes: PDF, originalName: "oct.pdf" });
+    expect(doc).toMatchObject({ category: "BOOKKEEPING", visibility: "STAFF_ONLY", docType: "BANK_STATEMENT" });
+    const filed = await prisma.document.findUniqueOrThrow({ where: { id: doc.id } });
+    expect(filed).toMatchObject({ requestId: r1.id, bookkeepingAccountId: r1.bookkeepingAccountId });
+    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: r1.id } })).status).toBe("SUBMITTED");
+    const other = r2.bookkeepingAccountId === chk.id ? chk : sav;
+    await staffUploadStatement(w.daria, w.biz.id, { accountId: other.id, month: "2026-10", bytes: new TextEncoder().encode("%PDF-1.4\n% another statement\n"), originalName: "oct-2.pdf" });
+    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: r2.id } })).status).toBe("SUBMITTED");
+    // Statements on file: the reconciliations now show them as received.
+    const p = await monthlyAccountProgress(w.daria, w.biz.id, 2026, 10, { today: TODAY });
+    expect(p.rows.map((r) => r.rec?.statementStatus)).toEqual(["RECEIVED", "RECEIVED"]);
   });
 });
 
