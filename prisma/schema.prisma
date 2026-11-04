@@ -4504,6 +4504,8 @@ model CommunicationPreferenceChange {
   createdAt    DateTime         @default(now())
 
   @@index([clientId, createdAt])
+}
+
 // Square webhook deliveries, one row per Square event_id, so a replayed event is never applied twice.
 model SquareWebhookEvent {
   id          String    @id @default(cuid())
