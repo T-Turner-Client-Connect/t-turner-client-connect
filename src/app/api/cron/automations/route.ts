@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { runAutomations } from "@/lib/services/automations";
 import { heartbeat } from "@/lib/services/documents";
 import { syncStaleSquareBilling } from "@/lib/services/square-billing";
+import { reconcileSquareInvoices } from "@/lib/services/square-invoicing";
 import { runDailyBankRetrieval } from "@/lib/services/banking";
 import { runDailyCoetha } from "@/lib/services/coetha";
 
@@ -17,11 +18,13 @@ export async function POST(req: Request) {
   const summary = await runAutomations();
   // Read-only Square refresh, so billing figures stay current without anyone pressing Sync.
   const square = await syncStaleSquareBilling().catch((e) => ({ error: e instanceof Error ? e.message : "failed" }));
+  // Backup for a missed Square webhook: re-reads invoices sent through Square and records any payment (reads only).
+  const squareInvoices = await reconcileSquareInvoices().catch(() => ({ error: "failed" }));
   // Automatic read-only bank retrieval: every authorized connection at least once a day (real
   // banks only with the Plaid production keys AND Tabitha's "Live bank connections" switch).
   const bank = await runDailyBankRetrieval().catch(() => ({ error: "failed" }));
   // Then Coetha drafts proposals for businesses with newly retrieved rows (her switch and an
   // Anthropic key are required; drafts only, nothing is posted).
   const coetha = await runDailyCoetha().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, bank, coetha });
+  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha });
 }

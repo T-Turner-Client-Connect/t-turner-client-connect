@@ -27,8 +27,9 @@
   **Collected** = recorded successful payments minus refunds, by date received. Failed and pending
   payments never count. Unpaid invoices never count as cash.
 
-## Payment provider
-**None connected.** Payments, refunds and failures are recorded by hand and labeled "Recorded manually".
-To take card/ACH payments online and get provider-confirmed results you'd need a provider account
-(e.g. Stripe or Square), its secret API key and webhook signing secret in Netlify (never in GitHub), and a
-review of that provider's rules on fees before enabling any plan fee for online payments.
+## Payment provider: Square
+Firm invoices can be sent through the firm's **existing Square connection** (the same token that
+imports recurring billing). Square payments are recorded on the invoice automatically (webhook +
+hourly re-check) and labeled "Square"; everything else is recorded by hand ("Recorded manually").
+Sending is controlled by Tabitha's "Send invoices through Square" switch (off by default). Setup,
+permissions and the go-live checklist: [square-invoicing.md](square-invoicing.md).

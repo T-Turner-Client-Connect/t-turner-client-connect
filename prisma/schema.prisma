@@ -2294,6 +2294,25 @@ model Invoice {
   // A Square payment link created in the firm's own Square account. Shown to the client only
   // when the owner has enabled Square payment links (BillingSettings) and Square is configured.
   squarePaymentUrl      String?
+  // Sent through the firm's existing Square connection (Orders + Invoices API). Square's ids are
+  // stored so retries resume instead of creating a second order or invoice. public_url is the
+  // page the client pays on ("Pay securely with Square").
+  squareCustomerId      String?
+  squareOrderId         String?        @unique
+  squareInvoiceId       String?        @unique
+  squareInvoiceVersion  Int?
+  // Square's invoice status: DRAFT, UNPAID, SCHEDULED, PARTIALLY_PAID, PAID, CANCELED, ...
+  squareStatus          String?
+  squarePublicUrl       String?
+  // Part of every Square idempotency key; only changes if a canceled Square invoice is replaced.
+  squareRevision        Int            @default(1)
+  squareSentAt          DateTime?
+  squareSentById        String?
+  squareSyncedAt        DateTime?
+  // The last Square problem for this invoice, in plain language (never a token or card data).
+  squareError           String?
+  // Our branded email with the Square link (delivery "Share manually").
+  squareEmailSentAt     DateTime?
   submittedAt           DateTime?
   submittedById         String?
   approvedAt            DateTime?
@@ -2392,27 +2411,35 @@ model Payment {
 
 // Owner-configurable defaults. One row (id = "default").
 model BillingSettings {
-  id                      String     @id @default("default")
-  planFeeType             AmountType @default(NONE)
-  planFeeValue            Int        @default(0)
-  maxInstallments         Int        @default(4)
-  defaultInstallments     Int        @default(3)
-  defaultDiscountType     AmountType @default(NONE)
-  defaultDiscountValue    Int        @default(0)
-  defaultTaxRateBps       Int        @default(0)
-  defaultDepositType      AmountType @default(NONE)
-  defaultDepositValue     Int        @default(0)
-  defaultPaymentTerms     String?
+  id                       String     @id @default("default")
+  planFeeType              AmountType @default(NONE)
+  planFeeValue             Int        @default(0)
+  maxInstallments          Int        @default(4)
+  defaultInstallments      Int        @default(3)
+  defaultDiscountType      AmountType @default(NONE)
+  defaultDiscountValue     Int        @default(0)
+  defaultTaxRateBps        Int        @default(0)
+  defaultDepositType       AmountType @default(NONE)
+  defaultDepositValue      Int        @default(0)
+  defaultPaymentTerms      String?
   // Owner confirmed the payment provider's / legal rules for the plan fee.
-  planFeeRulesConfirmedAt DateTime?
+  planFeeRulesConfirmedAt  DateTime?
   // Square payment links on invoices: off until the owner turns them on.
-  squareLinksEnabledAt    DateTime?
-  squareLinksEnabledById  String?
+  squareLinksEnabledAt     DateTime?
+  squareLinksEnabledById   String?
   // Republic Bank Refund Transfer fees the owner has confirmed, shown to clients as written.
   // Empty = no fee amounts are shown (none are assumed).
-  refundTransferFeeNote   String?
-  updatedById             String?
-  updatedAt               DateTime   @updatedAt
+  refundTransferFeeNote    String?
+  // "Send invoices through Square": the one owner-only switch for live Square invoices. Off until
+  // the owner turns it on; every change is in the owner audit log.
+  squareSendingEnabledAt   DateTime?
+  squareSendingEnabledById String?
+  // SHARE_MANUALLY = our own branded email carries the Square link; EMAIL = Square emails the client.
+  squareDelivery           String     @default("SHARE_MANUALLY")
+  // Bank transfer (ACH) on Square invoices, alongside card.
+  squareAcceptBank         Boolean    @default(true)
+  updatedById              String?
+  updatedAt                DateTime   @updatedAt
 }
 
 model Expense {
@@ -4564,4 +4591,41 @@ model CoethaProposal {
 
   @@index([clientId, status, kind])
   @@index([bankTransactionId])
+}
+
+// Square webhook deliveries, one row per Square event_id, so a replayed event is never applied twice.
+model SquareWebhookEvent {
+  id          String    @id @default(cuid())
+  eventId     String    @unique
+  type        String
+  objectId    String?
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  result      String?
+
+  @@index([receivedAt])
+}
+
+// Square payments seen by the webhook or the reconcile job. MATCHED = recorded on one of our
+// invoices; UNMATCHED = needs staff review; RECURRING = a recurring-billing customer already
+// tracked under Square billing; DISMISSED = reviewed, not a Client Connect invoice.
+model SquarePaymentSeen {
+  id               String    @id @default(cuid())
+  squarePaymentId  String    @unique
+  squareOrderId    String?
+  squareCustomerId String?
+  amountCents      Int
+  status           String
+  paidAt           DateTime?
+  sourceType       String?
+  state            String
+  invoiceId        String?
+  paymentId        String?
+  note             String?
+  reviewedById     String?
+  reviewedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([state])
 }
