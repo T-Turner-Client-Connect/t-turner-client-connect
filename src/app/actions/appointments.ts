@@ -35,6 +35,7 @@ function refresh() {
   revalidatePath("/owner/appointments");
   revalidatePath("/appointments");
   revalidatePath("/tasks");
+  revalidatePath("/");
 }
 
 // --- Client portal -----------------------------------------------------------
