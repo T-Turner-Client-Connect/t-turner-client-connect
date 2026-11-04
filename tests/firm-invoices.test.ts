@@ -162,7 +162,7 @@ describe("drafts, approval and permissions", () => {
     await expect(updateFirmInvoice(tab, inv.id, input(rosa.id))).rejects.toThrow(/Only drafts/);
   });
 
-  it("staff submit drafts for approval but can't approve, send, void, record payments or change settings", async () => {
+  it("staff submit drafts for approval but can't approve, void, record refunds or credits, or change settings", async () => {
     const { tab, daria } = await office();
     const { rosa, rosaUser } = await clients(tab);
     const inv = await createFirmInvoice(daria, input(rosa.id));
@@ -187,7 +187,9 @@ describe("drafts, approval and permissions", () => {
     const sent = await prisma.invoice.findUniqueOrThrow({ where: { id: inv.id } });
     expect(sent).toMatchObject({ state: "ISSUED", approvedById: tab.id, submittedById: daria.id });
     expect(sent.publishedAt).not.toBeNull();
-    await expect(recordPayment(daria, { invoiceId: inv.id, kind: "PAYMENT", status: "SUCCEEDED", amountCents: 100, receivedOn: today, method: "CASH" })).rejects.toBeInstanceOf(ForbiddenError);
+    // Billing staff record payments received (square-invoicing.test.ts); refunds and credits stay with the owner.
+    await expect(recordPayment(daria, { invoiceId: inv.id, kind: "REFUND", status: "SUCCEEDED", amountCents: 100, receivedOn: today, method: "CASH" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(recordPayment(daria, { invoiceId: inv.id, kind: "CREDIT", status: "SUCCEEDED", amountCents: 100, receivedOn: today, method: "OTHER", note: "x" })).rejects.toBeInstanceOf(ForbiddenError);
     expect((await invoiceHistory(tab, inv.id)).map((h) => h.action)).toEqual([
       "Created as a draft", "Submitted for owner approval", "Returned to draft", "Edited", "Submitted for owner approval", "Approved by the owner", "Sent to the client's portal",
     ]);
