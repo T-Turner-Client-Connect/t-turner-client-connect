@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Building2, CalendarDays, ChevronRight, Handshake, Info, Users } from "lucide-react";
+import { Building2, CalendarDays, ChevronRight, ExternalLink, HandHeart, Handshake, Info, Landmark, Users } from "lucide-react";
 /** "2027-04-15" → "Apr 15, 2027" (date only, no time-zone shift). */
 const shortDate = (iso: string) => { const [y, m, d] = iso.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }); };
 
@@ -90,7 +90,13 @@ const FORMS: { key: string; form: string; who: string; icon: React.ComponentType
   { key: "PARTNERSHIP", form: "Form 1065", who: "Partnerships", icon: Handshake },
   { key: "S_CORP", form: "Form 1120-S", who: "S Corporations", icon: Building2 },
   { key: "C_CORP", form: "Form 1120", who: "C Corporations", icon: Building2 },
+  { key: "TRUST_ESTATE", form: "Form 1041", who: "Estates & Trusts", icon: Landmark },
+  { key: "NONPROFIT_990", form: "Form 990 / 990-EZ", who: "Nonprofits", icon: HandHeart },
+  { key: "NONPROFIT_990N", form: "Form 990-N", who: "Small Nonprofits", icon: HandHeart },
 ];
+
+/** IRS forms, instructions and publications (official site, new tab). */
+export const IRS_FORMS_URL = "https://www.irs.gov/forms-instructions";
 
 /**
  * The headline federal filing countdowns (from the same deadline engine as before — dates are
@@ -100,7 +106,8 @@ export function CountdownCards({ lines, max = 4 }: { lines: CountdownLine[]; max
   const cards = FORMS.map((f) => ({ ...f, line: lines.find((l) => l.key === f.key) })).filter((c) => c.line && c.line.dueDate && c.line.days !== null).slice(0, max);
   if (!cards.length) return <p className="py-6 text-sm text-slate-600">Deadlines will appear here once the IRS confirms the next filing season.</p>;
   return (
-    <div className={`grid gap-3 ${cards.length >= 4 ? "grid-cols-2 xl:grid-cols-4" : "grid-cols-3"}`} data-testid="countdown-cards">
+    <>
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-4" data-testid="countdown-cards">
       {cards.map((c) => (
         <div key={c.key} className={`flex flex-col overflow-hidden rounded-2xl border bg-white text-center shadow-sm ${c.line!.appliesToYou ? "border-gold-500 ring-2 ring-gold-400/40" : "border-gold-200"}`} data-testid={`countdown-${c.key}`}>
           <div className="flex flex-1 flex-col items-center px-1.5 pb-3 pt-4 sm:px-3">
@@ -118,6 +125,8 @@ export function CountdownCards({ lines, max = 4 }: { lines: CountdownLine[]; max
         </div>
       ))}
     </div>
+    <p className="mt-3 text-center text-sm"><a href={IRS_FORMS_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-navy-900 underline decoration-gold-500 underline-offset-2" data-testid="irs-forms-link">View all IRS forms &amp; publications <ExternalLink className="size-3.5" aria-hidden /></a></p>
+    </>
   );
 }
 

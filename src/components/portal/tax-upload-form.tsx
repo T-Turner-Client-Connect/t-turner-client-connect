@@ -16,6 +16,8 @@ const SCAN_TEXT: Record<string, { tone: Result["tone"]; text: string }> = {
  * Each item is stored under an existing client document type, with its name as the file's title.
  */
 export const UPLOAD_CHECKLIST: { key: string; label: string; note?: string; docType: string }[] = [
+  { key: "w2", label: "W-2", note: "Wages from an employer", docType: "W2" },
+  { key: "k1", label: "K-1", note: "Partnership, S corporation, estate or trust income", docType: "K1" },
   { key: "charity", label: "Charity donations", note: "Receipts or letters for cash or items you gave", docType: "CLIENT_OTHER" },
   { key: "car-tag", label: "Car tag", note: "Vehicle registration (tag) receipt", docType: "CLIENT_OTHER" },
   { key: "medical", label: "Medical expenses", note: "Doctor, dental, prescription and insurance costs", docType: "CLIENT_OTHER" },

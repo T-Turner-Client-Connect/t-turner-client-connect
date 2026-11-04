@@ -1,7 +1,7 @@
-import { ChevronDown, IdCard, Lightbulb, ShieldCheck, UserPlus, UserRound, Users } from "lucide-react";
+import { Car, ChevronDown, IdCard, Lightbulb, ShieldCheck, Trash2, UserPlus, UserRound, Users } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { SlotRow } from "@/components/identity-section";
-import { portalAddPersonAction } from "@/app/actions/identity";
+import { portalAddPersonAction, portalRemovePersonAction } from "@/app/actions/identity";
 import { ID_ROLES, ID_TYPES, type identityOverview, type IdRole, type IdType } from "@/lib/services/identity";
 import { fmtIso } from "@/lib/tax/deadlines";
 import { NavyCard } from "./luxury";
@@ -43,11 +43,44 @@ function StatusChip({ s, label }: { s: Slot; label?: boolean }) {
 
 const slotOf = (e: Entry, t: IdType) => e.slots.find((s) => s.type === t)!;
 
-function Slots({ entry, clientId, linkFor }: { entry: Entry; clientId: string; linkFor: (id: string) => string }) {
+/** Anything already submitted for this person (any document, any status). */
+const hasSubmitted = (e: Entry) => e.slots.some((s) => s.history.length > 0);
+
+/**
+ * A spouse or dependent added by mistake can be removed until something is submitted for
+ * them; after that only our office can remove them (the server enforces this too).
+ */
+function RemovePerson({ entry, clientId }: { entry: Entry; clientId: string }) {
+  if (entry.person.role === "CLIENT") return null;
+  if (hasSubmitted(entry)) return <p className="px-4 pb-3 text-xs text-slate-500 sm:px-6">Documents were submitted for {entry.person.name}. To remove them, please send our office a message.</p>;
   return (
-    <ul className="divide-y divide-navy-100 border-t border-ivory-200 bg-ivory-50/40 px-4 sm:px-6">
-      {entry.slots.map((s) => <SlotRow key={s.type} slot={s} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} />)}
-    </ul>
+    <ActionForm action={portalRemovePersonAction.bind(null, clientId, entry.person.id)} className="px-4 pb-3 sm:px-6">
+      <button type="submit" className="inline-flex items-center gap-1.5 text-sm font-semibold text-red-700 underline-offset-2 hover:underline" data-testid="remove-person">
+        <Trash2 className="size-4" aria-hidden /> Remove {entry.person.name}
+      </button>
+      <span className="ml-2 text-xs text-slate-500">Added by mistake? You can remove them until documents are submitted.</span>
+    </ActionForm>
+  );
+}
+
+function Slots({ entry, clientId, linkFor }: { entry: Entry; clientId: string; linkFor: (id: string) => string }) {
+  // Dependents: a driver's license only for those old enough to drive — never asked by default.
+  const isDependent = entry.person.role === "DEPENDENT";
+  const license = entry.slots.find((s) => s.type === "DRIVERS_LICENSE");
+  const showLicense = !isDependent || (license?.history.length ?? 0) > 0;
+  return (
+    <div className="border-t border-ivory-200 bg-ivory-50/40">
+      <ul className="divide-y divide-navy-100 px-4 sm:px-6">
+        {entry.slots.filter((s) => showLicense || s.type !== "DRIVERS_LICENSE").map((s) => <SlotRow key={s.type} slot={s} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} />)}
+      </ul>
+      {!showLicense && license && (
+        <details className="px-4 pb-3 sm:px-6">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-sm font-semibold text-navy-900 underline underline-offset-2 [&::-webkit-details-marker]:hidden"><Car className="size-4 text-gold-600" aria-hidden />Only if {entry.person.name} drives: add a driver&apos;s license</summary>
+          <ul className="mt-1"><SlotRow slot={license} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} /></ul>
+        </details>
+      )}
+      <RemovePerson entry={entry} clientId={clientId} />
+    </div>
   );
 }
 

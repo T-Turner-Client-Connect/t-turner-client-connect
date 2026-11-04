@@ -5,6 +5,7 @@ import { countdownText, fmtIso } from "@/lib/tax/deadlines";
 import { money } from "@/lib/billing/pricing";
 import { fmtChicago } from "@/lib/tz";
 import { TaxYearSelect } from "./home-widgets";
+import { TaxDocsOnline } from "./tax-docs-online";
 import { ActionTiles, CountdownCards, ImportantToKnow, luxCard, NewsList, PanelHead, type Tile } from "./luxury";
 import { Mountains } from "./mountains";
 
@@ -122,6 +123,7 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
         </p>
       )}
       <ActionTiles tiles={tiles} />
+      <TaxDocsOnline />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <section className={luxCard} data-testid="announcements">
@@ -130,7 +132,7 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
         </section>
         <section className={luxCard} data-testid="countdowns-panel">
           <PanelHead icon={Clock} title="Tax Countdowns" action={<span className="rounded-full border border-gold-500 px-3 py-1 text-sm font-semibold text-navy-900">Next filing season</span>} />
-          <div className="pt-3"><CountdownCards lines={countdownLines} max={3} /></div>
+          <div className="pt-3"><CountdownCards lines={countdownLines} max={7} /></div>
         </section>
       </div>
 
