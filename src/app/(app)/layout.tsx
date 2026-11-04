@@ -15,7 +15,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <div className="min-h-dvh">
       <PreviewBanner />
       <AppNav user={{ name: user.name, role: user.role }} signOut={logoutAction} unread={unread} owner={owner} />
-      <main className="px-4 py-6 sm:px-6 lg:ml-64 lg:px-12 lg:py-10">
+      <main className="px-4 py-6 sm:px-6 lg:ml-64 lg:px-12 lg:py-10 print:ml-0! print:p-0!">
         <div className="mx-auto max-w-6xl">
           {ready.length > 0 && (
             // In-site reminder: due social posts, shown until each platform is marked posted.

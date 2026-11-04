@@ -80,6 +80,8 @@ export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: str
     // Coetha Accounting Review: internal findings, requests and approvals across bookkeeping clients.
     { href: "/owner/coetha-review", label: "Coetha Accounting Review", show: access.isOwner || c("coetha", "view") },
     { href: "/owner/automation", label: "Coetha & bank feeds", show: access.isOwner },
+    // Quarterly access reviews and staff offboarding: Tabitha's alone (not grantable).
+    { href: "/owner/access-review", label: "Access review", show: access.isOwner },
     { href: billingSettingsVisible(access) ? "/owner/settings" : "/owner/settings/staff-access", label: "Settings", show: settingsVisible(access) },
   ];
   return tabs.filter((t) => t.show).map(({ href, label }) => ({ href, label }));
