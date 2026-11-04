@@ -125,7 +125,7 @@ export default async function ClientOverview({ params, searchParams }: { params:
       {/* Banner */}
       <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-6 py-6 text-white ring-1 ring-gold-500/40 sm:px-8" data-testid="overview-banner">
         {/* Tabitha's glass-building photo on the right, fading into the navy. */}
-        <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] sm:block">
+        <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 hidden w-[48%] sm:block">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/brand/glass-buildings.jpg" alt="" className="size-full object-cover object-right" />
           <span className="absolute inset-0 bg-gradient-to-r from-navy-950 via-navy-950/30 to-transparent" />
