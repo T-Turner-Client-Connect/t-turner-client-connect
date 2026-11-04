@@ -8,9 +8,21 @@ const PLAID_PRIVACY_URL = "https://plaid.com/legal/#end-user-privacy-policy";
 const list = "list-disc space-y-1 pl-6";
 const status = "rounded-lg border border-gold-300 bg-gold-50 px-4 py-3 text-[15px]";
 
+/**
+ * The effective date shown on the policy. A production build fails until the owner's
+ * publication date is set, so the updated text can't go live with a placeholder date.
+ */
+function effectiveDate(): string {
+  if (PRIVACY_EFFECTIVE_DATE) return PRIVACY_EFFECTIVE_DATE;
+  if ((process.env.BUILD_CONTEXT || process.env.CONTEXT) === "production") {
+    throw new Error("Set PRIVACY_EFFECTIVE_DATE in src/lib/business.ts to the publication date before publishing the Privacy Policy.");
+  }
+  return "Pending publication (draft)";
+}
+
 export default function PrivacyPolicy() {
   return (
-    <LegalDoc title="Privacy Policy" effective={PRIVACY_EFFECTIVE_DATE}>
+    <LegalDoc title="Privacy Policy" effective={effectiveDate()}>
       <p>{BUSINESS.legalName} operates {BUSINESS.platformName} to communicate with clients and support our professional services. This policy applies to {BUSINESS.platformIdentity}.</p>
       <section>
         <h2>Information we collect</h2>
@@ -47,8 +59,11 @@ export default function PrivacyPolicy() {
           </li>
           <li>
             <strong>Information we receive.</strong> The name and type of each connected account, your financial institution&rsquo;s name, the last four digits of the account number, account
-            balances, and transactions (date, amount, and description, which may include merchant or payee names). We do not request full account or routing numbers. Account statements would be
-            retrieved only if we add that feature later and you separately authorize it.
+            balances, and transactions (date, amount, and description, which may include merchant or payee names). We do not request full account or routing numbers.
+          </li>
+          <li>
+            <strong>Account statements.</strong> We have requested Plaid&rsquo;s Statements product, which provides copies of account statements. It will not be used until consent wording
+            that covers statements has been approved, added to the connection process, and tested, and you have separately authorized it.
           </li>
           <li>
             <strong>Read-only use.</strong> Bank connections are read-only. We cannot move money, make payments, or change your accounts through them. Each connection belongs to one client
@@ -103,7 +118,7 @@ export default function PrivacyPolicy() {
           <li><strong>Square</strong> &mdash; invoices and payments.</li>
           <li><strong>Anthropic</strong> &mdash; the AI service for AI-assisted bookkeeping (not yet active; used only with your authorization, as described above).</li>
           <li><strong>Resend</strong> &mdash; email delivery.</li>
-          <li><strong>Twilio</strong> &mdash; text message delivery.</li>
+          <li><strong>Twilio</strong> &mdash; text message delivery for our SMS program.</li>
           <li><strong>Jotform</strong> &mdash; online forms and questionnaires.</li>
           <li><strong>Cloudmersive</strong> &mdash; virus scanning of uploaded files.</li>
         </ul>
@@ -119,17 +134,27 @@ export default function PrivacyPolicy() {
       <section>
         <h2>Security</h2>
         <p>
-          Staff and client portal sign-ins require a password and a verification code. Information is encrypted in transit, and our hosting provider encrypts stored data. Bank connection access
-          credentials are additionally encrypted by {BUSINESS.platformName}. Uploaded client documents are virus-scanned before anyone can open them. Access to client records is limited to authorized
+          Staff and client portal sign-ins require a password and a verification code. Information is encrypted in transit, and our hosting provider encrypts stored data. When bank connections become
+          available, their access credentials will also be encrypted by {BUSINESS.platformName}. Uploaded client documents are virus-scanned before anyone can open them. Access to client records is limited to authorized
           personnel and is logged. No electronic system can guarantee absolute security. Please use the secure client portal for sensitive documents rather than sending them by text.
         </p>
       </section>
       <section>
         <h2>Retention</h2>
         <p>
-          We keep client tax and financial records, including bookkeeping records and any bank transaction information entered in your books, for seven years after the end of the tax year or
-          engagement they relate to, or longer when required by law or a legal hold. Records are not deleted automatically; each deletion is reviewed and approved by our owner. We also keep
-          consent and opt-out records as needed to honor your choices.
+          Our records retention policy keeps client records for the following periods, or longer when required by law or a legal hold:
+        </p>
+        <ul className={`${list} mt-3`}>
+          <li>Tax returns, workpapers, and signed e-file authorization and due-diligence forms: seven years after the tax year.</li>
+          <li>Tax source documents (such as W-2s, 1099s, and statements): seven years after the tax year.</li>
+          <li>Bookkeeping and payroll records, including any bank transaction information entered in your books: seven years after the end of the year they cover.</li>
+          <li>Identity documents: while you are an active client, then seven years.</li>
+          <li>Engagement letters, contracts, invoices, and payment records: seven years after the engagement ends.</li>
+          <li>Security and access logs: seven years.</li>
+        </ul>
+        <p className="mt-3">
+          These periods meet or exceed the federal record-keeping minimums that apply to tax return preparers. Records are not deleted automatically; deletion requires our owner&rsquo;s
+          approval. We also keep consent and opt-out records as needed to honor your choices.
         </p>
       </section>
       <section>

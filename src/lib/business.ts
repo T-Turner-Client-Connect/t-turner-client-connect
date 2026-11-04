@@ -28,10 +28,12 @@ export const BUSINESS = {
 export const LEGAL_EFFECTIVE_DATE = "October 29, 2026";
 
 /**
- * Date the current Privacy Policy text takes effect. Set it to the publication
- * date when the owner approves and the update is deployed.
+ * Date the current Privacy Policy text takes effect. Leave null until the owner
+ * approves publication, then set it to the actual publication date (for example
+ * "December 1, 2026") in the same change that is merged. While it is null, a
+ * production build refuses to publish the page; previews show "Pending publication".
  */
-export const PRIVACY_EFFECTIVE_DATE = "November 4, 2026";
+export const PRIVACY_EFFECTIVE_DATE: string | null = null;
 
 // Exact consent wording. Any change must get a new version so stored
 // consents always point at the text the person actually saw.
