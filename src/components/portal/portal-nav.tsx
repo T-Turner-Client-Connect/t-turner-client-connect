@@ -35,12 +35,12 @@ const MORE = [
 // Keeps ?account= ahead of a #section anchor.
 const withQuery = (href: string, q: string) => (href.includes("#") ? href.replace("#", `${q}#`) : `${href}${q}`);
 
-function NavLinks({ q, pathname, unread, onNavigate, business, payroll }: { q: string; pathname: string; unread: number; onNavigate?: () => void; business: boolean; payroll: boolean }) {
+function NavLinks({ q, pathname, unread, onNavigate, business, payroll, hide = [] }: { q: string; pathname: string; unread: number; onNavigate?: () => void; business: boolean; payroll: boolean; hide?: string[] }) {
   const isActive = (href: string) =>
     href === "/client" || href === "/client/tax-center" ? pathname === href : pathname === href || (pathname.startsWith(`${href}/`) && href !== "/client/taxes");
   return (
     <nav aria-label="Portal" className="space-y-1 px-3">
-      {MAIN.map(([href, label, Icon]) => (
+      {MAIN.filter(([href]) => !hide.includes(href)).map(([href, label, Icon]) => (
         <Link
           key={href}
           href={`${href}${q}`}
@@ -57,7 +57,7 @@ function NavLinks({ q, pathname, unread, onNavigate, business, payroll }: { q: s
         </Link>
       ))}
       <div className="mx-3 my-4 h-px bg-white/15" aria-hidden />
-      {MORE.filter(([href]) => (business || href !== "/client/bookkeeping") && (payroll || href !== "/client/payroll-approval")).map(([href, label, Icon]) => (
+      {MORE.filter(([href]) => (business || href !== "/client/bookkeeping") && (payroll || href !== "/client/payroll-approval") && !hide.includes(href)).map(([href, label, Icon]) => (
         <Link
           key={href}
           href={withQuery(href, q)}
@@ -74,7 +74,7 @@ function NavLinks({ q, pathname, unread, onNavigate, business, payroll }: { q: s
 }
 
 /** Client portal frame: navy sidebar on large screens, top bar with a menu drawer on phones. */
-type Account = { id: string; name: string; personal?: boolean; owner?: string | null; business?: boolean; payrollApprover?: boolean };
+type Account = { id: string; name: string; personal?: boolean; owner?: string | null; business?: boolean; payrollApprover?: boolean; hide?: string[] };
 
 /** Business tabs: Personal first, then each business this login may open. The selected one is always named. */
 function AccountTabs({ accounts, current, pathname }: { accounts: Account[]; current: string; pathname: string }) {
@@ -113,6 +113,8 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
   const business = !!accounts.find((a) => a.id === account)?.business;
   // Payroll Approval only for owners designated as this business's payroll approvers (re-checked on the server).
   const payroll = accounts.some((a) => a.payrollApprover);
+  // Areas this login's owner permissions don't include, for the account in view (gated on the server too).
+  const hide = accounts.find((a) => a.id === account)?.hide ?? [];
   const [open, setOpen] = useState(false);
     // Close the drawer and menu after navigating.
   const [seenPath, setSeenPath] = useState(pathname);
@@ -148,7 +150,7 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
           </select>
         </label>
       )}
-      <NavLinks q={q} pathname={pathname} unread={unread} onNavigate={onNavigate} business={business} payroll={payroll} />
+      <NavLinks q={q} pathname={pathname} unread={unread} onNavigate={onNavigate} business={business} payroll={payroll} hide={hide} />
       <form action={signOut} className="px-3 pt-4">
         <button className="flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left text-[13px] text-navy-100/80 hover:bg-white/10 hover:text-white"><LogOut className="size-4" aria-hidden />Sign out</button>
       </form>

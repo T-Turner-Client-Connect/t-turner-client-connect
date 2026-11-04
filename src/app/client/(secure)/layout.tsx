@@ -9,6 +9,8 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { ownerAndBusiness } from "@/lib/services/related-businesses";
 import { isPayrollApprover } from "@/lib/services/payroll-approval";
+import { serviceProfile } from "@/lib/services/service-profile";
+import { conversationScope } from "@/lib/portal/access";
 
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
   const user = await requirePortalUser();
@@ -16,6 +18,22 @@ export default async function PortalLayout({ children }: { children: React.React
     await Promise.all(
       (await accessibleClients(user.id)).map(async (a) => {
         const names = a.client.clientType === "INDIVIDUAL" ? null : await ownerAndBusiness(a.clientId);
+        const { businessOnly } = await serviceProfile(a.clientId);
+        // A business-only account (no personal tax preparation) drops the personal tax pages, and
+        // each area this login wasn't granted. Regular accounts keep the full menu.
+        const hide = businessOnly
+          ? [
+              "/client/tax-center",
+              "/client/tax-center/upload",
+              "/client/identity",
+              "/client/taxes/summary",
+              "/client/nonprofit",
+              ...(a.canMessage ? [] : ["/client/messages"]),
+              ...(a.canViewBilling ? [] : ["/client/billing"]),
+              ...(a.canViewContracts ? [] : ["/client/agreements", "/client/contracts"]),
+              ...(a.canViewTax ? [] : ["/client/taxes/filings"]),
+            ]
+          : [];
         return {
           id: a.clientId,
           name: a.client.businessName || a.client.displayName,
@@ -26,6 +44,8 @@ export default async function PortalLayout({ children }: { children: React.React
           owner: names?.owner ?? null,
           order: names?.order ?? 0,
           payrollApprover: await isPayrollApprover(user.id, a.clientId),
+          businessOnly,
+          hide,
         };
       }),
     )
@@ -33,7 +53,8 @@ export default async function PortalLayout({ children }: { children: React.React
   // A login not yet connected to any client account sees only its setup page.
   if (accounts.length === 0) redirect("/client/start");
   const unread = await prisma.message.count({
-    where: { conversation: { clientId: { in: accounts.map((a) => a.id) } }, channel: "PORTAL", direction: "OUTBOUND", readByClientAt: null },
+    where: { conversation: { clientId: { in: accounts.map((a) => a.id) }, ...conversationScope(user.id) }, channel: "PORTAL", direction: "OUTBOUND", readByClientAt: null },
+
   });
   return (
     <div className="lux-page min-h-dvh">

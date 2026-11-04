@@ -1,7 +1,7 @@
 import { Notice, PageHeader } from "@/components/ui";
 import { PortalSummaryView } from "@/components/portal/tax-summary-portal";
 import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
+import { requirePersonalTaxAccount, resolveAccount } from "@/lib/portal/account";
 import { portalSummaries } from "@/lib/services/tax-summary";
 
 export const metadata = { title: "Tax return summary" };
@@ -10,6 +10,7 @@ export default async function PortalTaxSummary({ searchParams }: { searchParams:
   const user = await requirePortalUser();
   const { current } = await resolveAccount(user.id, (await searchParams).account);
   if (!current) return null;
+  await requirePersonalTaxAccount(current.clientId);
   if (!current.canViewTax) return <Notice>Tax information isn&apos;t included in your access to this account.</Notice>;
   const summaries = await portalSummaries(user, current.clientId);
   return (

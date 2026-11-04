@@ -45,7 +45,13 @@ export async function businessFamily(clientId: string) {
 
 /** The owner's name already on a Business main record: its first contact, else the name fields on the record. Never asked for again. */
 async function ownerOfRecord(clientId: string) {
+  // Listed business owners win: one owner is named; with several, no single "Owner:" is
+  // shown (the Owners card lists them, and an owner's login never shows another owner's name).
+  const listed = await prisma.businessOwner.findMany({ where: { clientId, archivedAt: null }, select: { contact: { select: { name: true } } }, take: 2 });
+  if (listed.length === 1) return listed[0].contact.name;
+  if (listed.length > 1) return null;
   const r = await prisma.client.findUnique({ where: { id: clientId }, select: { firstName: true, lastName: true, contacts: { select: { name: true }, orderBy: { createdAt: "asc" }, take: 1 } } });
+
   return r?.contacts[0]?.name?.trim() || [r?.firstName, r?.lastName].filter(Boolean).join(" ").trim() || null;
 }
 

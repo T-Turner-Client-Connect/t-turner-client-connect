@@ -62,6 +62,9 @@ async function setup(opts: { texting?: boolean } = {}) {
     const phone = `555010${i}130`;
     const u = await prisma.portalUser.create({ data: { email: `${name.split(" ")[0].toLowerCase()}@example.com`, name, phone, phoneNormalized: normalizePhone(phone), passwordHash: "x", emailVerifiedAt: new Date() } });
     await prisma.portalAccess.create({ data: { portalUserId: u.id, clientId: biz.id } });
+    // Each is a business owner (Owners card) with their own login: only owners approve payroll.
+    const contact = await prisma.contact.create({ data: { clientId: biz.id, name, email: u.email, emailNormalized: u.email } });
+    await prisma.businessOwner.create({ data: { clientId: biz.id, contactId: contact.id, portalUserId: u.id, ownershipBps: 2500 } });
     await submitSmsConsent({ name, phone, service: true, marketing: false, sourcePage: "/sms-consent", ip: null, userAgent: "test" });
     owners.push(u);
   }

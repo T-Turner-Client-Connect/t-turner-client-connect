@@ -36,6 +36,7 @@ import { queueStaffAlert } from "./staff-alerts";
 export const SERVICES = [
   "Individual tax preparation",
   "Business tax preparation",
+  "K-1 preparation for owners",
   "Nonprofit tax / compliance",
   "Bookkeeping",
   "Payroll",
@@ -43,6 +44,26 @@ export const SERVICES = [
   "Consultation",
   "Other",
 ] as const;
+
+/**
+ * The record's Services list from what the person picked at sign-up. It drives the
+ * portal: a business that picked business services only gets the business-only
+ * portal (no personal tax questionnaire, spouse, dependents or refund options).
+ */
+const SIGNUP_SERVICE_MAP: Record<string, string | null> = {
+  "Individual tax preparation": "Individual tax preparation",
+  "Business tax preparation": "Business tax return (1065/1120-S/1120)",
+  "K-1 preparation for owners": "K-1 preparation for owners",
+  "Nonprofit tax / compliance": "Nonprofit services",
+  Bookkeeping: "Bookkeeping",
+  Payroll: "Payroll",
+  "Business setup": "Business setup",
+  Consultation: "Consulting",
+  Other: null,
+};
+export function signupServices(requested: string[]) {
+  return [...new Set(requested.map((s) => SIGNUP_SERVICE_MAP[s]).filter((s): s is string => !!s))];
+}
 
 const CODE_TTL_MS = 15 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 60 * 1000;
@@ -385,6 +406,7 @@ export async function submitOnboarding(user: PortalActor) {
         state: app.state,
         postalCode: app.postalCode,
         status: "PROSPECT",
+        services: signupServices(app.servicesRequested),
         source: "Client portal sign-up",
         notes: `Requested through the portal: ${app.servicesRequested.join(", ")}`,
       },
@@ -440,7 +462,9 @@ export async function approveAsNewClient(actor: Actor, applicationId: string) {
       state: app.state,
       postalCode: app.postalCode,
       status: "PROSPECT",
+      services: signupServices(app.servicesRequested),
       source: "Client portal sign-up (staff reviewed)",
+
       notes: `Requested through the portal: ${app.servicesRequested.join(", ")}`,
     },
   });

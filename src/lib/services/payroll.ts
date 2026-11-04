@@ -6,7 +6,8 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
 import { assertLedger, assertLedgerWrite, bookOf, parseCsv, postEntryTx, todayCentral, usd, ymdOf } from "./ledger";
-import { isReportApprover, openWorkPeriod, PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
+import { openWorkPeriod, PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
+import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { PAYROLL_ACCESS } from "./bookkeeping-profile";
 import { staffUploadDocument } from "./documents";
 import { nextPayDate } from "./business-overview";
@@ -351,7 +352,7 @@ export async function postPayrollRun(actor: Actor, clientId: string, runId: stri
   await assertStaff(actor);
   await assertLedgerWrite(actor, clientId);
   const { run, version } = await loadRun(clientId, runId);
-  if (run.origin === "COETHA" && !(await isReportApprover(actor))) throw new ForbiddenError("This pay run was prepared by Coetha. Only Tabitha can approve and post Coetha's work.");
+  if (run.origin === "COETHA" && !(await canApproveCoethaWork(actor))) throw new ForbiddenError("This pay run was prepared by Coetha. Only Tabitha can approve and post Coetha's work.");
   if (run.journalEntryId) throw new ValidationError("This pay run is already posted.");
   if (run.status !== "SUBMITTED" && run.status !== "PROCESSED") throw new ValidationError("Post payroll to the books after it's submitted for processing (or imported as already processed).");
   const checkDate = ymdOf(version.checkDate);
