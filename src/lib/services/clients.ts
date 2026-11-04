@@ -128,7 +128,6 @@ function toClientData(input: ClientInput, before?: SpouseFields | null) {
     }
   }
   return {
-    trackAddressNeeded: !!raw.mailingSection,
     joint: individual && raw.spouseNeeded !== undefined ? { needed: raw.spouseNeeded, year: raw.spouseYear ?? currentTaxYear() } : null,
     data: {
       firstName: v.firstName ?? null,
@@ -156,6 +155,8 @@ function toClientData(input: ClientInput, before?: SpouseFields | null) {
       assignedToId: v.assignedToId ?? null,
     },
     groupIds: v.groupIds,
+    // Only the Create/Edit client screens manage the Address Needed flag.
+    trackAddressNeeded: !!raw.mailingSection,
   };
 }
 
