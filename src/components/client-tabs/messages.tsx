@@ -9,6 +9,8 @@ import { clientTextingOn } from "@/lib/services/staff-alerts";
 import { downloadToken } from "@/lib/services/documents";
 import { fmtDateTime } from "@/lib/format";
 import { formatPhone } from "@/lib/normalize";
+import { conversationLabels, invoiceRequestCard } from "@/lib/services/invoice-requests";
+import { InvoiceRequestCardView } from "@/components/invoice-request-card";
 
 const CHANNEL_LABEL = { PORTAL: "Portal", EMAIL: "Email", SMS: "Text", INTERNAL_NOTE: "Internal note" } as const;
 const STATUS_LABEL: Record<string, string> = {
@@ -54,6 +56,8 @@ export async function MessagesTab({ clientId, conversationId, user }: { clientId
       })
     : [];
   if (selected?.unreadByStaff) await markStaffRead(selected.id);
+  // Invoice requests say who and what (older generic ones: "details not given"); the card opens with the thread.
+  const [labels, requestCard] = await Promise.all([conversationLabels(conversations.map((c) => c.id)), selected ? invoiceRequestCard(user, selected.id) : null]);
   const channels = channelAvailability(await clientTextingOn());
   // Portal and text (SMS) conversations stay separate: a text thread offers only Text and notes,
   // a portal thread only Portal, Email and notes.
@@ -114,7 +118,7 @@ export async function MessagesTab({ clientId, conversationId, user }: { clientId
               <li key={c.id}>
                 <Link href={`/clients/${clientId}?tab=messages&c=${c.id}`} className={`block px-3 py-2 hover:bg-navy-50 ${c.id === selected?.id ? "bg-navy-50" : ""}`}>
                   <p className="flex items-center justify-between gap-2 font-semibold text-navy-900">
-                    <span className="flex min-w-0 items-center gap-1.5"><Badge tone={c._count.messages ? "green" : "navy"}>{c._count.messages ? "SMS" : "Portal"}</Badge><span className="truncate">{c.subject}</span></span>
+                    <span className="flex min-w-0 items-center gap-1.5"><Badge tone={c._count.messages ? "green" : "navy"}>{c._count.messages ? "SMS" : "Portal"}</Badge><span className="truncate" data-testid="conversation-title">{labels.get(c.id)?.title ?? c.subject}</span></span>
                     {c.awaitingStaff && <Badge tone="gold">Needs reply</Badge>}
                   </p>
                   <p className="truncate text-sm text-slate-600">{c.messages[0]?.body}</p>
@@ -127,7 +131,8 @@ export async function MessagesTab({ clientId, conversationId, user }: { clientId
       </div>
       <div className="lg:col-span-2">
         {selected ? (
-          <Card title={`${selectedIsSms ? "Text messages (SMS)" : "Portal conversation"} · ${selected.subject}`}>
+          <Card title={`${selectedIsSms ? "Text messages (SMS)" : "Portal conversation"} · ${labels.get(selected.id)?.title ?? selected.subject}`}>
+            {requestCard && <InvoiceRequestCardView card={requestCard} />}
             <ActionForm action={conversationStateAction.bind(null, clientId, selected.id)} className="mb-4 flex flex-wrap items-end gap-2" showSuccess={false}>
               <Field label="Handled by">
                 <select className="input" name="assignedToId" defaultValue={selected.assignedToId ?? ""}>

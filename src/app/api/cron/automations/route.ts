@@ -6,6 +6,7 @@ import { reconcileSquareInvoices } from "@/lib/services/square-invoicing";
 import { runDailyBankRetrieval } from "@/lib/services/banking";
 import { runDailyCoetha } from "@/lib/services/coetha";
 import { runDailyWorkflowMonitor } from "@/lib/services/monthly-workflow";
+import { runBillingSchedules } from "@/lib/services/billing-schedules";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {
@@ -30,5 +31,9 @@ export async function POST(req: Request) {
   // Coetha's monthly workflow monitor (rules only, no AI call): reconciliations, draft requests and
   // recommendations for Tabitha. Requests go out only if Tabitha's auto-send setting is on.
   const workflow = await runDailyWorkflowMonitor().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow });
+  // Recurring invoice schedules and payment plans Tabitha approved: each due cycle becomes one draft
+  // invoice (idempotent). Sent only if she turned on auto-send AND live sending is on; Square only
+  // through the existing send path with its own switch. Bookkeeping subscriptions in Square are untouched.
+  const schedules = await runBillingSchedules().catch(() => ({ error: "failed" }));
+  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules });
 }
