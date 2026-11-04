@@ -37,7 +37,7 @@ export default async function PortalLayout({ children }: { children: React.React
       <Suspense>
         <PortalNav accounts={accounts} name={user.name} unread={unread} signOut={portalLogoutAction} />
       </Suspense>
-      <div>
+      <div className="lg:pl-64">
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">{children}</main>
         <PublicFooter />
       </div>

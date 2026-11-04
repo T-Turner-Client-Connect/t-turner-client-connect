@@ -1,15 +1,34 @@
 import Link from "next/link";
-import { Button, Field, Notice, PageHeader } from "@/components/ui";
-import { ActionForm } from "@/components/action-form";
-import { requestTaxYearAction } from "@/app/actions/notices";
-import { QuestionnairePicker } from "@/components/portal/questionnaire-picker";
+import { CalendarDays, Check, CircleCheck, ClipboardCheck, CloudUpload, FileCheck2, FolderOpen, IdCard, Mail, Pencil, User, Users, UsersRound } from "lucide-react";
+import { Notice } from "@/components/ui";
+import { QuestionnaireStart } from "@/components/portal/tax-pages";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { loadPortalHome } from "@/lib/portal/views";
-import { fmtChicago } from "@/lib/tz";
-import { checklistText, identityChecklist } from "@/lib/services/identity";
+import { identityChecklist } from "@/lib/services/identity";
 
 export const metadata = { title: "My Tax Center" };
+
+type Icon = React.ComponentType<{ className?: string; strokeWidth?: number }>;
+const cream = "border border-gold-300 bg-gradient-to-b from-white to-ivory-50 text-navy-900";
+const navy = "bg-gradient-to-br from-navy-900 to-navy-950 text-white ring-1 ring-navy-800";
+const btnGold = "inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-b from-gold-300 to-gold-500 whitespace-nowrap px-5 py-2.5 font-bold text-navy-950 shadow hover:to-gold-400";
+const btnOutline = "inline-flex items-center justify-center gap-2 rounded-full border-2 border-gold-400 whitespace-nowrap px-5 py-2.5 font-bold text-white hover:bg-white/10";
+
+/** One of the four action cards: icon beside the title, centered text, button at the bottom. */
+function ActionCard({ tone, icon: I, title, sub, children, testId }: { tone: "cream" | "navy"; icon: Icon; title: string; sub: string; children: React.ReactNode; testId: string }) {
+  const dark = tone === "navy";
+  return (
+    <section className={`flex min-w-0 flex-col rounded-2xl p-5 shadow-[0_14px_32px_-22px_rgb(10_26_68/0.55)] ${dark ? navy : cream}`} data-testid={testId}>
+      <div className="flex items-center gap-3">
+        <I className={`size-12 shrink-0 ${dark ? "text-gold-400" : "text-gold-600"}`} strokeWidth={1.5} aria-hidden />
+        <h2 className={`font-serif text-2xl font-bold leading-tight ${dark ? "text-white" : "text-navy-900"}`}>{title}</h2>
+      </div>
+      <p className={`mt-3 text-center text-[15px] ${dark ? "text-navy-100" : "text-navy-800"}`}>{sub}</p>
+      <div className="mt-auto pt-4 text-center">{children}</div>
+    </section>
+  );
+}
 
 export default async function TaxCenter({ searchParams }: { searchParams: Promise<{ account?: string; year?: string }> }) {
   const user = await requirePortalUser();
@@ -19,85 +38,101 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
   if (!current.canViewTax) return <Notice>Tax information isn&apos;t included in your access to this account.</Notice>;
   const data = await loadPortalHome(current.clientId, current, user.id);
   const q = `?account=${current.clientId}`;
+  const yq = sp.year ? `&year=${sp.year}` : "";
   const idList = current.canViewIdentity ? await identityChecklist(current.clientId) : [];
+  const group = (roles: string[]) => {
+    const people = idList.filter((p) => roles.includes(p.person.role));
+    const items = people.flatMap((p) => p.items);
+    return { people: people.length, onFile: items.filter((i) => i.state === "ON_FILE").length, total: items.length };
+  };
+  const idRows = [
+    { label: "You (Taxpayer)", icon: User, ...group(["CLIENT"]) },
+    { label: "Spouse", icon: UsersRound, ...group(["SPOUSE"]) },
+    { label: "Dependents (Children)", icon: Users, ...group(["DEPENDENT"]) },
+  ];
+
   return (
     <>
-      <PageHeader title="My Tax Center" subtitle="Your questionnaire, documents and filings — one step at a time." />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4" data-testid="tax-center">
-        <section className="lux-tile rounded-2xl border border-ivory-200 bg-white p-5" data-testid="tile-questionnaire">
-          <h2 className="font-serif text-xl font-bold">1. Complete Tax Questionnaire</h2>
-          <p className="mb-3 text-sm text-slate-600">Tell us about your year so we can prepare your return.</p>
-          <QuestionnairePicker options={data.questionnaires} uploadHref={`/client/tax-center/upload?account=${current.clientId}&year=`} />
-          <details className="mt-3 text-sm" data-testid="request-year">
-            <summary className="cursor-pointer font-semibold underline">Request Another Tax Year</summary>
-            <ActionForm action={requestTaxYearAction.bind(null, current.clientId)} className="mt-2 space-y-2" resetOnSuccess>
-              <Field label="Tax year"><input className="input" name="year" inputMode="numeric" placeholder="e.g. 2021" /></Field>
-              <Field label="What do you need? (optional)"><input className="input" name="note" placeholder="e.g. I need to file a late return" /></Field>
-              <Button type="submit" variant="secondary">Send request</Button>
-            </ActionForm>
-          </details>
-        </section>
-        <section className="lux-tile flex flex-col rounded-2xl border border-ivory-200 bg-white p-5" data-testid="tile-upload">
-          <h2 className="font-serif text-xl font-bold">2. Upload Documents</h2>
-          <p className="flex-1 text-sm text-slate-600">W-2s, 1099s, receipts and letters go into your secure Document Vault for the right tax year.</p>
-          <Link href={`/client/tax-center/upload${q}${sp.year ? `&year=${sp.year}` : ""}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-navy-900 px-4 py-2.5 font-semibold text-white hover:bg-navy-800" data-testid="upload-button">Upload documents →</Link>
-        </section>
-        <section className="lux-tile flex flex-col rounded-2xl border border-gold-500 bg-navy-900 p-5 text-white" data-testid="tile-retrieve">
-          <h2 className="font-serif text-xl font-bold text-white">3. Retrieve Tax Filings</h2>
-          <p className="flex-1 text-sm text-navy-100">Preview, download or print returns our office has saved to your account, 2020 onward.</p>
-          <Link href={`/client/taxes/filings${q}${sp.year ? `&year=${sp.year}` : ""}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-gold-500 px-4 py-2.5 font-semibold text-navy-950 hover:bg-gold-300" data-testid="retrieve-button">Retrieve Tax Filings →</Link>
-        </section>
-        <section className="lux-tile flex flex-col rounded-2xl border border-ivory-200 bg-white p-5" data-testid="tile-notice">
-          <h2 className="font-serif text-xl font-bold">4. Upload Audit or Tax Notice</h2>
-          <p className="flex-1 text-sm text-slate-600">Got a letter from the IRS, your state or a city? Send it so we can track it and any response deadline.</p>
-          <Link href={`/client/tax-center/notice${q}${sp.year ? `&year=${sp.year}` : ""}`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-navy-900 px-4 py-2.5 font-semibold text-white hover:bg-navy-800" data-testid="notice-button">Upload a notice →</Link>
-        </section>
+      {/* Light banner: tax-document icon, thin divider, serif title, navy-and-gold swoosh. */}
+      <section className="relative -mx-4 -mt-6 mb-6 overflow-hidden border-b border-ivory-200 bg-gradient-to-r from-ivory-50 via-white to-white px-4 py-6 sm:-mx-6 sm:px-8" data-testid="page-banner">
+        <svg className="pointer-events-none absolute inset-y-0 right-0 hidden h-full w-[48%] md:block" viewBox="0 0 600 130" preserveAspectRatio="none" aria-hidden>
+          <path d="M0 130 C 220 120, 380 70, 600 22 L 600 130 Z" fill="#0A1A44" />
+          <path d="M60 130 C 260 112, 420 58, 600 6" fill="none" stroke="#C89D29" strokeWidth="10" />
+          <path d="M0 126 C 240 116, 400 74, 600 30" fill="none" stroke="#E6C76A" strokeWidth="3" opacity="0.8" />
+        </svg>
+        <div className="relative flex items-center gap-4 sm:gap-5 md:max-w-[62%]">
+          <FileCheck2 className="size-12 shrink-0 text-gold-500 sm:size-16" strokeWidth={1.5} aria-hidden />
+          <span className="h-14 w-px shrink-0 bg-gold-400 sm:h-16" aria-hidden />
+          <div className="min-w-0">
+            <h1 className="font-serif text-3xl font-bold leading-tight text-navy-900 sm:text-[2.6rem]">My Tax Center</h1>
+            <p className="mt-1 text-[15px] text-navy-800 sm:text-lg">Your tax information, documents, and filings — all in one place.</p>
+          </div>
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" data-testid="tax-center">
+        <ActionCard tone="cream" icon={ClipboardCheck} title="Complete Tax Questionnaire" sub="Tell us about your year so we can prepare your return." testId="tile-questionnaire">
+          <div className="text-left"><QuestionnaireStart options={data.questionnaires} /></div>
+        </ActionCard>
+        <ActionCard tone="navy" icon={CloudUpload} title="Upload Documents" sub="W-2s, 1099s, receipts and letters go into your secure Document Vault." testId="tile-upload">
+          <Link href={`/client/tax-center/upload${q}${yq}`} className={btnOutline} data-testid="upload-button">Upload Documents <span aria-hidden>→</span></Link>
+        </ActionCard>
+        <ActionCard tone="cream" icon={FolderOpen} title="Retrieve Tax Filings" sub="View, download or print current and prior year returns." testId="tile-retrieve">
+          <Link href={`/client/taxes/filings${q}${yq}`} className={btnGold} data-testid="retrieve-button">Retrieve Filings <span aria-hidden>→</span></Link>
+        </ActionCard>
+        <ActionCard tone="navy" icon={Mail} title="Upload Audit or Tax Notice" sub="Received a letter from the IRS or state? Upload it here so we can review and respond." testId="tile-notice">
+          <Link href={`/client/tax-center/notice${q}${yq}`} className={btnOutline} data-testid="notice-button">Upload a Notice <span aria-hidden>→</span></Link>
+        </ActionCard>
       </div>
 
-      {current.canViewIdentity && (
-        <section className="mt-6 rounded-2xl border border-ivory-200 bg-white p-5" data-testid="identity-checklist">
-          <h2 className="font-serif text-xl font-bold">Identity documents on file</h2>
-          <p className="mb-3 text-sm text-slate-600">Used for every tax year — you don&apos;t need to upload these again each year.</p>
-          <ul className="grid gap-3 md:grid-cols-2">
-            {idList.map(({ person, items }) => (
-              <li key={person.id} className="rounded-xl bg-ivory-50 p-3">
-                <p className="font-semibold text-navy-900">{person.name}</p>
-                <ul className="mt-1 space-y-0.5 text-sm">
-                  {items.map((i) => (
-                    <li key={i.type} className="flex justify-between gap-2">
-                      <span>{i.label}</span>
-                      <span className={i.state === "ON_FILE" ? "text-emerald-800" : i.state === "EXPIRED" ? "text-red-800" : "text-slate-600"}>{checklistText(i)}</span>
-                    </li>
-                  ))}
-                </ul>
+      <div className="mt-6 grid grid-cols-1 items-start gap-6 lg:grid-cols-[1.7fr_1fr]">
+        {current.canViewIdentity ? (
+          <section className={`min-w-0 rounded-2xl p-5 shadow-[0_14px_32px_-22px_rgb(10_26_68/0.45)] ${cream}`} data-testid="identity-summary">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <IdCard className="size-11 shrink-0 text-gold-600" strokeWidth={1.5} aria-hidden />
+                <div>
+                  <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900">Identity Documents</h2>
+                  <p className="text-sm text-navy-800">Upload once and keep on file. Driver&apos;s licenses are only updated when they expire.</p>
+                </div>
+              </div>
+              <Link href={`/client/identity${q}`} className="inline-flex items-center gap-2 rounded-full border border-gold-500 bg-gradient-to-b from-gold-50 to-gold-200 px-5 py-2 text-sm font-bold text-navy-950 shadow-sm hover:to-gold-300">
+                <Pencil className="size-4" aria-hidden /> Manage Documents
+              </Link>
+            </div>
+            <ul className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3 sm:divide-x sm:divide-gold-200" data-testid="identity-checklist">
+              {idRows.map((r) => (
+                <li key={r.label} className="sm:px-4 sm:first:pl-0">
+                  <span className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><r.icon className="size-6 shrink-0 text-gold-600" aria-hidden />{r.label}</span>
+                  {r.onFile > 0 ? (
+                    <span className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-emerald-700"><CircleCheck className="size-5 fill-emerald-600 text-white" aria-hidden />Documents on file</span>
+                  ) : (
+                    <span className="mt-1 block text-sm text-slate-500">Not on file yet</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : (
+          <span className="hidden lg:block" />
+        )}
+        <section className={`min-w-0 rounded-2xl p-5 shadow-[0_14px_32px_-22px_rgb(10_26_68/0.45)] ${cream}`} data-testid="quick-reminders">
+          <h2 className="mb-3 flex items-center gap-3 font-serif text-2xl font-bold text-navy-900"><CalendarDays className="size-8 text-gold-600" strokeWidth={1.5} aria-hidden />Quick Reminders</h2>
+          <ul className="space-y-2.5 text-[15px] text-navy-800">
+            {[
+              "Keep your information up to date.",
+              "Upload new tax documents as you receive them.",
+              "Update your driver's license only when it expires.",
+              "Documents are securely stored year to year.",
+            ].map((t) => (
+              <li key={t} className="flex items-start gap-2.5">
+                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-gold-500"><Check className="size-3.5 text-white" strokeWidth={3} aria-hidden /></span>
+                {t}
               </li>
             ))}
           </ul>
-          <Link href={`/client/identity${q}`} className="mt-3 inline-block text-sm font-semibold underline">Manage identity documents →</Link>
         </section>
-      )}
-
-      <section className="mt-6 rounded-2xl border border-ivory-200 bg-white p-5" data-testid="service-progress">
-        <h2 className="mb-3 font-serif text-xl font-bold">Progress</h2>
-        {(data.statuses.some((x) => x.year === Number(sp.year)) ? data.statuses.filter((x) => x.year === Number(sp.year)) : data.progress).map((y) => (
-          <div key={y.year} className="mb-4 last:mb-0">
-            <p className="mb-2 font-semibold text-navy-900">
-              {y.year} tax year
-              {y.estimatedCompletion && <span className="ml-2 font-normal text-slate-700">· Estimated completion {fmtChicago(y.estimatedCompletion, { month: "long", day: "numeric", year: "numeric" })}</span>}
-            </p>
-            <ol className="grid gap-2 sm:grid-cols-5">
-              {y.steps.map((s) => (
-                <li key={s.key} className={`rounded-xl p-3 ${s.done ? "bg-emerald-50 ring-1 ring-emerald-200" : "bg-ivory-100"}`} data-step={s.key}>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">{s.label}</p>
-                  <p className={`text-sm font-semibold ${s.done ? "text-emerald-800" : "text-navy-900"}`}>{s.done ? "✓ " : ""}{s.value}</p>
-                </li>
-              ))}
-            </ol>
-            {y.estimateNote && <p className="mt-1 text-xs text-slate-600">{y.estimateNote}</p>}
-          </div>
-        ))}
-        <p className="mt-2 text-xs text-slate-500">Each step is updated separately by our office. An estimate is not a guarantee.</p>
-      </section>
+      </div>
     </>
   );
 }
