@@ -7,6 +7,8 @@ import { luxPanel, navyTable, NoteBar, PanelTitle, pillButton, StatCard, StatusP
 import { PaymentPanel } from "@/components/portal/payment-panel";
 import { acceptQuoteAction, declineQuoteAction } from "@/app/actions/portal-billing";
 import { portalMessageAction } from "@/app/actions/portal";
+import { PayFromRefund } from "@/components/portal/pay-from-refund";
+import { portalRefundTransfers, RT_STATUS, type RtStatus } from "@/lib/services/refund-transfers";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { portalBilling, quoteTermsHash } from "@/lib/services/owner-billing";
@@ -74,11 +76,12 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
       </>
     );
   }
-  const [items, sq, manual, instructions] = await Promise.all([
+  const [items, sq, manual, instructions, refundPays] = await Promise.all([
     portalBilling(user, current.clientId),
     portalSquareBilling(user, current.clientId),
     portalManualBilling(user, current.clientId),
     prisma.paymentInstruction.findMany({ where: { active: true }, select: { method: true, details: true } }),
+    portalRefundTransfers(user, current.clientId),
   ]);
   const q = `account=${current.clientId}`;
   const today = todayCentral();
@@ -148,6 +151,14 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
       if (paidOn.startsWith(year)) paidYtd += p.amountCents;
       rows.push({ key: p.id, sort: paidOn, number: "—", description: `Monthly bookkeeping · ${p.periodMonth}`, amountCents: p.amountCents, status: ["Paid", "paid"], date: paidOn, action: null });
     }
+  }
+  // Pay From My Refund: shown as its own line; counted as paid only once the deposit is recorded.
+  for (const r of refundPays.filter((x) => x.status !== "CANCELLED")) {
+    const st = RT_STATUS[r.status as RtStatus];
+    const day = (r.receivedOn ?? r.updatedAt).toISOString().slice(0, 10);
+    if (r.status === "AWAITING_DEPOSIT" && r.amountCents) pendingCents += r.amountCents;
+    if ((r.status === "RECEIVED" || r.status === "SHORT") && r.receivedCents && day.startsWith(year)) paidYtd += r.receivedCents;
+    rows.push({ key: r.id, sort: day, number: "—", description: `${r.taxYear} tax preparation — paid from refund (Republic Bank)`, amountCents: r.amountCents, status: [st.label, st.tone], date: day, action: null });
   }
   rows.sort((a, b) => b.sort.localeCompare(a.sort));
 
@@ -243,6 +254,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
                 <Button type="submit" data-testid="request-invoice">Request an Invoice</Button>
               </ActionForm>
             )}
+            <PayFromRefund clientId={current.clientId} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} />
             {WAYS.map((w) => {
               const d = instructions.find((i) => i.method === w.method)?.details;
               return (
