@@ -106,11 +106,11 @@ export async function assertNotDuplicate(clientId: string, sha256: string, forCl
   if (existing) throw new ValidationError(`This file is already saved${existing.year ? ` under ${existing.year}` : ""} as “${existing.title}”, so it wasn't added again.`);
 }
 
-export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string, opts: { encrypt?: boolean; allowOffice?: boolean } = {}) {
+export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string, opts: { encrypt?: boolean; allowOffice?: boolean; allowSpreadsheet?: boolean } = {}) {
   if (bytes.length === 0) throw new ValidationError("The file is empty.");
   if (bytes.length > MAX_UPLOAD_BYTES) throw new ValidationError(`Files can be up to ${MAX_UPLOAD_LABEL}.`);
-  const type = sniffType(bytes, { allowOffice: opts.allowOffice, name: originalName });
-  if (!type) throw new ValidationError(opts.allowOffice ? "Upload a PDF, Word (DOC/DOCX, no macros), JPG or PNG file." : "Upload a PDF, JPG, or PNG file.");
+  const type = sniffType(bytes, { allowOffice: opts.allowOffice, allowSpreadsheet: opts.allowSpreadsheet, name: originalName });
+  if (!type) throw new ValidationError(opts.allowSpreadsheet ? "Upload the payroll register as a CSV or Excel (.xlsx) file." : opts.allowOffice ? "Upload a PDF, Word (DOC/DOCX, no macros), JPG or PNG file." : "Upload a PDF, JPG, or PNG file.");
   const sha256 = sha256Of(bytes);
   if (clientId) await assertNotDuplicate(clientId, sha256, "portal" in uploader);
   const scanned = await scanBytesDetailed(bytes, originalName);
@@ -169,6 +169,8 @@ export type StaffUploadInput = {
   notify?: boolean;
   // Word documents (DOC/DOCX) are accepted only where a caller allows them (nonprofit portfolio items).
   allowOffice?: boolean;
+  // CSV/XLSX are accepted only for payroll register imports (docType PAYROLL_REPORT).
+  allowSpreadsheet?: boolean;
 };
 
 // Nonprofit portfolio files reach the client only through Release in the portfolio (drafts never do).
@@ -188,7 +190,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
   if (input.periodId && !(await prisma.bookkeepingPeriod.count({ where: { id: input.periodId, clientId: input.clientId } }))) throw new ValidationError("Bookkeeping month not found.");
-  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM" });
+  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT" });
   try {
     const doc = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });

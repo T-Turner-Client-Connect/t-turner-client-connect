@@ -6,8 +6,8 @@ import { NextResponse, type NextRequest } from "next/server";
  * verifies the session, MFA state and permissions against the database — a
  * URL is never treated as protection.
  */
-// Public policy pages, the SMS consent form and signed email unsubscribe links need no login.
-const PUBLIC_PAGES = ["/sms-consent", "/privacy-policy", "/terms", "/unsubscribe/"];
+// Public policy pages, the SMS consent form, signed email unsubscribe links and signed payroll-approval links need no login.
+const PUBLIC_PAGES = ["/sms-consent", "/privacy-policy", "/terms", "/unsubscribe/", "/payroll-approval/"];
 const PUBLIC_STAFF = ["/welcome", "/staff/login", "/staff/setup", "/staff/invite/", "/staff/forgot-password", "/staff/reset-password/", "/brand/", "/icon.png", "/favicon"];
 const PUBLIC_PORTAL = ["/client/login", "/client/signup", "/client/activate", "/client/invite/", "/client/forgot-password", "/client/reset-password/"];
 // Webhooks authenticate themselves (shared secret + provider API verification).

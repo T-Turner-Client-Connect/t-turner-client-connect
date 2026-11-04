@@ -20,6 +20,9 @@ next-env.d.ts
 *.xlsx
 *.xls
 !tests/fixtures/*.csv
+# Test fixtures are fictional sample files (e.g. payroll registers) and must be committed.
+!tests/fixtures/**/*.csv
+!tests/fixtures/**/*.xlsx
 
 # misc
 .DS_Store

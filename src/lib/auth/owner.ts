@@ -72,6 +72,7 @@ export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: str
     { href: "/owner/reconcile", label: "Reconcile Square", show: c("receivables", "reconcile") },
     { href: "/owner/plans", label: "Payment plans", show: c("billing", "view") },
     { href: "/owner/refund-payments", label: "Pay by Refund", show: c("billing", "view") },
+    { href: "/owner/payroll-approvers", label: "Payroll approvers", show: c("payroll", "edit") },
     { href: "/owner/expenses", label: "Expenses", show: c("revenue", "view") },
     { href: "/owner/business-access", label: "Business access", show: c("business_access", "view") },
     // Coetha & bank feeds: Tabitha's own on/off switches (owner only, not grantable).

@@ -330,6 +330,10 @@ model Client {
   manualBillingPayments ManualBillingPayment[]
   businessLicenses      BusinessLicense[]
   yearEndFilings        YearEndFiling[]
+  payrollImports        PayrollImport[]
+  payrollRuns           PayrollRun[]
+  payrollApprovers      PayrollApprover[]
+  payrollConnections    PayrollConnection[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -791,17 +795,19 @@ model PortalUser {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  access         PortalAccess[]
-  sessions       PortalSession[]
-  resetTokens    PortalResetToken[]
-  recoveryCodes  MfaRecoveryCode[]
-  messages       Message[]              @relation("PortalMessages")
-  trustedDevices TrustedDevice[]
-  onboarding     OnboardingApplication?
-  files          StoredFile[]
-  documents      Document[]             @relation("PortalDocuments")
-  notifications  Notification[]
-  accessLogs     DocumentAccessLog[]
+  access           PortalAccess[]
+  sessions         PortalSession[]
+  resetTokens      PortalResetToken[]
+  recoveryCodes    MfaRecoveryCode[]
+  messages         Message[]              @relation("PortalMessages")
+  trustedDevices   TrustedDevice[]
+  onboarding       OnboardingApplication?
+  files            StoredFile[]
+  documents        Document[]             @relation("PortalDocuments")
+  notifications    Notification[]
+  accessLogs       DocumentAccessLog[]
+  payrollApprover  PayrollApprover[]
+  payrollApprovals PayrollApproval[]
 }
 
 enum PortalRole {
@@ -2497,6 +2503,8 @@ enum ChallengePurpose {
   SIGN_IN
   // Proving the account's email address (turns on email codes).
   VERIFY_EMAIL
+  // Confirming identity before a payroll decision opened from a texted or emailed link.
+  PAYROLL_APPROVAL
 }
 
 // One emailed (or, later, texted) code. Single use, short-lived, limited attempts.
@@ -2906,6 +2914,11 @@ model BookkeepingProfile {
   payrollAccessStatus String?
   // Payroll reports required each month (keys of PAYROLL_REPORT_TYPES).
   payrollReports      String[]  @default([])
+  // Payroll system (keys of PAYROLL_SYSTEMS): ADP_RUN | ADP_WFN | PAYCHEX_FLEX | GUSTO | OTHER.
+  // payrollProvider stays the display name shown everywhere.
+  payrollSystem       String?
+  // How payroll data reaches us: REPORT_IMPORT (register files) | API (once the provider connection is approved).
+  payrollConnection   String?
   // HMAC of the EIN, so duplicate businesses can be spotted without decrypting.
   einHash             String?
   contactEmail        String?
@@ -4652,6 +4665,267 @@ model CommunicationPreferenceChange {
   createdAt    DateTime         @default(now())
 
   @@index([clientId, createdAt])
+}
+
+/// One payroll register / journal file imported for a business (ADP, Paychex…).
+/// The original file is kept in the client's documents (docType PAYROLL_REPORT).
+model PayrollImport {
+  id          String       @id @default(cuid())
+  clientId    String
+  client      Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // ADP_RUN | ADP_WFN | PAYCHEX_FLEX | GUSTO | OTHER
+  provider    String
+  fileName    String
+  fileSha256  String
+  documentId  String?
+  rows        Int
+  payDates    Int
+  created     Int
+  duplicates  Int
+  // Column → field mapping used for this file.
+  mapping     Json
+  createdById String
+  createdAt   DateTime     @default(now())
+  runs        PayrollRun[]
+
+  @@index([clientId])
+}
+
+/// A pay run for one business and pay date. Its figures live in immutable versions;
+/// approvals bind to one version (id + content hash) and one approval round.
+model PayrollRun {
+  id                    String                @id @default(cuid())
+  clientId              String
+  client                Client                @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // ADP_RUN | ADP_WFN | PAYCHEX_FLEX | GUSTO | OTHER
+  provider              String
+  // IMPORT | API | COETHA | MANUAL — a COETHA run is finalized only by Tabitha.
+  origin                String                @default("IMPORT")
+  importId              String?
+  import                PayrollImport?        @relation(fields: [importId], references: [id], onDelete: SetNull)
+  // provider + check date + totals hash of the data as first received: re-imports never double up.
+  dedupeKey             String
+  // The current version's pay date (kept here for lists and the next-pay-date estimate).
+  checkDate             DateTime              @db.Date
+  // DRAFT | AWAITING_APPROVAL | DENIED | FULLY_APPROVED | SUBMITTED | PROCESSED | DISCARDED
+  status                String                @default("DRAFT")
+  currentVersionId      String?               @unique
+  // Each "send for approval" starts a new round; only decisions in the current round count.
+  approvalRound         Int                   @default(0)
+  approvalRequestedAt   DateTime?
+  approvalRequestedById String?
+  fullyApprovedAt       DateTime?
+  // Submission to ADP/Paychex is always a person's action, never automatic.
+  submittedAt           DateTime?
+  submittedById         String?
+  // MANUAL_IN_PROVIDER | API | PROCESSED_AT_PROVIDER (imported after the provider already paid it)
+  submissionMethod      String?
+  submissionNote        String?
+  // Ledger: a draft entry until staff post it.
+  cashAccountId         String?
+  journalEntryId        String?               @unique
+  postedAt              DateTime?
+  postedById            String?
+  discardedAt           DateTime?
+  discardedById         String?
+  discardReason         String?
+  createdById           String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  versions              PayrollRunVersion[]
+  approvals             PayrollApproval[]
+  events                PayrollRunEvent[]
+  links                 PayrollApprovalLink[]
+  notices               PayrollNotice[]
+
+  @@unique([clientId, dedupeKey])
+  @@index([clientId, checkDate])
+}
+
+/// Immutable: a staff change creates the next version; nothing here is ever updated.
+model PayrollRunVersion {
+  id               String            @id @default(cuid())
+  runId            String
+  run              PayrollRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  number           Int
+  contentHash      String
+  checkDate        DateTime          @db.Date
+  periodStart      DateTime?         @db.Date
+  periodEnd        DateTime?         @db.Date
+  employees        Int
+  hoursHundredths  Int               @default(0)
+  grossCents       Int
+  federalWhCents   Int               @default(0)
+  ssEeCents        Int               @default(0)
+  medicareEeCents  Int               @default(0)
+  stateWhCents     Int               @default(0)
+  otherEeTaxCents  Int               @default(0)
+  employerTaxCents Int               @default(0)
+  deductionsCents  Int               @default(0)
+  netPayCents      Int
+  reason           String?
+  createdById      String?
+  createdAt        DateTime          @default(now())
+  lines            PayrollRunLine[]
+  approvals        PayrollApproval[]
+
+  @@unique([runId, number])
+}
+
+model PayrollRunLine {
+  id               String            @id @default(cuid())
+  versionId        String
+  version          PayrollRunVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  sortOrder        Int
+  employeeName     String
+  hoursHundredths  Int               @default(0)
+  grossCents       Int
+  federalWhCents   Int               @default(0)
+  ssEeCents        Int               @default(0)
+  medicareEeCents  Int               @default(0)
+  stateWhCents     Int               @default(0)
+  otherEeTaxCents  Int               @default(0)
+  employerTaxCents Int               @default(0)
+  deductionsCents  Int               @default(0)
+  netPayCents      Int
+
+  @@index([versionId])
+}
+
+/// A business owner (portal login) Tabitha designated to approve this business's payroll.
+/// Kept loose (portalUserId + clientId) so the business-owners work wires in through isPayrollApprover().
+model PayrollApprover {
+  id                 String     @id @default(cuid())
+  clientId           String
+  client             Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  portalUserId       String
+  portalUser         PortalUser @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  required           Boolean    @default(false)
+  // Per-employee detail on the approval screen (set per approver by the office).
+  showEmployeeDetail Boolean    @default(true)
+  // EMAIL | SMS | BOTH; null = default (email, plus text when allowed).
+  notifyChannel      String?
+  active             Boolean    @default(true)
+  designatedById     String
+  removedAt          DateTime?
+  removedById        String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@unique([clientId, portalUserId])
+}
+
+/// One owner's decision on one version in one round. Never updated or deleted.
+model PayrollApproval {
+  id            String            @id @default(cuid())
+  runId         String
+  run           PayrollRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  versionId     String
+  version       PayrollRunVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  contentHash   String
+  round         Int
+  clientId      String
+  portalUserId  String
+  portalUser    PortalUser        @relation(fields: [portalUserId], references: [id], onDelete: Restrict)
+  approverName  String
+  approverEmail String
+  // APPROVED | DENIED
+  decision      String
+  comment       String?
+  // PORTAL | SMS_LINK | EMAIL_LINK
+  channel       String
+  // PORTAL_SESSION | EMAIL_CODE | PASSWORD_AND_AUTHENTICATOR
+  verifiedBy    String
+  ip            String?
+  userAgent     String?
+  linkId        String?
+  createdAt     DateTime          @default(now())
+
+  @@unique([runId, round, portalUserId])
+  @@index([portalUserId])
+}
+
+/// Single-use link texted or emailed to one approver for one version and round.
+model PayrollApprovalLink {
+  id              String     @id @default(cuid())
+  tokenHash       String     @unique
+  runId           String
+  run             PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  versionId       String
+  round           Int
+  portalUserId    String
+  clientId        String
+  // SMS | EMAIL
+  channel         String
+  expiresAt       DateTime
+  usedAt          DateTime?
+  verifiedAt      DateTime?
+  verifyNonceHash String?
+  createdAt       DateTime   @default(now())
+
+  @@index([runId])
+  @@index([portalUserId])
+}
+
+/// Every approval request sent (or skipped or held, with the reason).
+model PayrollNotice {
+  id           String     @id @default(cuid())
+  runId        String
+  run          PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  round        Int
+  portalUserId String
+  // EMAIL | SMS
+  channel      String
+  // SENT | FAILED | SKIPPED | HELD
+  status       String
+  detail       String?
+  linkId       String?
+  createdAt    DateTime   @default(now())
+  sentAt       DateTime?
+
+  @@index([runId, round])
+  @@index([status])
+}
+
+/// The status timeline of a pay run (append-only).
+model PayrollRunEvent {
+  id            String     @id @default(cuid())
+  runId         String
+  run           PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  // CREATED | VERSIONED | APPROVAL_REQUESTED | APPROVED | DENIED | FULLY_APPROVED | SUBMITTED | PROCESSED | POSTED | DISCARDED | APPROVALS_INVALIDATED
+  kind          String
+  versionNumber Int?
+  actorUserId   String?
+  portalUserId  String?
+  actorName     String?
+  note          String?
+  createdAt     DateTime   @default(now())
+
+  @@index([runId, createdAt])
+}
+
+/// A business's API connection to ADP or Paychex. Stays NOT_CONNECTED until the firm's
+/// partner approval and the client's consent are both in place (docs/payroll-integrations.md).
+model PayrollConnection {
+  id                String    @id @default(cuid())
+  clientId          String
+  client            Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // ADP_RUN | ADP_WFN | PAYCHEX_FLEX
+  provider          String
+  // NOT_CONNECTED | CONSENT_REQUESTED | CONNECTED | REVOKED
+  status            String    @default("NOT_CONNECTED")
+  // ADP: the client's organization id from consent; Paychex: the company displayId.
+  externalCompanyId String?
+  note              String?
+  requestedAt       DateTime?
+  connectedAt       DateTime?
+  lastSyncAt        DateTime?
+  lastSyncError     String?
+  updatedById       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([clientId, provider])
 }
 
 // Square webhook deliveries, one row per Square event_id, so a replayed event is never applied twice.
