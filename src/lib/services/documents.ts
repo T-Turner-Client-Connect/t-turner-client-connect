@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
-import { allowedCategories, effectiveGrantsFor, requireClientAccess } from "@/lib/portal/access";
+import { allowedCategories, effectiveGrantsFor, k1VisibleWhere, portalDocumentScope, requireClientAccess } from "@/lib/portal/access";
 import { storage } from "@/lib/storage";
 import { decryptBytes, encryptBytes, sign, verifySignature } from "@/lib/crypto";
 import { imageSize, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
@@ -71,6 +71,8 @@ export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   CLIENT_UPLOADS: "Client uploads",
   OTHER: "Other",
   IDENTITY: "Identity document",
+  OWNER_K1: "K-1 (owner)",
+  PAYROLL: "Payroll",
 };
 
 export const REPORT_LABELS: Record<ReportType, string> = {
@@ -106,11 +108,11 @@ export async function assertNotDuplicate(clientId: string, sha256: string, forCl
   if (existing) throw new ValidationError(`This file is already saved${existing.year ? ` under ${existing.year}` : ""} as “${existing.title}”, so it wasn't added again.`);
 }
 
-export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string, opts: { encrypt?: boolean; allowOffice?: boolean } = {}) {
+export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string, opts: { encrypt?: boolean; allowOffice?: boolean; allowSpreadsheet?: boolean } = {}) {
   if (bytes.length === 0) throw new ValidationError("The file is empty.");
   if (bytes.length > MAX_UPLOAD_BYTES) throw new ValidationError(`Files can be up to ${MAX_UPLOAD_LABEL}.`);
-  const type = sniffType(bytes, { allowOffice: opts.allowOffice, name: originalName });
-  if (!type) throw new ValidationError(opts.allowOffice ? "Upload a PDF, Word (DOC/DOCX, no macros), JPG or PNG file." : "Upload a PDF, JPG, or PNG file.");
+  const type = sniffType(bytes, { allowOffice: opts.allowOffice, allowSpreadsheet: opts.allowSpreadsheet, name: originalName });
+  if (!type) throw new ValidationError(opts.allowSpreadsheet ? "Upload the payroll register as a CSV or Excel (.xlsx) file." : opts.allowOffice ? "Upload a PDF, Word (DOC/DOCX, no macros), JPG or PNG file." : "Upload a PDF, JPG, or PNG file.");
   const sha256 = sha256Of(bytes);
   if (clientId) await assertNotDuplicate(clientId, sha256, "portal" in uploader);
   const scanned = await scanBytesDetailed(bytes, originalName);
@@ -169,6 +171,10 @@ export type StaffUploadInput = {
   notify?: boolean;
   // Word documents (DOC/DOCX) are accepted only where a caller allows them (nonprofit portfolio items).
   allowOffice?: boolean;
+  // CSV/XLSX are accepted only for payroll register imports (docType PAYROLL_REPORT).
+  allowSpreadsheet?: boolean;
+  // K-1 (owner): the business owner this K-1 belongs to. Required for OWNER_K1, not allowed otherwise.
+  businessOwnerId?: string | null;
 };
 
 // Nonprofit portfolio files reach the client only through Release in the portfolio (drafts never do).
@@ -188,7 +194,12 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
   if (input.periodId && !(await prisma.bookkeepingPeriod.count({ where: { id: input.periodId, clientId: input.clientId } }))) throw new ValidationError("Bookkeeping month not found.");
-  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM" });
+  if (input.category === "OWNER_K1") {
+    if (!input.businessOwnerId || !(await prisma.businessOwner.count({ where: { id: input.businessOwnerId, clientId: input.clientId, archivedAt: null } }))) throw new ValidationError("Choose the owner this K-1 belongs to.");
+  } else if (input.businessOwnerId) {
+    throw new ValidationError("Only a K-1 (owner) document is linked to an owner.");
+  }
+  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT" });
   try {
     const doc = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });
@@ -205,6 +216,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
           reportType: input.reportType ?? null,
           periodId: input.periodId ?? null,
           docType: input.docType ?? null,
+          businessOwnerId: input.category === "OWNER_K1" ? input.businessOwnerId : null,
           ...coverageData(input.coverage, input.asOf),
           reviewStatus: isFinancialReport ? "DRAFT" : null,
           fileId: file.id,
@@ -215,7 +227,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
         },
       });
       await tx.documentAccessLog.create({ data: { documentId: doc.id, action: "UPLOAD", staffUserId: actor.id } });
-      await audit(tx, { actorId: actor.id, action: "document.uploaded", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { category: input.category, visibility: input.visibility } });
+      await audit(tx, { actorId: actor.id, action: "document.uploaded", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { category: input.category, visibility: input.visibility, ...(doc.businessOwnerId ? { businessOwnerId: doc.businessOwnerId } : {}) } });
       return doc;
     });
     // Clients are told only once the file has passed the malware scan.
@@ -251,16 +263,27 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
 /** Client upload, optionally answering a document request. */
 export async function portalUploadDocument(
   user: PortalActor,
-  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; docType?: string | null; coverage?: Coverage | null; asOf?: Date | null; bytes: Uint8Array; originalName: string },
+  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; docType?: string | null; coverage?: Coverage | null; asOf?: Date | null; bytes: Uint8Array; originalName: string; payroll?: boolean },
 ) {
-  const uploadGrant = await requireClientAccess(user.id, input.clientId, "upload");
+  // Payroll files need the payroll upload permission; everything else the general upload permission.
+  const uploadGrant = await requireClientAccess(user.id, input.clientId, input.payroll ? "payrollUpload" : "upload");
+  if (input.payroll && (input.requestId || input.periodId)) throw new ValidationError("Send payroll files on their own.");
   const thisYear = new Date().getFullYear();
   if (typeof input.year === "number" && (input.year < thisYear - 15 || input.year > thisYear + 1)) throw new ValidationError("Choose a tax year from the list.");
   let periodId = input.periodId ?? null;
+  // A targeted request names the document, account and period: the upload is filed with them.
+  let linked: { docType: string | null; bookkeepingAccountId: string | null; coverage: Coverage | null } = { docType: null, bookkeepingAccountId: null, coverage: null };
   if (input.requestId) {
     const req = await prisma.documentRequest.findFirst({ where: { id: input.requestId, clientId: input.clientId } });
-    if (!req || req.status === "CANCELLED" || req.status === "ACCEPTED") throw new ValidationError("That request is closed.");
+    // A draft was never sent, so the client can't answer it.
+    if (!req || req.status === "CANCELLED" || req.status === "ACCEPTED" || req.status === "DRAFT") throw new ValidationError("That request is closed.");
     periodId = req.periodId;
+    const sameMonth = req.periodStart && req.periodEnd && req.periodStart.getUTCFullYear() === req.periodEnd.getUTCFullYear() && req.periodStart.getUTCMonth() === req.periodEnd.getUTCMonth();
+    linked = {
+      docType: req.docType,
+      bookkeepingAccountId: req.bookkeepingAccountId,
+      coverage: req.periodStart && req.periodEnd ? { kind: sameMonth ? "MONTH" : "RANGE", year: req.periodEnd.getUTCFullYear(), month: sameMonth ? req.periodEnd.getUTCMonth() + 1 : null, start: req.periodStart, end: req.periodEnd } : null,
+    };
   } else if (periodId && !(await prisma.bookkeepingPeriod.count({ where: { id: periodId, clientId: input.clientId } }))) {
     throw new ForbiddenError();
   }
@@ -274,12 +297,13 @@ export async function portalUploadDocument(
       const doc = await tx.document.create({
         data: {
           clientId: input.clientId,
-          category: "CLIENT_UPLOADS",
+          category: input.payroll ? "PAYROLL" : "CLIENT_UPLOADS",
           title: input.title?.trim().slice(0, 200) || file.title,
           // The client confirms the year; "Not sure" stays empty for staff to classify.
-          year: period?.year ?? input.coverage?.year ?? (typeof input.year === "number" ? input.year : null),
-          month: period?.month ?? input.coverage?.month ?? null,
-          ...coverageData(input.coverage, input.asOf),
+          year: period?.year ?? linked.coverage?.year ?? input.coverage?.year ?? (typeof input.year === "number" ? input.year : null),
+          month: period?.month ?? linked.coverage?.month ?? input.coverage?.month ?? null,
+          ...coverageData(linked.coverage ?? input.coverage, input.asOf),
+          bookkeepingAccountId: linked.bookkeepingAccountId,
           // Uploads by the client are visible back to the client.
           visibility: "PUBLISHED",
           publishedAt: new Date(),
@@ -291,8 +315,8 @@ export async function portalUploadDocument(
           needsReview: true,
           periodId,
           requestId: input.requestId ?? null,
-          docType: input.docType ?? null,
-          retainUntil: await retentionDate("CLIENT_UPLOADS"),
+          docType: linked.docType ?? input.docType ?? null,
+          retainUntil: await retentionDate(input.payroll ? "PAYROLL" : "CLIENT_UPLOADS"),
         },
       });
       if (input.requestId) await tx.documentRequest.update({ where: { id: input.requestId }, data: { status: "SUBMITTED" } });
@@ -312,12 +336,14 @@ export async function portalUploadDocument(
 /** Documents a portal user may see for one client. */
 export async function portalDocuments(user: PortalActor, clientId: string) {
   const access = await requireClientAccess(user.id, clientId);
-  return prisma.document.findMany({
+  const docs = await prisma.document.findMany({
     // Quarantined files (not yet scanned clean) never reach the portal.
-    where: { clientId, deletedAt: null, visibility: "PUBLISHED", category: { in: allowedCategories(access) }, scanStatus: "CLEAN", AND: [clientReceivableWhere] },
+    where: { clientId, deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN", AND: [clientReceivableWhere, portalDocumentScope(access, user.id)] },
     include: { file: { select: { mimeType: true, sizeBytes: true, originalName: true } } },
     orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
   });
+  // Internal review fields never leave the office, even in data handed to a client page.
+  return docs.map((d) => ({ ...d, reviewNote: null, submittedForReviewById: null, approvedById: null, reviewedById: null, deletionReason: null, deletedById: null, lastScanError: null }));
 }
 
 // --- Expiring download links ----------------------------------------------
@@ -370,7 +396,8 @@ export async function authorizeDownload(token: string, viewer: { staffId?: strin
     if (!clientMayReceive(doc)) return null;
     try {
       const access = await requireClientAccess(viewer.portalUserId, doc.clientId);
-      if (!allowedCategories(access).includes(doc.category as never)) return null;
+      // Same scope as every portal list: allowed categories, their own uploads, and K-1s they may open.
+      if (!(await prisma.document.count({ where: { id: doc.id, AND: [portalDocumentScope(access, viewer.portalUserId)] } }))) return null;
     } catch {
       return null;
     }
@@ -421,7 +448,11 @@ export async function deleteDocument(actor: Actor, documentId: string, reason: s
 async function notifyClientUsers(clientId: string, kind: string, refId: string, category?: DocumentCategory) {
   const grants = await effectiveGrantsFor(clientId);
   for (const g of grants) {
-    if (category && !allowedCategories(g).includes(category as never)) continue;
+    // A K-1 notice goes only to the owner it belongs to (and owners Tabitha shared it with).
+    if (category === "OWNER_K1") {
+      if (!(await prisma.document.count({ where: { id: refId, ...k1VisibleWhere(g.portalUserId) } }))) continue;
+    } else if (category && !allowedCategories(g).includes(category as never)) continue;
+
     await queuePortalNotification(g.portalUserId, kind, `${kind}:${refId}`);
   }
 }

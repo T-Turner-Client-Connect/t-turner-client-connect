@@ -165,7 +165,10 @@ export async function enrollmentStatus(subject: MfaSubject) {
  * Emails a 6-digit code. Returns where it went (masked) only when the email
  * provider accepted the message; otherwise a clear error.
  */
-export async function sendEmailCode(subject: MfaSubject, purpose: "SIGN_IN" | "VERIFY_EMAIL") {
+/** SIGN_IN and VERIFY_EMAIL as before; PAYROLL_APPROVAL confirms an approver opening a texted/emailed payroll link. */
+export type CodePurpose = "SIGN_IN" | "VERIFY_EMAIL" | "PAYROLL_APPROVAL";
+
+export async function sendEmailCode(subject: MfaSubject, purpose: CodePurpose) {
   const row = await load(subject);
   if (!row) throw new ValidationError("Account not found.");
   if (!emailConfigured()) throw new ValidationError("Email isn't set up yet, so no code can be sent.");
@@ -187,7 +190,7 @@ export async function sendEmailCode(subject: MfaSubject, purpose: "SIGN_IN" | "V
   const challenge = await prisma.mfaChallenge.create({
     data: { subjectKind: subject.kind, subjectId: subject.id, purpose, channel: "EMAIL", destination, codeHash: hashCode(code), expiresAt: new Date(Date.now() + EMAIL_CODE_TTL_MS) },
   });
-  const heading = purpose === "SIGN_IN" ? "Your sign-in code" : "Verify your email address";
+  const heading = purpose === "SIGN_IN" ? "Your sign-in code" : purpose === "PAYROLL_APPROVAL" ? "Confirm your payroll decision" : "Verify your email address";
   const lines = [
     `Your ${BUSINESS.platformName} code is ${code}.`,
     "It expires in 10 minutes and works once. If you didn't try to sign in, you can ignore this email and consider changing your password.",
@@ -209,7 +212,7 @@ export async function sendEmailCode(subject: MfaSubject, purpose: "SIGN_IN" | "V
 }
 
 /** Checks an emailed code: single use, unexpired, limited attempts. */
-export async function verifyEmailCode(subject: MfaSubject, purpose: "SIGN_IN" | "VERIFY_EMAIL", code: string): Promise<VerifyResult> {
+export async function verifyEmailCode(subject: MfaSubject, purpose: CodePurpose, code: string): Promise<VerifyResult> {
   const c = await prisma.mfaChallenge.findFirst({ where: { subjectKind: subject.kind, subjectId: subject.id, purpose, consumedAt: null, sentAt: { not: null } }, orderBy: { createdAt: "desc" } });
   if (!c) return { ok: false, reason: "no_code" };
   if (c.expiresAt < new Date()) return { ok: false, reason: "expired" };

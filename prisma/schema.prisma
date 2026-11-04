@@ -63,6 +63,10 @@ model User {
   businessConversionAccess    Boolean                 @default(false)
   businessConversionGrantedBy String?
   businessConversionGrantedAt DateTime?
+  // Owner-granted: may set business owners' portal permissions (and K-1 sharing).
+  ownerPermissionsAccess      Boolean                 @default(false)
+  ownerPermissionsGrantedBy   String?
+  ownerPermissionsGrantedAt   DateTime?
   businessAccessRequests      BusinessAccessRequest[] @relation("BusinessAccessRequester")
   businessAccessDecisions     BusinessAccessRequest[] @relation("BusinessAccessDecider")
   businessAccessEvents        BusinessAccessEvent[]
@@ -94,6 +98,7 @@ model User {
   contracts        ContractAssignment[]
   portalInvites    PortalInvite[]
   ownerAccess      OwnerAccess?         @relation("OwnerAccessUser")
+  staffPermissions StaffPermission[]    @relation("StaffPermissionUser")
 }
 
 model Session {
@@ -286,56 +291,68 @@ model Client {
   createdAt               DateTime                @default(now())
   updatedAt               DateTime                @updatedAt
 
-  contacts              Contact[]
-  groups                ClientGroup[]
-  clientNotes           ClientNote[]
-  tasks                 Task[]
-  consentRecords        ConsentRecord[]
-  auditLogs             AuditLog[]
-  campaignInclusions    CampaignInclusion[]
-  campaignExclusions    CampaignExclusion[]
-  portalAccess          PortalAccess[]
-  refundTransfers       RefundTransferPayment[]
-  portalInvites         PortalInvite[]
-  conversations         Conversation[]
-  documents             Document[]
-  periods               BookkeepingPeriod[]
-  docRequests           DocumentRequest[]
-  announcements         Announcement[]
-  deadlines             ClientDeadline[]
-  signatureReqs         SignatureRequest[]
-  contracts             ContractAssignment[]
-  installmentPlans      InstallmentPlan[]
-  invoices              Invoice[]
-  clientServices        ClientService[]
-  payments              Payment[]
-  appointments          Appointment[]
-  pipelineCards         PipelineCard[]
-  filings               FilingRecord[]
-  taxSummaries          TaxReturnSummary[]
-  questionnaires        QuestionnaireSubmission[]
-  identityPeople        IdentityPerson[]
-  identityDocs          IdentityDocument[]
-  bookkeepingProfile    BookkeepingProfile?
-  bookkeepingAccounts   BookkeepingAccount[]
-  bookkeepingBilling    BookkeepingBilling?
-  squareBillings        SquareBillingMember[]
-  ledgerBook            LedgerBook?
-  nonprofitProfile      NonprofitProfile?
-  nonprofitPortfolio    NonprofitPortfolio?
-  chargeAuthorizations  RecurringChargeAuthorization[]
-  businessOnboarding    BusinessOnboarding?
-  taxPrepCases          TaxPrepCase[]
-  questionnaireRequests QuestionnaireRequest[]
+  contacts               Contact[]
+  groups                 ClientGroup[]
+  clientNotes            ClientNote[]
+  tasks                  Task[]
+  consentRecords         ConsentRecord[]
+  commPrefs              CommunicationPreference[]
+  commPrefChanges        CommunicationPreferenceChange[]
+  auditLogs              AuditLog[]
+  campaignInclusions     CampaignInclusion[]
+  campaignExclusions     CampaignExclusion[]
+  portalAccess           PortalAccess[]
+  refundTransfers        RefundTransferPayment[]
+  portalInvites          PortalInvite[]
+  conversations          Conversation[]
+  documents              Document[]
+  periods                BookkeepingPeriod[]
+  docRequests            DocumentRequest[]
+  announcements          Announcement[]
+  deadlines              ClientDeadline[]
+  signatureReqs          SignatureRequest[]
+  contracts              ContractAssignment[]
+  installmentPlans       InstallmentPlan[]
+  invoices               Invoice[]
+  clientServices         ClientService[]
+  payments               Payment[]
+  appointments           Appointment[]
+  pipelineCards          PipelineCard[]
+  filings                FilingRecord[]
+  taxSummaries           TaxReturnSummary[]
+  questionnaires         QuestionnaireSubmission[]
+  identityPeople         IdentityPerson[]
+  identityDocs           IdentityDocument[]
+  bookkeepingProfile     BookkeepingProfile?
+  bookkeepingAccounts    BookkeepingAccount[]
+  bookkeepingBilling     BookkeepingBilling?
+  squareBillings         SquareBillingMember[]
+  ledgerBook             LedgerBook?
+  nonprofitProfile       NonprofitProfile?
+  nonprofitPortfolio     NonprofitPortfolio?
+  chargeAuthorizations   RecurringChargeAuthorization[]
+  businessOnboarding     BusinessOnboarding?
+  taxPrepCases           TaxPrepCase[]
+  questionnaireRequests  QuestionnaireRequest[]
   // A person (Personal record) linked to the businesses they own, and back.
-  ownsBusinesses        ClientRelationship[]           @relation("RelPerson")
-  ownedBy               ClientRelationship[]           @relation("RelBusiness")
-  noticeCases           NoticeCase[]
-  businessInfoChanges   BusinessInfoChange[]
-  taxYearProgress       TaxYearProgress[]
-  manualBillingPayments ManualBillingPayment[]
-  businessLicenses      BusinessLicense[]
-  yearEndFilings        YearEndFiling[]
+  ownsBusinesses         ClientRelationship[]            @relation("RelPerson")
+  ownedBy                ClientRelationship[]            @relation("RelBusiness")
+  noticeCases            NoticeCase[]
+  businessInfoChanges    BusinessInfoChange[]
+  taxYearProgress        TaxYearProgress[]
+  manualBillingPayments  ManualBillingPayment[]
+  businessLicenses       BusinessLicense[]
+  yearEndFilings         YearEndFiling[]
+  payrollImports         PayrollImport[]
+  payrollRuns            PayrollRun[]
+  payrollApprovers       PayrollApprover[]
+  payrollConnections     PayrollConnection[]
+  businessOwners         BusinessOwner[]
+  ownerK1Grants          OwnerK1Grant[]
+  jointFilingYears       JointFilingYear[]
+  personalTaxRequests    PersonalTaxRequest[]
+  accountReconciliations AccountReconciliation[]
+  interimStatements      InterimStatement[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -361,6 +378,8 @@ model Contact {
 
   consentRecords ConsentRecord[]
   portalUser     PortalUser?
+  commPrefs      CommunicationPreference[]
+  businessOwner  BusinessOwner?
 
   @@index([clientId])
   @@index([emailNormalized])
@@ -566,6 +585,9 @@ enum CampaignPurpose {
   TAX_PREP_PROMO
   // Promotion of other services (bookkeeping, payroll, nonprofit, ...).
   OTHER_SERVICES_PROMO
+  // Nonessential news: office hours, holiday closures, general announcements.
+  // Not promotional, but honors the client's "General business updates" choice.
+  GENERAL_UPDATE
 }
 
 enum CampaignChannel {
@@ -601,9 +623,12 @@ model Campaign {
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
+  sentAt DateTime?
+
   groups     CampaignGroup[]
   inclusions CampaignInclusion[]
   exclusions CampaignExclusion[]
+  messages   CampaignMessage[]
 }
 
 model CampaignGroup {
@@ -799,17 +824,21 @@ model PortalUser {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  access         PortalAccess[]
-  sessions       PortalSession[]
-  resetTokens    PortalResetToken[]
-  recoveryCodes  MfaRecoveryCode[]
-  messages       Message[]              @relation("PortalMessages")
-  trustedDevices TrustedDevice[]
-  onboarding     OnboardingApplication?
-  files          StoredFile[]
-  documents      Document[]             @relation("PortalDocuments")
-  notifications  Notification[]
-  accessLogs     DocumentAccessLog[]
+  access              PortalAccess[]
+  sessions            PortalSession[]
+  resetTokens         PortalResetToken[]
+  recoveryCodes       MfaRecoveryCode[]
+  messages            Message[]              @relation("PortalMessages")
+  trustedDevices      TrustedDevice[]
+  onboarding          OnboardingApplication?
+  files               StoredFile[]
+  documents           Document[]             @relation("PortalDocuments")
+  notifications       Notification[]
+  accessLogs          DocumentAccessLog[]
+  payrollApprover     PayrollApprover[]
+  payrollApprovals    PayrollApproval[]
+  businessOwners      BusinessOwner[]
+  personalTaxRequests PersonalTaxRequest[]
 }
 
 enum PortalRole {
@@ -838,6 +867,15 @@ model PortalAccess {
   // Identity documents (license, birth certificate, Social Security card).
   // On for owners, off for other authorized contacts unless granted.
   canViewIdentity    Boolean    @default(false)
+  // Business documents (the vault's Other files and other logins' uploads). On for
+  // ordinary client logins; off for a business owner's login until granted.
+  canViewDocuments   Boolean    @default(true)
+  // Payroll documents (category PAYROLL): view, and upload payroll files.
+  canViewPayroll     Boolean    @default(true)
+  canUploadPayroll   Boolean    @default(true)
+  // Business owners designated Payroll Approvers: approve/deny payroll runs only
+  // (never edit payroll). Off unless Tabitha or authorized staff grant it.
+  canApprovePayroll  Boolean    @default(false)
   grantedById        String?
   createdAt          DateTime   @default(now())
   revokedAt          DateTime?
@@ -862,6 +900,10 @@ model PortalInvite {
   invitedById      String?
   // True only when the link went out by email (activation); accepting it proves the address.
   sentByEmail      Boolean    @default(false)
+  // A business owner's invitation: the permissions their login starts with
+  // (applied on acceptance) and the owner it belongs to.
+  permissions      Json?
+  businessOwnerId  String?
   invitedBy        User?      @relation(fields: [invitedById], references: [id])
   // Activation email tracking: exact recipient, Resend's id, and what happened
   // (SENT = accepted by Resend; DELIVERED / FAILED only from signed Resend events).
@@ -930,29 +972,32 @@ enum MessageStatus {
 }
 
 model Conversation {
-  id             String             @id @default(cuid())
-  clientId       String
-  client         Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  subject        String
-  assignedToId   String?
-  assignedTo     User?              @relation("ConversationAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  id                    String             @id @default(cuid())
+  clientId              String
+  client                Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  subject               String
+  assignedToId          String?
+  assignedTo            User?              @relation("ConversationAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   // Questions about a bookkeeping month attach to that period.
-  periodId       String?
-  period         BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  periodId              String?
+  period                BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
   // True when the newest message is from the client and nobody has replied.
-  awaitingStaff  Boolean            @default(false)
+  awaitingStaff         Boolean            @default(false)
   // Shared inbox: cleared when any staff member opens it.
-  unreadByStaff  Boolean            @default(false)
-  closedAt       DateTime?
-  lastMessageAt  DateTime           @default(now())
-  createdAt      DateTime           @default(now())
+  unreadByStaff         Boolean            @default(false)
+  closedAt              DateTime?
+  lastMessageAt         DateTime           @default(now())
+  createdAt             DateTime           @default(now())
   // A question staff asked about a bookkeeping month: OPEN (unanswered) →
   // ANSWERED (client replied; staff to review) → RESOLVED. Null for ordinary threads.
-  questionStatus String?
-  responseDueAt  DateTime?
-  askedById      String?
-  resolvedAt     DateTime?
-  resolvedById   String?
+  // A business owner's own thread: only that login (and staff) see it.
+  // Null = shared with every login on the account that may message.
+  privateToPortalUserId String?
+  questionStatus        String?
+  responseDueAt         DateTime?
+  askedById             String?
+  resolvedAt            DateTime?
+  resolvedById          String?
 
   messages Message[]
 
@@ -1027,6 +1072,11 @@ enum DocumentCategory {
   // Never listed with yearly folders; opened only through the Identity
   // Documents section by authorized staff and account holders.
   IDENTITY
+  // One business owner's Schedule K-1 (Document.businessOwnerId). Opens only
+  // for that owner's login (and owners Tabitha shared it with), plus staff.
+  OWNER_K1
+  // Payroll reports and filings (941, W-2/W-3, payroll registers).
+  PAYROLL
 }
 
 enum DocumentVisibility {
@@ -1142,6 +1192,9 @@ model Document {
   lastScanAt             DateTime?
   lastScanError          String?
   bookkeepingAccount     BookkeepingAccount?  @relation(fields: [bookkeepingAccountId], references: [id], onDelete: SetNull)
+  // The owner a K-1 (category OWNER_K1) belongs to.
+  businessOwnerId        String?
+  businessOwner          BusinessOwner?       @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
 
   @@index([clientId, category, year, month])
   @@index([visibility])
@@ -1217,6 +1270,8 @@ model BookkeepingPeriod {
 }
 
 enum RequestStatus {
+  // Prepared (by Coetha or staff) but not sent: the client never sees a draft.
+  DRAFT
   OPEN
   SUBMITTED
   ACCEPTED
@@ -1224,24 +1279,52 @@ enum RequestStatus {
 }
 
 model DocumentRequest {
-  id           String             @id @default(cuid())
-  clientId     String
-  client       Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  periodId     String?
-  period       BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
-  title        String
-  instructions String?
-  category     DocumentCategory   @default(CLIENT_UPLOADS)
-  dueAt        DateTime?
-  remindAt     DateTime?
-  status       RequestStatus      @default(OPEN)
-  createdById  String
-  createdBy    User               @relation(fields: [createdById], references: [id])
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  id                   String              @id @default(cuid())
+  clientId             String
+  client               Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  periodId             String?
+  period               BookkeepingPeriod?  @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  title                String
+  instructions         String?
+  category             DocumentCategory    @default(CLIENT_UPLOADS)
+  dueAt                DateTime?
+  remindAt             DateTime?
+  status               RequestStatus       @default(OPEN)
+  createdById          String
+  createdBy            User                @relation(fields: [createdById], references: [id])
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  // GENERAL | MONTHLY | STATEMENT (one account, one month) | HISTORICAL (onboarding records) | YEAR_END (annual tax documents)
+  kind                 String              @default("GENERAL")
+  // What is asked for (a bookkeeping upload type, or a year-end tax form key).
+  docType              String?
+  // The exact account and date range asked for. An upload against the request is filed with these.
+  bookkeepingAccountId String?
+  bookkeepingAccount   BookkeepingAccount? @relation(fields: [bookkeepingAccountId], references: [id], onDelete: SetNull)
+  periodStart          DateTime?           @db.Date
+  periodEnd            DateTime?           @db.Date
+  // YEAR_END: the tax year the annual documents are for.
+  taxYear              Int?
+  // STAFF | COETHA — who prepared it. Coetha's requests start as DRAFT unless Tabitha turned on auto-send.
+  source               String              @default("STAFF")
+  // Why it is needed (shown to the client in plain words; Coetha writes it for her requests).
+  reason               String?
+  // Keeps Coetha from drafting the same request twice (e.g. "stmt:<account>:2026-10").
+  draftKey             String?
+  // Coetha's routing: ROUTINE (may go out automatically) or REVIEW (waits for Tabitha), and why.
+  routing              String?
+  routingReason        String?
+  sentAt               DateTime?
+  sentById             String?
+  // #78: business tax-document requests made from the client's own facts (payroll, entity type,
+  // prior-year documents...): the rule that asked for it (one request per rule per tax year).
+  // Null for requests staff write by hand and for Coetha's requests (those use draftKey).
+  ruleKey              String?
 
   documents Document[]
 
+  @@unique([clientId, draftKey])
+  @@unique([clientId, taxYear, ruleKey])
   @@index([clientId, status])
 }
 
@@ -2181,12 +2264,44 @@ model OwnerAccess {
   user        User       @relation("OwnerAccessUser", fields: [userId], references: [id], onDelete: Cascade)
   // The owner's own binding. Only the primary may grant or revoke others.
   isPrimary   Boolean    @default(false)
-  // FULL = the whole Owner's Office; BILLING = quotes, invoices and payments only
-  // (no expenses, no financial dashboard, no settings).
+  // Legacy (before Staff Access & Permissions): FULL = the whole Owner's Office; BILLING = quotes,
+  // invoices and payments only. Only the primary row still matters; other rows were migrated to
+  // StaffPermission grants (20261106205000_staff_permissions) and no longer grant anything.
   scope       OwnerScope @default(FULL)
   grantedById String?
   grantedAt   DateTime   @default(now())
   revokedAt   DateTime?
+}
+
+// Staff Access & Permissions: one row per staff member, area and action (see src/lib/permissions.ts).
+// No row = denied. The primary owner holds everything and has no rows. Checked on every request.
+model StaffPermission {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation("StaffPermissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  area        String
+  action      String
+  grantedById String?
+  grantedAt   DateTime @default(now())
+
+  @@unique([userId, area, action])
+}
+
+// Every grant and revoke: who changed whom, which area/action, old -> new, and when.
+model StaffPermissionEvent {
+  id          String   @id @default(cuid())
+  actorId     String
+  userId      String
+  area        String
+  action      String
+  fromAllowed Boolean
+  toAllowed   Boolean
+  // "matrix", "preset:<key>", "migration:<mapping>", "legacy:bookkeeping_billing", "invite"
+  source      String
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
 }
 
 enum OwnerScope {
@@ -2466,6 +2581,8 @@ enum ChallengePurpose {
   SIGN_IN
   // Proving the account's email address (turns on email codes).
   VERIFY_EMAIL
+  // Confirming identity before a payroll decision opened from a texted or emailed link.
+  PAYROLL_APPROVAL
 }
 
 // One emailed (or, later, texted) code. Single use, short-lived, limited attempts.
@@ -2851,70 +2968,140 @@ model BookkeepingProfile {
   updatedAt             DateTime  @updatedAt
 
   // Business information. Entity type and fiscal year end live on Client.
-  legalName           String?
-  dba                 String?
+  legalName             String?
+  dba                   String?
   // EIN: encrypted (encryptSecret); only the last four are shown by default.
   // The full number opens for Admins only, and each view is audited.
-  einEncrypted        String?
-  einLast4            String?
-  businessAddress1    String?
-  businessAddress2    String?
-  businessCity        String?
-  businessState       String?
-  businessPostalCode  String?
-  businessEmail       String?
-  contactName         String?
-  contactTitle        String?
-  contactPhone        String?
-  businessStartDate   DateTime?
+  einEncrypted          String?
+  einLast4              String?
+  businessAddress1      String?
+  businessAddress2      String?
+  businessCity          String?
+  businessState         String?
+  businessPostalCode    String?
+  businessEmail         String?
+  contactName           String?
+  contactTitle          String?
+  contactPhone          String?
+  businessStartDate     DateTime?
   // The tax/accounting year being worked; earlier years stay available.
-  workingYear         Int?
+  workingYear           Int?
   // CASH | ACCRUAL | MODIFIED_CASH — shown on every report.
-  accountingBasis     String?
+  accountingBasis       String?
   // Payroll account access: NOT_REQUESTED | REQUESTED | ACCOUNTANT_ACCESS | REPORTS_EMAILED | CLIENT_UPLOADS
-  payrollAccessStatus String?
+  payrollAccessStatus   String?
   // Payroll reports required each month (keys of PAYROLL_REPORT_TYPES).
-  payrollReports      String[]  @default([])
+  payrollReports        String[]  @default([])
+  // Payroll system (keys of PAYROLL_SYSTEMS): ADP_RUN | ADP_WFN | PAYCHEX_FLEX | GUSTO | OTHER.
+  // payrollProvider stays the display name shown everywhere.
+  payrollSystem         String?
+  // How payroll data reaches us: REPORT_IMPORT (register files) | API (once the provider connection is approved).
+  payrollConnection     String?
   // HMAC of the EIN, so duplicate businesses can be spotted without decrypting.
-  einHash             String?
-  contactEmail        String?
+  einHash               String?
+  contactEmail          String?
   // When an Admin last verified the business information (client onboarding).
-  verifiedAt          DateTime?
-  verifiedById        String?
+  verifiedAt            DateTime?
+  verifiedById          String?
   // "Work with Coetha": this client's own Claude Project or conversation link
   // (https://claude.ai/...). Set by Tabitha; opened by authorized staff with
   // their own Claude access. Never a password; nothing syncs automatically.
-  coethaUrl           String?
-  coethaUpdatedById   String?
-  coethaUpdatedAt     DateTime?
+  coethaUrl             String?
+  coethaUpdatedById     String?
+  coethaUpdatedAt       DateTime?
+  // Business Tax Classification (internal; Tabitha sets and edits it, Coetha may only recommend):
+  // FORM_1065 (partnership / multi-member LLC) | FORM_1120S (S corporation) |
+  // SCHEDULE_C (sole proprietor / disregarded single-member LLC) | OTHER_REVIEW.
+  // Accounting method = accountingBasis (kept in step with LedgerBook.basis); fiscal year end =
+  // Client.fiscalYearEnd (kept in step with LedgerBook.fiscalYearStartMonth); tax year = workingYear.
+  taxClassification     String?
+  taxClassificationById String?
+  taxClassificationAt   DateTime?
 }
 
 /// A client's bank or credit-card account for bookkeeping. Never holds
 /// passwords, security answers or one-time codes: access is by delegated
 /// accountant access, an official connection, or statement uploads.
 model BookkeepingAccount {
-  id           String     @id @default(cuid())
-  clientId     String
-  client       Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  institution  String
+  id                  String                  @id @default(cuid())
+  clientId            String
+  client              Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  institution         String
   // CHECKING | SAVINGS | CREDIT_CARD | LINE_OF_CREDIT | LOAN | MERCHANT | OTHER
-  accountType  String
-  last4        String?
-  nickname     String?
+  accountType         String
+  last4               String?
+  nickname            String?
   // The bank's official sign-in page (https only), for delegated access.
-  loginUrl     String?
+  loginUrl            String?
   // NOT_REQUESTED | REQUESTED | DELEGATED_ACCESS | OFFICIAL_CONNECTION | STATEMENTS_ONLY | REVOKED
-  accessStatus String     @default("NOT_REQUESTED")
-  accessNote   String?
+  accessStatus        String                  @default("NOT_REQUESTED")
+  accessNote          String?
   // How the client gives access: DELEGATED (adds us as accountant user) | OFFICIAL_CONNECTION | STATEMENT_UPLOAD
-  accessMethod String?
-  active       Boolean    @default(true)
-  updatedById  String?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  documents    Document[]
+  accessMethod        String?
+  active              Boolean                 @default(true)
+  updatedById         String?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  documents           Document[]
+  // Banking & reconciliation (registry of the business's accounts; never usernames, passwords,
+  // full numbers or security codes — last 4 only).
+  // The GL account this account posts to: an asset (checking, savings) or a liability (card, LOC, loan).
+  ledgerAccountId     String?                 @unique
+  ledgerAccount       LedgerAccount?          @relation(fields: [ledgerAccountId], references: [id], onDelete: SetNull)
+  // Opening balance as the statement shows it (positive = normal side: money in the bank, or owed on a card/loan).
+  openingBalanceCents Int?
+  openingBalanceDate  DateTime?               @db.Date
+  // Day of the month the statement closes (31 = last day). Null = calendar month end.
+  statementDay        Int?
+  // Coetha watches this account each month (sync, reconciliation, missing statements).
+  monitored           Boolean                 @default(true)
+  // Employee / authorized-user card: one shared credit account (the parent liability) with several cards.
+  parentAccountId     String?
+  parentAccount       BookkeepingAccount?     @relation("SharedCards", fields: [parentAccountId], references: [id], onDelete: SetNull)
+  subCards            BookkeepingAccount[]    @relation("SharedCards")
+  cardholderLabel     String?
+  requests            DocumentRequest[]
+  reconciliations     AccountReconciliation[]
 
   @@index([clientId])
+}
+
+// One per account per month: Coetha prepares it from the bank feed and the statement, flags
+// exceptions, and only Tabitha approves it (approval also records the ledger's BankReconciliation).
+model AccountReconciliation {
+  id                    String             @id @default(cuid())
+  clientId              String
+  client                Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  bookkeepingAccountId  String
+  bookkeepingAccount    BookkeepingAccount @relation(fields: [bookkeepingAccountId], references: [id], onDelete: Cascade)
+  year                  Int
+  month                 Int
+  statementClosingDate  DateTime?          @db.Date
+  beginningBalanceCents Int?
+  endingBalanceCents    Int?
+  // Where the ending balance came from: STATEMENT_UPLOAD | PLAID_STATEMENT | STAFF_ENTRY
+  balanceSource         String?
+  transactionsImported  Int                @default(0)
+  paymentsCreditsCents  Int                @default(0)
+  chargesDebitsCents    Int                @default(0)
+  unmatchedCount        Int                @default(0)
+  differenceCents       Int?
+  // RECEIVED | MISSING | REQUESTED | NOT_NEEDED
+  statementStatus       String             @default("MISSING")
+  statementDocumentId   String?
+  // NOT_DUE | AWAITING_DATA | IN_PROGRESS | EXCEPTION | READY | APPROVED
+  status                String             @default("NOT_DUE")
+  exceptions            String[]           @default([])
+  preparedAt            DateTime?
+  preparedById          String?
+  approvedById          String?
+  approvedAt            DateTime?
+  bankReconciliationId  String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@unique([bookkeepingAccountId, year, month])
+  @@index([clientId, year, month])
 }
 
 /// Monthly bookkeeping billing for a client. Card details are never stored:
@@ -3210,6 +3397,8 @@ model NonprofitProfile {
 enum ServiceType {
   TAX_INDIVIDUAL
   TAX_BUSINESS
+  // Schedule K-1s prepared for each owner of a partnership or S corporation.
+  K1_PREPARATION
   TAX_AMENDED
   TAX_NONPROFIT
   BOOKKEEPING
@@ -3713,6 +3902,8 @@ model LedgerBook {
   customers            InvoiceCustomer[]
   invoices             ClientInvoice[]
   recurringInvoices    RecurringInvoice[]
+  coethaRuns           CoethaRun[]
+  coethaProposals      CoethaProposal[]
 }
 
 model LedgerAccount {
@@ -3733,6 +3924,7 @@ model LedgerAccount {
   lines            JournalLine[]
   bankTransactions BankTransaction[]
   reconciliations  BankReconciliation[]
+  registryAccount  BookkeepingAccount?
 
   @@unique([clientId, code])
   @@index([clientId, type])
@@ -3814,6 +4006,8 @@ model BankTransaction {
   source               String        @default("CSV")
   // The bank's own transaction ID (Plaid). A row is never added twice for one ID.
   providerId           String?
+  // The Plaid account (card) the row came from: several employee cards can feed one shared liability.
+  providerAccountId    String?
   // Set when a statement row confirmed a row that daily retrieval already brought in.
   statementFingerprint String?
   // POSSIBLE_DUPLICATE | CHANGED_AFTER_POSTING | REMOVED_AFTER_POSTING — for staff, never resolved automatically
@@ -4004,7 +4198,7 @@ model BankConnection {
   id                  String                  @id @default(cuid())
   clientId            String
   provider            String                  @default("PLAID")
-  // SANDBOX only until live banking is approved.
+  // SANDBOX (test data) or PRODUCTION (a real bank; only with Tabitha's switch on).
   environment         String                  @default("SANDBOX")
   itemId              String                  @unique
   accessTokenEnc      String
@@ -4016,6 +4210,12 @@ model BankConnection {
   lastAttemptAt       DateTime?
   lastSuccessAt       DateTime?
   lastError           String?
+  // Plaid's item error code when the connection stopped working (ITEM_LOGIN_REQUIRED, ...).
+  errorCode           String?
+  // When the client first needed to sign in to the bank again (cleared once they do).
+  reauthRequiredAt    DateTime?
+  // Last verified Plaid webhook for this connection.
+  lastWebhookAt       DateTime?
   // Who authorized read-only access, and how (recorded at connection time).
   authorizedByName    String
   authorizationMethod String
@@ -4024,6 +4224,8 @@ model BankConnection {
   createdAt           DateTime                @default(now())
   disconnectedAt      DateTime?
   disconnectedById    String?
+  // The client's own "Refresh now" from the portal (rate-limited: once per 5 minutes).
+  lastClientRefreshAt DateTime?
   accounts            BankConnectionAccount[]
   runs                BankSyncRun[]
 
@@ -4031,27 +4233,67 @@ model BankConnection {
 }
 
 model BankConnectionAccount {
-  id                String         @id @default(cuid())
-  connectionId      String
-  connection        BankConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  providerAccountId String
-  name              String
-  mask              String?
+  id                        String             @id @default(cuid())
+  connectionId              String
+  connection                BankConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  providerAccountId         String
+  name                      String
+  mask                      String?
   // depository / credit / loan … as the bank reports it
-  type              String
-  subtype           String?
+  type                      String
+  subtype                   String?
   // The client's ledger bank or card account it feeds. Unmapped accounts are not retrieved.
-  ledgerAccountId   String?        @unique
-  createdAt         DateTime       @default(now())
+  // Several Plaid accounts may feed ONE ledger account only when they are cards on one shared
+  // credit account (sharedWithId set and confirmed); otherwise one-to-one.
+  ledgerAccountId           String?
+  // Balances as Plaid last reported them (cents; credit: amount owed).
+  currentBalanceCents       Int?
+  // #78: available balance and currency as the bank reported them (client balance ticker).
+  availableBalanceCents     Int?
+  isoCurrency               String?
+  creditLimitCents          Int?
+  balanceAsOf               DateTime?
+  // Authorized-user / employee card detection: the primary card's account in this connection.
+  sharedWithId              String?
+  // SUGGESTED (detected, not yet confirmed) | CONFIRMED | SEPARATE (staff override: its own account)
+  sharedStatus              String?
+  sharedReason              String?
+  // Plaid Liabilities (credit cards and eligible loans), when enabled: the last statement and payment terms.
+  aprPercent                Float?
+  minimumPaymentCents       Int?
+  nextPaymentDueDate        DateTime?          @db.Date
+  lastStatementBalanceCents Int?
+  lastStatementDate         DateTime?          @db.Date
+  liabilityOverdue          Boolean?
+  liabilitiesAt             DateTime?
+  createdAt                 DateTime           @default(now())
+  dailyBalances             BankBalanceDaily[]
 
   @@unique([connectionId, providerAccountId])
+  @@index([ledgerAccountId])
+}
+
+// One balance per bank account per day (Central time), kept up to date by each retrieval.
+// Today's change on the balance ticker = today's balance minus the latest earlier day's.
+model BankBalanceDaily {
+  id                    String                @id @default(cuid())
+  accountId             String
+  account               BankConnectionAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  clientId              String
+  day                   DateTime              @db.Date
+  currentBalanceCents   Int
+  availableBalanceCents Int?
+  recordedAt            DateTime              @default(now())
+
+  @@unique([accountId, day])
+  @@index([clientId, day])
 }
 
 model BankSyncRun {
   id           String         @id @default(cuid())
   connectionId String
   connection   BankConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  // DAILY | MANUAL
+  // DAILY | MANUAL | WEBHOOK
   trigger      String
   startedAt    DateTime       @default(now())
   finishedAt   DateTime?
@@ -4130,12 +4372,27 @@ model JotformInbox {
 
 // Owner switches for integrations (one row, id "default").
 model IntegrationSettings {
-  id                     String   @id @default("default")
+  id                        String    @id @default("default")
   // Off until Tabitha approves: questionnaire webhooks go to the staff inbox
   // instead of being filed to client records automatically.
-  jotformAutoFileEnabled Boolean  @default(false)
-  updatedById            String?
-  updatedAt              DateTime @updatedAt
+  jotformAutoFileEnabled    Boolean   @default(false)
+  // Owner-only switch (primary owner): real bank connections through Plaid production.
+  // Real connections need BOTH this switch and the production keys in Netlify.
+  liveBankingEnabled        Boolean   @default(false)
+  liveBankingChangedById    String?
+  liveBankingChangedAt      DateTime?
+  // Owner-only switch (primary owner): Coetha AI drafts bookkeeping work through the
+  // Anthropic API. Drafts only: Tabitha approves everything before it is posted.
+  coethaEnabled             Boolean   @default(false)
+  coethaChangedById         String?
+  coethaChangedAt           DateTime?
+  // Owner-only: Coetha's ROUTINE document requests go to clients automatically (on by default, Tabitha's
+  // approval of 2026-11). Unusual, sensitive or unclear requests always wait for her review.
+  coethaAutoSendRequests    Boolean   @default(true)
+  coethaAutoSendChangedById String?
+  coethaAutoSendChangedAt   DateTime?
+  updatedById               String?
+  updatedAt                 DateTime  @updatedAt
 }
 
 // ===========================================================================
@@ -4429,6 +4686,520 @@ model YearEndFiling {
   @@unique([clientId, taxYear])
 }
 
+// ===========================================================================
+// COETHA (the firm's AI Senior Accountant): drafts only.
+// A run reads ONE client's books and asks Claude (Anthropic API) for proposals.
+// Proposals never change the books. Only the primary owner (Tabitha) approves
+// one, and approving is the only path that posts (through the ledger's own
+// posting rules). Every approval and rejection is audited.
+// ====================================================================
+model CoethaRun {
+  id           String           @id @default(cuid())
+  clientId     String
+  book         LedgerBook       @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  // MANUAL | DAILY
+  trigger      String
+  // Staff member who pressed "Run Coetha" (null for the daily run).
+  startedById  String?
+  model        String
+  // RUNNING | OK | FAILED
+  status       String           @default("RUNNING")
+  // SHA-256 of exactly what was sent to the model (no secrets, no client contact details).
+  inputHash    String?
+  transactions Int              @default(0)
+  proposals    Int              @default(0)
+  inputTokens  Int              @default(0)
+  outputTokens Int              @default(0)
+  // Anthropic's request id, for support questions.
+  requestId    String?
+  error        String?
+  startedAt    DateTime         @default(now())
+  finishedAt   DateTime?
+  items        CoethaProposal[]
+
+  @@index([clientId, startedAt])
+}
+
+model CoethaProposal {
+  id                String     @id @default(cuid())
+  clientId          String
+  book              LedgerBook @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  runId             String
+  run               CoethaRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  // CATEGORY | DISCREPANCY | ADJUSTING_ENTRY | MONTH_SUMMARY
+  kind              String
+  // PROPOSED | APPROVED | REJECTED | SUPERSEDED
+  status            String     @default("PROPOSED")
+  // The proposal itself (validated: this client's own account and transaction ids only).
+  payload           Json
+  // CATEGORY: the bank transaction it is for.
+  bankTransactionId String?
+  // 0 to 1, as Coetha reported it.
+  confidence        Float?
+  reason            String
+  model             String
+  inputHash         String
+  createdAt         DateTime   @default(now())
+  decidedById       String?
+  decidedAt         DateTime?
+  decisionNote      String?
+  // CATEGORY: the account Tabitha approved (may differ from Coetha's recommendation).
+  approvedAccountId String?
+  // The journal entry posted when Tabitha approved it.
+  journalEntryId    String?    @unique
+
+  @@index([clientId, status, kind])
+  @@index([bankTransactionId])
+}
+
+// ===========================================================================
+// CAMPAIGN DELIVERY
+// ===========================================================================
+//
+// One row per address per channel per campaign, created at send time after
+// permissions are re-checked. The unique key means a retry or an overlapping
+// run can never send the same campaign to the same address twice.
+
+enum CampaignMessageStatus {
+  SKIPPED
+  SENDING
+  PROVIDER_ACCEPTED
+  FAILED
+}
+
+model CampaignMessage {
+  id          String                @id @default(cuid())
+  campaignId  String
+  campaign    Campaign              @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  channel     Channel
+  address     String
+  clientId    String
+  contactId   String?
+  status      CampaignMessageStatus
+  skipReason  String?
+  providerId  String?
+  errorDetail String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@unique([campaignId, channel, address])
+  @@index([campaignId, status])
+}
+
+// ===========================================================================
+// COMMUNICATION PREFERENCES
+// ===========================================================================
+//
+// The client's master communication choices. Whether a channel may be used is
+// still decided by the consent ledger (ConsentRecord / SmsConsentEvent) and
+// the Suppression table, which every change writes through to; this row
+// holds the one choice that has no ledger of its own (general business
+// updates). One row per person: the client's primary details (personKey
+// "primary") or one additional contact (personKey = contact id).
+
+model CommunicationPreference {
+  id             String   @id @default(cuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contactId      String?
+  contact        Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  personKey      String
+  generalUpdates Boolean  @default(true)
+  updatedSource  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([clientId, personKey])
+}
+
+enum CommPrefCategory {
+  PROMO_EMAIL
+  PROMO_SMS
+  GENERAL_UPDATES
+}
+
+// History: who changed what, when, and how (portal, email link, one-click
+// unsubscribe, STOP/START reply, staff on the client's request).
+model CommunicationPreferenceChange {
+  id           String           @id @default(cuid())
+  clientId     String
+  client       Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contactId    String?
+  category     CommPrefCategory
+  subscribed   Boolean
+  // PORTAL | EMAIL_LINK | ONE_CLICK | STOP_REPLY | START_REPLY | STAFF
+  source       String
+  address      String?
+  portalUserId String?
+  actorId      String?
+  note         String?
+  createdAt    DateTime         @default(now())
+
+  @@index([clientId, createdAt])
+}
+
+/// One payroll register / journal file imported for a business (ADP, Paychex…).
+/// The original file is kept in the client's documents (docType PAYROLL_REPORT).
+model PayrollImport {
+  id          String       @id @default(cuid())
+  clientId    String
+  client      Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // ADP_RUN | ADP_WFN | PAYCHEX_FLEX | GUSTO | OTHER
+  provider    String
+  fileName    String
+  fileSha256  String
+  documentId  String?
+  rows        Int
+  payDates    Int
+  created     Int
+  duplicates  Int
+  // Column → field mapping used for this file.
+  mapping     Json
+  createdById String
+  createdAt   DateTime     @default(now())
+  runs        PayrollRun[]
+
+  @@index([clientId])
+}
+
+/// A pay run for one business and pay date. Its figures live in immutable versions;
+/// approvals bind to one version (id + content hash) and one approval round.
+model PayrollRun {
+  id                    String                @id @default(cuid())
+  clientId              String
+  client                Client                @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // ADP_RUN | ADP_WFN | PAYCHEX_FLEX | GUSTO | OTHER
+  provider              String
+  // IMPORT | API | COETHA | MANUAL — a COETHA run is finalized only by Tabitha.
+  origin                String                @default("IMPORT")
+  importId              String?
+  import                PayrollImport?        @relation(fields: [importId], references: [id], onDelete: SetNull)
+  // provider + check date + totals hash of the data as first received: re-imports never double up.
+  dedupeKey             String
+  // The current version's pay date (kept here for lists and the next-pay-date estimate).
+  checkDate             DateTime              @db.Date
+  // DRAFT | AWAITING_APPROVAL | DENIED | FULLY_APPROVED | SUBMITTED | PROCESSED | DISCARDED
+  status                String                @default("DRAFT")
+  currentVersionId      String?               @unique
+  // Each "send for approval" starts a new round; only decisions in the current round count.
+  approvalRound         Int                   @default(0)
+  approvalRequestedAt   DateTime?
+  approvalRequestedById String?
+  fullyApprovedAt       DateTime?
+  // Submission to ADP/Paychex is always a person's action, never automatic.
+  submittedAt           DateTime?
+  submittedById         String?
+  // MANUAL_IN_PROVIDER | API | PROCESSED_AT_PROVIDER (imported after the provider already paid it)
+  submissionMethod      String?
+  submissionNote        String?
+  // Ledger: a draft entry until staff post it.
+  cashAccountId         String?
+  journalEntryId        String?               @unique
+  postedAt              DateTime?
+  postedById            String?
+  discardedAt           DateTime?
+  discardedById         String?
+  discardReason         String?
+  createdById           String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  versions              PayrollRunVersion[]
+  approvals             PayrollApproval[]
+  events                PayrollRunEvent[]
+  links                 PayrollApprovalLink[]
+  notices               PayrollNotice[]
+
+  @@unique([clientId, dedupeKey])
+  @@index([clientId, checkDate])
+}
+
+/// Immutable: a staff change creates the next version; nothing here is ever updated.
+model PayrollRunVersion {
+  id               String            @id @default(cuid())
+  runId            String
+  run              PayrollRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  number           Int
+  contentHash      String
+  checkDate        DateTime          @db.Date
+  periodStart      DateTime?         @db.Date
+  periodEnd        DateTime?         @db.Date
+  employees        Int
+  hoursHundredths  Int               @default(0)
+  grossCents       Int
+  federalWhCents   Int               @default(0)
+  ssEeCents        Int               @default(0)
+  medicareEeCents  Int               @default(0)
+  stateWhCents     Int               @default(0)
+  otherEeTaxCents  Int               @default(0)
+  employerTaxCents Int               @default(0)
+  deductionsCents  Int               @default(0)
+  netPayCents      Int
+  reason           String?
+  createdById      String?
+  createdAt        DateTime          @default(now())
+  lines            PayrollRunLine[]
+  approvals        PayrollApproval[]
+
+  @@unique([runId, number])
+}
+
+model PayrollRunLine {
+  id               String            @id @default(cuid())
+  versionId        String
+  version          PayrollRunVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  sortOrder        Int
+  employeeName     String
+  hoursHundredths  Int               @default(0)
+  grossCents       Int
+  federalWhCents   Int               @default(0)
+  ssEeCents        Int               @default(0)
+  medicareEeCents  Int               @default(0)
+  stateWhCents     Int               @default(0)
+  otherEeTaxCents  Int               @default(0)
+  employerTaxCents Int               @default(0)
+  deductionsCents  Int               @default(0)
+  netPayCents      Int
+
+  @@index([versionId])
+}
+
+/// A business owner (portal login) Tabitha designated to approve this business's payroll.
+/// Kept loose (portalUserId + clientId) so the business-owners work wires in through isPayrollApprover().
+model PayrollApprover {
+  id                 String     @id @default(cuid())
+  clientId           String
+  client             Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  portalUserId       String
+  portalUser         PortalUser @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  required           Boolean    @default(false)
+  // Per-employee detail on the approval screen (set per approver by the office).
+  showEmployeeDetail Boolean    @default(true)
+  // EMAIL | SMS | BOTH; null = default (email, plus text when allowed).
+  notifyChannel      String?
+  active             Boolean    @default(true)
+  designatedById     String
+  removedAt          DateTime?
+  removedById        String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@unique([clientId, portalUserId])
+}
+
+/// One owner's decision on one version in one round. Never updated or deleted.
+model PayrollApproval {
+  id            String            @id @default(cuid())
+  runId         String
+  run           PayrollRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  versionId     String
+  version       PayrollRunVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  contentHash   String
+  round         Int
+  clientId      String
+  portalUserId  String
+  portalUser    PortalUser        @relation(fields: [portalUserId], references: [id], onDelete: Restrict)
+  approverName  String
+  approverEmail String
+  // APPROVED | DENIED
+  decision      String
+  comment       String?
+  // PORTAL | SMS_LINK | EMAIL_LINK
+  channel       String
+  // PORTAL_SESSION | EMAIL_CODE | PASSWORD_AND_AUTHENTICATOR
+  verifiedBy    String
+  ip            String?
+  userAgent     String?
+  linkId        String?
+  createdAt     DateTime          @default(now())
+
+  @@unique([runId, round, portalUserId])
+  @@index([portalUserId])
+}
+
+/// Single-use link texted or emailed to one approver for one version and round.
+model PayrollApprovalLink {
+  id              String     @id @default(cuid())
+  tokenHash       String     @unique
+  runId           String
+  run             PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  versionId       String
+  round           Int
+  portalUserId    String
+  clientId        String
+  // SMS | EMAIL
+  channel         String
+  expiresAt       DateTime
+  usedAt          DateTime?
+  verifiedAt      DateTime?
+  verifyNonceHash String?
+  createdAt       DateTime   @default(now())
+
+  @@index([runId])
+  @@index([portalUserId])
+}
+
+/// Every approval request sent (or skipped or held, with the reason).
+model PayrollNotice {
+  id           String     @id @default(cuid())
+  runId        String
+  run          PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  round        Int
+  portalUserId String
+  // EMAIL | SMS
+  channel      String
+  // SENT | FAILED | SKIPPED | HELD
+  status       String
+  detail       String?
+  linkId       String?
+  createdAt    DateTime   @default(now())
+  sentAt       DateTime?
+
+  @@index([runId, round])
+  @@index([status])
+}
+
+/// The status timeline of a pay run (append-only).
+model PayrollRunEvent {
+  id            String     @id @default(cuid())
+  runId         String
+  run           PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  // CREATED | VERSIONED | APPROVAL_REQUESTED | APPROVED | DENIED | FULLY_APPROVED | SUBMITTED | PROCESSED | POSTED | DISCARDED | APPROVALS_INVALIDATED
+  kind          String
+  versionNumber Int?
+  actorUserId   String?
+  portalUserId  String?
+  actorName     String?
+  note          String?
+  createdAt     DateTime   @default(now())
+
+  @@index([runId, createdAt])
+}
+
+/// A business's API connection to ADP or Paychex. Stays NOT_CONNECTED until the firm's
+/// partner approval and the client's consent are both in place (docs/payroll-integrations.md).
+model PayrollConnection {
+  id                String    @id @default(cuid())
+  clientId          String
+  client            Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // ADP_RUN | ADP_WFN | PAYCHEX_FLEX
+  provider          String
+  // NOT_CONNECTED | CONSENT_REQUESTED | CONNECTED | REVOKED
+  status            String    @default("NOT_CONNECTED")
+  // ADP: the client's organization id from consent; Paychex: the company displayId.
+  externalCompanyId String?
+  note              String?
+  requestedAt       DateTime?
+  connectedAt       DateTime?
+  lastSyncAt        DateTime?
+  lastSyncError     String?
+  updatedById       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([clientId, provider])
+}
+
+// ===========================================================================
+// BUSINESS OWNERS (several owners of one business, each with their own login)
+// ===========================================================================
+
+/// One owner of a business client (e.g. four members of an LLC). Name, email and
+/// phone live on the linked Contact (so consent, invitations and the login's
+/// contact link work as for any contact); ownership details live here.
+/// Ownership never grants portal access: each owner's login has its own
+/// permissions, set by Tabitha or staff she authorized.
+model BusinessOwner {
+  id           String      @id @default(cuid())
+  clientId     String
+  client       Client      @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  contactId    String      @unique
+  contact      Contact     @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  // Basis points: 2500 = 25%, 3333 = 33.33%. Null = not recorded yet.
+  ownershipBps Int?
+  // MEMBER | PARTNER | SHAREHOLDER | OFFICER | OTHER
+  title        String?
+  receivesK1   Boolean     @default(true)
+  notes        String?
+  // The owner's own portal login, once they accepted an invitation (or already had one).
+  portalUserId String?
+  portalUser   PortalUser? @relation(fields: [portalUserId], references: [id], onDelete: SetNull)
+  // Removed owners are archived, never deleted (their K-1s and history stay).
+  archivedAt   DateTime?
+  archivedById String?
+  createdById  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  k1Documents  Document[]
+  // Other owners' K-1s Tabitha shared with this owner, and who may see this owner's.
+  k1Viewing    OwnerK1Grant[] @relation("K1Viewer")
+  k1SharedWith OwnerK1Grant[] @relation("K1Holder")
+
+  @@index([clientId])
+  @@index([portalUserId])
+}
+
+/// An explicit, per-pair exception: `viewer` may open `holder`'s K-1s.
+/// Owners never see another owner's K-1 without one of these.
+model OwnerK1Grant {
+  id            String        @id @default(cuid())
+  clientId      String
+  client        Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  viewerOwnerId String
+  viewer        BusinessOwner @relation("K1Viewer", fields: [viewerOwnerId], references: [id], onDelete: Restrict)
+  holderOwnerId String
+  holder        BusinessOwner @relation("K1Holder", fields: [holderOwnerId], references: [id], onDelete: Restrict)
+  grantedById   String?
+  createdAt     DateTime      @default(now())
+  revokedAt     DateTime?
+  revokedById   String?
+
+  @@unique([viewerOwnerId, holderOwnerId])
+  @@index([clientId])
+}
+
+/// "Filing jointly / spouse needed for {year}": one answer per client and tax
+/// year. A spouse saved in an earlier year never implies a joint return now.
+model JointFilingYear {
+  id            String   @id @default(cuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  taxYear       Int
+  needed        Boolean
+  // STAFF | CLIENT
+  source        String
+  setById       String?
+  setByPortalId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([clientId, taxYear])
+}
+
+/// A business-only client's login asking for personal tax preparation.
+/// Staff accept it (which sets up the person's own Personal record and gives
+/// their login access to it, turning the personal tax features on there) or decline it.
+model PersonalTaxRequest {
+  id               String     @id @default(cuid())
+  // The business account the request was made from.
+  clientId         String
+  client           Client     @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  portalUserId     String
+  portalUser       PortalUser @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  businessOwnerId  String?
+  note             String?
+  // PENDING | ACCEPTED | DECLINED
+  status           String     @default("PENDING")
+  // The Personal record set up (or linked) when accepted.
+  personalClientId String?
+  decidedById      String?
+  decidedAt        DateTime?
+  createdAt        DateTime   @default(now())
+
+  @@index([status])
+  @@index([clientId])
+}
+
 // Square webhook deliveries, one row per Square event_id, so a replayed event is never applied twice.
 model SquareWebhookEvent {
   id          String    @id @default(cuid())
@@ -4464,4 +5235,23 @@ model SquarePaymentSeen {
   updatedAt        DateTime  @updatedAt
 
   @@index([state])
+}
+
+// An interim financial statement Tabitha approved and released (e.g. for a lender) without closing
+// the period. Always labeled "Interim — unaudited, prepared as of <date>" for the client.
+model InterimStatement {
+  id           String    @id @default(cuid())
+  clientId     String
+  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Profit and Loss covers fromDate..asOf; the Balance Sheet is as of asOf.
+  fromDate     DateTime  @db.Date
+  asOf         DateTime  @db.Date
+  // A short purpose shown to the client, e.g. "For Pretend Community Bank".
+  purpose      String?
+  releasedById String
+  releasedAt   DateTime  @default(now())
+  revokedAt    DateTime?
+  revokedById  String?
+
+  @@index([clientId, releasedAt])
 }

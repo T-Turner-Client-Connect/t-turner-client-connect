@@ -45,9 +45,11 @@ export function renderEmailHtml(input: EmailRenderInput): string {
   const footer = [
     escapeHtml(ORG_NAME),
     input.mailingAddress ? escapeHtml(input.mailingAddress) : "",
-    isPromo
-      ? `You're receiving this because you asked to hear about our services. <a href="${escapeHtml(input.unsubscribeUrl)}" style="color:#555">Unsubscribe</a>`
-      : `<a href="${escapeHtml(input.unsubscribeUrl)}" style="color:#555">Email preferences</a>`,
+    input.purpose === "GENERAL_UPDATE"
+      ? `You're receiving this general business update as a client of ours. <a href="${escapeHtml(input.unsubscribeUrl)}" style="color:#555">Unsubscribe from general updates</a>`
+      : isPromo
+        ? `You're receiving this because you asked to hear about our services. <a href="${escapeHtml(input.unsubscribeUrl)}" style="color:#555">Unsubscribe</a>`
+        : `<a href="${escapeHtml(input.unsubscribeUrl)}" style="color:#555">Email preferences</a>`,
   ]
     .filter(Boolean)
     .join("<br>");

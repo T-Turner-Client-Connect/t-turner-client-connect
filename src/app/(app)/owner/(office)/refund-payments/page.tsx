@@ -8,7 +8,7 @@ import {
   setRefundAmountAction,
   undoRefundDepositAction,
 } from "@/app/actions/refund-transfers";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { DEBT_CHECK, OFFSET_RISK, RT_STATUS, refundTransferBoard, type RtStatus } from "@/lib/services/refund-transfers";
 import { fmtDateTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -25,7 +25,9 @@ const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/
  * Tracking only: Republic Bank's application and agreement are the authorization.
  */
 export default async function RefundPaymentsPage({ searchParams }: { searchParams: Promise<{ year?: string }> }) {
-  const { actor } = await requireOwner("billing");
+  const { actor, access } = await requireOffice("billing");
+  const mayEdit = access.can("billing", "edit");
+  const mayReconcile = access.can("receivables", "reconcile");
   const thisYear = new Date().getFullYear();
   const year = Number((await searchParams).year) || thisYear - 1;
   const [{ rows, totals }, clients] = await Promise.all([
@@ -48,7 +50,7 @@ export default async function RefundPaymentsPage({ searchParams }: { searchParam
         <Card title="Follow up (short / not received)"><p className="font-serif text-2xl font-bold text-red-800">{usd(totals.followUpCents)}</p><p className="text-sm text-slate-600">{totals.followUpCount} client{totals.followUpCount === 1 ? "" : "s"}</p></Card>
       </div>
 
-      <Card title="Add a client's fee owed" className="mb-5">
+      {mayEdit && <Card title="Add a client's fee owed" className="mb-5">
         <ActionForm action={setRefundAmountAction} className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr_auto] sm:items-end" resetOnSuccess>
           <Field label="Client">
             <select className="input" name="clientId" required defaultValue="">
@@ -60,7 +62,7 @@ export default async function RefundPaymentsPage({ searchParams }: { searchParam
           <Field label="Fee owed ($)"><input className="input" name="amount" inputMode="decimal" required placeholder="300.00" /></Field>
           <Button type="submit">Add — awaiting deposit</Button>
         </ActionForm>
-      </Card>
+      </Card>}
 
       <Card title={`${year} returns paid by refund`}>
         {rows.length === 0 ? (
@@ -80,31 +82,31 @@ export default async function RefundPaymentsPage({ searchParams }: { searchParam
                   </div>
                   {r.debtCheck && <p className="mt-1 text-slate-600">Debt check: {DEBT_CHECK[r.debtCheck as keyof typeof DEBT_CHECK]} · Possible offset: {r.offsetRisk ? OFFSET_RISK[r.offsetRisk as keyof typeof OFFSET_RISK] : "—"}</p>}
                   <div className="mt-2 flex flex-wrap gap-3">
-                    {status === "REQUESTED" && (
+                    {status === "REQUESTED" && mayEdit && (
                       <ActionForm action={setRefundAmountAction} className="flex flex-wrap items-end gap-2">
                         <input type="hidden" name="clientId" value={r.client.id} /><input type="hidden" name="taxYear" value={r.taxYear} />
                         <Field label="Fee owed ($)"><input className="input w-32" name="amount" inputMode="decimal" required /></Field>
                         <Button type="submit">Approve — awaiting deposit</Button>
                       </ActionForm>
                     )}
-                    {status === "AWAITING_DEPOSIT" && (
+                    {status === "AWAITING_DEPOSIT" && mayReconcile && (
                       <ActionForm action={recordRefundDepositAction.bind(null, r.id)} className="flex flex-wrap items-end gap-2">
                         <Field label="Deposit received ($)"><input className="input w-32" name="amount" inputMode="decimal" required defaultValue={r.amountCents != null ? (r.amountCents / 100).toFixed(2) : ""} /></Field>
                         <Field label="Date"><input className="input" type="date" name="receivedOn" required defaultValue={today()} /></Field>
                         <Button type="submit" data-testid="record-deposit">Clear — deposit received</Button>
                       </ActionForm>
                     )}
-                    {(status === "REQUESTED" || status === "AWAITING_DEPOSIT") && (
+                    {(status === "REQUESTED" || status === "AWAITING_DEPOSIT") && mayReconcile && (
                       <details><summary className="cursor-pointer font-semibold text-red-800">Not received</summary>
                         <ActionForm action={refundNotReceivedAction.bind(null, r.id)} className="mt-2 flex items-end gap-2"><Field label="Reason"><input className="input" name="note" required maxLength={300} /></Field><Button type="submit" variant="danger">Mark not received</Button></ActionForm>
                       </details>
                     )}
-                    {(status === "RECEIVED" || status === "SHORT") && (
+                    {(status === "RECEIVED" || status === "SHORT") && mayReconcile && (
                       <details><summary className="cursor-pointer text-slate-600">Undo deposit</summary>
                         <ActionForm action={undoRefundDepositAction.bind(null, r.id)} className="mt-2 flex items-end gap-2"><Field label="Reason"><input className="input" name="note" required maxLength={300} /></Field><Button type="submit" variant="secondary">Undo</Button></ActionForm>
                       </details>
                     )}
-                    {(status === "REQUESTED" || status === "AWAITING_DEPOSIT" || status === "NOT_RECEIVED") && (
+                    {(status === "REQUESTED" || status === "AWAITING_DEPOSIT" || status === "NOT_RECEIVED") && mayEdit && (
                       <details><summary className="cursor-pointer text-slate-600">Cancel</summary>
                         <ActionForm action={cancelRefundTransferAction.bind(null, r.id)} className="mt-2 flex items-end gap-2"><Field label="Reason"><input className="input" name="note" required maxLength={300} /></Field><Button type="submit" variant="secondary">Cancel</Button></ActionForm>
                       </details>

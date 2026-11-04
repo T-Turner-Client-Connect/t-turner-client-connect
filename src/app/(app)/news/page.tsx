@@ -4,6 +4,7 @@ import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui"
 import { NewsAndCountdowns } from "@/components/portal/news-countdowns";
 import { announcementStepAction, deadlineStepAction, saveAnnouncementAction, saveDeadlineAction, saveQuestionnaireAction } from "@/app/actions/tax-center";
 import { requireUser } from "@/lib/auth/session";
+import { campaignFromAnnouncementAction } from "@/app/actions/campaigns";
 import { prisma } from "@/lib/prisma";
 import { AUDIENCES, countdownsFor, listDeadlines, missingSuggestions, staffAnnouncements, TOPICS } from "@/lib/services/news";
 import { DEADLINE_KIND_LABELS, fmtIso, officeToday } from "@/lib/tax/deadlines";
@@ -115,6 +116,9 @@ export default async function NewsPage() {
                         <span className="flex gap-1">
                           <form action={announcementStepAction.bind(null, a.id, a.pinned ? "unpin" : "pin")}><Button variant="ghost">{a.pinned ? "Unpin" : "Pin"}</Button></form>
                           {state !== "Ended" && <form action={announcementStepAction.bind(null, a.id, "expire")}><Button variant="ghost">End now</Button></form>}
+                          <ActionForm action={campaignFromAnnouncementAction.bind(null, a.id)} showSuccess={false}>
+                            <Button variant="ghost" title="Start a General business update campaign. It skips everyone who turned off general updates.">Send as email update</Button>
+                          </ActionForm>
                         </span>
                       )}
                     </div>

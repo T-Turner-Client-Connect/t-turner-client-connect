@@ -2,14 +2,14 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import { Badge, Card, EmptyState, LinkButton, PageHeader } from "@/components/ui";
 import { INVOICE_STATUS } from "@/lib/billing/invoice-status";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { invoiceRows } from "@/lib/services/owner-billing";
 import { money } from "@/lib/billing/pricing";
 import { prisma } from "@/lib/prisma";
 import { STATE_LABELS } from "@/lib/billing/labels";
 
 export default async function InvoicesPage({ searchParams }: { searchParams: Promise<{ client?: string; state?: string }> }) {
-  const { actor, access } = await requireOwner("billing");
+  const { actor, access } = await requireOffice("billing");
   const sp = await searchParams;
   const states = Object.keys(STATE_LABELS);
   const all = await invoiceRows(actor, { clientId: sp.client || undefined, state: states.includes(sp.state ?? "") ? sp.state : undefined });
@@ -24,13 +24,13 @@ export default async function InvoicesPage({ searchParams }: { searchParams: Pro
           <>
             <LinkButton href="/owner/invoices/create" variant="gold" className="px-5 text-base shadow-md" data-testid="create-invoice"><Plus className="size-5" aria-hidden /> Create Invoice</LinkButton>
             <LinkButton href="/owner/invoices/new" variant="secondary">Itemized quote</LinkButton>
-            {access.scope === "FULL" && <LinkButton variant="secondary" href={`/api/owner/export?type=invoices${sp.client ? `&client=${sp.client}` : ""}`}>Export CSV</LinkButton>}
+            {access.can("billing", "view") && <LinkButton variant="secondary" href={`/api/owner/export?type=invoices${sp.client ? `&client=${sp.client}` : ""}`}>Export CSV</LinkButton>}
           </>
         }
       />
       {pending > 0 && (
         <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" data-testid="pending-approval-count">
-          <strong>{pending}</strong> invoice{pending === 1 ? " is" : "s are"} waiting for {access.scope === "FULL" ? "your" : "the owner's"} approval. <Link className="font-semibold underline" href="/owner/invoices?state=PENDING_APPROVAL">Review</Link>
+          <strong>{pending}</strong> invoice{pending === 1 ? " is" : "s are"} waiting for {access.isOwner ? "your" : "the owner's"} approval. <Link className="font-semibold underline" href="/owner/invoices?state=PENDING_APPROVAL">Review</Link>
         </p>
       )}
       <form className="mb-4 flex flex-wrap items-end gap-2" method="get">

@@ -5,54 +5,89 @@ import type { OwnerAccess } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { OWNER_EMAIL } from "@/lib/business";
 import { normalizeEmail } from "@/lib/normalize";
+import type { Area, PermAction } from "@/lib/permissions";
 import { verifyPassword } from "./password";
 import { ForbiddenError, type Actor } from "./actor";
 import { getCurrentUser, requireUser } from "./session";
+import { assertCan, can, officeAccessFor, type OfficeAccess } from "./permissions";
 
 /**
- * Owner's Office access. Bound to a staff account ID through an OwnerAccess
- * row; a role ("Admin") or a typed email never grants it. Every page, action,
- * export and download re-checks the row in the database.
+ * Owner's Office access. The owner is bound to her staff account ID through the primary
+ * OwnerAccess row; a role ("Admin") or a typed email never grants it. Everyone else holds only
+ * the Staff Access & Permissions grants the owner gave them (src/lib/auth/permissions.ts). Every
+ * page, action, export and download re-checks the database — nothing is cached in the session.
  */
-export type OwnerCapability = "billing" | "full" | "grant";
 
-export async function ownerAccessFor(userId: string): Promise<OwnerAccess | null> {
-  return prisma.ownerAccess.findFirst({ where: { userId, revokedAt: null, user: { active: true } } });
+/** The owner's own binding (primary, not revoked, active account), or null. */
+export async function primaryOwnerAccess(userId: string): Promise<OwnerAccess | null> {
+  return prisma.ownerAccess.findFirst({ where: { userId, isPrimary: true, revokedAt: null, user: { active: true } } });
 }
 
-function allows(access: OwnerAccess, need: OwnerCapability) {
-  if (need === "grant") return access.isPrimary;
-  if (need === "full") return access.scope === "FULL";
-  return true;
-}
-
-/** Throws unless this staff member holds owner access with the capability. */
-export async function assertOwner(actor: Actor, need: OwnerCapability = "full"): Promise<OwnerAccess> {
-  const access = await ownerAccessFor(actor.id);
-  if (!access || !allows(access, need)) throw new ForbiddenError("Not found.");
+/** Throws unless this is the owner herself. For the few things only she does. */
+export async function assertOwner(actor: Actor): Promise<OwnerAccess> {
+  const access = await primaryOwnerAccess(actor.id);
+  if (!access) throw new ForbiddenError("Not found.");
   return access;
 }
 
-/** Page gate: anyone without access gets a plain 404 — the section isn't advertised. */
-export async function requireOwner(need: OwnerCapability = "full"): Promise<{ actor: Actor; access: OwnerAccess }> {
+/** Throws unless this staff member holds the permission (the owner holds them all). */
+export async function assertOffice(actor: Pick<Actor, "id">, area: Area, action: PermAction = "view"): Promise<void> {
+  await assertCan(actor, area, action);
+}
+
+/** Per-request read of the signed-in account's grants (the layout and the page share one lookup). */
+export const myOfficeAccess = cache((userId: string) => officeAccessFor(userId));
+
+/**
+ * Page gate: anyone without the permission gets a plain 404 — the section isn't advertised.
+ * With no area, any Owner's Office permission opens the door (the layout).
+ */
+export async function requireOffice(area?: Area, action: PermAction = "view"): Promise<{ actor: Actor; access: OfficeAccess }> {
   const actor = await requireUser();
-  const access = await ownerAccessFor(actor.id);
-  if (!access || !allows(access, need)) notFound();
+  const access = await myOfficeAccess(actor.id);
+  if (area ? !access.can(area, action) : officeTabs(access).length === 0) notFound();
   return { actor, access };
 }
 
-/** For API routes: the signed-in owner (with capability) or null. */
-export async function ownerFromSession(need: OwnerCapability = "full"): Promise<Actor | null> {
+/** For API routes: the signed-in staff member holding the permission, or null. */
+export async function officeFromSession(area: Area, action: PermAction = "view"): Promise<Actor | null> {
   const actor = await getCurrentUser();
   if (!actor) return null;
-  const access = await ownerAccessFor(actor.id);
-  return access && allows(access, need) ? actor : null;
+  return (await can(actor, area, action)) ? actor : null;
 }
 
-/** What the sidebar may show this staff member. */
-export const ownerNavState = cache(async (actor: Actor): Promise<"none" | "claim" | "billing" | "full"> => {
-  const access = await ownerAccessFor(actor.id);
-  if (access) return access.scope === "FULL" ? "full" : "billing";
+export const billingSettingsVisible = (a: OfficeAccess) => a.can("billing", "settings") || a.can("square", "integrations");
+export const staffAccessVisible = (a: OfficeAccess) => a.isOwner || a.can("staff", "view") || a.can("staff", "manage");
+export const settingsVisible = (a: OfficeAccess) => billingSettingsVisible(a) || staffAccessVisible(a);
+
+export type OfficeHref = `/owner${string}`;
+
+/** The Owner's Office tabs this staff member may open, in order. */
+export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: string }[] {
+  const c = access.can;
+  const tabs: { href: OfficeHref; label: string; show: boolean }[] = [
+    { href: "/owner", label: "Overview", show: c("revenue", "view") },
+    { href: "/owner/appointments", label: "Appointments", show: c("appointments", "view") },
+    { href: "/owner/invoices", label: "Quotes & invoices", show: c("billing", "view") },
+    { href: "/owner/reconcile", label: "Reconcile Square", show: c("receivables", "reconcile") },
+    { href: "/owner/plans", label: "Payment plans", show: c("billing", "view") },
+    { href: "/owner/refund-payments", label: "Pay by Refund", show: c("billing", "view") },
+    { href: "/owner/payroll-approvers", label: "Payroll approvers", show: c("payroll", "edit") },
+    { href: "/owner/expenses", label: "Expenses", show: c("revenue", "view") },
+    { href: "/owner/business-access", label: "Business access", show: c("business_access", "view") },
+    // Coetha & bank feeds: Tabitha's own on/off switches (owner only, not grantable).
+    // Coetha Accounting Review: internal findings, requests and approvals across bookkeeping clients.
+    { href: "/owner/coetha-review", label: "Coetha Accounting Review", show: access.isOwner || c("coetha", "view") },
+    { href: "/owner/automation", label: "Coetha & bank feeds", show: access.isOwner },
+    { href: billingSettingsVisible(access) ? "/owner/settings" : "/owner/settings/staff-access", label: "Settings", show: settingsVisible(access) },
+  ];
+  return tabs.filter((t) => t.show).map(({ href, label }) => ({ href, label }));
+}
+
+/** What the sidebar may show this staff member: nothing, the claim page, or their first tab. */
+export const ownerNavState = cache(async (actor: Actor): Promise<"none" | "claim" | OfficeHref> => {
+  const first = officeTabs(await officeAccessFor(actor.id))[0];
+  if (first) return first.href;
   return (await canClaim(actor)) ? "claim" : "none";
 });
 
@@ -76,34 +111,21 @@ export async function claimOwnerOffice(actor: Actor, password: string) {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('owner-office-claim'))`;
     if ((await tx.ownerAccess.count({ where: { isPrimary: true } })) > 0) throw new ForbiddenError("Not found.");
-    const access = await tx.ownerAccess.create({ data: { userId: actor.id, isPrimary: true, scope: "FULL" } });
+    // A staff member's grants never sit on the owner's row: hers is full by definition.
+    await tx.staffPermission.deleteMany({ where: { userId: actor.id } });
+    const access = await tx.ownerAccess.upsert({
+      where: { userId: actor.id },
+      create: { userId: actor.id, isPrimary: true, scope: "FULL" },
+      update: { isPrimary: true, scope: "FULL", revokedAt: null },
+    });
     await tx.ownerAuditLog.create({ data: { actorId: actor.id, action: "owner.claimed", entityType: "OwnerAccess", entityId: access.id } });
     return access;
   });
 }
 
-/** Only the primary owner can share access, and must confirm with their password. */
-export async function grantOwnerAccess(actor: Actor, input: { userId: string; scope: "FULL" | "BILLING"; password: string }) {
-  await assertOwner(actor, "grant");
-  const me = await prisma.user.findUniqueOrThrow({ where: { id: actor.id } });
-  if (!me.passwordHash || !(await verifyPassword(input.password, me.passwordHash))) throw new ForbiddenError("That password isn't right.");
-  if (input.userId === actor.id) throw new ForbiddenError("You already have full access.");
-  const target = await prisma.user.findUnique({ where: { id: input.userId } });
-  if (!target || !target.active || !target.mfaEnabledAt) throw new ForbiddenError("Choose an active staff member who has set up two-step verification.");
-  const access = await prisma.ownerAccess.upsert({
-    where: { userId: target.id },
-    create: { userId: target.id, scope: input.scope, grantedById: actor.id },
-    update: { scope: input.scope, grantedById: actor.id, grantedAt: new Date(), revokedAt: null, isPrimary: false },
-  });
-  await prisma.ownerAuditLog.create({ data: { actorId: actor.id, action: "owner.granted", entityType: "OwnerAccess", entityId: access.id, details: { userId: target.id, scope: input.scope } } });
-}
-
-export async function revokeOwnerAccess(actor: Actor, userId: string) {
-  await assertOwner(actor, "grant");
-  if (userId === actor.id) throw new ForbiddenError("You can't remove your own access.");
-  const res = await prisma.ownerAccess.updateMany({ where: { userId, isPrimary: false, revokedAt: null }, data: { revokedAt: new Date() } });
-  if (res.count) await prisma.ownerAuditLog.create({ data: { actorId: actor.id, action: "owner.revoked", entityType: "OwnerAccess", details: { userId } } });
-}
+// Sharing access happens in Owner's Office → Settings → Staff Access & Permissions
+// (src/lib/auth/permissions.ts). The old "Full / Billing only" grants were migrated to permission
+// grants; nobody can create a second owner.
 
 export function ownerAudit(actorId: string, action: string, entityType: string, entityId?: string | null, details?: Record<string, unknown>) {
   return prisma.ownerAuditLog.create({ data: { actorId, action, entityType, entityId: entityId ?? null, details: details as object | undefined } });

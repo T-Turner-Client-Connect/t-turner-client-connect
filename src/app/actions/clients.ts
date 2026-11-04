@@ -43,13 +43,17 @@ function clientInput(fd: FormData): ClientInput {
     postalCode: str(fd, "postalCode"),
     clientType: str(fd, "clientType") as ClientInput["clientType"],
     status: str(fd, "status") as ClientInput["status"],
-    services: str(fd, "services"),
+    // Ticked service options plus anything typed under "Other services".
+    services: [...fd.getAll("serviceOption").map(String), str(fd, "services")].filter((s) => s.trim()).join(", "),
     tags: str(fd, "tags"),
     notes: str(fd, "notes"),
     assignedToId: str(fd, "assignedToId"),
     groupIds: fd.getAll("groupIds").map(String),
+    // Only the client form has the spouse box; other forms leave it undefined.
+    ...(fd.get("spouseSection") ? { spouseNeeded: fd.get("spouseNeeded") === "on", spouseYear: Number(str(fd, "spouseYear")) || undefined } : {}),
   };
 }
+
 
 export async function createClientAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
@@ -182,5 +186,28 @@ export async function addSuggestedGroupsAction(_prev: ActionState): Promise<Acti
     await prisma.auditLog.create({ data: { actorId: actor.id, action: "group.suggested_added", entityType: "Group", details: { added } } });
     revalidatePath("/groups");
     return added ? `Added ${added} suggested group(s).` : "All suggested groups already exist.";
+  });
+}
+
+/**
+ * Staff: update a client's Communication Preferences at the client's request
+ * (phone call, email, in person). The note saying how they asked is required
+ * and goes into the preference history.
+ */
+export async function staffCommPrefsAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const note = str(fd, "note").trim();
+    if (!note) throw new ValidationError('Say how the client asked for this (e.g. "Phone call with Avery, 11/4").');
+    const contactId = str(fd, "contactId") || null;
+    const { prisma } = await import("@/lib/prisma");
+    if (contactId && !(await prisma.contact.count({ where: { id: contactId, clientId } }))) throw new ValidationError("Contact not found.");
+    const pick = (k: string) => (str(fd, k) === "on" ? true : str(fd, k) === "off" ? false : undefined);
+    const changes = { promoSms: pick("promoSms"), promoEmail: pick("promoEmail"), generalUpdates: pick("generalUpdates") };
+    if (Object.values(changes).every((v) => v === undefined)) throw new ValidationError("Choose at least one change.");
+    const { setCommunicationPreferences } = await import("@/lib/services/comm-prefs");
+    const r = await setCommunicationPreferences({ targets: [{ clientId, contactId }], changes, source: "STAFF", actorId: actor.id, note });
+    revalidatePath(`/clients/${clientId}`);
+    return r.changed.length ? "Communication preferences updated and logged." : "Nothing changed — those were already the client's choices.";
   });
 }

@@ -1,0 +1,4 @@
+Pay Date,Associate ID,Name,Regular Hours,Overtime Hours,Gross Pay,Federal Tax,Social Security Tax,Medicare Tax,State Tax,Local Tax,Medical,Dental,Net Pay,ER Social Security,ER Medicare,ER FUTA,ER SUI
+2026-10-16,FAKERIV,"Rivera, Ana (fictional)",75.00,5.00,2400.00,192.00,148.80,34.80,96.00,10.00,300.75,100.25,1517.40,148.80,34.80,14.40,64.80
+2026-10-16,FAKEOKA,"Okafor, Ben (fictional)",67.50,5.00,1812.50,145.00,112.38,26.28,72.50,10.00,0.00,0.00,1446.34,112.38,26.28,10.88,48.94
+2026-10-16,FAKELIN,"Lindqvist, Cara (fictional)",75.00,5.00,3200.00,256.00,198.40,46.40,128.00,10.00,120.00,40.00,2401.20,198.40,46.40,19.20,86.40

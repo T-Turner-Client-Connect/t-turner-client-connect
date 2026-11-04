@@ -64,13 +64,14 @@ const LINKS = [
   { href: "/settings", label: "Settings", icon: Settings, also: [] },
 ];
 
-export type OwnerNav = "none" | "claim" | "billing" | "full";
+/** "none", "claim", or the first Owner's Office page this account may open. */
+export type OwnerNav = "none" | "claim" | `/owner${string}`;
 
 // Rendered only when the server says this signed-in account holds owner access.
 function OwnerLink({ owner, onNavigate }: { owner: OwnerNav; onNavigate?: () => void }) {
   const pathname = usePathname();
   if (owner === "none") return null;
-  const href = owner === "claim" ? "/owner/claim" : owner === "billing" ? "/owner/invoices" : "/owner";
+  const href = owner === "claim" ? "/owner/claim" : owner;
   const active = pathname.startsWith("/owner");
   return (
     <Link
@@ -92,7 +93,7 @@ function OwnerLink({ owner, onNavigate }: { owner: OwnerNav; onNavigate?: () => 
 /** The bookkeeping client's own menu, shown in place of the main menu inside /bookkeeping/<client>. */
 export function workspaceClientId(pathname: string) {
   const m = /^\/bookkeeping\/([^/]+)/.exec(pathname);
-  return m && !["new", "square-billing"].includes(m[1]) ? m[1] : null;
+  return m && !["new", "square-billing", "plaid-oauth"].includes(m[1]) ? m[1] : null;
 }
 
 function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => void }) {
@@ -102,8 +103,10 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
   const items: { href: string; label: string; icon: typeof Users; active: boolean }[] = [
     { href: base, label: "Client Overview", icon: LayoutGrid, active: pathname === base },
     { href: `/clients/${id}?tab=overview`, label: "Client Profile", icon: Users, active: false },
-    { href: `${base}/close#coetha`, label: "Coetha AI", icon: Sparkles, active: false },
-    { href: `${base}/books?tab=bank`, label: "Banking & Reconciliation", icon: Building2, active: pathname === `${base}/books` && tab === "bank" },
+    { href: `${base}/coetha`, label: "Coetha AI", icon: Sparkles, active: pathname === `${base}/coetha` },
+    { href: base, label: "Bookkeeping Management", icon: ClipboardList, active: false },
+    { href: `${base}/banking`, label: "Banking & Reconciliation", icon: Building2, active: pathname.startsWith(`${base}/banking`) || (pathname === `${base}/books` && tab === "bank") },
+    { href: `${base}/records`, label: "Historical Records", icon: History, active: pathname === `${base}/records` },
     { href: `${base}/books?tab=journal`, label: "General Ledger", icon: BookOpen, active: pathname === `${base}/books` && (tab === "journal" || tab === "accounts" || !tab || tab === "overview") },
     { href: `${base}/payroll`, label: "Payroll & ADP", icon: UsersRound, active: pathname === `${base}/payroll` },
     { href: `/clients/${id}?tab=taxes`, label: "Taxes & Compliance", icon: ClipboardList, active: false },
@@ -113,7 +116,7 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
     { href: `${base}/books?tab=reports`, label: "Financial Statements", icon: FileBarChart, active: pathname === `${base}/books` && tab === "reports" },
     { href: `/clients/${id}?tab=documents`, label: "Documents", icon: FolderOpen, active: false },
     { href: `/clients/${id}?tab=messages`, label: "Communication", icon: MessageSquareText, active: false },
-    { href: `${base}/close`, label: "History & Reports", icon: History, active: pathname === `${base}/close` || pathname === `${base}/profile` },
+    { href: `${base}/profile`, label: "Business Profile", icon: History, active: pathname === `${base}/profile` },
   ];
   return (
     <div className="space-y-4" data-testid="workspace-nav">
@@ -138,12 +141,12 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
           </li>
         ))}
       </ul>
-      <Link href={`${base}/close#coetha`} onClick={onNavigate} className="flex items-center gap-3 rounded-xl border border-gold-500 bg-navy-950/60 px-3 py-3 text-white shadow-[0_0_18px_-6px_var(--color-gold-500)] hover:bg-navy-900" data-testid="coetha-nav-card">
+      <Link href={`${base}/coetha`} onClick={onNavigate} className="flex items-center gap-3 rounded-xl border border-gold-500 bg-navy-950/60 px-3 py-3 text-white shadow-[0_0_18px_-6px_var(--color-gold-500)] hover:bg-navy-900" data-testid="coetha-nav-card">
         <Sparkles aria-hidden className="size-8 shrink-0 text-gold-400" />
         <span className="min-w-0 flex-1 leading-tight">
           <span className="block font-serif text-lg font-bold">Coetha</span>
           <span className="block text-xs text-navy-100">Senior Accountant</span>
-          <span className="mt-1 block text-[11px] text-navy-100/80">Ask Coetha anything about this client</span>
+          <span className="mt-1 block text-[11px] text-navy-100/80">Drafts for Tabitha to approve</span>
         </span>
         <ChevronRight aria-hidden className="size-4 text-gold-400" />
       </Link>

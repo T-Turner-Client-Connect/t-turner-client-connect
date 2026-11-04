@@ -13,7 +13,21 @@ export const BK_UPLOAD_TYPES = {
   CARD_STATEMENT: "Credit-card statement",
   PAYROLL_REPORT: "Payroll report",
   RECEIPTS: "Receipts",
+  // Business tax documents (the client's "What we need from you" checklist).
+  FORM_1099_NEC_ISSUED: "1099-NEC issued to contractors",
+  FORM_1099_NEC_RECEIVED: "1099-NEC received",
+  FORM_1099_MISC: "1099-MISC",
+  FORM_1099_INT: "1099-INT (interest)",
+  FORM_1098_MORTGAGE: "1098 (mortgage interest)",
+  FORM_W2_ISSUED: "W-2s issued to employees",
+  FORM_K1: "Schedule K-1",
+  BILLS: "Bills",
+  SALES_TAX_RETURN: "Sales tax return",
+  BUSINESS_LICENSE: "Business license",
   SUPPORTING_SCHEDULE: "Supporting schedule",
+  MERCHANT_STATEMENT: "Merchant processing statement",
+  LOAN_AGREEMENT: "Loan or line-of-credit agreement",
+  PRIOR_FINANCIALS: "Prior financial statements",
   BK_OTHER: "Other",
 } as const;
 export type BkUploadType = keyof typeof BK_UPLOAD_TYPES;
@@ -24,7 +38,7 @@ export const AS_OF_TYPES: BkUploadType[] = ["BALANCE_SHEET", "FINANCIAL_PACKET",
 export const AS_OF_REQUIRED: BkUploadType[] = ["BALANCE_SHEET"];
 
 export type PeriodInput = { kind: string; year?: string; month?: string; quarter?: string; start?: string; end?: string };
-export type Coverage = { kind: "MONTH" | "QUARTER" | "RANGE"; year: number; month: number | null; start: Date; end: Date };
+export type Coverage = { kind: "MONTH" | "QUARTER" | "RANGE" | "YEAR"; year: number; month: number | null; start: Date; end: Date };
 
 const ymd = (s?: string) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s ?? "");
@@ -49,6 +63,8 @@ export function parseCoverage(p: PeriodInput, now = new Date()): Coverage {
   }
   const year = Number(p.year);
   if (!Number.isInteger(year) || year < thisYear - 15 || year > thisYear + 1) throw new PeriodError("Choose the reporting year.");
+  // A whole (tax) year: 1099s, 1098s, annual sales tax returns, licenses.
+  if (p.kind === "YEAR") return { kind: "YEAR", year, month: null, start: new Date(Date.UTC(year, 0, 1, 12)), end: lastDay(year, 12) };
   if (p.kind === "QUARTER") {
     const q = Number(p.quarter);
     if (![1, 2, 3, 4].includes(q)) throw new PeriodError("Choose the quarter.");
@@ -77,6 +93,7 @@ const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "n
 /** "January 2026", "Q1 2026", "Jan 5, 2026 – Feb 4, 2026", or null when the file has no recorded period. */
 export function periodText(d: { year: number | null; month: number | null; reportPeriodType?: string | null; periodStart?: Date | null; periodEnd?: Date | null }) {
   if (d.periodStart && d.periodEnd) {
+    if (d.reportPeriodType === "YEAR") return `Year ${d.periodStart.getUTCFullYear()}`;
     if (d.reportPeriodType === "QUARTER") return `Q${Math.floor(d.periodStart.getUTCMonth() / 3) + 1} ${d.periodStart.getUTCFullYear()}`;
     if (d.reportPeriodType === "MONTH" || (d.reportPeriodType == null && d.month && d.year)) return `${MONTH_NAMES[d.periodStart.getUTCMonth()]} ${d.periodStart.getUTCFullYear()}`;
     return `${fmt(d.periodStart)} – ${fmt(d.periodEnd)}`;

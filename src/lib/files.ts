@@ -15,10 +15,28 @@ export type SniffedType =
   | { mime: "video/mp4"; ext: "mp4" }
   | { mime: "video/quicktime"; ext: "mov" }
   | { mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"; ext: "docx" }
-  | { mime: "application/msword"; ext: "doc" };
+  | { mime: "application/msword"; ext: "doc" }
+  | { mime: "text/csv"; ext: "csv" }
+  | { mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"; ext: "xlsx" };
 
 /** Video is only accepted into the marketing media library, never client documents. */
-export function sniffType(bytes: Uint8Array, opts: { allowVideo?: boolean; allowOffice?: boolean; name?: string } = {}): SniffedType | null {
+export function sniffType(bytes: Uint8Array, opts: { allowVideo?: boolean; allowOffice?: boolean; allowSpreadsheet?: boolean; name?: string } = {}): SniffedType | null {
+  if (opts.allowSpreadsheet) {
+    // .xlsx is a ZIP package with an xl/ part. Macro-enabled workbooks (vbaProject) are refused.
+    if (/\.xlsx$/i.test(opts.name ?? "") && bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+      const head = new TextDecoder("latin1").decode(bytes.slice(0, Math.min(bytes.length, 2_000_000)));
+      if (head.includes("xl/") && !head.includes("vbaProject")) return { mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ext: "xlsx" };
+    }
+    // CSV: plain UTF-8 text (no NUL bytes, decodes cleanly) with a .csv name.
+    if (/\.csv$/i.test(opts.name ?? "") && bytes.length > 0 && !bytes.includes(0)) {
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        return { mime: "text/csv", ext: "csv" };
+      } catch {
+        return null;
+      }
+    }
+  }
   if (opts.allowOffice) {
     // .docx is a ZIP package with a word/ part. Macro-enabled documents (vbaProject) are refused.
     if (bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {

@@ -63,6 +63,7 @@ export default async function StartPage() {
             </div>
             <fieldset className="sm:col-span-2">
               <legend className="mb-1 text-sm font-semibold text-navy-900">Services you&apos;re interested in</legend>
+              <p className="mb-1 text-xs text-slate-600">Business owners: if you only need business services (business tax return, K-1s, payroll, bookkeeping), we won&apos;t ask you any personal tax questions.</p>
               <div className="grid gap-1 sm:grid-cols-2">
                 {SERVICES.map((s) => <label key={s} className="flex items-center gap-2 text-sm"><input type="checkbox" name="services" value={s} defaultChecked={app.servicesRequested.includes(s)} /> {s}</label>)}
               </div>

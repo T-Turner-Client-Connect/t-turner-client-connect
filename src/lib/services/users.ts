@@ -59,6 +59,12 @@ export async function acceptInvite(token: string, password: string) {
         ...(invite.grantBillingAccess ? { bookkeepingBillingAccess: true, bookkeepingBillingGrantedBy: granted.by, bookkeepingBillingGrantedAt: granted.at } : {}),
       },
     });
+    if (invite.grantBillingAccess) {
+      // Tabitha chose bookkeeping billing on the invitation: the same grants as the Settings toggle.
+      const keys = [["square", "view"], ["square", "edit"]] as const;
+      await tx.staffPermission.createMany({ data: keys.map(([area, action]) => ({ userId: user.id, area, action, grantedById: granted.by })) });
+      await tx.staffPermissionEvent.createMany({ data: keys.map(([area, action]) => ({ actorId: granted.by, userId: user.id, area, action, fromAllowed: false, toAllowed: true, source: "invite" })) });
+    }
     await audit(tx, { actorId: user.id, action: "user.invite_accepted", entityType: "User", entityId: user.id });
     return user;
   });

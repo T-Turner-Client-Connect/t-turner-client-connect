@@ -60,7 +60,7 @@ export default async function SettingsPage() {
   const isTabitha = await isReportApprover(user);
   const isAdmin = user.role === "ADMIN";
   const [staff, invites, suppressions, logs] = await Promise.all([
-    prisma.user.findMany({ orderBy: [{ active: "desc" }, { name: "asc" }] }),
+    prisma.user.findMany({ orderBy: [{ active: "desc" }, { name: "asc" }], include: { staffPermissions: { where: { area: "square", action: "edit" }, select: { id: true } } } }),
     isAdmin ? recentInvites() : [],
     prisma.suppression.findMany({ where: { liftedAt: null }, orderBy: { createdAt: "desc" }, take: 200 }),
     isAdmin ? prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 75, include: { actor: { select: { name: true } } } }) : [],
@@ -124,15 +124,15 @@ export default async function SettingsPage() {
                       )}
                       {isTabitha && s.id !== user.id && (
                         <ActionForm
-                          action={billingAccessAction.bind(null, s.id, !s.bookkeepingBillingAccess)}
-                          confirm={s.bookkeepingBillingAccess ? undefined : `Let ${s.name} view and change bookkeeping billing (charges, Square references, recurring-charge authorizations)? This does not open your Owner's Office.`}
+                          action={billingAccessAction.bind(null, s.id, !(s.staffPermissions.length > 0))}
+                          confirm={(s.staffPermissions.length > 0) ? undefined : `Let ${s.name} view and change bookkeeping billing (charges, Square references, recurring-charge authorizations)? This does not open your Owner's Office.`}
                           className="rounded-lg bg-ivory-50 p-2 text-sm"
                         >
                           <p className="mb-1">
-                            Bookkeeping billing: {s.bookkeepingBillingAccess ? <strong>allowed</strong> : <>Tabitha only</>}
+                            Bookkeeping billing: {(s.staffPermissions.length > 0) ? <strong>allowed</strong> : <>Tabitha only</>}
                             <span className="block text-xs text-slate-600">Payment methods stay in Square. Never includes the Owner&apos;s Office.</span>
                           </p>
-                          <Button type="submit" variant="ghost">{s.bookkeepingBillingAccess ? "Remove billing access" : "Allow billing access"}</Button>
+                          <Button type="submit" variant="ghost">{(s.staffPermissions.length > 0) ? "Remove billing access" : "Allow billing access"}</Button>
                         </ActionForm>
                       )}
                       <ActionForm action={resetLinkAction.bind(null, s.id)}>
@@ -373,7 +373,7 @@ export default async function SettingsPage() {
               <div className="mb-4 space-y-3 rounded-lg bg-ivory-50 p-3 text-sm" data-testid="twilio-card">
                 <p className="font-semibold">
                   Text messages (Twilio): {configured ? <Badge tone="green">Connected</Badge> : <Badge tone="gray">Not set up</Badge>}{" "}
-                  <span className="font-normal text-slate-600">Bulk campaign texting stays off (LIVE_SENDING_ENABLED).</span>
+                  <span className="font-normal text-slate-600">Bulk campaigns stay off until CAMPAIGN_SENDING_ENABLED and LIVE_SENDING_ENABLED are on. A STOP reply blocks every text to that number until START.</span>
                 </p>
                 <div>
                   <p className="font-semibold">Webhook addresses — Twilio Console → Messaging → Services → your service → Integration</p>

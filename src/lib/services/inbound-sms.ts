@@ -2,11 +2,13 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { normalizePhone } from "@/lib/normalize";
-import { SMS_HELP_REPLY, SMS_STOP_REPLY } from "@/lib/business";
-import { detectKeyword, recordStop } from "./sms-consent";
+import { SMS_HELP_REPLY, SMS_START_REPLY, SMS_STOP_REPLY } from "@/lib/business";
+import { detectKeyword, recordStart, recordStop } from "./sms-consent";
+import { blockNumber, TWILIO_UNSUBSCRIBED } from "@/lib/sms-block";
 import { queueStaffAlert } from "./staff-alerts";
 import { assertAdmin, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
+import { payrollTextReply } from "./payroll-approval";
 
 /**
  * Handles one incoming text from Twilio (signature already verified).
@@ -31,9 +33,10 @@ export async function handleInboundSms(params: Record<string, string>): Promise<
   }
 
   const appReplies = process.env.SMS_KEYWORD_REPLIES === "app";
+  // STOP blocks the number for every sender; START lifts the block and restores the
+  // text permissions the person had before that STOP (Twilio lifts its block too).
   if (keyword === "STOP") await recordStop(from, inbound.id);
-  // START: Twilio lifts its own block, but our Terms say texts resume only after a
-  // new opt-in on the consent form, so consent is not re-granted here.
+  if (keyword === "START") await recordStart(from, inbound.id);
 
   // Thread the text (keywords included, so the history is complete) into the client's
   // conversation when exactly one client uses this number; otherwise staff match it
@@ -48,13 +51,19 @@ export async function handleInboundSms(params: Record<string, string>): Promise<
     if (keyword !== "STOP" && keyword !== "START") await queueStaffAlert({ conversationId: convoId });
   }
   if (keyword === "STOP") return { reply: appReplies ? SMS_STOP_REPLY : null };
+  if (keyword === "START") return { reply: appReplies ? SMS_START_REPLY : null };
   if (keyword === "HELP") return { reply: appReplies ? SMS_HELP_REPLY : null };
+  // "APPROVE"/"DENY" replies never approve payroll: an approver gets a fresh secure link instead.
+  if (!keyword) {
+    const payroll = await payrollTextReply(from, body);
+    if (payroll) return { reply: payroll };
+  }
   return { reply: null };
 }
 
 const KEYWORD_NOTE = {
-  STOP: "The client replied STOP. Texting to this number is now blocked and their text consent is withdrawn. Texts can resume only after they opt in again on the consent form or in the portal.",
-  START: "The client replied START. Twilio lifted its block, but our Terms require a new opt-in before we text again, so texting stays blocked until they opt in on the consent form or in the portal.",
+  STOP: "The client replied STOP. Every text to this number is now blocked (appointment, billing, security and promotional), and promotional texts are turned off in their Communication Preferences. Use email or the portal for essential notices. Texts resume only if they reply START.",
+  START: "The client replied START. The text block is lifted and the text permissions they had before replying STOP are restored.",
   HELP: "The client replied HELP and received the help message. They may need a call back.",
 } as const;
 
@@ -105,6 +114,9 @@ export async function handleStatusCallback(params: Record<string, string>) {
   const status = (params.MessageStatus || params.SmsStatus || "").toLowerCase();
   if (!sid || !status) return;
   const detail = params.ErrorCode ? `Twilio ${status} (error ${params.ErrorCode})` : `Twilio ${status}`;
+  // 21610 can also arrive here (Messaging Service sends): the recipient opted out — block the number.
+  const to = normalizePhone(params.To);
+  if (Number(params.ErrorCode) === TWILIO_UNSUBSCRIBED && to) await blockNumber(prisma, to, `Twilio error 21610 on ${sid}`);
   const early = !FINAL.includes(status);
   await prisma.notification.updateMany({
     where: { providerSid: sid, ...(early ? notFinal : {}) },

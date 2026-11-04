@@ -52,7 +52,7 @@ beforeEach(async () => {
   // Mocked providers: nothing ever leaves the test.
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
     if (String(url).includes("api.twilio.com")) {
-      if (twilioFails) return new Response(JSON.stringify({ code: 21610 }), { status: 400 });
+      if (twilioFails) return new Response(JSON.stringify({ code: 21211 }), { status: 400 });
       const p = new URLSearchParams(String(init.body));
       texts.push({ to: p.get("To")!, body: p.get("Body")! });
       return new Response(JSON.stringify({ sid: `SM${String(texts.length).padStart(32, "0")}` }), { status: 201 });

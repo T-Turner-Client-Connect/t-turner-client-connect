@@ -6,6 +6,7 @@ import { LOGO_MARK_PNG_BASE64 } from "@/lib/brand-logo";
 import { BASIS, longDate, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
 import { readDocumentBytes, REPORT_LABELS } from "./documents";
 import { accountLabel } from "./bookkeeping-profile";
+import { clientText } from "./client-statements";
 
 /**
  * Printable financial packet for one client and reporting period, laid out
@@ -144,7 +145,7 @@ export async function buildPacketPdf(periodId: string, periodType: PeriodType, v
         r.reportType === "PROFIT_AND_LOSS" && r.reportIncludesYtd ? " — monthly and year-to-date total" :
         r.reportType === "BALANCE_SHEET" ? ` — as of ${longDate(r.reportAsOf ?? range.end)}` :
         r.reportType === "BANK_RECONCILIATION" && r.bookkeepingAccount ? ` — ${accountLabel(r.bookkeepingAccount)}` :
-        r.reportType === "SUPPORTING_SCHEDULE" || r.reportType === "OTHER_REPORT" ? ` — ${r.title}` : "";
+        r.reportType === "SUPPORTING_SCHEDULE" || r.reportType === "OTHER_REPORT" ? ` — ${"staff" in viewer ? r.title : clientText(r.title, "Schedule")}` : "";
       return `${i + 1}. ${label}${extra}`;
     });
     const rows: [string, string[]][] = [

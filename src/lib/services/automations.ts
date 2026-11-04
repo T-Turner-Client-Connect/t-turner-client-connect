@@ -6,6 +6,7 @@ import { assertAdmin, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
 import { dispatchPendingNotifications, queuePortalNotification } from "./notifications";
 import { markDueManualTargets } from "./social";
+import { runDueCampaigns } from "./campaign-dispatch";
 import { runAppointmentReminders } from "./appointment-notices";
 
 export const AUTOMATION_TEMPLATES: Record<AutomationKind, { name: string; offsetDays: number; repeatEveryDays: number | null; maxReminders: number; describe: string }> = {
@@ -116,6 +117,7 @@ export async function runAutomations(now = new Date()) {
     summary[rule.kind] = queued;
   }
   summary.SOCIAL_DUE_FOR_MANUAL_POSTING = await markDueManualTargets(now);
+  summary.CAMPAIGNS_DISPATCHED = await runDueCampaigns(now);
   summary.APPOINTMENT_REMINDERS_QUEUED = (await runAppointmentReminders(now)).reminders;
   await dispatchPendingNotifications();
   return summary;

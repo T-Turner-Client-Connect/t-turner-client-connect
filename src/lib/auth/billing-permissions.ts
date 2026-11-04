@@ -1,50 +1,39 @@
 import "server-only";
 import { ForbiddenError, type Actor } from "./actor";
-import { ownerAccessFor } from "./owner";
+import { can } from "./permissions";
 
 /**
- * Who may do what with firm invoices and Square. Every billing server function routes its check
- * through these helpers, so the staff-permission matrix (built on another branch) can rewire them
- * in one place.
+ * Who may do what with firm invoices and Square, routed through Staff Access & Permissions
+ * (src/lib/permissions.ts). Every call reads the database; the primary owner always passes.
  *
- * For now: the owner, or staff the owner gave delegated billing access (OwnerAccess, scope
- * BILLING), may send invoices, record payments and reconcile Square payments. Billing settings —
- * including the "Send invoices through Square" switch — are the primary owner's alone. Refunds,
- * credits and voids stay with the owner's full access (canRefundOrVoid).
+ * - Send invoices (approve and send, through Square or the portal) → Billing → Send
+ * - Record verified payments                                        → Billing → Record payments
+ * - Reconcile Square / other payment records (Reconcile Square tab)  → Accounts receivable → Reconcile
+ * - Billing settings                                                  → Billing → Change billing settings
+ * - "Send invoices through Square", Square delivery options, pasted Square links
+ *                                                                     → Square → Change integrations
+ * - Refunds → Billing → Refund; credits → Billing → Credits & waivers; voids → Billing → Void
+ * Nobody holds any of these by default except the owner.
  */
-async function access(actor: Actor) {
-  return ownerAccessFor(actor.id);
-}
 
-export async function canSendInvoices(actor: Actor) {
-  return !!(await access(actor));
-}
-
-export async function canRecordPayments(actor: Actor) {
-  return !!(await access(actor));
-}
-
-export async function canReconcile(actor: Actor) {
-  return !!(await access(actor));
-}
-
-/** Owner only: the primary owner with full access. */
-export async function canChangeBillingSettings(actor: Actor) {
-  const a = await access(actor);
-  return !!(a && a.isPrimary && a.scope === "FULL");
-}
-
-/** Refunds, credits (adjustments) and voids: the owner's full access. */
-export async function canRefundOrVoid(actor: Actor) {
-  return (await access(actor))?.scope === "FULL";
-}
+export const canSendInvoices = (actor: Actor) => can(actor, "billing", "send");
+export const canRecordPayments = (actor: Actor) => can(actor, "billing", "record_payment");
+export const canReconcile = (actor: Actor) => can(actor, "receivables", "reconcile");
+export const canChangeBillingSettings = (actor: Actor) => can(actor, "billing", "settings");
+export const canChangePaymentIntegrations = (actor: Actor) => can(actor, "square", "integrations");
+export const canRefund = (actor: Actor) => can(actor, "billing", "refund");
+export const canApplyCredits = (actor: Actor) => can(actor, "billing", "adjust");
+export const canVoid = (actor: Actor) => can(actor, "billing", "void");
 
 const guard = (check: (a: Actor) => Promise<boolean>, message: string) => async (actor: Actor) => {
   if (!(await check(actor))) throw new ForbiddenError(message);
 };
 
-export const assertCanSendInvoices = guard(canSendInvoices, "Only the owner or staff with billing access can send invoices.");
-export const assertCanRecordPayments = guard(canRecordPayments, "Only the owner or staff with billing access can record payments.");
-export const assertCanReconcile = guard(canReconcile, "Only the owner or staff with billing access can reconcile Square payments.");
-export const assertCanChangeBillingSettings = guard(canChangeBillingSettings, "Only Tabitha can change billing settings.");
-export const assertCanRefundOrVoid = guard(canRefundOrVoid, "Only the owner can record refunds, apply credits or void invoices.");
+export const assertCanSendInvoices = guard(canSendInvoices, "Sending invoices needs the owner's permission (Billing → Send).");
+export const assertCanRecordPayments = guard(canRecordPayments, "Recording payments needs the owner's permission (Billing → Record payments).");
+export const assertCanReconcile = guard(canReconcile, "Reconciling payments needs the owner's permission (Accounts receivable → Reconcile).");
+export const assertCanChangeBillingSettings = guard(canChangeBillingSettings, "Only Tabitha (or staff she allows) can change billing settings.");
+export const assertCanChangePaymentIntegrations = guard(canChangePaymentIntegrations, "Only Tabitha (or staff she allows) can change payment integrations.");
+export const assertCanRefund = guard(canRefund, "Only Tabitha (or staff she allows) can record refunds.");
+export const assertCanApplyCredits = guard(canApplyCredits, "Only Tabitha (or staff she allows) can apply credits.");
+export const assertCanVoid = guard(canVoid, "Only Tabitha (or staff she allows) can void invoices.");

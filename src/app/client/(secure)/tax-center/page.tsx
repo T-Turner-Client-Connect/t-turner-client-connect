@@ -1,9 +1,12 @@
 import Link from "next/link";
 import { CalendarDays, Check, CircleCheck, ClipboardCheck, CloudUpload, FileCheck2, FolderOpen, IdCard, Mail, Pencil, User, Users, UsersRound } from "lucide-react";
-import { Notice } from "@/components/ui";
+import { Button, Notice } from "@/components/ui";
+import { ActionForm } from "@/components/action-form";
+import { portalJointFilingAction } from "@/app/actions/portal";
+import { currentTaxYear, jointFilingNeeded } from "@/lib/services/clients";
 import { QuestionnaireStart } from "@/components/portal/tax-pages";
 import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
+import { requirePersonalTaxAccount, resolveAccount } from "@/lib/portal/account";
 import { loadPortalHome } from "@/lib/portal/views";
 import { identityChecklist } from "@/lib/services/identity";
 
@@ -35,8 +38,12 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
   const sp = await searchParams;
   const { current } = await resolveAccount(user.id, sp.account);
   if (!current) return null;
+  await requirePersonalTaxAccount(current.clientId);
   if (!current.canViewTax) return <Notice>Tax information isn&apos;t included in your access to this account.</Notice>;
   const data = await loadPortalHome(current.clientId, current, user.id);
+  const jointYear = currentTaxYear();
+  const jointNeeded = await jointFilingNeeded(current.clientId, jointYear);
+
   const q = `?account=${current.clientId}`;
   const yq = sp.year ? `&year=${sp.year}` : "";
   const idList = current.canViewIdentity ? await identityChecklist(current.clientId) : [];
@@ -70,6 +77,16 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
         </div>
       </section>
 
+      {current.role === "OWNER" && current.client.clientType === "INDIVIDUAL" && (
+        <section className="mb-5 rounded-2xl border border-gold-300 bg-gold-50/60 px-4 py-3" data-testid="joint-filing-question">
+          <ActionForm action={portalJointFilingAction.bind(null, current.clientId, jointYear)} className="flex flex-wrap items-center gap-3 text-sm">
+            <span className="font-semibold text-navy-900">Filing jointly with a spouse for {jointYear}?</span>
+            <label className="flex items-center gap-1.5"><input type="radio" name="needed" value="yes" defaultChecked={jointNeeded} className="accent-navy-900" /> Yes, add my spouse</label>
+            <label className="flex items-center gap-1.5"><input type="radio" name="needed" value="no" defaultChecked={!jointNeeded} className="accent-navy-900" /> No</label>
+            <Button type="submit" variant="secondary">Save</Button>
+          </ActionForm>
+        </section>
+      )}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" data-testid="tax-center">
         <ActionCard tone="cream" icon={ClipboardCheck} title="Complete Tax Questionnaire" sub="Tell us about your year so we can prepare your return." testId="tile-questionnaire">
           <div className="text-left"><QuestionnaireStart options={data.questionnaires} /></div>

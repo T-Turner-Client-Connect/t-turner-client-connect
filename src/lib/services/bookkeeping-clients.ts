@@ -474,13 +474,34 @@ async function loadPeriod(periodId: string) {
   });
 }
 
+/**
+ * Lines the monthly workflow already derived from real data (services/monthly-workflow.ts):
+ * key → true when done. A working bank feed satisfies "bank statements"; reconciliations,
+ * categorizing and payroll reports come from the books — no manual check-off needed.
+ */
+export type AutoDone = Partial<Record<string, boolean>>;
+export function autoFromWorkflow(items: { key: string; state: string }[]): AutoDone {
+  const ok = (k: string) => items.find((i) => i.key === k)?.state === "DONE";
+  const na = (k: string) => !items.some((i) => i.key === k);
+  return {
+    BANK_STATEMENTS: ok("BANK_SYNC"),
+    CARD_STATEMENTS: ok("CARD_SYNC") || na("CARD_SYNC"),
+    PAYROLL_REPORTS: ok("PAYROLL"),
+    PAYROLL_ENTRIES: ok("PAYROLL"),
+    RECEIPTS: ok("RECEIPTS"),
+    CATEGORIZE: ok("CATEGORIZED"),
+    RECONCILE: ok("RECONCILED"),
+    PREPARE_REPORTS: ok("PREPARED"),
+  };
+}
+
 /** Checklist lines with who they're waiting on. */
-export function checklistView(p: PeriodFull) {
+export function checklistView(p: PeriodFull, auto: AutoDone = {}) {
   return p.checklist.map((i) => {
     const def = CHECKLIST.find((c) => c.key === i.key);
     const files = def?.docType ? p.documents.filter((d) => d.docType === def.docType) : [];
     let state: "DONE" | "NOT_NEEDED" | "RECEIVED" | "WAITING_CLIENT" | "STAFF_TODO";
-    if (i.status === "DONE") state = "DONE";
+    if (i.status === "DONE" || (i.status === "OPEN" && auto[i.key])) state = "DONE";
     else if (i.status === "NOT_NEEDED") state = "NOT_NEEDED";
     else if (i.kind === "CLIENT_DOCUMENT") state = files.length ? "RECEIVED" : "WAITING_CLIENT";
     else state = "STAFF_TODO";
@@ -488,8 +509,10 @@ export function checklistView(p: PeriodFull) {
   });
 }
 
-export function periodSummary(p: PeriodFull, frequency = "MONTHLY", now = new Date(), deadlines: Deadlines = {}) {
-  const items = checklistView(p);
+export function periodSummary(p: PeriodFull, frequency = "MONTHLY", now = new Date(), deadlines: Deadlines = {}, auto: AutoDone = {}) {
+  const items = checklistView(p, auto);
+  // Annual tax documents are never part of a month: year-end requests are left out of every count.
+  p = { ...p, requests: p.requests.filter((r) => r.kind !== "YEAR_END") };
   const reports = p.documents.filter((d) => isReport(d) && !d.supersededAt);
   const missing = items.filter((i) => i.state === "WAITING_CLIENT").length + p.requests.filter((r) => r.status === "OPEN").length;
   const done = items.filter((i) => i.state === "DONE" || i.state === "NOT_NEEDED" || i.state === "RECEIVED").length;
@@ -544,7 +567,8 @@ export async function bookkeepingClients(f: ListFilters = {}) {
   for (const p of profiles) {
     const { year, month } = workMonth(p.frequency, now);
     const recent = await prisma.bookkeepingPeriod.findMany({ where: { clientId: p.clientId }, orderBy: [{ year: "desc" }, { month: "desc" }], take: 6, select: { id: true, year: true, month: true } });
-    const summaries = await Promise.all(recent.map(async (r) => ({ ...r, summary: periodSummary(await loadPeriod(r.id), p.frequency, now, p) })));
+    const isCurrent = (r: { year: number; month: number }) => r.year === year && r.month === month;
+    const summaries = await Promise.all(recent.map(async (r) => ({ ...r, summary: periodSummary(await loadPeriod(r.id), p.frequency, now, p, isCurrent(r) ? await autoDone(p.clientId, r.year, r.month) : {}) })));
     const current = summaries.find((r) => r.year === year && r.month === month) ?? null;
     const summary = current?.summary ?? null;
     // Earlier months still not finished also count as overdue.
@@ -574,7 +598,16 @@ export async function bookkeepingWorkspace(clientId: string, periodId?: string |
   const freq = profile?.frequency ?? "MONTHLY";
   const dl = { documentsDueDay: profile?.documentsDueDay ?? null, reportsDueDay: profile?.reportsDueDay ?? null, reviewDueDay: profile?.reviewDueDay ?? null };
   const prior = await Promise.all(periods.map(async (p) => ({ ...p, summary: periodSummary(await loadPeriod(p.id), freq, new Date(), dl) })));
-  return { client, profile, periods: prior, period, summary: period ? periodSummary(period, freq, new Date(), dl) : null };
+  return { client, profile, periods: prior, period, summary: period ? periodSummary(period, freq, new Date(), dl, await autoDone(clientId, period.year, period.month)) : null };
+}
+
+async function autoDone(clientId: string, year: number, month: number): Promise<AutoDone> {
+  const { monthlyChecklist } = await import("./monthly-workflow");
+  try {
+    return autoFromWorkflow((await monthlyChecklist(clientId, year, month)).items);
+  } catch {
+    return {};
+  }
 }
 
 /** Reports waiting for the owner, across all clients. */

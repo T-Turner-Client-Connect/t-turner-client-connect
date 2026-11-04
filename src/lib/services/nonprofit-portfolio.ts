@@ -5,10 +5,11 @@ import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { sendEmail } from "@/lib/email";
+import { canSend } from "./comm-prefs";
 import { appUrl } from "@/lib/integrations";
 import { STATES } from "@/lib/resources/catalog";
 import { officeToday, daysBetween } from "@/lib/tax/deadlines";
-import { assertOwner } from "@/lib/auth/owner";
+import { assertOffice } from "@/lib/auth/owner";
 import { ValidationError } from "./clients";
 import { createService, prepareAgreement, startGate } from "./service-agreements";
 import { staffUploadDocument } from "./documents";
@@ -354,7 +355,7 @@ async function notifyRelease(fileId: string, resend: boolean): Promise<ReleaseRe
   const r: ReleaseResult = { sent: 0, failed: 0, skipped: 0 };
   for (const a of access) {
     const u = a.portalUser;
-    if (!u.active || !u.passwordHash || !u.notifyByEmail) {
+    if (!u.active || !u.passwordHash || !u.notifyByEmail || !(await canSend({ channel: "EMAIL", address: u.email, category: "ESSENTIAL" })).ok) {
       r.skipped++;
       continue;
     }
@@ -392,7 +393,7 @@ export async function packages(includeInactive = false) {
 
 /** Owner: edit a package — name, price, price note, state prices, government-fee handling, deliverables, grant disclaimer. */
 export async function savePackage(actor: Actor, key: string, input: { name: string; priceCents: number; priceNote?: string; statePrices?: Record<string, number>; govFeesMode: string; deliverables: PackageDeliverable[]; grantDisclaimer: boolean; active: boolean }) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "settings");
   if (!/^[A-Z0-9_]{2,30}$/.test(key)) throw new ValidationError("Use a short key like AL_BASIC.");
   if (!input.name.trim()) throw new ValidationError("Name the package.");
   if (!Number.isInteger(input.priceCents) || input.priceCents <= 0) throw new ValidationError("Enter the package price.");

@@ -1,349 +1,327 @@
 import Link from "next/link";
-import { connection } from "next/server";
-import { notFound, redirect } from "next/navigation";
 import clsx from "clsx";
+import { connection } from "next/server";
+import { notFound } from "next/navigation";
 import {
-  ArrowDown, ArrowRight, ArrowUp, BarChart3, Building2, CalendarPlus, Calculator, CheckCircle2, Circle, Coins, CreditCard, FileBadge, FileSpreadsheet, FileText, IdCard, Landmark, MessageSquareText, ReceiptText, Sparkles, UsersRound,
+  ArrowRight, Ban, BarChart3, CalendarDays, CheckCircle2, ChevronRight, Clock, Coins, CreditCard, FileText, Info, Landmark, Lightbulb, Link2, ListChecks, MonitorCheck, Percent, RefreshCw, Scale, Settings, SquareCheckBig, TrendingDown, TrendingUp, Upload,
 } from "lucide-react";
+import { ActionForm } from "@/components/action-form";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
-import { businessOverview, YEAR_END_STAGES, type Deadline } from "@/lib/services/business-overview";
-import { usd } from "@/lib/services/ledger";
-import { MonthSelect } from "@/components/business-overview/month-select";
+import { businessOverview } from "@/lib/services/business-overview";
+import { bankingRegistry, monthlyAccountProgress, REGISTRY_TYPES, registryLabel } from "@/lib/services/bank-accounts";
+import { canManageBanking, canSendClientRequests, canViewBanking } from "@/lib/services/bk-permissions";
+import { rangeText, requestsFor } from "@/lib/services/client-requests";
+import { monthlyChecklist } from "@/lib/services/monthly-workflow";
+import { accountBalance, todayCentral, usd } from "@/lib/services/ledger";
+import { workMonth } from "@/lib/services/bookkeeping-clients";
+import { MONTH_NAMES } from "@/lib/bk-uploads";
+import { retrieveNowAction } from "@/app/actions/ledger";
+import { uploadForRequestAction, uploadStatementAction } from "@/app/actions/bk-workflow";
 
-export const metadata = { title: "Client Overview" };
+export const metadata = { title: "Bookkeeping" };
 
-const monthName = (ym: string, opts: Intl.DateTimeFormatOptions = { month: "long", year: "numeric" }) => {
-  const [y, m] = ym.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-US", { ...opts, timeZone: "UTC" });
-};
-const dayLabel = (d: string, opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" }) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-US", { ...opts, timeZone: "UTC" });
+/**
+ * The staff / admin bookkeeping dashboard for one business (Tabitha's design). Coetha does the
+ * routine work; this page shows where everything stands, from real data only, and lets the office
+ * upload the statements Coetha asks for when a new client has no bank feed.
+ */
 
 const card = "min-w-0 rounded-2xl border border-gold-200/80 bg-gradient-to-b from-white to-ivory-50 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)]";
-const navyBtn = "inline-flex items-center justify-center rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-navy-800";
-const outlineBtn = "inline-flex items-center justify-center rounded-lg border-[1.5px] border-navy-900 bg-white px-4 py-2 text-sm font-semibold text-navy-900 hover:bg-ivory-50";
-const goldBtn = "inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-4 py-2.5 text-sm font-semibold text-navy-950 shadow hover:to-gold-600";
-const ghostBtn = "inline-flex items-center justify-center gap-2 rounded-lg border border-white/80 bg-white px-4 py-2.5 text-sm font-semibold text-navy-900 hover:bg-ivory-50";
+const smallBtn = "inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-sm font-semibold text-navy-900 shadow-sm hover:bg-ivory-50";
+const fmtSync = (d: Date) => d.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" }).replace(/, (\d{1,2}:)/, " at $1");
+const fmtShort = (d: Date) => d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" });
+const shiftYm = (y: number, m: number, n: number) => { const d = new Date(Date.UTC(y, m - 1 + n, 1)); return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 }; };
 
-function Kpi({ icon: Icon, label, value, change, goodWhenDown = false, sub, testId }: { icon: typeof Coins; label: string; value: string; change?: number | null; goodWhenDown?: boolean; sub?: string; testId: string }) {
-  const up = (change ?? 0) >= 0;
-  const good = goodWhenDown ? !up : up;
-  return (
-    <div className={clsx(card, "flex items-center gap-4 px-5 py-4")} data-testid={testId}>
-      <Icon className="size-11 shrink-0 text-gold-600" aria-hidden />
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-navy-800">{label}</p>
-        <p className="truncate font-serif text-xl font-bold text-navy-900">{value}</p>
-        {change != null && (
-          <p className={clsx("flex items-center gap-1 text-sm font-semibold", good ? "text-emerald-700" : "text-red-700")}>
-            {up ? <ArrowUp className="size-4" aria-hidden /> : <ArrowDown className="size-4" aria-hidden />}
-            {Math.abs(change).toFixed(1)}%
-            <span className="sr-only"> vs the month before</span>
-          </p>
-        )}
-        {sub && <p className="text-sm text-slate-600">{sub}</p>}
-      </div>
-    </div>
-  );
+const PILL: Record<string, string> = { DONE: "bg-emerald-50 text-emerald-800 ring-emerald-200", IN_PROGRESS: "bg-gold-100 text-gold-800 ring-gold-300", NOT_DUE: "bg-gold-100 text-gold-800 ring-gold-300", MISSING: "bg-red-50 text-red-700 ring-red-200" };
+function RowIcon({ state, red }: { state: string; red?: boolean }) {
+  if (state === "DONE") return <CheckCircle2 className="size-6 shrink-0 fill-emerald-600 text-white" aria-label="Complete" />;
+  if (state === "MISSING" || red) return <Ban className="size-6 shrink-0 text-red-600" aria-label="Not done" />;
+  return <Clock className="size-6 shrink-0 text-gold-500" aria-label="In progress" />;
 }
 
-function Donut({ percent }: { percent: number }) {
-  const r = 52;
-  const c = 2 * Math.PI * r;
-  return (
-    <div className="relative size-36 shrink-0" role="img" aria-label={`${percent}% complete`}>
-      <svg viewBox="0 0 128 128" className="size-full -rotate-90">
-        <circle cx="64" cy="64" r={r} fill="none" stroke="var(--color-navy-900)" strokeWidth="12" />
-        <circle cx="64" cy="64" r={r} fill="none" stroke="var(--color-gold-500)" strokeWidth="12" strokeDasharray={`${(percent / 100) * c} ${c}`} strokeLinecap="round" />
-      </svg>
-      <span className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="font-serif text-2xl font-bold text-navy-900">{percent}%</span>
-        <span className="text-sm text-navy-800">Complete</span>
-      </span>
-    </div>
-  );
-}
-
-const DEADLINE_PILL: Record<Deadline["status"], [string, string]> = {
-  ON_TRACK: ["On Track", "bg-emerald-50 text-emerald-700"],
-  DUE_SOON: ["Due Soon", "bg-red-50 text-red-700"],
-  UPCOMING: ["Upcoming", "bg-navy-50 text-navy-800"],
-  PAST_DUE: ["Past Due", "bg-red-600 text-white"],
+const STATUS: Record<string, [string, string]> = {
+  APPROVED: ["Reconciled", "bg-emerald-50 text-emerald-800"],
+  READY: ["Awaiting Approval", "bg-gold-100 text-gold-800"],
+  IN_PROGRESS: ["In Progress", "bg-gold-100 text-gold-800"],
+  AWAITING_DATA: ["Awaiting Data", "bg-gold-100 text-gold-800"],
+  EXCEPTION: ["Issue", "bg-red-50 text-red-700"],
+  NOT_DUE: ["Not Yet Due", "bg-slate-100 text-slate-700"],
 };
 
-function Chart({ perf }: { perf: { month: string; income: number; expenses: number }[] }) {
-  const max = Math.max(1, ...perf.flatMap((p) => [p.income, p.expenses]));
-  // A rounded top for the axis: 1, 2 or 5 × a power of ten, in whole dollars.
-  const dollars = max / 100;
-  const pow = 10 ** Math.floor(Math.log10(dollars || 1));
-  const top = [1, 2, 5, 10].map((k) => k * pow).find((v) => v >= dollars) ?? dollars;
-  const ticks = [1, 0.8, 0.6, 0.4, 0.2, 0].map((f) => f * top);
-  const fmt = (v: number) => (v >= 1000 ? `$${Math.round(v / 1000)}K` : `$${Math.round(v)}`);
-  return (
-    <div className="flex gap-2" data-testid="performance-chart">
-      <div className="flex h-44 flex-col justify-between pb-6 text-right text-xs text-navy-800">{ticks.map((t) => <span key={t}>{fmt(t)}</span>)}</div>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="relative flex h-38 items-end justify-around border-b border-l border-ivory-200">
-          {perf.map((p) => (
-            <div key={p.month} className="flex h-full items-end gap-1" title={`${monthName(p.month)}: income ${usd(p.income)}, expenses ${usd(p.expenses)}`}>
-              <span className="w-3 rounded-t bg-navy-900 sm:w-4" style={{ height: `${Math.max(0, (p.income / 100 / top) * 100)}%` }} />
-              <span className="w-3 rounded-t bg-gold-500 sm:w-4" style={{ height: `${Math.max(0, (p.expenses / 100 / top) * 100)}%` }} />
-            </div>
-          ))}
-        </div>
-        <div className="flex justify-around pt-1 text-xs text-navy-800">{perf.map((p) => <span key={p.month}>{monthName(p.month, { month: "short" })}</span>)}</div>
-      </div>
-    </div>
-  );
-}
-
-export default async function ClientOverview({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<Record<string, string | undefined>> }) {
+export default async function BookkeepingDashboard({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ period?: string; year?: string; month?: string }> }) {
   await connection();
   const user = await requireUser();
   const { clientId } = await params;
   const sp = await searchParams;
-  // Links to a month's close (?period=…, ?year=&month=) open the monthly close page.
-  if (sp.period || (sp.year && sp.month)) {
-    const q = new URLSearchParams(Object.entries(sp).filter((e): e is [string, string] => !!e[1]));
-    redirect(`/bookkeeping/${clientId}/close?${q}`);
-  }
-  if (!(await prisma.client.count({ where: { id: clientId } }))) notFound();
-  const o = await businessOverview(user, clientId, sp.month);
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, bookkeepingProfile: { select: { frequency: true } } } });
+  if (!client) notFound();
   const base = `/bookkeeping/${clientId}`;
-  const mName = monthName(o.selected);
-  const short = monthName(o.selected, { month: "long" });
+  // The month shown: ?period, ?year&month, ?month=YYYY-MM (links made for the earlier Client Overview), else the month being worked.
+  const byPeriod = sp.period ? await prisma.bookkeepingPeriod.findFirst({ where: { id: sp.period, clientId }, select: { year: true, month: true } }) : null;
+  const ymParam = !sp.year && sp.month && /^\d{4}-(0[1-9]|1[0-2])$/.test(sp.month) ? { year: Number(sp.month.slice(0, 4)), month: Number(sp.month.slice(5)) } : null;
+  const sel = byPeriod ?? ymParam ?? (sp.year && sp.month && Number(sp.month) >= 1 && Number(sp.month) <= 12 ? { year: Number(sp.year), month: Number(sp.month) } : workMonth(client.bookkeepingProfile?.frequency ?? "MONTHLY"));
+  const ym = `${sel.year}-${String(sel.month).padStart(2, "0")}`;
+  const monthLabel = `${MONTH_NAMES[sel.month - 1]} ${sel.year}`;
+  const today = todayCentral();
 
-  const nextStep = o.close?.steps.find((s) => !s.done);
-  const coethaSays = !o.close
-    ? `${mName} hasn't been opened yet. Open the month to start its close checklist.`
-    : !nextStep
-      ? `${short}'s close is complete — the financial statements have been approved and released to the client.`
-      : `${short}'s close is ${o.close.percent}% complete. Next step: ${nextStep.label}.${o.close.steps.filter((s) => s.done).length ? ` Done so far: ${o.close.steps.filter((s) => s.done).map((s) => s.label).join(", ")}.` : ""}`;
+  const [o, banking, manage, canSend] = await Promise.all([businessOverview(user, clientId, ym), canViewBanking(user, clientId), canManageBanking(user, clientId), canSendClientRequests(user, clientId)]);
+  const [reg, prog, reqs] = await Promise.all([banking ? bankingRegistry(user, clientId) : null, banking ? monthlyAccountProgress(user, clientId, sel.year, sel.month) : null, requestsFor(clientId)]);
+  const pct = o.close.percent;
+
+  // Accounts overview (registry: top-level accounts; employee cards live under their shared account).
+  const rows = reg?.rows ?? [];
+  const bankCount = rows.filter((r) => r.accountType === "CHECKING" || r.accountType === "SAVINGS").length;
+  const cardCount = rows.filter((r) => r.accountType === "CREDIT_CARD").length;
+  const recOf = new Map((prog?.rows ?? []).map((r) => [r.account.id, r.rec]));
+  const balanceOf = async (r: (typeof rows)[number]) => {
+    const feed = r.feeds.find((f) => f.currentBalanceCents != null);
+    if (feed) return feed.currentBalanceCents!;
+    const rec = recOf.get(r.id);
+    if (rec?.endingBalanceCents != null) return rec.endingBalanceCents;
+    return r.ledgerAccountId ? accountBalance(clientId, r.ledgerAccountId, today).catch(() => 0) : 0;
+  };
+  const balances = new Map(await Promise.all(rows.map(async (r) => [r.id, await balanceOf(r)] as const)));
+  const toReconcile = rows.filter((r) => recOf.get(r.id)?.status !== "APPROVED" && recOf.has(r.id)).reduce((n, r) => n + Math.abs(balances.get(r.id) ?? 0), 0);
+  const recent = [...rows].sort((a, b) => (b.lastSync?.getTime() ?? 0) - (a.lastSync?.getTime() ?? 0)).slice(0, 5);
+  const reconciled = prog?.reconciled ?? 0, recTotal = prog?.total ?? 0;
+
+  // Coetha tiles.
+  const requestsNeeded = reqs.all.filter((r) => (r.status === "DRAFT" || r.status === "OPEN") && r.kind !== "YEAR_END").length;
+  const recommendations = (o.coetha.proposals.RECOMMENDATION ?? 0) + (o.coetha.proposals.CLASSIFICATION ?? 0);
+  const tiles = [
+    { label: "Banking & Accounts", icon: Landmark, href: `${base}/banking`, badge: 0 },
+    { label: "Credit Cards", icon: CreditCard, href: `${base}/banking#group-CREDIT_CARD`, badge: 0 },
+    { label: "Reconciliations", icon: SquareCheckBig, href: `${base}/banking/reconciliation?month=${ym}`, badge: 0 },
+    { label: "Requests & Items Needed", icon: FileText, href: `${base}/records`, badge: requestsNeeded },
+    { label: "Recommendations", icon: Lightbulb, href: `${base}/coetha`, badge: recommendations },
+  ];
+
+  // Statements Coetha asked for (new clients / missing statements): upload straight to the request.
+  const statementRequests = reqs.all.filter((r) => (r.status === "OPEN" || (r.status === "DRAFT" && r.routing !== "REVIEW")) && (r.docType === "BANK_STATEMENT" || r.docType === "CARD_STATEMENT"));
+
+  // Month tiles: four months back, the month shown, two ahead.
+  const months = await Promise.all([-4, -3, -2, -1, 0, 1, 2].map(async (n) => {
+    const t = shiftYm(sel.year, sel.month, n);
+    const c = await monthlyChecklist(clientId, t.year, t.month, { today });
+    const started = c.items.some((i) => i.state !== "NOT_DUE");
+    return { ...t, percent: c.percent, state: c.percent === 100 ? "COMPLETE" : started ? "IN_PROGRESS" : "NOT_STARTED", current: n === 0 };
+  }));
 
   return (
-    <div className="space-y-5" data-testid="client-overview">
+    <div className="space-y-5" data-testid="bk-dashboard">
       {/* Banner */}
-      <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-6 py-6 text-white ring-1 ring-gold-500/40 sm:px-8" data-testid="overview-banner">
-        {/* Tabitha's glass-building photo on the right, fading into the navy. */}
-        <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 hidden w-[48%] sm:block">
+      <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-6 pb-14 pt-6 text-white ring-1 ring-gold-500/40 sm:px-8" data-testid="bk-banner">
+        <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 hidden w-[55%] sm:block">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/brand/glass-buildings.jpg" alt="" className="size-full object-cover object-right" />
           <span className="absolute inset-0 bg-gradient-to-r from-navy-950 via-navy-950/30 to-transparent" />
         </div>
-        <div className="relative flex flex-wrap items-center justify-between gap-4">
-          <div className="flex min-w-0 items-start gap-4 sm:max-w-[60%]">
-            <span className="mt-1 hidden size-14 shrink-0 items-center justify-center rounded-lg border-2 border-gold-400 sm:flex"><Building2 className="size-9 text-gold-400" aria-hidden /></span>
-            <div className="min-w-0">
-              <h1 className="font-serif text-2xl font-bold leading-tight text-white sm:text-3xl" data-testid="overview-name">{o.client.name}</h1>
-              <p className="mt-1 flex flex-wrap border-t border-gold-500/40 pt-1 text-base text-navy-100" data-testid="overview-services">
-                {o.services.map((s, i) => <span key={s}>{i > 0 && <span className="mx-2 text-gold-400">•</span>}{s}</span>)}
-              </p>
-              <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-navy-100">
-                {o.client.managed ? (
-                  <span className="rounded-full bg-emerald-500 px-3 py-0.5 font-semibold text-white" data-testid="overview-access">Active Client</span>
-                ) : (
-                  <Link href="/owner/business-access" className="rounded-full bg-amber-400 px-3 py-0.5 font-semibold text-navy-950" data-testid="overview-access">Not approved for Managed Business access</Link>
-                )}
-                {o.profile.einLast4 && <span>EIN: ••••{o.profile.einLast4}</span>}
-                {o.profile.basis && <span>| Accounting Basis: {o.profile.basis === "ACCRUAL" ? "Accrual" : o.profile.basis === "CASH" ? "Cash" : "Modified cash"}</span>}
-                {o.payroll && <span>| Payroll: {o.payroll.provider ?? "Provider not set"}{o.payroll.frequency ? ` (${o.payroll.frequency})` : ""}</span>}
-              </p>
-            </div>
-          </div>
-          <MonthSelect base={base} value={o.selected} choices={o.monthChoices} />
+        <div className="relative">
+          <h1 className="font-serif text-2xl font-bold leading-tight text-white" data-testid="bk-name">{o.client.name}</h1>
+          <p className="font-serif text-lg text-navy-100">Bookkeeping Services</p>
         </div>
       </section>
 
-      {/* Figures */}
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="This month's figures">
-        {o.ledger ? (
-          <>
-            <Kpi icon={BarChart3} label="Income (MTD)" value={usd(o.ledger.income)} change={o.ledger.change.income} testId="kpi-income" />
-            <Kpi icon={CreditCard} label="Expenses (MTD)" value={usd(o.ledger.expenses)} change={o.ledger.change.expenses} goodWhenDown testId="kpi-expenses" />
-            <Kpi icon={Coins} label="Net Profit (MTD)" value={usd(o.ledger.net)} change={o.ledger.change.net} testId="kpi-net" />
-            <Kpi icon={Landmark} label="Bank Balance" value={usd(o.ledger.bank)} sub={`(${o.ledger.bankAccounts} Account${o.ledger.bankAccounts === 1 ? "" : "s"})`} testId="kpi-bank" />
-          </>
-        ) : (
-          <div className={clsx(card, "px-5 py-4 text-sm text-navy-800 sm:col-span-2 xl:col-span-4")} data-testid="kpi-none">
-            {o.hasBooks ? "Only Admins and the staff member assigned to this client can see its figures." : <>Income, expenses, profit and bank balance appear here once this client&apos;s books are set up in <Link className="font-semibold underline" href={`${base}/books`}>General Ledger</Link>.</>}
+      {/* Financial Overview */}
+      <section className={clsx(card, "relative -mt-16 mx-1 p-4 sm:mx-3 sm:p-5")} data-testid="financial-overview">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <h2 className="font-serif text-xl font-bold text-navy-900">Financial Overview</h2>
+            <p className="flex items-center gap-1.5 text-sm text-navy-800" data-testid="last-bank-update">
+              <span className={clsx("size-2.5 rounded-full", reg?.lastSync ? "bg-emerald-600" : "bg-slate-300")} aria-hidden />
+              Last bank update: <strong className="font-semibold text-navy-900">{reg?.lastSync ? fmtSync(reg.lastSync) : "Not connected yet"}</strong>
+            </p>
           </div>
-        )}
+          <div className="flex items-center gap-2">
+            {manage && (reg?.connections.some((c) => c.status === "ACTIVE" || c.status === "ERROR") ?? false) && (
+              <ActionForm action={retrieveNowAction.bind(null, clientId)} showSuccess={false}><button type="submit" className={smallBtn} data-testid="refresh-data"><RefreshCw className="size-4" aria-hidden /> Refresh Data</button></ActionForm>
+            )}
+            <span title="Figures come only from this business's own books and bank feeds."><Info className="size-5 text-navy-700" aria-label="About these figures" /></span>
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            { icon: Landmark, label: "Total Bank Balance", value: o.ledger ? usd(o.ledger.bank) : "—", sub: o.ledger ? `(${o.ledger.bankAccounts} account${o.ledger.bankAccounts === 1 ? "" : "s"})` : "Books not set up", tone: "text-gold-600", id: "fo-bank" },
+            { icon: TrendingUp, label: "Income (MTD)", value: o.ledger ? usd(o.ledger.income) : "—", tone: "text-emerald-600", id: "fo-income" },
+            { icon: TrendingDown, label: "Expenses (MTD)", value: o.ledger ? usd(o.ledger.expenses) : "—", tone: "text-red-500", id: "fo-expenses" },
+            { icon: Coins, label: "Net Profit (MTD)", value: o.ledger ? usd(o.ledger.net) : "—", tone: "text-gold-600", id: "fo-net" },
+          ].map((k) => (
+            <div key={k.label} className="flex items-center gap-3 rounded-xl border border-ivory-200 bg-white px-4 py-3" data-testid={k.id}>
+              <k.icon className={clsx("size-9 shrink-0", k.tone)} aria-hidden />
+              <div className="min-w-0">
+                <p className="text-sm text-navy-800">{k.label}</p>
+                <p className="truncate font-serif text-xl font-bold text-navy-900">{k.value}</p>
+                {k.sub && <p className="text-xs text-slate-600">{k.sub}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
-      {/* Close + Coetha */}
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className={clsx(card, "p-5")} data-testid="monthly-close">
-          <h2 className="font-serif text-xl font-bold text-navy-900">{mName} – Monthly Close</h2>
-          {o.close ? (
-            <div className="mt-3 flex flex-wrap items-center gap-6">
-              <Donut percent={o.close.percent} />
-              <ul className="min-w-0 flex-1 divide-y divide-ivory-200">
-                {o.close.steps.map((s) => (
-                  <li key={s.label} className="flex items-center gap-2 py-1.5 text-[15px] text-navy-900">
-                    {s.done ? <CheckCircle2 className="size-5 shrink-0 fill-emerald-600 text-white" aria-hidden /> : <Circle className="size-5 shrink-0 text-gold-500" aria-hidden />}
-                    {s.label}<span className="sr-only">{s.done ? " — done" : " — not done"}</span>
+      <section className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)]">
+        {/* Monthly Progress */}
+        <div className={clsx(card, "p-4 sm:p-5")} data-testid="monthly-progress">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="flex items-center gap-2 font-serif text-xl font-bold text-navy-900"><CalendarDays className="size-6 text-gold-600" aria-hidden /> Monthly Progress – {monthLabel}</h2>
+            <span className="rounded-lg bg-gold-200 px-3 py-1 text-sm font-semibold text-navy-950" data-testid="progress-pill">{pct}% Complete</span>
+          </div>
+          <div className="mt-3 h-3 overflow-hidden rounded-full bg-ivory-200" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><div className="h-full rounded-full bg-emerald-600" style={{ width: `${pct}%` }} /></div>
+          <ul className="mt-3 divide-y divide-ivory-200">
+            {o.close.steps.map((s) => {
+              const red = s.key === "RELEASED" && s.state !== "DONE";
+              const tone = s.state === "DONE" ? PILL.DONE : red ? PILL.MISSING : PILL[s.state ?? "NOT_DUE"];
+              const action = s.key === "RECONCILED" && s.state !== "DONE" ? { label: "Review", href: `${base}/banking/reconciliation?month=${ym}` }
+                : s.key === "PREPARED" && s.state !== "NA" ? { label: s.state === "DONE" ? "View" : "View Draft", href: `${base}/statements?year=${sel.year}&month=${sel.month}` }
+                : s.key === "APPROVAL" && s.state === "IN_PROGRESS" ? { label: "Review", href: `${base}/statements?year=${sel.year}&month=${sel.month}` }
+                : s.key === "CATEGORIZED" && s.state === "IN_PROGRESS" ? { label: "Review", href: `${base}/books?tab=bank` }
+                : null;
+              return (
+                <li key={s.label} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2" data-item={s.key} data-state={s.state} title={s.detail}>
+                  <RowIcon state={s.state ?? "NOT_DUE"} red={red} />
+                  <span className="min-w-0 flex-1 text-[15px] text-navy-900">{s.label}</span>
+                  <span className={clsx("rounded-full px-3 py-0.5 text-xs font-semibold ring-1", tone)}>{s.pill ?? s.detail}</span>
+                  {action && <Link href={action.href} className="rounded-md border border-navy-200 bg-white px-2.5 py-0.5 text-xs font-semibold text-navy-900 hover:bg-ivory-50">{action.label}</Link>}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        <div className="space-y-4">
+          {/* Coetha – Senior Accountant */}
+          <div className="overflow-hidden rounded-2xl ring-1 ring-gold-500/40" data-testid="coetha-card">
+            <div className="flex items-start justify-between gap-2 bg-gradient-to-br from-navy-900 to-navy-950 px-4 py-3 text-white">
+              <div className="flex min-w-0 items-center gap-3">
+                <MonitorCheck className="size-8 text-gold-400" aria-hidden />
+                <div>
+                  <h2 className="font-serif text-lg font-bold text-white">Coetha – Senior Accountant</h2>
+                  <p className="text-xs text-navy-100">Account Monitoring • Reconciliation • Document Requests • Recommendations</p>
+                </div>
+              </div>
+              <span className="shrink-0 rounded-md bg-emerald-100 px-2.5 py-0.5 text-sm font-semibold text-emerald-800">Active</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 bg-white p-3 sm:grid-cols-5">
+              {tiles.map((t) => (
+                <Link key={t.label} href={t.href} className="relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl border border-ivory-200 bg-ivory-50 px-1 py-3 text-center text-[11px] font-semibold leading-tight text-navy-900 hover:border-gold-400" data-testid="coetha-tile">
+                  <t.icon className="size-7 text-gold-600" aria-hidden />
+                  {t.label}
+                  {t.badge > 0 && <span className="absolute -right-1 -top-1 flex size-6 items-center justify-center rounded-full bg-red-600 text-xs font-bold text-white" aria-label={`${t.badge} waiting`}>{t.badge}</span>}
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {/* Accounts Overview */}
+          <div className={clsx(card, "p-4")} data-testid="accounts-overview">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><BarChart3 className="size-6 text-gold-600" aria-hidden /> Accounts Overview</h2>
+              <div className="flex flex-wrap gap-2">
+                <Link href={`${base}/banking#connect`} className={smallBtn}><Link2 className="size-4" aria-hidden /> Connect Financial Institution</Link>
+                <Link href={`${base}/banking#manage`} className={smallBtn}><Settings className="size-4" aria-hidden /> Manage Accounts</Link>
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3 rounded-xl bg-navy-900 px-3 py-3 text-white sm:grid-cols-3 2xl:grid-cols-5" data-testid="accounts-strip">
+              {[
+                { icon: Landmark, label: "Total Accounts", value: String(rows.length) },
+                { icon: BarChart3, label: "Bank Accounts", value: String(bankCount) },
+                { icon: CreditCard, label: "Credit Cards", value: String(cardCount) },
+                { icon: Percent, label: "Reconciled", value: `${reconciled} of ${recTotal}`, sub: recTotal ? `(${Math.round((reconciled / recTotal) * 100)}%)` : "" },
+                { icon: Scale, label: "Balance to Reconcile", value: usd(toReconcile) },
+              ].map((s) => (
+                <div key={s.label} className="flex min-w-0 items-center gap-2">
+                  <s.icon className="size-6 shrink-0 text-gold-400" aria-hidden />
+                  <div className="min-w-0"><p className="text-[11px] leading-tight text-navy-100">{s.label}</p><p className="font-semibold leading-tight">{s.value} <span className="whitespace-nowrap text-xs font-normal text-navy-100">{s.sub}</span></p></div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Recent Account Activity */}
+          <div className={clsx(card, "p-4")} data-testid="recent-activity">
+            <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><ListChecks className="size-6 text-gold-600" aria-hidden /> Recent Account Activity</h2>
+            {!recent.length ? <p className="mt-2 text-sm text-slate-600">No accounts registered yet.</p> : (
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full min-w-[30rem] text-xs sm:text-[13px]">
+                  <thead className="text-left text-xs text-slate-600"><tr><th className="py-1.5 pr-2 font-semibold">Account</th><th className="pr-2 font-semibold">Type</th><th className="pr-2 font-semibold">Last Sync</th><th className="pr-2 font-semibold">Status</th><th className="pr-2 text-right font-semibold">Balance</th><th /></tr></thead>
+                  <tbody className="divide-y divide-ivory-200">
+                    {recent.map((r) => {
+                      const rec = recOf.get(r.id);
+                      const [st, tone] = STATUS[rec?.status ?? "NOT_DUE"] ?? STATUS.NOT_DUE;
+                      const isCard = r.accountType !== "CHECKING" && r.accountType !== "SAVINGS";
+                      return (
+                        <tr key={r.id}>
+                          <td className="py-2 pr-2"><span className="flex items-center gap-1.5 whitespace-nowrap font-semibold text-navy-900">{isCard ? <CreditCard className="size-4 shrink-0 text-gold-600" aria-hidden /> : <Landmark className="size-4 shrink-0 text-gold-600" aria-hidden />}<span className="max-w-[9rem] truncate">{r.nickname || r.institution}</span> <span className="font-normal text-navy-800">••••{r.last4 ?? "—"}</span></span></td>
+                          <td className="pr-2">{isCard ? (REGISTRY_TYPES[r.accountType as keyof typeof REGISTRY_TYPES]?.label ?? "Card") : "Bank"}</td>
+                          <td className="whitespace-nowrap pr-2">{r.lastSync ? fmtShort(r.lastSync) : "—"}</td>
+                          <td className="pr-2"><span className={clsx("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold", tone)}>{rec?.status === "APPROVED" ? <CheckCircle2 className="size-3.5" aria-hidden /> : null}{st}</span></td>
+                          <td className="whitespace-nowrap pr-2 text-right tabular-nums">{usd(balances.get(r.id) ?? 0)}</td>
+                          <td><Link href={`${base}/banking/reconciliation?month=${ym}`} aria-label={`Open ${registryLabel(r)}`}><ChevronRight className="size-4 text-navy-800" aria-hidden /></Link></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <Link href={`${base}/banking/reconciliation?month=${ym}`} className="mt-2 flex items-center justify-end gap-1 text-sm font-semibold text-navy-900 underline decoration-gold-500">View All {rows.length} Accounts &amp; Reconciliations <ArrowRight className="size-4" aria-hidden /></Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Monthly Bookkeeping Progress */}
+      <section className={clsx(card, "p-4 sm:p-5")} data-testid="bookkeeping-progress">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="flex items-center gap-2 font-serif text-xl font-bold text-navy-900"><BarChart3 className="size-6 text-gold-600" aria-hidden /> Monthly Bookkeeping Progress</h2>
+          <Link href={`${base}/statements`} className={smallBtn}>View Full Bookkeeping History <ArrowRight className="size-4" aria-hidden /></Link>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+          {months.map((m) => (
+            <Link key={`${m.year}-${m.month}`} href={`${base}?year=${m.year}&month=${m.month}`} className={clsx("rounded-xl border px-3 py-2.5 text-center", m.current ? "border-gold-400 bg-gold-50 shadow" : "border-ivory-200 bg-white hover:border-gold-300")} data-testid="month-tile" data-state={m.state}>
+              <p className="font-semibold text-navy-900">{MONTH_NAMES[m.month - 1].slice(0, 3)} {m.year}</p>
+              {m.state === "COMPLETE" ? <p className="mt-1 flex items-center justify-center gap-1 text-sm font-semibold text-emerald-700"><CheckCircle2 className="size-4" aria-hidden /> Complete</p>
+                : m.state === "IN_PROGRESS" ? (<><p className="mt-1 flex items-center justify-center gap-1 text-sm font-semibold text-navy-900"><span className="size-2 rounded-full bg-red-600" aria-hidden /> In Progress</p><span className="mt-1 flex items-center gap-1.5"><span className="h-1.5 flex-1 overflow-hidden rounded-full bg-ivory-200"><span className="block h-full rounded-full bg-emerald-600" style={{ width: `${m.percent}%` }} /></span><span className="text-xs">{m.percent}%</span></span></>)
+                : <p className="mt-1 flex items-center justify-center gap-1 text-sm text-navy-800"><span className="size-2 rounded-full bg-red-600" aria-hidden /> Not Started</p>}
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      {/* Statements Coetha asked for (only when she needs them) */}
+      {canSend && (
+        <section className={clsx(card, "p-4 sm:p-5")} data-testid="statement-uploads">
+          {statementRequests.length > 0 ? (
+            <>
+              <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><Upload className="size-5 text-gold-600" aria-hidden /> Upload statements Coetha requested <span className="rounded-full bg-red-600 px-2 py-0.5 font-sans text-xs font-bold text-white">{statementRequests.length}</span></h2>
+              <ul className="mt-2 divide-y divide-ivory-200">
+                {statementRequests.slice(0, 8).map((r) => (
+                  <li key={r.id} className="flex flex-wrap items-center gap-2 py-2 text-sm" data-testid="statement-request">
+                    <span className="min-w-0 flex-1"><strong className="text-navy-900">{r.bookkeepingAccount ? registryLabel(r.bookkeepingAccount) : "Account"}</strong> · {rangeText(r) ?? ""} <span className="text-xs text-slate-600">· {r.status === "OPEN" ? "asked of the client" : "draft"}</span></span>
+                    <ActionForm action={uploadForRequestAction.bind(null, clientId, r.id)} className="flex flex-wrap items-center gap-2" resetOnSuccess idempotent>
+                      <input className="input max-w-56 py-1 text-xs" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label={`Statement for ${r.title}`} />
+                      <button type="submit" className={smallBtn}><Upload className="size-4" aria-hidden /> Upload</button>
+                    </ActionForm>
                   </li>
                 ))}
               </ul>
-            </div>
+              {statementRequests.length > 8 && <Link className="text-xs underline" href={`${base}/records`}>+ {statementRequests.length - 8} more</Link>}
+            </>
           ) : (
-            <p className="mt-3 text-sm text-navy-800">This month hasn&apos;t been opened. <Link className="font-semibold underline" href={`${base}/close?year=${o.selected.slice(0, 4)}&month=${Number(o.selected.slice(5))}`}>Open {mName}</Link></p>
+            <p className="flex items-center gap-2 text-sm text-navy-800"><CheckCircle2 className="size-4 text-emerald-600" aria-hidden /> Coetha isn&apos;t waiting on any statements.</p>
           )}
-          {o.close && <Link href={o.periodId ? `${base}/close?period=${o.periodId}` : `${base}/close`} className="mt-3 inline-block text-sm font-semibold text-navy-900 underline decoration-gold-500">Open the monthly close</Link>}
-        </div>
-
-        <div className="rounded-2xl bg-gradient-to-br from-navy-900 to-navy-950 p-5 text-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.6)] ring-1 ring-gold-500/40" data-testid="coetha-card">
-          <h2 className="flex items-center gap-3 font-serif text-xl font-bold text-white"><Sparkles className="size-7 text-gold-400" aria-hidden /> Coetha | Senior Accountant</h2>
-          <p className="ml-11 text-sm text-navy-100">Client: {o.client.name}</p>
-          <p className="mt-4 rounded-xl bg-white px-5 py-4 text-base leading-snug text-navy-900" data-testid="coetha-message">{coethaSays}</p>
-          <div className="mt-4 flex flex-wrap gap-3">
-            <Link href={`${base}/books?tab=reports`} className={goldBtn}><FileText className="size-4" aria-hidden /> Review Financials</Link>
-            <Link href={`/clients/${clientId}?tab=taxes`} className={ghostBtn}><Calculator className="size-4" aria-hidden /> Prepare Taxes</Link>
-            {o.profile.coethaUrl ? (
-              <a href={o.profile.coethaUrl} target="_blank" rel="noopener noreferrer" className={ghostBtn}><MessageSquareText className="size-4" aria-hidden /> Open Coetha AI</a>
-            ) : (
-              <Link href={`${base}/close#coetha`} className={ghostBtn}><MessageSquareText className="size-4" aria-hidden /> Open Coetha AI</Link>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Payroll, filings, licenses, year-end */}
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <div className={clsx(card, "flex flex-col p-4")} data-testid="payroll-card">
-          <h3 className="flex flex-wrap items-center gap-2 font-serif text-lg font-bold text-navy-900">
-            <UsersRound className="size-6 text-gold-600" aria-hidden /> Payroll{o.payroll?.provider ? ` (${o.payroll.provider})` : ""}
-            {o.payroll && <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-sans text-xs font-semibold text-emerald-700">On Schedule</span>}
-          </h3>
-          <p className="mt-3 flex-1 text-sm text-navy-900">
-            {!o.payroll ? "This client doesn't run payroll." : o.payroll.next ? <>Next Pay Date: {dayLabel(o.payroll.next)}</> : "Next pay date: add a known pay date on the Payroll page."}
-          </p>
-          <div className="mt-3 flex gap-2">
-            <Link href={`${base}/payroll`} className={clsx(navyBtn, "flex-1")}>View Payroll</Link>
-            <Link href={`${base}/close#upload-financials`} className={clsx(outlineBtn, "flex-1")}>New Payroll</Link>
-          </div>
-        </div>
-
-        <div className={clsx(card, "flex flex-col p-4")} data-testid="filings-card">
-          <h3 className="flex flex-wrap items-center gap-2 font-serif text-lg font-bold text-navy-900">
-            <FileSpreadsheet className="size-6 text-gold-600" aria-hidden /> Taxes &amp; Filings
-            {o.filings.dueSoon > 0 && <span className="rounded-full bg-red-600 px-2 py-0.5 font-sans text-xs font-semibold text-white">{o.filings.dueSoon} Due</span>}
-          </h3>
-          <p className="mt-3 flex-1 text-sm text-navy-900">
-            {o.filings.next ? <><span className="font-semibold">• {o.filings.next.title}</span><br />Due: {dayLabel(o.filings.next.date)}</> : "No filing deadlines added for this client."}
-          </p>
-          <Link href={`/clients/${clientId}?tab=taxes`} className={clsx(navyBtn, "mt-3 w-full")}>View Tax Center</Link>
-        </div>
-
-        <div className={clsx(card, "flex flex-col p-4")} data-testid="licenses-card">
-          <h3 className="flex flex-wrap items-center gap-2 font-serif text-lg font-bold text-navy-900">
-            <IdCard className="size-6 text-gold-600" aria-hidden /> Business Licenses
-            {o.licenses.count > 0 && (o.licenses.expired ? <span className="rounded-full bg-red-600 px-2 py-0.5 font-sans text-xs font-semibold text-white">{o.licenses.expired} Expired</span> : <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-sans text-xs font-semibold text-emerald-700">All Current</span>)}
-          </h3>
-          <p className="mt-3 flex-1 text-sm text-navy-900">
-            {o.licenses.next ? <>Next Renewal: {dayLabel(o.licenses.next.renewal!)}<br />({o.licenses.next.name})</> : o.licenses.count ? "No upcoming renewal dates." : "No licenses added yet."}
-          </p>
-          <Link href={`${base}/licenses`} className={clsx(outlineBtn, "mt-3 w-full")}>View Licenses</Link>
-        </div>
-
-        <div className={clsx(card, "flex flex-col p-4")} data-testid="year-end-card">
-          <h3 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><FileBadge className="size-6 text-gold-600" aria-hidden /> 1099 / W-2</h3>
-          <div className="mt-3 flex-1 text-center text-sm text-navy-900">
-            {o.yearEnd ? (
-              <>
-                <p className="font-semibold">{o.yearEnd.taxYear} Year-End Setup</p>
-                <p className="mt-1 inline-block rounded-full bg-gold-200 px-3 py-0.5 text-xs font-semibold text-navy-900">{YEAR_END_STAGES[o.yearEnd.stage].label}</p>
-              </>
-            ) : (
-              <p>Year-end W-2 / 1099 work not started.</p>
-            )}
-          </div>
-          <Link href={`${base}/year-end`} className={clsx(navyBtn, "mt-3 w-full")}>View 1099 / W-2</Link>
-        </div>
-      </section>
-
-      {/* Invoicing + our account */}
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className={clsx(card, "p-5")} data-testid="client-invoicing">
-          <div className="flex items-start gap-3 border-b border-ivory-200 pb-3">
-            <ReceiptText className="size-10 shrink-0 text-gold-600" aria-hidden />
-            <div>
-              <h3 className="font-serif text-xl font-bold text-navy-900">Client Invoicing <span className="font-sans text-sm font-semibold">(Your Customers)</span></h3>
-              <p className="text-sm text-navy-800">Create, send, and track invoices to your customers.</p>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 divide-x divide-ivory-200 py-4 text-center">
-            <div><p className="font-serif text-xl font-bold text-navy-900">{usd(o.invoicing.openCents)}</p><p className="text-sm text-navy-800">Open Invoices ({o.invoicing.openCount})</p></div>
-            <div><p className="font-serif text-xl font-bold text-navy-900">{usd(o.invoicing.collectedCents)}</p><p className="text-sm text-navy-800">Collected (MTD)</p></div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link href={`${base}/books?tab=invoicing`} className={navyBtn}>Create Invoice</Link>
-            <Link href={`${base}/books?tab=invoicing`} className={outlineBtn}>View Invoices</Link>
-            <Link href={`${base}/books?tab=invoicing`} className={outlineBtn}>Payment History</Link>
-          </div>
-        </div>
-
-        <div className="min-w-0 rounded-2xl border-2 border-gold-400 bg-gradient-to-b from-white to-gold-50/40 p-5 shadow-[0_14px_32px_-24px_rgb(200_157_41/0.7)]" data-testid="my-account">
-          <div className="flex items-start gap-3">
-            <FileText className="size-10 shrink-0 text-gold-600" aria-hidden />
-            <div>
-              <h3 className="font-serif text-xl font-bold text-navy-900">My Account – T. Turner &amp; Associates</h3>
-              <p className="text-sm text-navy-800">Your Bookkeeping &amp; Tax Services</p>
-            </div>
-          </div>
-          {o.account ? (
-            <div className="mt-3 grid gap-4 sm:grid-cols-[1fr_auto]">
-              <div className="text-center sm:border-r sm:border-ivory-200 sm:pr-4">
-                {o.account.plan && <p className="inline-block rounded-full bg-gold-300 px-4 py-1 text-sm font-semibold text-navy-950">{o.account.plan}</p>}
-                <p className="mt-2 font-serif text-2xl font-bold text-navy-900">{o.account.amountCents != null ? usd(o.account.amountCents) : "—"}</p>
-                {o.account.due && <p className="text-sm text-navy-800">Due: {dayLabel(o.account.due)}</p>}
-                <p className={clsx("mt-2 inline-flex items-center gap-1 rounded-full px-4 py-1 text-sm font-semibold", o.account.status.tone === "paid" ? "bg-emerald-600 text-white" : o.account.status.tone === "overdue" ? "bg-red-600 text-white" : "bg-navy-50 text-navy-900")} data-testid="my-account-status">
-                  {o.account.status.tone === "paid" && <CheckCircle2 className="size-4" aria-hidden />}{o.account.status.label}
-                </p>
-              </div>
-              <div className="flex flex-col gap-2">
-                {["View Invoice", "Make a Payment", "Set Up AutoPay", "Billing History"].map((l) => (
-                  <Link key={l} href={`${base}/profile#billing`} className="rounded-lg border-[1.5px] border-navy-900 bg-white px-4 py-1.5 text-center text-sm font-semibold text-navy-900 hover:bg-ivory-50">{l}</Link>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <p className="mt-3 text-sm text-navy-800">Billing is visible to Tabitha and staff she allows.</p>
+          {rows.length > 0 && (
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer text-navy-900 underline decoration-gold-500">Upload a bank statement</summary>
+              <ActionForm action={uploadStatementAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-end gap-2" resetOnSuccess idempotent>
+                <label className="text-xs">Account<select className="input mt-1" name="accountId" required defaultValue="">{[<option key="" value="" disabled>Choose…</option>, ...rows.map((r) => <option key={r.id} value={r.id}>{registryLabel(r)}</option>)]}</select></label>
+                <label className="text-xs">Month<input className="input mt-1" type="month" name="month" required defaultValue={ym} /></label>
+                <input className="input max-w-64" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label="Statement file" />
+                <button type="submit" className={smallBtn}><Upload className="size-4" aria-hidden /> Upload</button>
+              </ActionForm>
+            </details>
           )}
-        </div>
-      </section>
-
-      {/* Performance + deadlines */}
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className={clsx(card, "p-5")}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="flex items-center gap-2 font-serif text-xl font-bold text-navy-900"><BarChart3 className="size-6 text-gold-600" aria-hidden /> Monthly Performance</h3>
-            <p className="flex gap-3 text-xs text-navy-800"><span className="flex items-center gap-1"><span className="size-3 rounded-sm bg-navy-900" />Income</span><span className="flex items-center gap-1"><span className="size-3 rounded-sm bg-gold-500" />Expenses</span></p>
-          </div>
-          <div className="mt-4">{o.ledger ? <Chart perf={o.ledger.perf} /> : <p className="text-sm text-navy-800">The chart fills in from the books once they&apos;re set up.</p>}</div>
-        </div>
-
-        <div className={clsx(card, "p-5")} data-testid="upcoming-deadlines">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="flex items-center gap-2 font-serif text-xl font-bold text-navy-900"><CalendarPlus className="size-6 text-gold-600" aria-hidden /> Upcoming Deadlines</h3>
-            <Link href="/tasks" className="flex items-center gap-1 text-sm font-semibold text-navy-900">View Calendar <ArrowRight className="size-4" aria-hidden /></Link>
-          </div>
-          {o.deadlines.length ? (
-            <ul className="mt-3 divide-y divide-ivory-200">
-              {o.deadlines.map((d) => (
-                <li key={`${d.date}${d.title}`} className="flex items-center gap-3 py-2">
-                  <span className="w-20 shrink-0 rounded-md bg-gold-200 px-2 py-1 text-center text-sm font-bold uppercase text-navy-950">{dayLabel(d.date, { month: "short", day: "2-digit" })}</span>
-                  <span className="min-w-0 flex-1 font-semibold text-navy-900">{d.title}</span>
-                  <span className={clsx("shrink-0 rounded-full px-3 py-0.5 text-sm font-semibold", DEADLINE_PILL[d.status][1])}>{DEADLINE_PILL[d.status][0]}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-sm text-navy-800">No upcoming deadlines for this client.</p>
-          )}
-        </div>
-      </section>
-      <p className="flex items-center gap-2 text-xs text-slate-500"><Building2 className="size-3.5" aria-hidden /> Figures come only from this client&apos;s own records in Client Connect.</p>
+        </section>
+      )}
     </div>
   );
 }
