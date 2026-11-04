@@ -74,9 +74,11 @@ function toClientData(input: ClientInput, before?: SpouseFields | null) {
   // A business is never asked for (and never saves) personal spouse information.
   // With the box unticked, a spouse already on file is kept as it was (it may be a
   // past year's), and nothing new is saved.
+  // Hiding the section (unticked, or a business/nonprofit record) never deletes a
+  // spouse already on file: removing one is a separate, explicit action.
   const individual = raw.clientType === "INDIVIDUAL";
   const saveSpouse = individual && raw.spouseNeeded !== false;
-  const kept = individual && raw.spouseNeeded === false && before ? before : null;
+  const kept = !saveSpouse && before ? before : null;
   const v = saveSpouse
     ? raw
     : { ...raw, spouseFirstName: kept?.spouseFirstName ?? null, spouseMiddleName: kept?.spouseMiddleName ?? null, spouseLastName: kept?.spouseLastName ?? null, spouseEmail: kept?.spouseEmail ?? null, spousePhone: kept?.spousePhone ?? null };
@@ -102,7 +104,8 @@ function toClientData(input: ClientInput, before?: SpouseFields | null) {
       ? {}
       : { spouseFirstName: null, spouseMiddleName: null, spouseLastName: null, spouseEmail: null, spousePhone: null, spousePhoneNormalized: null };
   return {
-    joint: individual && raw.spouseNeeded !== undefined ? { needed: raw.spouseNeeded, year: raw.spouseYear ?? currentTaxYear() } : null,
+    // No year sent (the section was hidden, e.g. a business return this year): no answer is recorded.
+    joint: individual && raw.spouseNeeded !== undefined && (raw.spouseNeeded || raw.spouseYear !== undefined) ? { needed: raw.spouseNeeded, year: raw.spouseYear ?? currentTaxYear() } : null,
     data: {
       firstName: v.firstName ?? null,
       middleName: v.middleName ?? null,
@@ -196,6 +199,29 @@ export async function jointFilingNeeded(clientId: string, year = currentTaxYear(
   ]);
   if (flag) return flag.needed;
   return kase?.returnType === "1040_MFJ" || kase?.returnType === "1040_MFS";
+}
+
+const BUSINESS_RETURN_TYPES = new Set(["1065", "1120S", "1120", "990"]);
+
+/**
+ * What the client form's "Add spouse / Joint tax return" box starts as for {year}.
+ * Never assumes married: open only for a joint answer recorded for THAT year, or
+ * that year's filing status Married Filing Jointly (tax-prep case or summary). A
+ * prior year's joint return or a spouse saved earlier doesn't open it. A business
+ * return for the year (1065, 1120-S, 1120, 990) hides the box altogether.
+ */
+export async function spouseSectionDefaults(clientId: string, year = currentTaxYear()) {
+  const [c, flag, kase, summary] = await Promise.all([
+    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { clientType: true } }),
+    prisma.jointFilingYear.findUnique({ where: { clientId_taxYear: { clientId, taxYear: year } } }),
+    prisma.taxPrepCase.findUnique({ where: { clientId_taxYear: { clientId, taxYear: year } }, select: { returnType: true } }),
+    prisma.taxReturnSummary.findFirst({ where: { clientId, taxYear: year }, orderBy: { version: "desc" }, select: { filingStatus: true } }),
+  ]);
+  // The form itself also hides the box whenever Client type isn't Individual.
+  const businessReturn = BUSINESS_RETURN_TYPES.has(kase?.returnType ?? "");
+  if (businessReturn || c.clientType !== "INDIVIDUAL") return { businessReturn, open: false };
+  const open = flag ? flag.needed : kase?.returnType === "1040_MFJ" || summary?.filingStatus === "MFJ";
+  return { businessReturn, open };
 }
 
 /**
