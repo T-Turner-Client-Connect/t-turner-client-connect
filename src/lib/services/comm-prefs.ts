@@ -218,6 +218,10 @@ export async function setCommunicationPreferences(input: {
 }): Promise<{ changed: CommPrefCategory[] }> {
   const label = SOURCE_TEXT[input.source];
   const note = input.note?.trim().slice(0, 500) || null;
+  // Consent takes effect at the app's own "now" — the same clock currentConsent() compares against
+  // (effectiveAt <= now). Left to the database default, a record written on a clock even slightly
+  // ahead of the app's reads as "not yet effective", so a just-saved opt-in shows as off.
+  const now = new Date();
   return prisma.$transaction(async (tx) => {
     const people = await resolvePeople(tx, input.targets);
     const before = await preferenceState(input.targets, { emails: input.emails, phones: input.phones }, tx);
@@ -241,7 +245,7 @@ export async function setCommunicationPreferences(input: {
       if (before.emailBlocked) throw new ValidationError(`We can't send promotional email to this address (${before.emailBlocked.toLowerCase()}). Please call our office.`);
       await tx.suppression.updateMany({ where: { channel: "EMAIL", addressNormalized: { in: emails }, reason: "UNSUBSCRIBE", liftedAt: null }, data: { liftedAt: new Date(), note: `Re-subscribed (${label})` } });
       for (const p of people) {
-        await tx.consentRecord.create({ data: { clientId: p.clientId, contactId: p.contactId, kind: "EMAIL_MARKETING", status: "GRANTED", scope: "Promotional email: flyers, newsletters, offers and announcements", source: label, evidenceNote: note, recordedById: input.actorId ?? null } });
+        await tx.consentRecord.create({ data: { clientId: p.clientId, contactId: p.contactId, kind: "EMAIL_MARKETING", status: "GRANTED", effectiveAt: now, scope: "Promotional email: flyers, newsletters, offers and announcements", source: label, evidenceNote: note, recordedById: input.actorId ?? null } });
       }
       record("PROMO_EMAIL", true, people, emails.join(", "));
     } else if (c.promoEmail === false && (before.any.promoEmail || !(await allUnsubscribed(tx, emails)))) {
@@ -254,7 +258,7 @@ export async function setCommunicationPreferences(input: {
       }
       const affected = uniquePeople([...people, ...(await Promise.all(emails.map((e) => peopleWithEmail(tx, e)))).flat()]);
       for (const p of affected) {
-        await tx.consentRecord.create({ data: { clientId: p.clientId, contactId: p.contactId, kind: "EMAIL_MARKETING", status: "REVOKED", source: label, evidenceNote: note, recordedById: input.actorId ?? null } });
+        await tx.consentRecord.create({ data: { clientId: p.clientId, contactId: p.contactId, kind: "EMAIL_MARKETING", status: "REVOKED", effectiveAt: now, source: label, evidenceNote: note, recordedById: input.actorId ?? null } });
       }
       if (before.any.promoEmail || added) record("PROMO_EMAIL", false, affected, emails.join(", ") || null);
     }

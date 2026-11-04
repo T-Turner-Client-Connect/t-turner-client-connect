@@ -337,7 +337,7 @@ async function finishLink(applicationId: string, clientId: string, portalUserId:
     if (app.smsService) await prisma.portalUser.update({ where: { id: portalUserId }, data: { phone: app.phone, phoneNormalized: app.phoneNormalized, notifyBySms: true } });
   }
   if (app.emailMarketing) {
-    await prisma.consentRecord.create({ data: { clientId, kind: "EMAIL_MARKETING", status: "GRANTED", source: "Client portal onboarding (client checked the box)", scope: "Newsletters and offers by email" } });
+    await prisma.consentRecord.create({ data: { clientId, kind: "EMAIL_MARKETING", status: "GRANTED", effectiveAt: new Date(), source: "Client portal onboarding (client checked the box)", scope: "Newsletters and offers by email" } });
   }
   // Lands in the shared staff inbox like any client message.
   const convoId = await prisma.$transaction(async (tx) => {

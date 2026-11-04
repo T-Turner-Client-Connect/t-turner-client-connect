@@ -200,7 +200,7 @@ describe("Communication Preferences: saving and immediate enforcement", () => {
 describe("Unsubscribe links", () => {
   it("valid token unsubscribes; tampered and expired tokens change nothing", async () => {
     const { avery } = await setup();
-    await prisma.consentRecord.create({ data: { clientId: avery.id, kind: "EMAIL_MARKETING", status: "GRANTED", source: "Signed form" } });
+    await prisma.consentRecord.create({ data: { clientId: avery.id, kind: "EMAIL_MARKETING", status: "GRANTED", effectiveAt: NOON, source: "Signed form" } });
     const token = unsubscribeToken({ clientId: avery.id, contactId: null, email: "avery@example.com", kind: "PROMO" });
 
     const [body, sig] = token.split(".");
@@ -240,7 +240,7 @@ describe("Unsubscribe links", () => {
 
   it("isolation: one client's token can't change another client's preferences", async () => {
     const { avery, blake } = await setup();
-    for (const c of [avery, blake]) await prisma.consentRecord.create({ data: { clientId: c.id, kind: "EMAIL_MARKETING", status: "GRANTED", source: "Signed form" } });
+    for (const c of [avery, blake]) await prisma.consentRecord.create({ data: { clientId: c.id, kind: "EMAIL_MARKETING", status: "GRANTED", effectiveAt: NOON, source: "Signed form" } });
     const averyToken = unsubscribeToken({ clientId: avery.id, contactId: null, email: "avery@example.com", kind: "PROMO" });
     // Re-pointing Avery's signed token at Blake breaks the signature.
     const [body, sig] = averyToken.split(".");
