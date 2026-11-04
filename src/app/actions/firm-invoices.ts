@@ -63,12 +63,13 @@ export async function submitInvoiceAction(invoiceId: string, _prev: ActionState)
   });
 }
 
-export async function approveInvoiceAction(invoiceId: string, _prev: ActionState): Promise<ActionState> {
+export async function approveInvoiceAction(invoiceId: string, _prev: ActionState, fd?: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    await approveAndSend(actor, invoiceId);
+    const r = await approveAndSend(actor, invoiceId, { viaSquare: fd?.get("viaSquare") === "on" });
     revalidatePath(`/owner/invoices/${invoiceId}`);
-    return "Approved and sent to the client's portal.";
+    if (r.squareProblem) return `Approved and sent to the client's portal. Square: ${r.squareProblem}`;
+    return r.squareUrl ? "Approved, sent to the client's portal and sent through Square." : "Approved and sent to the client's portal.";
   });
 }
 

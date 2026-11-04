@@ -48,7 +48,7 @@ const ICONS: Record<AppointmentService["icon"], React.ComponentType<{ className?
 
 const STEPS = ["Select Service(s)", "Choose Date", "Choose Time", "Confirm & Book"];
 const card = "min-w-0 rounded-2xl border border-gold-500/40 bg-white p-4 text-navy-900 shadow-[0_24px_48px_-28px_rgb(0_0_0/0.8)] sm:p-5";
-const colTitle = "flex items-center gap-2 font-serif text-xl font-bold text-navy-900 sm:text-[1.35rem]";
+const colTitle = "flex items-center gap-2 font-serif text-xl font-bold text-navy-900 sm:text-xl";
 const goldBtn = "inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-4 text-lg font-bold text-navy-950 shadow-[0_10px_24px_-12px_rgb(200_157_41/0.9)] ring-1 ring-gold-200 transition hover:to-gold-400 disabled:cursor-not-allowed disabled:opacity-50";
 
 function Num({ n }: { n: number }) {

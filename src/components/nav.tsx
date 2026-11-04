@@ -101,6 +101,7 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
   const base = `/bookkeeping/${id}`;
   const items: { href: string; label: string; icon: typeof Users; active: boolean }[] = [
     { href: base, label: "Client Overview", icon: LayoutGrid, active: pathname === base },
+    { href: `/clients/${id}?tab=overview`, label: "Client Profile", icon: Users, active: false },
     { href: `${base}/coetha`, label: "Coetha AI", icon: Sparkles, active: pathname === `${base}/coetha` },
     { href: `${base}/books?tab=bank`, label: "Banking & Reconciliation", icon: Building2, active: pathname === `${base}/books` && tab === "bank" },
     { href: `${base}/books?tab=journal`, label: "General Ledger", icon: BookOpen, active: pathname === `${base}/books` && (tab === "journal" || tab === "accounts" || !tab || tab === "overview") },

@@ -88,7 +88,7 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
         <Mountains variant="light" className="absolute bottom-0 right-0 h-1/2 w-full opacity-80 [mask-image:linear-gradient(to_bottom,transparent,black_35%)] sm:inset-y-0 sm:h-full sm:w-[50%] sm:opacity-100 sm:[mask-image:linear-gradient(to_right,transparent,black_30%)] lg:w-[54%]" />
         {/* The text keeps its own column (left of the artwork) and long names wrap onto their own line. */}
         <div className="relative z-10 px-6 pb-28 pt-8 sm:max-w-[54%] sm:px-10 sm:py-12 lg:max-w-[50%]">
-          <h1 className="font-serif text-2xl font-bold leading-[1.15] text-navy-900 [overflow-wrap:anywhere] sm:text-[1.75rem] lg:text-3xl" data-testid="hero-heading">
+          <h1 className="font-serif text-2xl font-bold leading-[1.15] text-navy-900 [overflow-wrap:anywhere] sm:text-2xl lg:text-3xl" data-testid="hero-heading">
             Welcome Back{name ? "," : ""}
             {name && <span className="block text-balance">{name}</span>}
           </h1>
@@ -141,7 +141,7 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
         <section className={card} data-testid="tax-center">
           <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h2 className="font-serif text-xl sm:text-[1.375rem] font-bold text-navy-900">My {selected} Tax Progress</h2>
+              <h2 className="font-serif text-xl sm:text-xl font-bold text-navy-900">My {selected} Tax Progress</h2>
               <p className="text-sm text-slate-600">Manage your tax documents, filings, and year-specific tasks.</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">

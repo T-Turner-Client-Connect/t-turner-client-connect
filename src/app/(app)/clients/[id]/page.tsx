@@ -3,7 +3,7 @@ import { chicagoToday } from "@/lib/dates";
 import { BusinessTabs } from "@/components/business-tabs";
 import { NonprofitCard } from "@/components/nonprofit-card";
 import { recordHeading } from "@/lib/services/related-businesses";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { ConsentKind } from "@prisma/client";
 import { ActionForm } from "@/components/action-form";
 import { ConfirmButton } from "@/components/confirm-button";
@@ -50,6 +50,8 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
   const user = await requireUser();
   const { id } = await params;
   const sp = await searchParams;
+  // Bookkeeping clients open on their Client Overview dashboard; the full profile stays one click away (?tab=overview).
+  if (!sp.tab && (await prisma.bookkeepingProfile.count({ where: { clientId: id, active: true } }))) redirect(`/bookkeeping/${id}`);
   const seesInvoices = !!(await ownerAccessFor(user.id));
   const tabs = TABS.filter((t) => t.key !== "invoices" || seesInvoices);
   const tab = tabs.find((t) => t.key === sp.tab)?.key ?? "overview";
