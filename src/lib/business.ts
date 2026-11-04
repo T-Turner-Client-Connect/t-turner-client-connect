@@ -20,10 +20,18 @@ export const BUSINESS = {
   platformIdentity: "TTurner Client Connect, operated by T. Turner & Associates, LLC",
   officePhoneDisplay: "205-639-1000",
   officePhoneTel: "+12056391000",
+  // Privacy questions and requests (Privacy Policy contact).
+  privacyEmail: "info@tturnerassociates.com",
 } as const;
 
-/** Date the Privacy Policy and Terms were published. Update when the text changes. */
+/** Date the Terms were published. Update when the text changes. */
 export const LEGAL_EFFECTIVE_DATE = "October 29, 2026";
+
+/**
+ * Date the current Privacy Policy text takes effect. Set it to the publication
+ * date when the owner approves and the update is deployed.
+ */
+export const PRIVACY_EFFECTIVE_DATE = "November 4, 2026";
 
 // Exact consent wording. Any change must get a new version so stored
 // consents always point at the text the person actually saw.
