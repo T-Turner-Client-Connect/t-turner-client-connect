@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { normalizePhone } from "@/lib/normalize";
 import { sign } from "@/lib/crypto";
 import { SMS_CONSENT_TEXT, SMS_CONSENT_VERSION } from "@/lib/business";
+import { blockNumber, smsBlock } from "@/lib/sms-block";
 import { ValidationError } from "./clients";
 
 type Tx = Prisma.TransactionClient;
@@ -17,8 +18,9 @@ export async function currentSmsConsent(db: Db, phone: string, category: SmsCons
   return last?.status ?? "UNKNOWN";
 }
 
+/** The number-level text block (STOP reply, Twilio 21610, or staff do-not-contact). */
 export async function activeStop(db: Db, phone: string) {
-  return db.suppression.findFirst({ where: { channel: "SMS", addressNormalized: phone, liftedAt: null } });
+  return smsBlock(db, phone);
 }
 
 /**
@@ -26,14 +28,14 @@ export async function activeStop(db: Db, phone: string) {
  * opt-in for this category and no active opt-out.
  */
 export async function smsSendAllowed(phone: string, category: SmsConsentCategory): Promise<{ ok: boolean; reason?: string }> {
-  if (await activeStop(prisma, phone)) return { ok: false, reason: "Number has opted out (STOP)" };
+  if (await activeStop(prisma, phone)) return { ok: false, reason: "Texts blocked: the number replied STOP (reply START to resume)" };
   const status = await currentSmsConsent(prisma, phone, category);
   if (status !== "GRANTED") return { ok: false, reason: `No ${category === "SERVICE" ? "service" : "marketing"} text consent on file` };
   return { ok: true };
 }
 
 /** People (client primary phone or additional contacts) using this number. */
-async function peopleWithPhone(db: Db, phone: string) {
+export async function peopleWithPhone(db: Db, phone: string) {
   const [clients, contacts] = await Promise.all([
     db.client.findMany({ where: { phoneNormalized: phone }, select: { id: true } }),
     db.contact.findMany({ where: { phoneNormalized: phone }, select: { id: true, clientId: true } }),
@@ -41,7 +43,15 @@ async function peopleWithPhone(db: Db, phone: string) {
   return [...clients.map((c) => ({ clientId: c.id, contactId: null as string | null })), ...contacts.map((c) => ({ clientId: c.clientId, contactId: c.id as string | null }))];
 }
 
-type ChangeMeta = { source: string; sourcePage?: string; consentText?: string; submissionId?: string; inboundSmsId?: string; actorId?: string | null; note?: string };
+type ChangeMeta = { source: string; sourcePage?: string; consentText?: string; submissionId?: string; inboundSmsId?: string; actorId?: string | null; note?: string; label?: string };
+
+const SOURCE_LABEL: Record<string, string> = {
+  WEB_FORM: "Website SMS consent form",
+  STOP_KEYWORD: "Replied STOP",
+  START_KEYWORD: "Replied START",
+  CLIENT_PORTAL: "Client portal account settings",
+  APPOINTMENT_BOOKING: "Appointment booking (client portal)",
+};
 
 /**
  * Records a consent change in the phone ledger and mirrors it onto any
@@ -78,7 +88,7 @@ export async function applySmsConsent(tx: Tx, phone: string, category: SmsConsen
         kind: KIND[category],
         status,
         scope: meta.consentText ?? null,
-        source: meta.source === "WEB_FORM" ? "Website SMS consent form" : meta.source === "STOP_KEYWORD" ? "Replied STOP" : meta.source === "CLIENT_PORTAL" ? "Client portal account settings" : meta.source === "APPOINTMENT_BOOKING" ? "Appointment booking (client portal)" : "Staff",
+        source: meta.label ?? SOURCE_LABEL[meta.source] ?? "Staff",
         evidenceNote: [meta.submissionId && `Submission ${meta.submissionId}`, status === "GRANTED" && `Wording ${SMS_CONSENT_VERSION}`, meta.note].filter(Boolean).join(" · ") || null,
         recordedById: meta.actorId ?? null,
       },
@@ -179,18 +189,60 @@ export function detectKeyword(body: string, optOutType?: string | null): "STOP" 
   return null;
 }
 
-/** STOP: opt the number out of every text category and suppress it. */
+/**
+ * STOP: block the number for every sender (service, appointment, billing,
+ * security, marketing — carriers and Twilio enforce this too), withdraw every
+ * text category, and turn promotional texts off in Communication Preferences.
+ */
 export async function recordStop(phone: string, inboundSmsId: string) {
   await prisma.$transaction(async (tx) => {
+    const granted: string[] = [];
     for (const category of ["SERVICE", "MARKETING"] as const) {
       if ((await currentSmsConsent(tx, phone, category)) === "GRANTED") {
+        granted.push(category);
         await applySmsConsent(tx, phone, category, "REVOKED", { source: "STOP_KEYWORD", inboundSmsId });
       } else {
         await tx.smsConsentEvent.create({ data: { phoneNormalized: phone, category, status: "REVOKED", source: "STOP_KEYWORD", inboundSmsId } });
       }
     }
-    if (!(await activeStop(tx, phone))) {
-      await tx.suppression.create({ data: { channel: "SMS", addressNormalized: phone, reason: "STOP", note: `Inbound ${inboundSmsId}` } });
+    // The block remembers what was agreed right before it, so START can restore exactly that.
+    // A repeated STOP while already blocked keeps the original record.
+    await blockNumber(tx, phone, `Inbound ${inboundSmsId} · restore on START: ${granted.join(",")}`);
+    await prefHistory(tx, phone, false, "STOP_REPLY", "Replied STOP — all texts blocked");
+  });
+}
+
+/**
+ * START/UNSTOP: lift the STOP block and restore each text category the person
+ * had agreed to immediately before that STOP. A staff do-not-contact entry
+ * (MANUAL) is not lifted by a text reply.
+ */
+export async function recordStart(phone: string, inboundSmsId: string) {
+  await prisma.$transaction(async (tx) => {
+    const blocks = await tx.suppression.findMany({ where: { channel: "SMS", addressNormalized: phone, liftedAt: null, reason: "STOP" } });
+    if (!blocks.length) return;
+    for (const b of blocks) {
+      await tx.suppression.update({ where: { id: b.id }, data: { liftedAt: new Date(), note: `${b.note ?? ""} · lifted by START (inbound ${inboundSmsId})`.slice(0, 500) } });
     }
+    // Only a STOP reply revoked consent (a Twilio 21610 block leaves it as it was).
+    const restore = new Set(blocks.flatMap((b) => /restore on START: ([A-Z,]*)/.exec(b.note ?? "")?.[1].split(",") ?? []));
+    let marketing = false;
+    for (const category of ["SERVICE", "MARKETING"] as const) {
+      if (!restore.has(category) || (await currentSmsConsent(tx, phone, category)) === "GRANTED") continue;
+      const last = await tx.smsConsentEvent.findFirst({ where: { phoneNormalized: phone, category, status: "GRANTED" }, orderBy: { createdAt: "desc" } });
+      await applySmsConsent(tx, phone, category, "GRANTED", { source: "START_KEYWORD", inboundSmsId, consentText: last?.consentText ?? SMS_CONSENT_TEXT[category], note: "Restored by START reply" });
+      if (category === "MARKETING") marketing = true;
+    }
+    if (!marketing && (await currentSmsConsent(tx, phone, "MARKETING")) === "GRANTED") marketing = true;
+    await prefHistory(tx, phone, marketing, "START_REPLY", marketing ? "Replied START — texts resumed, promotional texts restored" : "Replied START — text block lifted");
+  });
+}
+
+/** Communication Preferences history row for everyone using this number. */
+async function prefHistory(tx: Tx, phone: string, subscribed: boolean, source: string, note: string) {
+  const people = await peopleWithPhone(tx, phone);
+  if (!people.length) return;
+  await tx.communicationPreferenceChange.createMany({
+    data: people.map((p) => ({ clientId: p.clientId, contactId: p.contactId, category: "PROMO_SMS" as const, subscribed, source, address: phone, note })),
   });
 }

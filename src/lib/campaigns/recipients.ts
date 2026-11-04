@@ -13,6 +13,8 @@ export type AudienceClient = {
   archivedAt: Date | null;
   taxReturnDerived: boolean;
   consentRecords: ConsentLike[];
+  // People (contact id, or null for the primary details) who turned off general business updates.
+  generalUpdatesOff?: (string | null)[];
   contacts: {
     id: string;
     name: string;
@@ -121,6 +123,7 @@ export function resolveRecipients(args: {
           personConsents: client.consentRecords.filter((r) => r.contactId === person.contactId),
           clientConsents,
           suppressions: address ? args.suppressions.get(`${channel}:${address}`) ?? [] : [],
+          generalUpdatesOff: client.generalUpdatesOff?.includes(person.contactId) ?? false,
           now: args.now,
         });
         if (reason) {

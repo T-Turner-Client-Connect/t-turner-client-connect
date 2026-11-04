@@ -26,6 +26,7 @@ import { ServicesTab } from "@/components/client-tabs/services";
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
 import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { can } from "@/lib/auth/permissions";
+import { CommPrefsStaffCard } from "@/components/client-tabs/comm-prefs-staff";
 
 export const metadata = { title: "Client" };
 
@@ -333,6 +334,8 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
               </details>
             )}
           </Card>
+
+          <CommPrefsStaffCard clientId={id} people={people} />
 
           <Card title="Activity">
             <ActionForm action={addNoteAction.bind(null, id)} className="mb-4 space-y-2" resetOnSuccess>

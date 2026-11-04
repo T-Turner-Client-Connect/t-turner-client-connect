@@ -8,7 +8,7 @@ import { chicagoLocalToUtc, chicagoParts, fmtChicago, utcToChicagoLocal } from "
 import { formatPhone, normalizePhone } from "@/lib/normalize";
 import { MEETING_TYPES, serviceNames, smsServiceText } from "@/lib/appointments/services";
 import { CLIENT_SMS_QUIET } from "./notifications";
-import { smsSendAllowed } from "./sms-consent";
+import { canSend } from "./comm-prefs";
 import { clientTextingOn, inWindow, nextWindowStart, staffAlertSettings } from "./staff-alerts";
 
 /**
@@ -190,8 +190,9 @@ async function gate(n: { audience: string; channel: string; kind: string; to: st
   if (n.audience === "CLIENT" && n.kind.startsWith("REMINDER") && (a.status !== "CONFIRMED" || a.version !== n.version)) return { skip: "The appointment changed before the reminder was due" };
   if (!n.to) return { skip: n.channel === "SMS" ? "No mobile number on the booking" : "No email address on the booking" };
   if (n.channel === "EMAIL") {
-    const stop = await prisma.suppression.findFirst({ where: { channel: "EMAIL", addressNormalized: n.to.toLowerCase(), liftedAt: null } });
-    if (stop) return { skip: "This email address is suppressed (unsubscribed or bounced)" };
+    // Appointment emails are essential: a marketing unsubscribe never stops them; a bounce or do-not-contact does.
+    const allowed = await canSend({ channel: "EMAIL", address: n.to, category: "ESSENTIAL" });
+    if (!allowed.ok) return { skip: allowed.reason };
     if (n.audience === "CLIENT" && n.kind.startsWith("REMINDER") && a.bookedByPortalUserId) {
       const pu = await prisma.portalUser.findUnique({ where: { id: a.bookedByPortalUserId }, select: { notifyByEmail: true } });
       if (pu && !pu.notifyByEmail) return { skip: "The client turned off email notices" };
@@ -207,8 +208,8 @@ async function gate(n: { audience: string; channel: string; kind: string; to: st
   }
   if (!a.smsOptIn) return { skip: "The client didn't agree to appointment texts for this booking" };
   if (!(await clientTextingOn())) return { skip: "Client texting is off (Settings); the email notice is unaffected" };
-  const allowed = await smsSendAllowed(n.to, "SERVICE");
-  if (!allowed.ok) return { skip: allowed.reason ?? "No service text consent on file" };
+  const allowed = await canSend({ channel: "SMS", address: n.to, category: "ESSENTIAL" });
+  if (!allowed.ok) return { skip: allowed.reason };
   if (!twilioConfigured()) return { skip: "Text provider (Twilio) not set up" };
   const later = nextClientTextWindow(now);
   if (later) return { defer: later };
@@ -257,7 +258,7 @@ export async function dispatchAppointmentNotices(now = new Date()) {
     let result: { ok: boolean; detail: string; sid?: string | null; skipped?: boolean };
     if (n.channel === "SMS") {
       const r = await sendSms(n.to!, n.body);
-      result = { ok: r.ok, detail: r.detail, sid: r.sid ?? null };
+      result = { ok: r.ok, detail: r.detail, sid: r.sid ?? null, skipped: r.blocked };
     } else {
       const html = n.audience === "CLIENT" ? clientEmail(n.kind, n.appointment).html : ownerMessages(n.kind, n.appointment, "").html;
       const r = await sendEmail({ to: n.to!, subject: n.subject ?? "Appointment update", text: n.body, html, idempotencyKey: n.idempotencyKey, tags: { category: "appointment" } });

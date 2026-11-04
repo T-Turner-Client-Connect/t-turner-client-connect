@@ -36,4 +36,5 @@ export const SMS_CONSENT_TEXT = {
 
 /** Reply sent for HELP (when the app answers keywords itself). */
 export const SMS_HELP_REPLY = `${BUSINESS.shortName} (${BUSINESS.platformName}): for help call ${BUSINESS.officePhoneDisplay}. Msg frequency varies. Msg & data rates may apply. Reply STOP to unsubscribe.`;
-export const SMS_STOP_REPLY = `${BUSINESS.shortName}: You are unsubscribed and will receive no further messages. To resume, opt in again at our SMS consent page.`;
+export const SMS_STOP_REPLY = `${BUSINESS.shortName}: You are unsubscribed and will receive no further text messages. Reply START to resume. Essential account notices will still come by email and in your portal.`;
+export const SMS_START_REPLY = `${BUSINESS.shortName}: You are resubscribed to the text messages you had agreed to. Msg frequency varies. Msg & data rates may apply. Reply STOP to unsubscribe, HELP for help.`;
