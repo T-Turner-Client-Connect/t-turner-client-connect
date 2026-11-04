@@ -347,7 +347,7 @@ at seven years of deletions, or about $0.47/month on B2 and $1.82/month on S3.
 ## 8. Coetha client notice (authorization)
 
 Coetha (the AI assistant) works on a client's financial information only after the client has
-authorized the current notice version (`COETHA_CONSENT_VERSION`, now `2026-11-v1`, wording in
+authorized the current notice version (`COETHA_CONSENT_VERSION`, now `2026-11-v2`, wording in
 `src/lib/services/coetha-consent.ts`, **draft for Tabitha's approval**). This is on top of the
 owner switch and the API key. Every Coetha run, draft and document-request generation refuses,
 with a staff-facing message, for a client without a current authorization. The daily runs skip

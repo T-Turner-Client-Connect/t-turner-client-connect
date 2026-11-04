@@ -5,7 +5,7 @@ import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
-import { runCoetha, runDailyCoetha } from "@/lib/services/coetha";
+import { runCoetha, runDailyCoetha, scrub } from "@/lib/services/coetha";
 import { runWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { COETHA_CONSENT_TEXT, COETHA_CONSENT_VERSION, coethaConsentState, portalDecideCoetha, portalMayDecideCoetha, staffRecordCoethaConsent } from "@/lib/services/coetha-consent";
@@ -61,13 +61,23 @@ async function setup() {
 }
 
 describe("Coetha client notice and authorization", () => {
-  it("the notice says who provides the assistant, what's removed, that Tabitha approves, and that the client can decline or withdraw", () => {
+  it("the screening before the AI service matches the notice: client identifiers removed, long numbers cut to four digits, merchant names kept", () => {
+    expect(scrub("HOME DEPOT #4410 card for jane@example.com 205-555-1234 ACCT 000123456789 SSN 123-45-6789 EIN 12-3456789")).toBe(
+      "HOME DEPOT #4410 card for [email] [phone] ACCT …6789 SSN [id] EIN [id]",
+    );
+  });
+
+  it("the notice says who provides the assistant, exactly what is and isn't removed, that Tabitha approves, and that the client can decline or withdraw", () => {
     const text = COETHA_CONSENT_TEXT.join(" ");
-    expect(COETHA_CONSENT_VERSION).toBe("2026-11-v1");
+    expect(COETHA_CONSENT_VERSION).toBe("2026-11-v2");
     expect(text).toMatch(/AI assistant, provided by Anthropic/);
     expect(text).toMatch(/categories/);
     expect(text).toMatch(/reconcile/);
-    expect(text).toMatch(/remove names, account numbers and other identifiers/);
+    // The notice must describe what the scrubber really does, not promise more.
+    expect(text).not.toMatch(/remove names, account numbers and other identifiers/);
+    expect(text).toMatch(/leave out your name and remove email addresses, phone numbers and Social Security or EIN-format numbers/);
+    expect(text).toMatch(/Long numbers, such as account numbers, are shortened to their last four digits/);
+    expect(text).toMatch(/Transaction amounts, dates and descriptions are sent, and descriptions may include merchant or payee names/);
     expect(text).toMatch(/Tabitha reviews every draft and approves it/);
     expect(text).toMatch(/decline, or withdraw .* at any time/);
     expect(text).toMatch(/without the assistant/);
@@ -107,7 +117,7 @@ describe("Coetha client notice and authorization", () => {
 
   it("an authorization of an older notice version must be renewed", async () => {
     const s = await setup();
-    await prisma.coethaConsent.create({ data: { clientId: s.vessel.id, status: "AUTHORIZED", version: "2026-10-draft", method: "PORTAL", portalUserId: s.vesselOwner.id } });
+    await prisma.coethaConsent.create({ data: { clientId: s.vessel.id, status: "AUTHORIZED", version: "2026-11-v1", method: "PORTAL", portalUserId: s.vesselOwner.id } });
     expect(await coethaConsentState(s.vessel.id)).toMatchObject({ ok: false, state: "OLD_VERSION" });
     await expect(runCoetha(s.daria, s.vessel.id, opts)).rejects.toThrow(/earlier version of the AI assistant notice/);
     await portalDecideCoetha(s.vesselOwner, s.vessel.id, "AUTHORIZED");

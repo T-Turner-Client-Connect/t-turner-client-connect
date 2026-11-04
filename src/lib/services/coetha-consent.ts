@@ -15,12 +15,12 @@ import { ValidationError } from "./clients";
  *
  * DRAFT wording for Tabitha's approval.
  */
-export const COETHA_CONSENT_VERSION = "2026-11-v1";
+export const COETHA_CONSENT_VERSION = "2026-11-v2";
 
 export const COETHA_CONSENT_TITLE = "Using an AI assistant on your books";
 export const COETHA_CONSENT_TEXT: string[] = [
   "T. Turner & Associates uses an AI assistant, provided by Anthropic, to help prepare your bookkeeping. It drafts categories for your transactions and helps reconcile your accounts, working from your bank and bookkeeping data.",
-  "Before anything is sent to the assistant, we remove names, account numbers and other identifiers.",
+  "Before anything is sent to the assistant, we leave out your name and remove email addresses, phone numbers and Social Security or EIN-format numbers. Long numbers, such as account numbers, are shortened to their last four digits. Transaction amounts, dates and descriptions are sent, and descriptions may include merchant or payee names.",
   "Nothing the assistant prepares is final. Tabitha reviews every draft and approves it before it becomes part of your books.",
   "You can decline, or withdraw your authorization at any time. If you do, we keep doing your books without the assistant, and nothing else about your service changes.",
 ];
