@@ -4547,6 +4547,8 @@ model PersonalTaxRequest {
 
   @@index([status])
   @@index([clientId])
+}
+
 // Square webhook deliveries, one row per Square event_id, so a replayed event is never applied twice.
 model SquareWebhookEvent {
   id          String    @id @default(cuid())
