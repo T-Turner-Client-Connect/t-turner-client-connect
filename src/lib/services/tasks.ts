@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
+import { recordStaffAppointmentCreated, staffCancelAppointment } from "./appointments";
 
 const taskSchema = z.object({
   title: z.string().trim().min(1, "Give the task a title.").max(200),
@@ -54,13 +55,27 @@ export async function addAppointment(actor: Actor, input: { clientId: string; ti
   if (!input.title.trim() || !input.startsAt) throw new ValidationError("Add a title, date and time.");
   if (!(await prisma.client.count({ where: { id: input.clientId } }))) throw new ValidationError("Choose a client.");
   const a = await prisma.appointment.create({
-    data: { clientId: input.clientId, title: input.title.trim().slice(0, 200), startsAt: input.startsAt, location: input.location?.trim() || null, staffId: input.staffId || actor.id, createdById: actor.id },
+    data: {
+      clientId: input.clientId,
+      title: input.title.trim().slice(0, 200),
+      startsAt: input.startsAt,
+      // Staff-added appointments are one hour unless changed on the appointment calendar.
+      endsAt: new Date(input.startsAt.getTime() + 60 * 60_000),
+      durationMin: 60,
+      status: "CONFIRMED",
+      source: "STAFF",
+      confirmedAt: new Date(),
+      location: input.location?.trim() || null,
+      staffId: input.staffId || actor.id,
+      createdById: actor.id,
+    },
   });
+  await recordStaffAppointmentCreated(a.id, actor);
   await audit(prisma, { actorId: actor.id, action: "appointment.created", entityType: "Appointment", entityId: a.id, clientId: input.clientId });
   return a;
 }
 
 export async function cancelAppointment(actor: Actor, appointmentId: string) {
-  const a = await prisma.appointment.update({ where: { id: appointmentId }, data: { cancelledAt: new Date() } });
+  const a = await staffCancelAppointment(actor, appointmentId);
   await audit(prisma, { actorId: actor.id, action: "appointment.cancelled", entityType: "Appointment", entityId: appointmentId, clientId: a.clientId });
 }

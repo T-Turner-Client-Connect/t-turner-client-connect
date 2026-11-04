@@ -6,7 +6,7 @@ import { ActionForm } from "@/components/action-form";
 
 type State = { error?: string; ok?: string; at?: number } | null;
 
-export const SUBJECTS = ["General question", "Tax preparation", "Documents I sent", "Billing & payments", "Appointment request", "Bookkeeping", "Other"];
+export const SUBJECTS = ["General question", "Tax preparation", "Documents I sent", "Billing & payments", "Bookkeeping", "Other"];
 
 /**
  * "Send a Message" from the approved Message Center design. A portal message goes through the

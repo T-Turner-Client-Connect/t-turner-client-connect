@@ -6,6 +6,7 @@ import { assertAdmin, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
 import { dispatchPendingNotifications, queuePortalNotification } from "./notifications";
 import { markDueManualTargets } from "./social";
+import { runAppointmentReminders } from "./appointment-notices";
 
 export const AUTOMATION_TEMPLATES: Record<AutomationKind, { name: string; offsetDays: number; repeatEveryDays: number | null; maxReminders: number; describe: string }> = {
   MISSING_DOCUMENT_REMINDER: {
@@ -71,7 +72,8 @@ async function targetsFor(kind: AutomationKind, now: Date): Promise<Target[]> {
     return reqs.map((r) => ({ key: `request:${r.id}`, clientId: r.clientId, anchor: r.dueAt!, kind: "DOCUMENT_REQUEST" }));
   }
   if (kind === "APPOINTMENT_REMINDER") {
-    const appts = await prisma.appointment.findMany({ where: { cancelledAt: null, startsAt: { gt: now }, client: { archivedAt: null } }, select: { id: true, clientId: true, startsAt: true } });
+    // Portal bookings get their own 24-hour and 2-hour reminders (appointment-notices.ts).
+    const appts = await prisma.appointment.findMany({ where: { cancelledAt: null, status: "CONFIRMED", source: { not: "PORTAL" }, startsAt: { gt: now }, client: { archivedAt: null } }, select: { id: true, clientId: true, startsAt: true } });
     return appts.map((a) => ({ key: `appointment:${a.id}`, clientId: a.clientId, anchor: a.startsAt, kind: "APPOINTMENT_REMINDER" }));
   }
   const contracts = await prisma.contractAssignment.findMany({ where: { status: "ASSIGNED", client: { archivedAt: null } }, select: { id: true, clientId: true, createdAt: true } });
@@ -114,6 +116,7 @@ export async function runAutomations(now = new Date()) {
     summary[rule.kind] = queued;
   }
   summary.SOCIAL_DUE_FOR_MANUAL_POSTING = await markDueManualTargets(now);
+  summary.APPOINTMENT_REMINDERS_QUEUED = (await runAppointmentReminders(now)).reminders;
   await dispatchPendingNotifications();
   return summary;
 }
