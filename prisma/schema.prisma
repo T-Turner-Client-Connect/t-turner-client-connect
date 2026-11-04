@@ -1460,19 +1460,212 @@ model ContractAssignment {
 // CALENDAR
 // ===========================================================================
 
+enum AppointmentStatus {
+  // Booked by a client, waiting for the owner's approval. Holds its slot.
+  REQUESTED
+  CONFIRMED
+  // The client asked for a new time; the old slot and the requested one are both held.
+  RESCHEDULE_REQUESTED
+  // The owner proposed a different time; the client accepts or declines it.
+  PROPOSED
+  DECLINED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+// One appointment for one client (the master Client record). Staff-created
+// appointments (Tasks & Calendar) and portal bookings share this table, so the
+// same row shows on the client's Upcoming Appointments, the staff and owner
+// calendars and the client profile.
 model Appointment {
-  id          String    @id @default(cuid())
-  clientId    String
-  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  title       String
-  startsAt    DateTime
-  location    String?
-  staffId     String?
-  cancelledAt DateTime?
-  createdById String
-  createdAt   DateTime  @default(now())
+  id                   String            @id @default(cuid())
+  clientId             String
+  client               Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  title                String
+  startsAt             DateTime
+  endsAt               DateTime?
+  durationMin          Int?
+  location             String?
+  staffId              String?
+  // Kept in step with status = CANCELLED for older callers.
+  cancelledAt          DateTime?
+  createdById          String
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @default(now()) @updatedAt
+  status               AppointmentStatus @default(CONFIRMED)
+  // "STAFF" (added by staff) or "PORTAL" (booked by the client).
+  source               String            @default("STAFF")
+  // Service keys from src/lib/appointments/services.ts.
+  services             String[]
+  // IN_OFFICE | PHONE | VIRTUAL
+  meetingType          String?
+  clientNotes          String?
+  // Never shown to the client.
+  staffNotes           String?
+  bookedByPortalUserId String?
+  // Snapshot of the Booking Information step (name, phone, email, new/existing,
+  // business name, text consent). Changes there never overwrite the master record.
+  bookingInfo          Json?
+  // Text consent given for this appointment (appointment/service texts only).
+  smsOptIn             Boolean           @default(false)
+  // Bumped whenever the time is confirmed again, so each confirmation is sent once per version.
+  version              Int               @default(1)
+  confirmedAt          DateTime?
+  // A requested (client) or proposed (owner) new time.
+  pendingStartsAt      DateTime?
+  pendingEndsAt        DateTime?
+  pendingStaffId       String?
+  pendingBy            String?
+
+  events  AppointmentEvent[]
+  notices AppointmentNotice[]
+  claims  AppointmentSlotClaim[]
 
   @@index([startsAt])
+  @@index([clientId, startsAt])
+  @@index([status, startsAt])
+}
+
+// Database guard against double-booking: every 15-minute block an active
+// appointment occupies is claimed once per staff member.
+model AppointmentSlotClaim {
+  id            String      @id @default(cuid())
+  appointmentId String
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  staffId       String
+  blockStart    DateTime
+  // CURRENT (the booked time) or PENDING (a requested / proposed new time).
+  kind          String      @default("CURRENT")
+
+  @@unique([staffId, blockStart])
+  @@index([appointmentId])
+}
+
+// Creation and modification history.
+model AppointmentEvent {
+  id            String      @id @default(cuid())
+  appointmentId String
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  action        String
+  // CLIENT | STAFF | SYSTEM
+  actorType     String
+  actorId       String?
+  fromStatus    String?
+  toStatus      String?
+  details       Json?
+  createdAt     DateTime    @default(now())
+
+  @@index([appointmentId, createdAt])
+}
+
+// Confirmation, reminder, cancellation and owner-alert history (sent / skipped / failed).
+model AppointmentNotice {
+  id             String      @id @default(cuid())
+  appointmentId  String
+  appointment    Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  // CLIENT or OWNER
+  audience       String
+  // EMAIL or SMS
+  channel        String
+  // REQUEST_RECEIVED | CONFIRMATION | RESCHEDULED | PROPOSED | DECLINED | CANCELLED | REMINDER_24H | REMINDER_2H | OWNER_* alerts
+  kind           String
+  version        Int
+  to             String?
+  subject        String?
+  body           String      @default("")
+  // PENDING | SENT | SKIPPED | FAILED
+  status         String      @default("PENDING")
+  statusDetail   String?
+  providerSid    String?     @unique
+  deliveryStatus String?
+  notBefore      DateTime    @default(now())
+  sentAt         DateTime?
+  // appointment + kind + version + audience + channel: never sent twice.
+  idempotencyKey String      @unique
+  createdAt      DateTime    @default(now())
+
+  @@index([status, notBefore])
+  @@index([appointmentId, createdAt])
+}
+
+// Office-wide booking rules (one row, id "default"). Owner only.
+model AppointmentSettings {
+  id                      String   @id @default("default")
+  // ISO weekdays 1 = Monday … 7 = Sunday; copied into each month when it is first opened.
+  weekdays                Int[]    @default([1, 2, 3, 4, 5])
+  openTime                String   @default("09:00")
+  closeTime               String   @default("17:00")
+  slotStepMin             Int      @default(30)
+  maxPerDay               Int      @default(6)
+  // Earliest a client may book, in hours from now.
+  minNoticeHours          Int      @default(24)
+  // Clients may cancel or reschedule online until this many hours before.
+  cancelCutoffHours       Int      @default(24)
+  rescheduleNeedsApproval Boolean  @default(true)
+  // Every new booking waits for the owner's approval (holding its slot).
+  requireApproval         Boolean  @default(true)
+  meetingTypes            String[] @default(["IN_OFFICE", "PHONE", "VIRTUAL"])
+  alertEmail              String   @default("info@tturnerassociates.com")
+  // E.164. Owner booking alerts; texts go out only through the staff-alert texting path when it is on.
+  alertPhone              String   @default("+12054201825")
+  remind24h               Boolean  @default(true)
+  remind2h                Boolean  @default(true)
+  updatedById             String?
+  updatedAt               DateTime @default(now()) @updatedAt
+}
+
+// A month opened by the owner. Nothing in a month is bookable until it is published.
+model AppointmentMonth {
+  id            String    @id @default(cuid())
+  year          Int
+  month         Int
+  weekdays      Int[]
+  openTime      String
+  closeTime     String
+  maxPerDay     Int
+  publishedAt   DateTime?
+  publishedById String?
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@unique([year, month])
+}
+
+// Blocks (holidays, vacation, personal days, closures, single dates or time
+// ranges) and special availability for specific dates.
+model AppointmentDateRule {
+  id          String   @id @default(cuid())
+  // "YYYY-MM-DD" in office (Central) time
+  date        String
+  // BLOCK or SPECIAL
+  kind        String
+  // HOLIDAY | VACATION | PERSONAL | CLOSURE | OTHER (blocks)
+  reason      String?
+  label       String?
+  // "HH:MM"; both null = the whole day
+  startTime   String?
+  endTime     String?
+  // null = the whole office; otherwise one staff member
+  staffId     String?
+  // SPECIAL only: the day's own appointment limit
+  maxPerDay   Int?
+  createdById String
+  createdAt   DateTime @default(now())
+
+  @@index([date])
+}
+
+// Staff who take client appointments and when. With none set up, the owner takes every booking.
+model AppointmentStaff {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  active    Boolean  @default(true)
+  weekdays  Int[]    @default([1, 2, 3, 4, 5])
+  // null = office hours
+  startTime String?
+  endTime   String?
+  sortOrder Int      @default(0)
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 // ===========================================================================

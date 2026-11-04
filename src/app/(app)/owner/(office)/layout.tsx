@@ -8,7 +8,7 @@ export const metadata = { title: "Owner's Office" };
 export default async function OwnerLayout({ children }: { children: React.ReactNode }) {
   const { access } = await requireOwner("billing");
   const tabs = [
-    ...(access.scope === "FULL" ? [{ href: "/owner", label: "Overview" }] : []),
+    ...(access.scope === "FULL" ? [{ href: "/owner", label: "Overview" }, { href: "/owner/appointments", label: "Appointments" }] : []),
     { href: "/owner/invoices", label: "Quotes & invoices" },
     { href: "/owner/plans", label: "Payment plans" },
     ...(access.scope === "FULL" ? [{ href: "/owner/expenses", label: "Expenses" }, { href: "/owner/settings", label: "Billing settings & access" }] : []),
