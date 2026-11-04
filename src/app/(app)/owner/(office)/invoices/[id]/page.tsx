@@ -6,7 +6,7 @@ import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader } from "@/co
 import { FirmInvoiceDocument } from "@/components/billing/firm-invoice-document";
 import { issueInvoiceAction, offerQuoteAction, recordPaymentAction, voidInvoiceAction, withdrawQuoteAction } from "@/app/actions/owner";
 import { adjustInvoiceAction, approveInvoiceAction, returnInvoiceAction, submitInvoiceAction } from "@/app/actions/firm-invoices";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { breakdownOf, todayYmd, ymd } from "@/lib/services/owner-billing";
 import { firmInvoiceDoc, invoiceHistory } from "@/lib/services/firm-invoices";
 import { collectedCents, money, scheduleStatus, type ScheduleItem } from "@/lib/billing/pricing";
@@ -16,8 +16,9 @@ import { fmtDateTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
 export default async function InvoicePage({ params }: { params: Promise<{ id: string }> }) {
-  const { actor, access } = await requireOwner("billing");
-  const isOwner = access.scope === "FULL";
+  const { actor, access } = await requireOffice("billing");
+  // Each control shows only to staff holding that permission; the server re-checks every action.
+  const may = { pay: access.can("billing", "record_payment"), refund: access.can("billing", "refund"), adjust: access.can("billing", "adjust"), send: access.can("billing", "send"), edit: access.can("billing", "edit"), void: access.can("billing", "void") };
   const { id } = await params;
   const inv = await prisma.invoice.findUnique({
     where: { id },
@@ -61,7 +62,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
       <PageHeader
         title={`${inv.number} · ${inv.title}`}
         subtitle={<><Link className="underline" href={`/clients/${inv.client.id}?tab=invoices`}>{inv.client.displayName}</Link> · <Badge tone={status.badge}>{status.label}</Badge></>}
-        actions={editable ? <LinkButton variant="secondary" href={`/owner/invoices/${inv.id}/edit`}>Edit draft</LinkButton> : undefined}
+        actions={editable && may.edit ? <LinkButton variant="secondary" href={`/owner/invoices/${inv.id}/edit`}>Edit draft</LinkButton> : undefined}
       />
       {inv.state === "PENDING_APPROVAL" && (
         <div className="mb-4"><Notice tone="warn" title="Waiting for the owner's approval">Submitted by {nameOf(inv.submittedById)}{inv.submittedAt ? ` on ${fmtDateTime(inv.submittedAt)}` : ""}. It isn&apos;t visible to the client until it&apos;s approved and sent.</Notice></div>
@@ -145,10 +146,10 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 ))}
               </ul>
             )}
-            {open && isOwner && (balance ?? 0) > 0 && (
+            {open && (may.pay || may.refund) && (balance ?? 0) > 0 && (
               <ActionForm action={recordPaymentAction.bind(null, inv.id)} className="mt-4 grid gap-2 sm:grid-cols-3" resetOnSuccess idempotent>
                 <p className="text-sm font-semibold text-navy-900 sm:col-span-3">Record an offline payment · balance {money(balance ?? 0)}</p>
-                <Field label="Type"><select className="input" name="kind"><option value="PAYMENT">Payment received</option><option value="REFUND">Refund given</option></select></Field>
+                <Field label="Type"><select className="input" name="kind">{may.pay && <option value="PAYMENT">Payment received</option>}{may.refund && <option value="REFUND">Refund given</option>}</select></Field>
                 <Field label="Result"><select className="input" name="status"><option value="SUCCEEDED">Succeeded</option><option value="FAILED">Failed / bounced</option></select></Field>
                 <Field label="Amount"><input className="input" name="amount" inputMode="decimal" required placeholder="0.00" /></Field>
                 <Field label="Payment date"><input className="input" type="date" name="receivedOn" defaultValue={today} max={today} required /></Field>
@@ -158,7 +159,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 <div className="flex items-end"><Button type="submit">Record payment</Button></div>
               </ActionForm>
             )}
-            {open && isOwner && (balance ?? 0) > 0 && (
+            {open && may.adjust && (balance ?? 0) > 0 && (
               <details className="mt-3 rounded-lg border border-ivory-200 p-3 text-sm">
                 <summary className="cursor-pointer font-semibold text-navy-900">Apply an adjustment (credit)…</summary>
                 <ActionForm action={adjustInvoiceAction.bind(null, inv.id)} className="mt-2 grid gap-2 sm:grid-cols-3" resetOnSuccess idempotent>
@@ -170,7 +171,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 <p className="mt-2 text-xs text-slate-600">Reduces the balance without counting as cash collected.</p>
               </details>
             )}
-            {open && !isOwner && <p className="mt-3 text-xs text-slate-600">Only the owner records and reconciles payments.</p>}
+            {open && !may.pay && <p className="mt-3 text-xs text-slate-600">Recording payments needs the owner&apos;s permission (Billing → Record payments).</p>}
           </Card>
 
           <Card title="History">
@@ -188,7 +189,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
         <div className="space-y-4">
           <Card title="Actions">
             <div className="space-y-2">
-              {(inv.state === "DRAFT" || inv.state === "PENDING_APPROVAL") && isOwner && (
+              {(inv.state === "DRAFT" || inv.state === "PENDING_APPROVAL") && may.send && (
                 <>
                   {(isFirm || inv.allowFull) && (
                     <ActionForm action={(isFirm ? approveInvoiceAction : issueInvoiceAction).bind(null, inv.id)} confirm="Approve and send this invoice? It will appear in the client's portal and the client is notified that a new invoice is available.">
@@ -202,26 +203,26 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                   )}
                 </>
               )}
-              {inv.state === "DRAFT" && !isOwner && (
+              {inv.state === "DRAFT" && !may.send && may.edit && (
                 <ActionForm action={submitInvoiceAction.bind(null, inv.id)}>
                   <Button type="submit" className="w-full" data-testid="submit-approval">Submit for owner approval</Button>
                 </ActionForm>
               )}
-              {inv.state === "PENDING_APPROVAL" && (isOwner || inv.submittedById === actor.id) && (
+              {inv.state === "PENDING_APPROVAL" && may.edit && (may.send || inv.submittedById === actor.id) && (
                 <details className="text-sm">
-                  <summary className="cursor-pointer underline">{isOwner ? "Return to draft for changes…" : "Take back to draft…"}</summary>
+                  <summary className="cursor-pointer underline">{may.send ? "Return to draft for changes…" : "Take back to draft…"}</summary>
                   <ActionForm action={returnInvoiceAction.bind(null, inv.id)} className="mt-2 space-y-2">
                     <Field label="Note (optional)"><input className="input" name="note" maxLength={300} /></Field>
                     <Button type="submit" variant="secondary">Return to draft</Button>
                   </ActionForm>
                 </details>
               )}
-              {inv.state === "OFFERED" && isOwner && (
+              {inv.state === "OFFERED" && may.send && (
                 <ActionForm action={withdrawQuoteAction.bind(null, inv.id)} confirm="Withdraw this quote? It disappears from the client's portal and returns to draft.">
                   <Button type="submit" variant="secondary" className="w-full">Withdraw quote</Button>
                 </ActionForm>
               )}
-              {inv.state !== "VOID" && isOwner && (
+              {inv.state !== "VOID" && may.void && (
                 <details className="text-sm">
                   <summary className="cursor-pointer underline">Void…</summary>
                   <ActionForm action={voidInvoiceAction.bind(null, inv.id)} className="mt-2 space-y-2">
@@ -232,7 +233,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
               )}
               {inv.state === "VOID" && <p className="text-sm text-slate-700">Voided {inv.voidedAt ? fmtDateTime(inv.voidedAt) : ""}{inv.voidReason ? ` — ${inv.voidReason}` : ""}.</p>}
             </div>
-            <p className="mt-3 text-xs text-slate-600">{isOwner ? "No automatic charges: payments are recorded here when money is received. Nothing is created or charged in Square from this page." : "You can prepare and submit drafts. The owner approves, sends, voids and records payments."}</p>
+            <p className="mt-3 text-xs text-slate-600">{may.send ? "No automatic charges: payments are recorded here when money is received. Nothing is created or charged in Square from this page." : "You can prepare and submit drafts. Someone the owner allows to send (or the owner) approves and sends."}</p>
           </Card>
           <Card title="Record">
             <dl className="space-y-1 text-sm">

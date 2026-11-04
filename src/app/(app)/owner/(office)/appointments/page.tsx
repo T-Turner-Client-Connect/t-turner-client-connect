@@ -5,7 +5,7 @@ import { ActionForm } from "@/components/action-form";
 import { Button, Card } from "@/components/ui";
 import { CalendarViews, viewRange, type View } from "@/components/appointments/calendar-views";
 import { AppointmentDetail } from "@/components/appointments/appointment-detail";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { prisma } from "@/lib/prisma";
 import { appointmentSettings, calendarAppointments, officeDate, pendingRequests } from "@/lib/services/appointments";
 import { atOffice, dateLabel, monthDates, timeLabel } from "@/lib/appointments/availability";
@@ -34,7 +34,7 @@ function DayBoxes({ selected }: { selected: number[] }) {
 }
 
 export default async function OwnerAppointmentsPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
-  await requireOwner("full");
+  await requireOffice("appointments");
   const sp = await searchParams;
   const section = (["calendar", "requests", "availability", "settings"] as const).find((s) => s === sp.section) ?? "calendar";
   const today = officeDate(new Date());

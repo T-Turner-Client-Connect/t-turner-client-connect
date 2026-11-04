@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Field, PageHeader } from "@/components/ui";
 import { approvePlanAction, declinePlanAction, methodChangeDecisionAction, planPaymentAction, waiveFeeAction } from "@/app/actions/installment-plans";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { chargeAllowed, lateFeePolicy, PAY_METHODS, PLAN_STATUS, planProgress, planQueue, type PayMethod, type PlanStatus } from "@/lib/services/installment-plans";
 import { usd } from "@/lib/billing/payment-fees";
 import { fmtDateTime } from "@/lib/format";
@@ -14,9 +14,11 @@ const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/
 
 /** Owner's Office → Payment plans: approvals, progress and payment-method changes. */
 export default async function PlansPage() {
-  const { actor, access } = await requireOwner("billing");
+  const { actor, access } = await requireOffice("billing");
   const [{ plans, changes }, policy] = await Promise.all([planQueue(actor), lateFeePolicy()]);
-  const full = access.scope === "FULL";
+  const full = access.can("billing", "approve");
+  const mayPay = access.can("billing", "record_payment");
+  const mayWaive = access.can("billing", "adjust");
   const waiting = plans.filter((p) => p.status === "PENDING_APPROVAL");
   return (
     <>
@@ -37,7 +39,7 @@ export default async function PlansPage() {
                     <ActionForm action={approvePlanAction.bind(null, p.id)}><Button type="submit" variant="gold">Approve plan</Button></ActionForm>
                     <ActionForm action={declinePlanAction.bind(null, p.id)} className="flex gap-1"><input className="input" name="reason" placeholder="Reason (shown to client)" required /><Button type="submit" variant="ghost">Decline</Button></ActionForm>
                   </div>
-                ) : <p className="mt-1 text-xs text-slate-600">Only the owner can approve.</p>}
+                ) : <p className="mt-1 text-xs text-slate-600">Approving plans needs the owner&apos;s permission (Billing → Approve).</p>}
               </li>
             ))}
           </ul>
@@ -73,12 +75,12 @@ export default async function PlansPage() {
                   <p className="text-xs text-slate-600">{gate.ok ? "Automatic charges allowed." : `No automatic charges: ${gate.reason}`}</p>
                   {p.approvedAt && prog.balanceCents > 0 && (
                     <div className="mt-1 flex flex-wrap gap-3">
-                      <ActionForm action={planPaymentAction.bind(null, p.id)} className="flex flex-wrap items-end gap-1" resetOnSuccess>
+                      {mayPay && <ActionForm action={planPaymentAction.bind(null, p.id)} className="flex flex-wrap items-end gap-1" resetOnSuccess>
                         <Field label="Record a verified payment"><input className="input w-28" name="amount" inputMode="decimal" placeholder="$0.00" required /></Field>
                         <input className="input w-44" name="note" placeholder="How it was verified" aria-label="Note" />
                         <Button type="submit" variant="secondary">Record</Button>
-                      </ActionForm>
-                      {full && prog.lateFeesCents > 0 && (
+                      </ActionForm>}
+                      {mayWaive && prog.lateFeesCents > 0 && (
                         <ActionForm action={waiveFeeAction.bind(null, p.clientId, p.id)} className="flex items-end gap-1"><input className="input w-24" name="amount" placeholder="$0.00" required aria-label="Waive amount" /><input className="input w-40" name="reason" placeholder="Reason" required aria-label="Reason" /><Button type="submit" variant="ghost">Waive</Button></ActionForm>
                       )}
                     </div>

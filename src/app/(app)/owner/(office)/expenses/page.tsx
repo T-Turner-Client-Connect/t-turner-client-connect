@@ -2,14 +2,14 @@ import Link from "next/link";
 import { ActionForm } from "@/components/action-form";
 import { Button, Card, Field, PageHeader } from "@/components/ui";
 import { createExpenseAction, deleteExpenseAction } from "@/app/actions/owner";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { EXPENSE_CATEGORIES, listExpenses } from "@/lib/services/owner-expenses";
 import { todayYmd, ymd } from "@/lib/services/owner-billing";
 import { money } from "@/lib/billing/pricing";
 import { METHOD_LABELS } from "@/lib/billing/labels";
 
 export default async function ExpensesPage({ searchParams }: { searchParams: Promise<{ year?: string; month?: string; category?: string }> }) {
-  const { actor } = await requireOwner("full");
+  const { actor, access } = await requireOffice("revenue");
   const sp = await searchParams;
   const today = todayYmd();
   const year = Number(sp.year) || Number(today.slice(0, 4));
@@ -23,7 +23,7 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
     <>
       <PageHeader title="Business expenses" subtitle="Private to you. Receipts are kept in a separate owner-only store, never in client documents." />
       <div className="grid gap-4 lg:grid-cols-[2fr_3fr]">
-        <Card title="Add an expense">
+        {access.can("revenue", "create") ? <Card title="Add an expense">
           <ActionForm action={createExpenseAction} className="grid gap-3" resetOnSuccess idempotent>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Date"><input className="input" type="date" name="spentOn" defaultValue={today} required /></Field>
@@ -38,7 +38,7 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
             <Field label="Receipt (PDF, PNG or JPG, optional)"><input className="input" type="file" name="receipt" accept="application/pdf,image/png,image/jpeg" /></Field>
             <Button type="submit">Save expense</Button>
           </ActionForm>
-        </Card>
+        </Card> : <div />}
         <Card
           title={`${month ? new Date(Date.UTC(year, month - 1, 1)).toLocaleString("en-US", { month: "long", timeZone: "UTC" }) : "All of"} ${year}`}
           actions={<Link className="text-sm underline" href={exportHref}>Export CSV</Link>}
@@ -61,7 +61,7 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
                 <span className="flex items-center gap-2">
                   {e.receiptKey && <a className="underline" href={`/api/owner/receipts/${e.id}`}>Receipt</a>}
                   <strong>{money(e.amountCents)}</strong>
-                  <ActionForm action={deleteExpenseAction.bind(null, e.id)} confirm="Remove this expense? It stays in your private history but no longer counts."><Button variant="ghost">Remove</Button></ActionForm>
+                  {access.can("revenue", "edit") && <ActionForm action={deleteExpenseAction.bind(null, e.id)} confirm="Remove this expense? It stays in your private history but no longer counts."><Button variant="ghost">Remove</Button></ActionForm>}
                 </span>
               </li>
             ))}

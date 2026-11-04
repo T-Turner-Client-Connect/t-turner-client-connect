@@ -9,7 +9,7 @@ import { MONTHS, PERIOD_LABELS } from "@/lib/services/bookkeeping";
 import { filingTitle } from "@/lib/tax/normalize";
 import { fmtDate, fmtDateTime, fromNow } from "@/lib/format";
 import { integrationStatus } from "@/lib/integrations";
-import { ownerAccessFor } from "@/lib/auth/owner";
+import { can } from "@/lib/auth/permissions";
 import { receivables } from "@/lib/services/owner-billing";
 import { money } from "@/lib/billing/pricing";
 
@@ -51,8 +51,7 @@ export default async function Dashboard() {
     prisma.activationRequest.count({ where: { status: { in: ["NEEDS_STAFF", "EMAIL_FAILED"] } } }),
     selfServiceAvailable(),
   ]);
-  const ownerAccess = await ownerAccessFor(user.id);
-  const owed = ownerAccess?.scope === "FULL" ? await receivables(user) : null;
+  const owed = (await can(user, "receivables", "view")) ? await receivables(user) : null;
 
   return (
     <>

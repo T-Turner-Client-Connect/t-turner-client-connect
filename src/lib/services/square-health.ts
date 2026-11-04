@@ -22,7 +22,7 @@ const PERMISSION: Record<string, string> = {
 };
 
 export async function runSquareHealthCheck(actor: Actor) {
-  if (!(await canManageBilling(actor))) throw new ForbiddenError("Only Tabitha (or staff she allows) can check the Square connection.");
+  if (!(await canManageBilling(actor, "view"))) throw new ForbiddenError("Only Tabitha (or staff she allows) can check the Square connection.");
   const s = squareSettings();
   const steps: HealthStep[] = [];
   const push = (st: HealthStep) => (steps.push(st), st);

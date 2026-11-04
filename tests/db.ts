@@ -25,3 +25,14 @@ export async function managed(...clientIds: string[]) {
   await prisma.client.updateMany({ where: { id: { in: clientIds } }, data: { businessAccess: "ACTIVE" } });
   await prisma.portalAccess.updateMany({ where: { clientId: { in: clientIds } }, data: { canViewBookkeeping: true } });
 }
+
+/**
+ * Test fixture: Staff Access & Permissions grants written directly (as if Tabitha had saved them
+ * on the screen). Granting through the screen itself is tested in staff-permissions.test.ts.
+ */
+export async function grantPerms(userId: string, keys: string[]) {
+  await prisma.staffPermission.createMany({ data: keys.map((k) => ({ userId, area: k.split(".")[0], action: k.split(".")[1] })), skipDuplicates: true });
+}
+
+/** What "Billing only" Owner's Office access became (see the 20261106000000 migration). */
+export const OLD_BILLING_ONLY = ["billing.view", "billing.create", "billing.edit", "billing.record_payment", "receivables.reconcile"];

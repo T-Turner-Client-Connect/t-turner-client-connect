@@ -1,7 +1,9 @@
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
-import { grantOwnerAction, revokeOwnerAction, saveBillingSettingsAction } from "@/app/actions/owner";
-import { requireOwner } from "@/lib/auth/owner";
+import { redirect } from "next/navigation";
+import { saveBillingSettingsAction } from "@/app/actions/owner";
+import { billingSettingsVisible, requireOffice } from "@/lib/auth/owner";
+import { SettingsNav } from "@/components/owner/settings-nav";
 import { billingSettings } from "@/lib/services/owner-billing";
 import { fmtDateTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -24,18 +26,21 @@ function AmountPicker({ name, type, value, label, hint }: { name: string; type: 
 }
 
 export default async function OwnerSettingsPage() {
-  const { actor, access } = await requireOwner("full");
-  const [s, staff, grants, log] = await Promise.all([
+  const { access } = await requireOffice();
+  // Billing settings: Billing → Change billing settings and/or Square → Change integrations.
+  if (!billingSettingsVisible(access)) redirect("/owner/settings/staff-access");
+  const settings = access.can("billing", "settings");
+  const integrations = access.can("square", "integrations");
+  const [s, log] = await Promise.all([
     billingSettings(),
-    prisma.user.findMany({ where: { active: true, id: { not: actor.id } }, orderBy: { name: "asc" } }),
-    prisma.ownerAccess.findMany({ where: { isPrimary: false }, include: { user: { select: { name: true, email: true } } }, orderBy: { grantedAt: "desc" } }),
-    prisma.ownerAuditLog.findMany({ orderBy: { createdAt: "desc" }, take: 40 }),
+    access.isOwner ? prisma.ownerAuditLog.findMany({ orderBy: { createdAt: "desc" }, take: 40 }) : [],
   ]);
   return (
     <>
-      <PageHeader title="Billing settings & access" />
+      <PageHeader title="Settings" />
+      <SettingsNav access={access} current="billing" />
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="Quote and payment-plan defaults">
+        {settings ? <Card title="Quote and payment-plan defaults">
           <ActionForm action={saveBillingSettingsAction} className="space-y-3">
             <input type="hidden" name="planFeeType" value="NONE" />
             <p className="rounded-lg bg-ivory-50 p-3 text-sm" data-testid="no-plan-fee">No payment-plan fee: choosing a payment plan never adds a fee. Card processing fees are set separately under Payment-method fees.</p>
@@ -49,7 +54,7 @@ export default async function OwnerSettingsPage() {
             <Field label="Default payment terms"><textarea className="input" name="defaultPaymentTerms" rows={3} defaultValue={s.defaultPaymentTerms ?? ""} /></Field>
             <Button type="submit">Save settings</Button>
           </ActionForm>
-        </Card>
+        </Card> : <div />}
 
         <div className="space-y-4">
           <Card title="Invoice payment options">
@@ -62,17 +67,21 @@ export default async function OwnerSettingsPage() {
                   When on, a client sees a &ldquo;Pay securely with Square&rdquo; button on an invoice that offers Square and has a link from the firm&apos;s own Square account attached. Client Connect never creates or sends Square invoices, never charges a card and never stores card details.
                   {!squareSettings().configured && " Square isn't configured on this site, so no link is shown even when this is on."}
                 </p>
+{integrations && (
                 <ActionForm action={squareLinksAction.bind(null, !s.squareLinksEnabledAt)} className="mt-2" confirm={s.squareLinksEnabledAt ? undefined : "Turn on Square payment links? Clients will see the Square link on invoices that offer Square."}>
                   <Button type="submit" variant="secondary">{s.squareLinksEnabledAt ? "Turn off Square links" : "Turn on Square links"}</Button>
                 </ActionForm>
+                )}
               </div>
               <div className="border-t border-ivory-200 pt-4">
                 <p className="font-semibold text-navy-900">Republic Bank Refund Transfer — confirmed fees</p>
                 <p className="mt-1 text-slate-700">Shown to clients exactly as written, with Republic Bank&apos;s disclosures. Leave empty until the fees are confirmed: no amount is shown or assumed.</p>
+{settings ? (
                 <ActionForm action={refundFeeNoteAction} className="mt-2 space-y-2">
                   <textarea className="input" name="note" rows={2} maxLength={1000} defaultValue={s.refundTransferFeeNote ?? ""} aria-label="Confirmed Refund Transfer fees" />
                   <Button type="submit" variant="secondary">Save</Button>
                 </ActionForm>
+                ) : <p className="mt-2 text-sm">{s.refundTransferFeeNote || "None confirmed."}</p>}
               </div>
               <p className="text-xs text-slate-600">Which methods can be offered on invoices is set under &ldquo;Payment instructions clients see&rdquo; below: only methods turned on there can be chosen.</p>
             </div>
@@ -84,35 +93,19 @@ export default async function OwnerSettingsPage() {
               provider-confirmed failures/refunds need a provider account (for example Stripe or Square) — see docs/BILLING.md.
             </p>
           </Card>
-          {access.isPrimary && (
-            <Card title="Who can open the Owner's Office">
-              <ul className="mb-3 divide-y divide-navy-100 text-sm">
-                <li className="py-2"><strong>You</strong> — full access (owner)</li>
-                {grants.map((g) => (
-                  <li key={g.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                    <span>{g.user.name} ({g.user.email}) · {g.scope === "FULL" ? "Full access" : "Billing only"} {g.revokedAt && <Badge tone="gray">Removed</Badge>}</span>
-                    {!g.revokedAt && <ActionForm action={revokeOwnerAction.bind(null, g.userId)} confirm={`Remove ${g.user.name}'s access?`}><Button variant="ghost">Remove</Button></ActionForm>}
-                  </li>
-                ))}
-              </ul>
-              <ActionForm action={grantOwnerAction} className="grid gap-2" resetOnSuccess>
-                <Field label="Staff member"><select className="input" name="userId" required><option value="">Choose…</option>{staff.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}</select></Field>
-                <Field label="Access"><select className="input" name="scope"><option value="BILLING">Billing only — quotes, invoices, payments</option><option value="FULL">Full — including expenses and totals</option></select></Field>
-                <Field label="Confirm your password"><input className="input" type="password" name="password" required autoComplete="current-password" /></Field>
-                <Button type="submit" variant="secondary">Grant access</Button>
-              </ActionForm>
-            </Card>
-          )}
-          <Card title="Private activity log">
+          <Card title="Who can open the Owner's Office">
+            <p className="text-sm text-slate-700">Each staff member&apos;s access is set area by area under <a className="font-semibold underline" href="/owner/settings/staff-access">Staff Access &amp; Permissions</a>. You remain the owner with full access, permanently.</p>
+          </Card>
+          {access.isOwner && <Card title="Private activity log">
             <ul className="max-h-80 divide-y divide-navy-100 overflow-y-auto text-xs">
               {log.map((l) => <li key={l.id} className="flex justify-between gap-2 py-1.5"><code>{l.action}</code><span className="text-slate-600">{fmtDateTime(l.createdAt)}</span></li>)}
             </ul>
-          </Card>
-          <Notice tone="info">Only you see this log. Owner activity is never written to the shared staff audit log.</Notice>
+          </Card>}
+          {access.isOwner && <Notice tone="info">Only you see this log. Owner activity is never written to the shared staff audit log.</Notice>}
         </div>
       </div>
-      <div className="mt-4"><FeeSettingsCard /></div>
-      <PlanSettingsCards />
+      {settings && <div className="mt-4"><FeeSettingsCard /></div>}
+      <PlanSettingsCards instructions={integrations} lateFees={settings} />
     </>
   );
 }

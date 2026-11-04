@@ -2,7 +2,7 @@ import "server-only";
 import type { AmountType, Invoice, InvoiceLine, Installment, Payment, PaymentMethod, PaymentOption, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
-import { assertOwner, ownerAudit } from "@/lib/auth/owner";
+import { assertOffice, ownerAudit } from "@/lib/auth/owner";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import {
@@ -63,7 +63,7 @@ export type SettingsInput = {
 
 /** Fee and default settings: primary owner (full access) only. */
 export async function updateBillingSettings(actor: Actor, input: SettingsInput) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "settings");
   // The payment-plan fee was removed by the owner's decision: plans never add a fee.
   if (input.planFeeType !== "NONE") throw new ValidationError("Payment plans don't carry a fee.");
   if (input.maxInstallments < 2 || input.maxInstallments > 24) throw new ValidationError("Allow between 2 and 24 installments.");
@@ -232,7 +232,7 @@ function asPricing(input: QuoteInput, fee: { type: AmountType; value: number }):
 }
 
 export async function createQuote(actor: Actor, input: QuoteInput) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "create");
   if (!input.title.trim()) throw new ValidationError("Give the quote a title (e.g. 2026 tax preparation).");
   if (!(await prisma.client.count({ where: { id: input.clientId, archivedAt: null } }))) throw new ValidationError("Choose a client.");
   const fee = await planFeeFor(actor, input.planFeeOverride);
@@ -260,7 +260,7 @@ export async function createQuote(actor: Actor, input: QuoteInput) {
 
 /** Drafts only — once offered or issued, the terms are fixed. */
 export async function updateDraft(actor: Actor, invoiceId: string, input: QuoteInput) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "edit");
   const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
   if (!inv) throw new ValidationError("Not found.");
   if (inv.state !== "DRAFT") throw new ValidationError("Only drafts can be edited. Withdraw the quote first.");
@@ -307,7 +307,7 @@ async function notifyBilling(clientId: string, kind: "QUOTE_READY" | "NEW_INVOIC
 
 /** Publishes a quote to the client's portal for acceptance. */
 export async function offerQuote(actor: Actor, invoiceId: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "send");
   const inv = await loadFull(invoiceId);
   if (inv.state !== "DRAFT" && inv.state !== "PENDING_APPROVAL") throw new ValidationError("This quote was already sent.");
   const s = await billingSettings();
@@ -321,7 +321,7 @@ export async function offerQuote(actor: Actor, invoiceId: string) {
 
 /** Takes an offered quote back to draft (only before the client accepts). */
 export async function withdrawQuote(actor: Actor, invoiceId: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "send");
   const res = await prisma.invoice.updateMany({ where: { id: invoiceId, state: "OFFERED" }, data: { state: "DRAFT", publishedAt: null } });
   if (res.count !== 1) throw new ValidationError("Only an offered quote that hasn't been accepted can be withdrawn.");
   await ownerAudit(actor.id, "billing.quote_withdrawn", "Invoice", invoiceId);
@@ -342,7 +342,7 @@ async function freeze(tx: Prisma.TransactionClient, inv: FullInvoice & { client:
  * notification settings). Drafts and invoices pending approval only; owner (full access) only.
  */
 export async function issueInvoice(actor: Actor, invoiceId: string, opts: { checkOptions?: (inv: Invoice) => Promise<void> } = {}) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "send");
   const inv = await loadFull(invoiceId);
   if (inv.state !== "DRAFT" && inv.state !== "PENDING_APPROVAL") throw new ValidationError("Only drafts and invoices waiting for approval can be sent.");
   if (!inv.allowFull) throw new ValidationError("Issuing directly bills the full amount. For a payment plan, send it as a quote so the client can choose and accept.");
@@ -360,7 +360,7 @@ export async function issueInvoice(actor: Actor, invoiceId: string, opts: { chec
 }
 
 export async function voidInvoice(actor: Actor, invoiceId: string, reason: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "void");
   if (!reason.trim()) throw new ValidationError("Give a reason for voiding.");
   const inv = await loadFull(invoiceId);
   if (cashCollectedCents(inv.payments) !== 0) throw new ValidationError("Refund or reverse the recorded payments before voiding.");
@@ -480,7 +480,7 @@ export type PaymentInput = {
  * reference already recorded for this client, or the same amount, date and method on this invoice.
  */
 export async function recordPayment(actor: Actor, input: PaymentInput) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", input.kind === "REFUND" ? "refund" : input.kind === "CREDIT" ? "adjust" : "record_payment");
   if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) throw new ValidationError("Enter an amount greater than $0.");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.receivedOn) || input.receivedOn > todayYmd()) throw new ValidationError("Enter the date the money moved (not in the future).");
   if (input.kind === "CREDIT" && !input.note?.trim()) throw new ValidationError("Give a reason for the adjustment.");
@@ -566,7 +566,11 @@ export type InvoiceRow = {
 
 /** Accepted/issued invoices with balances, using only recorded payments. */
 export async function invoiceRows(actor: Actor, filter: { clientId?: string; state?: string } = {}): Promise<InvoiceRow[]> {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "view");
+  return rowsOf(filter);
+}
+
+async function rowsOf(filter: { clientId?: string; state?: string } = {}): Promise<InvoiceRow[]> {
   const rows = await prisma.invoice.findMany({
     where: { ...(filter.clientId ? { clientId: filter.clientId } : {}), ...(filter.state ? { state: filter.state as Invoice["state"] } : {}) },
     include: { lines: true, payments: true, client: { select: { displayName: true } } },
@@ -605,8 +609,8 @@ export async function invoiceRows(actor: Actor, filter: { clientId?: string; sta
 
 /** Who owes what, aged by how late each unpaid installment is. */
 export async function receivables(actor: Actor) {
-  await assertOwner(actor, "full");
-  const rows = (await invoiceRows(actor)).filter((r) => r.balanceCents > 0);
+  await assertOffice(actor, "receivables", "view");
+  const rows = (await rowsOf()).filter((r) => r.balanceCents > 0);
   const invs = await prisma.invoice.findMany({ where: { id: { in: rows.map((r) => r.id) } }, include: { payments: true } });
   const today = todayYmd();
   const aging = Object.fromEntries(AGING_BUCKETS.map((b) => [b, 0])) as Record<(typeof AGING_BUCKETS)[number], number>;
@@ -637,7 +641,7 @@ export async function receivables(actor: Actor) {
  * refunds. Unpaid invoices never count as cash.
  */
 export async function monthlySummary(actor: Actor, year: number) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "revenue", "view");
   const start = new Date(Date.UTC(year, 0, 1));
   const end = new Date(Date.UTC(year + 1, 0, 1));
   const [invoices, payments, expenses] = await Promise.all([

@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/ui";
 import { QuoteForm } from "@/components/owner/quote-form";
 import { saveQuoteAction } from "@/app/actions/owner";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { billingSettings, ymd } from "@/lib/services/owner-billing";
 import { FirmInvoiceForm } from "@/components/owner/firm-invoice-form";
 import { saveFirmInvoiceAction } from "@/app/actions/firm-invoices";
@@ -12,7 +12,7 @@ import { prisma } from "@/lib/prisma";
 const plain = (type: string, v: number) => (type === "FLAT" || type === "PERCENT" ? (v / 100).toString() : "");
 
 export default async function EditQuotePage({ params }: { params: Promise<{ id: string }> }) {
-  const { actor, access } = await requireOwner("billing");
+  const { actor, access } = await requireOffice("billing", "edit");
   const { id } = await params;
   const inv = await prisma.invoice.findUnique({ where: { id }, include: { lines: { orderBy: { sortOrder: "asc" } } } });
   if (!inv || inv.state !== "DRAFT") notFound();
@@ -29,7 +29,7 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
           approved={approved}
           squareLive={live}
           refundFeeNote={settings.refundTransferFeeNote}
-          canApprove={access.scope === "FULL"}
+          canApprove={access.can("billing", "send")}
           defaults={{
             clientId: inv.clientId,
             service: line?.service ?? inv.title,
@@ -53,7 +53,7 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
         action={saveQuoteAction.bind(null, inv.id)}
         clients={clients}
         fee={{ type: s.planFeeType, value: s.planFeeValue, maxInstallments: s.maxInstallments, confirmed: !!s.planFeeRulesConfirmedAt }}
-        canOverrideFee={access.scope === "FULL"}
+        canOverrideFee={access.can("billing", "approve")}
         submitLabel="Save draft"
         defaults={{
           clientId: inv.clientId,

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { prisma, resetDb } from "./db";
+import { grantPerms, prisma, resetDb } from "./db";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { hashPassword } from "@/lib/auth/password";
-import { claimOwnerOffice, grantOwnerAccess } from "@/lib/auth/owner";
+import { claimOwnerOffice } from "@/lib/auth/owner";
 import { createClient, setArchived } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { savePaymentInstruction } from "@/lib/services/installment-plans";
@@ -66,7 +66,8 @@ async function office() {
   const daria = await staffAccount("daria@tturnerassociates.com", "Daria", "STAFF");
   const marcus = await staffAccount("marcus@tturnerassociates.com", "Marcus", "STAFF");
   await claimOwnerOffice(tab, PASSWORD);
-  await grantOwnerAccess(tab, { userId: daria.id, scope: "BILLING", password: PASSWORD });
+  // Daria prepares and submits drafts (PR #72's delegated billing access); the owner sends.
+  await grantPerms(daria.id, ["billing.view", "billing.create", "billing.edit"]);
   // The owner approves these methods for business use (Venmo stays unapproved).
   await savePaymentInstruction(tab, "ZELLE", { details: "Send to: Tabitha Turner\nPhone: 205-420-1825", active: true });
   await savePaymentInstruction(tab, "CASH_APP", { details: "Send to: $TThompson25", active: true });

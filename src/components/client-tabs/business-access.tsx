@@ -8,7 +8,7 @@ import {
   requestBusinessAccessAction,
 } from "@/app/actions/business-access";
 import { businessAccessFor, canRequestConversion, MANAGED_SERVICES } from "@/lib/services/business-access";
-import { ownerAccessFor } from "@/lib/auth/owner";
+import { officeAccessFor } from "@/lib/auth/permissions";
 import { fmtDateTime } from "@/lib/format";
 import type { Actor } from "@/lib/auth/actor";
 
@@ -29,9 +29,10 @@ const ACTION: Record<string, string> = {
  * The buttons are conveniences — every decision is re-checked on the server.
  */
 export async function BusinessAccessPanel({ clientId, actor }: { clientId: string; actor: Actor }) {
-  const [{ client, pending, events }, mayRequest, owner] = await Promise.all([businessAccessFor(clientId), canRequestConversion(actor), ownerAccessFor(actor.id)]);
+  const [{ client, pending, events }, mayRequest, office] = await Promise.all([businessAccessFor(clientId), canRequestConversion(actor), officeAccessFor(actor.id)]);
   if (!client) return null;
-  const isOwner = owner?.scope === "FULL";
+  const isOwner = office.can("business_access", "approve");
+  const mayRemove = office.can("business_access", "manage");
   const status = client.businessAccess;
   return (
     <Card title="Client classification" className="lg:col-span-2">
@@ -81,7 +82,7 @@ export async function BusinessAccessPanel({ clientId, actor }: { clientId: strin
         <Notice>Only Tabitha, or staff she authorizes, can request Managed Business access.</Notice>
       ) : null}
 
-      {status === "ACTIVE" && isOwner && (
+      {status === "ACTIVE" && mayRemove && (
         <details className="mt-3 rounded-lg border border-red-200 p-3">
           <summary className="cursor-pointer text-sm font-semibold text-red-800">Remove business access</summary>
           <ActionForm action={removeBusinessAccessAction.bind(null, clientId)} className="mt-2 space-y-2">

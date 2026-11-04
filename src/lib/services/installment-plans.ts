@@ -2,7 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { InstallmentPlan } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { assertOwner, ownerAudit } from "@/lib/auth/owner";
+import { assertOffice, ownerAudit } from "@/lib/auth/owner";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
@@ -137,7 +137,7 @@ export async function acceptPlan(user: PortalActor, input: { planId: string; ter
 
 /** Owner only: approve a plan the client accepted. Approval alone never charges anything. */
 export async function approvePlan(actor: Actor, planId: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "approve");
   const plan = await prisma.installmentPlan.findUnique({ where: { id: planId } });
   if (!plan) throw new ValidationError("Plan not found.");
   if (plan.status !== "PENDING_APPROVAL") throw new ValidationError(plan.status === "REQUESTED" ? "The client hasn't accepted the plan terms yet." : `A plan that's ${PLAN_STATUS[plan.status as PlanStatus]} can't be approved.`);
@@ -146,7 +146,7 @@ export async function approvePlan(actor: Actor, planId: string) {
 }
 
 export async function declinePlan(actor: Actor, planId: string, reason: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "approve");
   if (!reason.trim()) throw new ValidationError("Give the client a reason.");
   const plan = await prisma.installmentPlan.findUnique({ where: { id: planId } });
   if (!plan || !["REQUESTED", "PENDING_APPROVAL", "APPROVED"].includes(plan.status)) throw new ValidationError("This plan can't be declined now.");
@@ -197,7 +197,7 @@ export function planProgress(plan: Pick<InstallmentPlan, "status" | "depositCent
 
 /** Owner: records a verified payment against a plan (manual or confirmed by Square). */
 export async function recordPlanPayment(actor: Actor, planId: string, amountCents: number, note: string) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "record_payment");
   if (!Number.isInteger(amountCents) || amountCents <= 0) throw new ValidationError("Enter the amount received.");
   const plan = await prisma.installmentPlan.findUnique({ where: { id: planId } });
   if (!plan || !plan.approvedAt) throw new ValidationError("Payments apply only to approved plans.");
@@ -214,7 +214,7 @@ export async function lateFeePolicy(): Promise<LateFeePolicy & { reviewedNote: s
 
 /** Owner: edit the late-fee policy. Turning it on requires a recorded legal review. */
 export async function saveLateFeePolicy(actor: Actor, input: { enabled: boolean; graceDays: number; periodDays: number; rateBps: number; capBps: number | null; reviewedNote?: string }) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "settings");
   if (![input.graceDays, input.periodDays, input.rateBps].every((n) => Number.isInteger(n) && n >= 0) || input.periodDays < 1) throw new ValidationError("Enter whole numbers for the grace period, period and rate.");
   if (input.enabled && (!input.reviewedNote || input.reviewedNote.trim().length < 20)) throw new ValidationError("Record the legal review (applicable law, enforceability, and that clients' signed agreements include this policy) before turning late fees on.");
   const data = { enabled: input.enabled, graceDays: input.graceDays, periodDays: input.periodDays, rateBps: input.rateBps, capBps: input.capBps, ...(input.enabled ? { reviewedNote: input.reviewedNote!.trim().slice(0, 1000), reviewedAt: new Date(), reviewedById: actor.id } : {}) };
@@ -223,7 +223,7 @@ export async function saveLateFeePolicy(actor: Actor, input: { enabled: boolean;
 }
 
 export async function waiveFee(actor: Actor, input: { clientId: string; planId?: string; invoiceId?: string; amountCents: number; reason: string }) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "adjust");
   if (!Number.isInteger(input.amountCents) || input.amountCents <= 0 || !input.reason.trim()) throw new ValidationError("Enter the amount and a reason.");
   const w = await prisma.feeWaiver.create({ data: { clientId: input.clientId, planId: input.planId ?? null, invoiceId: input.invoiceId ?? null, amountCents: input.amountCents, reason: input.reason.trim().slice(0, 300), waivedById: actor.id } });
   await ownerAudit(actor.id, "billing.fee_waived", "FeeWaiver", w.id, { amountCents: input.amountCents });
@@ -251,7 +251,7 @@ export async function paymentInstructions() {
 }
 
 export async function savePaymentInstruction(actor: Actor, method: string, input: { details: string; active: boolean }) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "square", "integrations");
   if (!(method in PAY_METHODS)) throw new ValidationError("Choose a payment method.");
   if (input.active && !input.details.trim()) throw new ValidationError("Enter the payment instructions clients should see.");
   const label = PAY_METHODS[method as PayMethod].label;
@@ -265,7 +265,7 @@ export async function chooseInvoiceMethod(who: { staff: Actor } | { portal: Port
   const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
   if (!inv || inv.state === "DRAFT" || inv.state === "VOID") throw new ForbiddenError("You don't have access to that invoice.");
   if ("portal" in who) await requireClientAccess(who.portal.id, inv.clientId, "billing");
-  else await assertOwner(who.staff, "billing");
+  else await assertOffice(who.staff, "billing", "edit");
   if (!inv.paymentMethod) {
     await prisma.invoice.update({ where: { id: inv.id }, data: { paymentMethod: method } });
     await ownerAudit("staff" in who ? who.staff.id : `portal:${who.portal.id}`, "billing.method_selected", "Invoice", inv.id, { method });
@@ -278,7 +278,7 @@ export async function chooseInvoiceMethod(who: { staff: Actor } | { portal: Port
 }
 
 export async function decideMethodChange(actor: Actor, changeId: string, approve: boolean, note?: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "approve");
   const c = await prisma.paymentMethodChange.findUnique({ where: { id: changeId } });
   if (!c || c.status !== "PENDING") throw new ValidationError("This request was already decided.");
   await prisma.$transaction(async (tx) => {
@@ -290,7 +290,7 @@ export async function decideMethodChange(actor: Actor, changeId: string, approve
 
 /** Owner dashboard: plans needing approval, active/past due, and method changes waiting. */
 export async function planQueue(actor: Actor) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "view");
   const [plans, changes] = await Promise.all([
     prisma.installmentPlan.findMany({ where: { status: { notIn: ["DECLINED", "CANCELLED"] } }, include: { client: { select: { displayName: true } } }, orderBy: { createdAt: "desc" }, take: 200 }),
     prisma.paymentMethodChange.findMany({ where: { status: "PENDING" }, orderBy: { createdAt: "asc" } }),
