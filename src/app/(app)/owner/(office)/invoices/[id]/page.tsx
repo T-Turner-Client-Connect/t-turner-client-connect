@@ -1,11 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { LockKeyhole } from "lucide-react";
+import { ExternalLink, LockKeyhole } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader } from "@/components/ui";
 import { FirmInvoiceDocument } from "@/components/billing/firm-invoice-document";
 import { issueInvoiceAction, offerQuoteAction, recordPaymentAction, voidInvoiceAction, withdrawQuoteAction } from "@/app/actions/owner";
 import { adjustInvoiceAction, approveInvoiceAction, returnInvoiceAction, submitInvoiceAction } from "@/app/actions/firm-invoices";
+import { refreshSquareAction, resendSquareLinkAction, sendViaSquareAction } from "@/app/actions/square-invoicing";
+import { canReconcile, canRecordPayments, canSendInvoices } from "@/lib/auth/billing-permissions";
+import { SQUARE_STATUS_LABELS, squareSendingState } from "@/lib/services/square-invoicing";
+import { SQUARE_PAYABLE } from "@/lib/billing/invoice-status";
 import { requireOwner } from "@/lib/auth/owner";
 import { breakdownOf, todayYmd, ymd } from "@/lib/services/owner-billing";
 import { firmInvoiceDoc, invoiceHistory } from "@/lib/services/firm-invoices";
@@ -34,10 +38,14 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   const isFirm = inv.formType === "INVOICE";
   const open = inv.state === "ACCEPTED" || inv.state === "ISSUED";
   const balance = terms ? terms.totalCents - collected : null;
-  const [history, accepter, people] = await Promise.all([
+  const [history, accepter, people, sending, maySend, mayRecord, mayReconcile] = await Promise.all([
     invoiceHistory(actor, inv.id),
     inv.acceptedByPortalId ? prisma.portalUser.findUnique({ where: { id: inv.acceptedByPortalId }, select: { name: true, email: true } }) : null,
-    prisma.user.findMany({ where: { id: { in: [inv.createdById, inv.submittedById, inv.approvedById].filter((x): x is string => !!x) } }, select: { id: true, name: true } }),
+    prisma.user.findMany({ where: { id: { in: [inv.createdById, inv.submittedById, inv.approvedById, inv.squareSentById].filter((x): x is string => !!x) } }, select: { id: true, name: true } }),
+    squareSendingState(),
+    canSendInvoices(actor),
+    canRecordPayments(actor),
+    canReconcile(actor),
   ]);
   const nameOf = (uid: string | null) => people.find((p) => p.id === uid)?.name ?? "—";
   const doc = isFirm
@@ -52,8 +60,15 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
         payments: inv.payments.map((p) => ({ id: p.id, kind: p.kind, status: p.status, amountCents: p.amountCents, receivedOn: ymd(p.receivedOn), method: p.method })),
         offeredMethods: inv.offeredMethods,
         squarePaymentUrl: inv.squarePaymentUrl,
+        squarePublicUrl: inv.squarePublicUrl,
+        squareStatus: inv.squareStatus,
       })
     : null;
+  // Square: an approved, full-payment invoice with a balance can go through Square once.
+  const squareSendable = (inv.state === "ISSUED" || (inv.state === "ACCEPTED" && inv.acceptedOption === "FULL")) && (balance ?? 0) > 0;
+  const squareOpen = !!inv.squarePublicUrl && SQUARE_PAYABLE.includes(inv.squareStatus ?? "");
+  const squareNeedsSend = squareSendable && !squareOpen && inv.squareStatus !== "PAID" && inv.squareStatus !== "PAYMENT_PENDING";
+  const offersSquare = inv.offeredMethods.includes("SQUARE_INVOICE");
   const editable = inv.state === "DRAFT";
 
   return (
@@ -138,17 +153,17 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                   <li key={p.id} className="flex flex-wrap justify-between gap-2 py-2">
                     <span>{ymd(p.receivedOn)} · {p.kind === "REFUND" ? "Refund" : p.kind === "CREDIT" ? "Adjustment (credit)" : "Payment"}{p.kind !== "CREDIT" && ` · ${METHOD_LABELS[p.method]}`}{p.reference ? ` · Ref ${p.reference}` : ""}{p.kind === "CREDIT" && p.note ? ` · ${p.note}` : ""}</span>
                     <span className="flex items-center gap-2">
-                      {p.status === "FAILED" ? <Badge tone="red">Failed — not counted</Badge> : <Badge tone="gray">{p.kind === "CREDIT" ? "Not cash" : "Recorded manually"}</Badge>}
+                      {p.status === "FAILED" ? <Badge tone="red">Failed — not counted</Badge> : p.source === "square" ? <Badge tone="green">Square</Badge> : <Badge tone="gray">{p.kind === "CREDIT" ? "Not cash" : "Recorded manually"}</Badge>}
                       <strong>{p.kind === "REFUND" ? "+" : "−"}{money(p.amountCents)}</strong>
                     </span>
                   </li>
                 ))}
               </ul>
             )}
-            {open && isOwner && (balance ?? 0) > 0 && (
+            {open && mayRecord && (balance ?? 0) > 0 && (
               <ActionForm action={recordPaymentAction.bind(null, inv.id)} className="mt-4 grid gap-2 sm:grid-cols-3" resetOnSuccess idempotent>
                 <p className="text-sm font-semibold text-navy-900 sm:col-span-3">Record an offline payment · balance {money(balance ?? 0)}</p>
-                <Field label="Type"><select className="input" name="kind"><option value="PAYMENT">Payment received</option><option value="REFUND">Refund given</option></select></Field>
+                <Field label="Type"><select className="input" name="kind"><option value="PAYMENT">Payment received</option>{isOwner && <option value="REFUND">Refund given</option>}</select></Field>
                 <Field label="Result"><select className="input" name="status"><option value="SUCCEEDED">Succeeded</option><option value="FAILED">Failed / bounced</option></select></Field>
                 <Field label="Amount"><input className="input" name="amount" inputMode="decimal" required placeholder="0.00" /></Field>
                 <Field label="Payment date"><input className="input" type="date" name="receivedOn" defaultValue={today} max={today} required /></Field>
@@ -170,7 +185,8 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 <p className="mt-2 text-xs text-slate-600">Reduces the balance without counting as cash collected.</p>
               </details>
             )}
-            {open && !isOwner && <p className="mt-3 text-xs text-slate-600">Only the owner records and reconciles payments.</p>}
+            {open && squareOpen && <p className="mt-3 text-xs text-slate-600">Payments made through Square are recorded here automatically.</p>}
+            {open && !isOwner && <p className="mt-3 text-xs text-slate-600">Refunds, adjustments and voids are done by the owner.</p>}
           </Card>
 
           <Card title="History">
@@ -191,9 +207,18 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
               {(inv.state === "DRAFT" || inv.state === "PENDING_APPROVAL") && isOwner && (
                 <>
                   {(isFirm || inv.allowFull) && (
-                    <ActionForm action={(isFirm ? approveInvoiceAction : issueInvoiceAction).bind(null, inv.id)} confirm="Approve and send this invoice? It will appear in the client's portal and the client is notified that a new invoice is available.">
+                    <>
+                    <ActionForm action={(isFirm ? approveInvoiceAction : issueInvoiceAction).bind(null, inv.id)} className="space-y-2" confirm="Approve and send this invoice? It will appear in the client's portal and the client is notified that a new invoice is available.">
+                      {isFirm && offersSquare && sending.live && (
+                        <label className="flex items-start gap-2 rounded-lg border border-gold-300 bg-gold-50 px-3 py-2 text-sm" data-testid="approve-via-square">
+                          <input type="checkbox" name="viaSquare" defaultChecked className="mt-0.5 size-4 accent-navy-900" />
+                          <span>Also send through Square — Square creates the invoice and a secure payment link for {money(breakdown.options.FULL?.totalCents ?? 0)}.</span>
+                        </label>
+                      )}
                       <Button type="submit" variant="gold" className="w-full" data-testid="approve-send">Approve &amp; send invoice</Button>
                     </ActionForm>
+                    {isFirm && offersSquare && !sending.live && <p className="text-xs text-slate-600" data-testid="square-off-note">{sending.message}</p>}
+                    </>
                   )}
                   {!isFirm && (
                     <ActionForm action={offerQuoteAction.bind(null, inv.id)} confirm="Send this quote to the client's portal? They'll see every amount before choosing and accepting.">
@@ -232,8 +257,55 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
               )}
               {inv.state === "VOID" && <p className="text-sm text-slate-700">Voided {inv.voidedAt ? fmtDateTime(inv.voidedAt) : ""}{inv.voidReason ? ` — ${inv.voidReason}` : ""}.</p>}
             </div>
-            <p className="mt-3 text-xs text-slate-600">{isOwner ? "No automatic charges: payments are recorded here when money is received. Nothing is created or charged in Square from this page." : "You can prepare and submit drafts. The owner approves, sends, voids and records payments."}</p>
+            <p className="mt-3 text-xs text-slate-600">{isOwner ? "No automatic charges: the client pays through the Square link, or you record money received here." : "You can prepare and submit drafts, send approved invoices through Square and record payments received. The owner approves, voids and records refunds."}</p>
           </Card>
+          {isFirm && (inv.publishedAt || inv.squareInvoiceId) && (
+            <Card title="Square">
+              <div className="space-y-3 text-sm" data-testid="square-card">
+                <p className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-navy-900">Status:</span>
+                  {inv.squareStatus ? <Badge tone={inv.squareStatus === "PAID" ? "green" : inv.squareStatus === "CANCELED" || inv.squareStatus === "DELETED" ? "gray" : inv.squareStatus === "PARTIALLY_PAID" ? "gold" : "navy"}>{SQUARE_STATUS_LABELS[inv.squareStatus] ?? inv.squareStatus}</Badge> : <Badge tone="gray">Not sent through Square</Badge>}
+                  {sending.env === "sandbox" && inv.squareInvoiceId && <Badge tone="amber">Square sandbox</Badge>}
+                </p>
+                {inv.squarePublicUrl && (
+                  <p><a className="inline-flex items-center gap-1 font-semibold text-navy-900 underline decoration-gold-500 underline-offset-4" href={inv.squarePublicUrl} target="_blank" rel="noopener noreferrer" data-testid="square-public-url">Square payment page <ExternalLink className="size-3.5" aria-hidden /></a></p>
+                )}
+                {inv.squareInvoiceId && (
+                  <dl className="space-y-0.5 text-xs text-slate-700">
+                    <div><dt className="inline font-semibold">Square invoice: </dt><dd className="inline font-mono">{inv.squareInvoiceId}</dd></div>
+                    {inv.squareOrderId && <div><dt className="inline font-semibold">Order: </dt><dd className="inline font-mono">{inv.squareOrderId}</dd></div>}
+                    {inv.squareCustomerId && <div><dt className="inline font-semibold">Customer: </dt><dd className="inline font-mono">{inv.squareCustomerId}</dd></div>}
+                    {inv.squareSentAt && <div><dt className="inline font-semibold">Sent: </dt><dd className="inline">{fmtDateTime(inv.squareSentAt)} by {nameOf(inv.squareSentById)}{inv.squareEmailSentAt ? " · link emailed to the client" : ""}</dd></div>}
+                    {inv.squareSyncedAt && <div><dt className="inline font-semibold">Last checked: </dt><dd className="inline">{fmtDateTime(inv.squareSyncedAt)}</dd></div>}
+                  </dl>
+                )}
+                {inv.squareError && <Notice tone="warn">{inv.squareError}</Notice>}
+                {squareNeedsSend && maySend && (
+                  sending.live ? (
+                    <ActionForm action={sendViaSquareAction.bind(null, inv.id)} confirm={`Send ${inv.number} through Square? Square creates the invoice for ${money(balance ?? 0)} and the client gets a secure payment link (${sending.delivery === "EMAIL" ? "Square emails it" : "we email it"}). Nothing is charged until the client pays.`}>
+                      <Button type="submit" variant="gold" className="w-full" data-testid="send-via-square">Send via Square</Button>
+                    </ActionForm>
+                  ) : (
+                    <div className="space-y-2">
+                      <Button type="button" variant="secondary" className="w-full" disabled data-testid="send-via-square">Send via Square</Button>
+                      <p className="text-xs text-slate-700" data-testid="square-off-note">{sending.message}</p>
+                    </div>
+                  )
+                )}
+                {inv.squareInvoiceId && mayReconcile && (
+                  <ActionForm action={refreshSquareAction.bind(null, inv.id)}>
+                    <Button type="submit" variant="secondary" className="w-full">Refresh from Square</Button>
+                  </ActionForm>
+                )}
+                {squareOpen && maySend && sending.delivery === "SHARE_MANUALLY" && (
+                  <ActionForm action={resendSquareLinkAction.bind(null, inv.id)} confirm="Email the Square payment link to the client again?">
+                    <Button type="submit" variant="ghost" className="w-full">Email the Square link{inv.squareEmailSentAt ? " again" : ""}</Button>
+                  </ActionForm>
+                )}
+                <p className="text-xs text-slate-600">Square payments are recorded here automatically (Square notifies us, and we re-check every hour). Voiding cancels an unpaid Square invoice. No surcharges are added.</p>
+              </div>
+            </Card>
+          )}
           <Card title="Record">
             <dl className="space-y-1 text-sm">
               <div><dt className="inline font-semibold">Client ID: </dt><dd className="inline font-mono text-xs">{inv.client.id}</dd></div>

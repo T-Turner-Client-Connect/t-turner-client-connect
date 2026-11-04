@@ -11,6 +11,7 @@ import {
   FIRM_METHODS,
   FIRM_SERVICES,
   isSquarePaymentUrl,
+  squarePayUrl,
   shortId,
   TAX_RETURN_SERVICES,
   type FirmMethod,
@@ -47,6 +48,7 @@ export function FirmInvoiceForm({
   number,
   approved,
   squareLive,
+  squareSending,
   refundFeeNote,
   canApprove,
 }: {
@@ -56,11 +58,15 @@ export function FirmInvoiceForm({
   // The assigned number when editing; otherwise the next number (assigned for certain on save).
   number: { value: string; assigned: boolean };
   approved: { method: string; details: string }[];
+  // Manual (pasted) Square links are on and Square is configured.
   squareLive: boolean;
+  // "Send invoices through Square" is on and Square is configured: Square creates the link.
+  squareSending: boolean;
   refundFeeNote: string | null;
   canApprove: boolean;
 }) {
   const [f, setF] = useState(defaults);
+  const [linkOpen] = useState(() => !!defaults.squarePaymentUrl);
   const set = <K extends keyof FirmInvoiceDefaults>(k: K, v: FirmInvoiceDefaults[K]) => setF((x) => ({ ...x, [k]: v }));
   const [query, setQuery] = useState("");
   const client = clients.find((c) => c.id === f.clientId) ?? null;
@@ -189,15 +195,23 @@ export function FirmInvoiceForm({
                     </span>
                   </label>
                   {m === "SQUARE_INVOICE" && ok && f.methods.includes(m) && (
-                    <div className="mt-2 rounded-xl border border-ivory-200 bg-white p-3 text-sm">
-                      <label className="block">
-                        <span className={label}>Square payment link <span className="font-normal text-slate-600">(optional — from the firm&apos;s own Square account)</span></span>
-                        <input className="input" name="squarePaymentUrl" inputMode="url" placeholder="https://square.link/u/…" value={f.squarePaymentUrl} onChange={(e) => set("squarePaymentUrl", e.target.value)} />
-                      </label>
-                      {urlProblem && <p className="mt-1 text-xs text-red-800">Use a secure Square link (https://square.link/… or squareup.com).</p>}
-                      <p className="mt-1 text-xs text-slate-600">
-                        {squareLive ? "Square links are on: the client sees a Pay securely with Square button." : "Square payments are not enabled: the client won't see a link until the owner turns Square links on. Nothing is created or charged in Square from here."}
+                    <div className="mt-2 rounded-xl border border-ivory-200 bg-white p-3 text-sm" data-testid="square-link-help">
+                      <p className="text-navy-900">
+                        {squareSending
+                          ? "Square creates this invoice and its secure payment link automatically when the approved invoice is sent through Square. There's no link to paste."
+                          : "Square sending is off — Tabitha turns it on in Billing settings. Once it's on, Square creates the payment link automatically when the invoice is sent."}
                       </p>
+                      <details className="mt-2" open={linkOpen}>
+                        <summary className="cursor-pointer text-xs font-semibold text-slate-700 underline">Fallback: attach a Square link made by hand</summary>
+                        <label className="mt-2 block">
+                          <span className={label}>Square payment link <span className="font-normal text-slate-600">(optional — from the firm&apos;s own Square account)</span></span>
+                          <input className="input" name="squarePaymentUrl" inputMode="url" placeholder="https://square.link/u/…" value={f.squarePaymentUrl} onChange={(e) => set("squarePaymentUrl", e.target.value)} />
+                        </label>
+                        {urlProblem && <p className="mt-1 text-xs text-red-800">Use a secure Square link (https://square.link/… or squareup.com).</p>}
+                        <p className="mt-1 text-xs text-slate-600">
+                          {squareLive ? "Manual Square links are on: if this invoice isn't sent through Square, the client sees this link." : "Manual Square links are off, so a pasted link isn't shown to the client."}
+                        </p>
+                      </details>
                     </div>
                   )}
                   {m === "REFUND_TRANSFER" && ok && f.methods.includes(m) && (
@@ -236,7 +250,8 @@ export function FirmInvoiceForm({
             creditedCents: 0,
             balanceCents: amountCents,
             payments: [],
-            options: clientPaymentOptions(methods, approved, { squareLive, squareUrl: f.squarePaymentUrl.trim() || null, refundFeeNote }),
+            // Preview only: with Square sending on, the real link is created by Square when sent.
+            options: clientPaymentOptions(methods, approved, { squareUrl: squarePayUrl({ squarePaymentUrl: f.squarePaymentUrl.trim() || null }, squareLive) ?? (squareSending ? "https://squareup.com/pay-invoice/preview" : null), refundFeeNote }),
           }}
         />
       </aside>

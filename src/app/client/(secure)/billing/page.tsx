@@ -105,6 +105,8 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
       payments: opened.payments,
       offeredMethods: opened.offeredMethods,
       squarePaymentUrl: opened.squarePaymentUrl,
+      squarePublicUrl: opened.squarePublicUrl,
+      squareStatus: opened.squareStatus,
     });
     return (
       <div className="space-y-6">
