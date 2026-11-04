@@ -247,6 +247,15 @@ model Client {
   city                    String?
   state                   String?
   postalCode              String?
+  // Mailing address, when it differs from the street address above. True =
+  // mail goes to the street address; false = use the mailing fields; null =
+  // not recorded yet (older records). Read it with mailingAddressOf().
+  mailingSameAsAddress    Boolean?
+  mailingAddressLine1     String?
+  mailingAddressLine2     String?
+  mailingCity             String?
+  mailingState            String?
+  mailingPostalCode       String?
   clientType              ClientType              @default(INDIVIDUAL)
   // Regular Tax Client unless the owner approved Managed Business access.
   // clientType is informational only and never grants business access.
@@ -718,6 +727,15 @@ model ImportRow {
   // TaxAct with Client Connect. Blank fields are filled without this; values
   // already on file never change unless listed here.
   approvedFields String[]    @default([])
+  // Address/contact/return type that staff entered or corrected in the
+  // preview, before the client was created. Applied by the import; cleared
+  // with the staged data after commit/discard.
+  edits          Json?
+  editedById     String?
+  editedAt       DateTime?
+  // What the row is still missing ("Address", "Phone", "Email", "Filing
+  // status"), kept up to date as staff edit so the preview can filter.
+  missingInfo    String[]    @default([])
   resultClientId String?
 
   @@index([batchId, rowNumber])

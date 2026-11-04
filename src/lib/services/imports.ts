@@ -7,6 +7,17 @@ import { IMPORT_FIELD_KEYS, isImportField, isSensitiveHeader, MAX_IMPORT_ROWS } 
 import { classifyRow, cleanRow, type CleanRow, type MatchCandidate } from "@/lib/import/rows";
 import { IMPORT_FIELDS } from "@/lib/import/fields";
 import { mergeList, plannedChanges, REPLACEABLE_FIELDS } from "@/lib/import/plan";
+import {
+  ADDRESS_NEEDED_TAG,
+  applyEdits,
+  EDITOR_FIELDS,
+  FILING_STATUS_NEEDED_TAG,
+  missingInfo,
+  TEXT_EDIT_FIELDS,
+  validateEdits,
+  type MissingInfo,
+  type RowEdits,
+} from "@/lib/import/edits";
 import { caseFromImport } from "@/lib/services/tax-prep";
 import { normalizePhone } from "@/lib/normalize";
 import { clientDisplayName } from "@/lib/services/clients";
@@ -37,6 +48,65 @@ export type StageInput = {
 export const BATCH_SERVICES = ["Tax Preparation", "Bookkeeping", "Payroll", "Business Tax Preparation", "Nonprofit Services", "Consulting"] as const;
 const TAX_SERVICES = new Set(["tax preparation", "business tax preparation"]);
 
+/** Does this batch open tax-preparation cases (so a return type / filing status matters)? */
+export function batchWantsCase(batch: { batchServices: string[]; mapping: unknown }) {
+  const mapped = new Set(Object.values((batch.mapping ?? {}) as Record<string, string>));
+  return batch.batchServices.some((s) => TAX_SERVICES.has(s.toLowerCase())) || mapped.has("returnType") || mapped.has("filingStatus");
+}
+
+// What the preview needs from a matched client to tell "missing" from "already on file".
+export const EXISTING_INFO = {
+  id: true,
+  addressLine1: true,
+  addressLine2: true,
+  city: true,
+  state: true,
+  postalCode: true,
+  email: true,
+  phone: true,
+  mailingSameAsAddress: true,
+  mailingAddressLine1: true,
+  mailingAddressLine2: true,
+  mailingCity: true,
+  mailingState: true,
+  mailingPostalCode: true,
+} as const;
+type ExistingInfo = Prisma.ClientGetPayload<{ select: typeof EXISTING_INFO }>;
+
+/** "clientId:year" for every tax case that already has a return type. */
+async function casesWithReturnType(db: Prisma.TransactionClient | typeof prisma, clientIds: string[]) {
+  if (!clientIds.length) return new Set<string>();
+  const cases = await db.taxPrepCase.findMany({ where: { clientId: { in: clientIds }, returnType: { not: null } }, select: { clientId: true, taxYear: true } });
+  return new Set(cases.map((c) => `${c.clientId}:${c.taxYear}`));
+}
+
+const targetOf = (decision: string | null) => (decision?.startsWith("update:") ? decision.slice(7) : null);
+
+/** The row as it will be imported (file + staff entries) and what it still lacks. */
+function rowState(
+  data: CleanRow,
+  edits: RowEdits | null,
+  existing: ExistingInfo | null,
+  ctx: { wantsCase: boolean; taxYear: number | null; withReturnType: Set<string> },
+): { eff: CleanRow; missing: MissingInfo[] } {
+  const eff = applyEdits(data, edits, existing);
+  const year = eff.taxYear ?? ctx.taxYear;
+  const caseHasReturnType = !!existing && !!year && ctx.withReturnType.has(`${existing.id}:${year}`);
+  return { eff, missing: missingInfo(eff, existing, { wantsCase: ctx.wantsCase, caseHasReturnType }) };
+}
+
+/** Recomputes a row's "still missing" list after a decision or an edit. */
+async function refreshMissing(rowId: string) {
+  const row = await prisma.importRow.findUnique({ where: { id: rowId }, include: { batch: true } });
+  if (!row?.data || row.match === "ERROR") return [];
+  const target = targetOf(row.decision);
+  const existing = target ? await prisma.client.findUnique({ where: { id: target }, select: EXISTING_INFO }) : null;
+  const withReturnType = await casesWithReturnType(prisma, target ? [target] : []);
+  const { missing } = rowState(row.data as unknown as CleanRow, row.edits as RowEdits | null, existing, { wantsCase: batchWantsCase(row.batch), taxYear: row.batch.taxYear, withReturnType });
+  await prisma.importRow.update({ where: { id: rowId }, data: { missingInfo: missing } });
+  return missing;
+}
+
 export type ImportSummary = {
   mappedColumns: { header: string; field: string }[];
   unmappedColumns: string[];
@@ -57,6 +127,10 @@ export type ImportSummary = {
     needsReturnType: string[];
     needsConfirmation: string[];
     namesRepaired: string[];
+    // Imported incomplete and tagged, and rows completed by staff in the preview.
+    addressNeeded?: number;
+    filingStatusNeeded?: number;
+    completedInPreview?: number;
   };
 };
 
@@ -117,13 +191,11 @@ export async function stageImport(actor: Actor, input: StageInput) {
       ],
     },
     select: {
-      id: true,
+      ...EXISTING_INFO,
       displayName: true,
       firstName: true,
       spouseFirstName: true,
       spouseLastName: true,
-      addressLine1: true,
-      postalCode: true,
       lastName: true,
       businessName: true,
       emailNormalized: true,
@@ -138,11 +210,15 @@ export async function stageImport(actor: Actor, input: StageInput) {
   }));
 
   const seen = new Map<string, number>();
+  const byId = new Map(existing.map((c) => [c.id, c]));
+  const withReturnType = await casesWithReturnType(prisma, existing.map((c) => c.id));
   const rows = cleaned.map(({ row, errors, warnings }, i) => {
     const rowNumber = i + 2; // spreadsheet row, after the header
     const result = classifyRow(row, errors, candidates, seen, rowNumber);
     const decision =
       result.match === "NEW" ? "create" : result.match === "MATCH" ? `update:${result.candidateIds[0]}` : result.match === "ERROR" ? "skip" : null;
+    const target = targetOf(decision);
+    const missing = result.match === "ERROR" ? [] : rowState(row, null, target ? byId.get(target) ?? null : null, { wantsCase: !!wantsCase, taxYear, withReturnType }).missing;
     return {
       rowNumber,
       data: row as unknown as Prisma.InputJsonValue,
@@ -151,6 +227,7 @@ export async function stageImport(actor: Actor, input: StageInput) {
       match: result.match,
       candidateIds: result.candidateIds,
       decision,
+      missingInfo: missing,
     };
   });
 
@@ -166,7 +243,7 @@ export async function stageImport(actor: Actor, input: StageInput) {
     missing: {
       Email: missingOf((r) => r.emailNormalized),
       Phone: missingOf((r) => r.phoneNormalized),
-      "Mailing address": missingOf((r) => r.addressLine1),
+      "Street address": missingOf((r) => r.addressLine1),
       City: missingOf((r) => r.city),
       State: missingOf((r) => r.state),
       ZIP: missingOf((r) => r.postalCode),
@@ -223,27 +300,82 @@ export async function setRowDecision(actor: Actor, rowId: string, decision: stri
     if (!exists) throw new ImportError("That client no longer exists.");
   }
   await prisma.importRow.update({ where: { id: rowId }, data: { decision } });
+  await refreshMissing(rowId);
 }
 
-/** Staff approve replacing specific fields on the matched client (after the comparison). */
-export async function setRowApprovals(actor: Actor, rowId: string, fields: string[]) {
+/**
+ * Staff approve replacing specific fields on the matched client (after the
+ * comparison). `scope` is the set of fields the form showed: approvals for
+ * fields outside it (e.g. ones saved from the row editor) are kept.
+ */
+export async function setRowApprovals(actor: Actor, rowId: string, fields: string[], scope?: string[]) {
   const row = await prisma.importRow.findUnique({ where: { id: rowId }, include: { batch: true } });
   if (!row || row.batch.status !== "REVIEW") throw new ImportError("This import is no longer open.");
   if (!row.decision?.startsWith("update:")) throw new ImportError("Choose which existing client this row updates first.");
   const allowed = new Set<string>(REPLACEABLE_FIELDS);
-  const approved = Array.from(new Set(fields.filter((f) => allowed.has(f))));
+  const inScope = new Set<string>(scope?.length ? scope : REPLACEABLE_FIELDS);
+  const approved = Array.from(new Set([...row.approvedFields.filter((f) => !inScope.has(f)), ...fields.filter((f) => allowed.has(f) && inScope.has(f))]));
   await prisma.importRow.update({ where: { id: rowId }, data: { approvedFields: approved } });
   await audit(prisma, { actorId: actor.id, action: "import.fields_approved", entityType: "ImportRow", entityId: rowId, details: { batchId: row.batchId, fields: approved } });
   return approved;
 }
 
+export type RowEditInput = {
+  // Street / mailing address, phone and email as typed; blank = nothing entered.
+  values: Record<string, string>;
+  mailingSameAsAddress: boolean;
+  returnType?: string;
+  // Matched client: fields where staff chose "Use imported value" over what's on file.
+  useImported?: string[];
+};
+
+/**
+ * Saves what staff entered on a preview row. Stored on the import batch
+ * (server-side, per row) so a refresh or a later return keeps it; nothing
+ * reaches the client record until the import is applied.
+ */
+export async function saveRowEdits(actor: Actor, rowId: string, input: RowEditInput) {
+  const row = await prisma.importRow.findUnique({ where: { id: rowId }, include: { batch: true } });
+  if (!row || row.batch.status !== "REVIEW") throw new ImportError("This import is no longer open.");
+  if (!row.data || row.match === "ERROR") throw new ImportError("Rows with errors can only be skipped.");
+  const { edits, errors } = validateEdits({ ...input.values, mailingSameAsAddress: input.mailingSameAsAddress, returnType: input.returnType });
+  if (errors.length) throw new ImportError(errors.join(" "));
+  if (edits.returnType && !batchWantsCase(row.batch)) delete edits.returnType;
+  // Keep only what differs from the file, so the record shows what staff actually entered.
+  const source = row.data as unknown as CleanRow;
+  const same = (a: unknown, b: unknown) => typeof a === "string" && typeof b === "string" && a.trim().toLowerCase() === b.trim().toLowerCase();
+  for (const f of TEXT_EDIT_FIELDS) {
+    const typed = edits[f];
+    if (typed === undefined) continue;
+    if (f === "phone" ? normalizePhone(typed) === source.phoneNormalized : same(typed, source[f])) delete edits[f];
+  }
+  if (edits.returnType && edits.returnType === source.returnType) delete edits.returnType;
+  const editorFields = new Set<string>(EDITOR_FIELDS);
+  const approvals = row.decision?.startsWith("update:") ? Array.from(new Set((input.useImported ?? []).filter((f) => editorFields.has(f)))) : [];
+  const approvedFields = Array.from(new Set([...row.approvedFields.filter((f) => !editorFields.has(f)), ...approvals]));
+  await prisma.importRow.update({ where: { id: rowId }, data: { edits: edits as Prisma.InputJsonValue, editedById: actor.id, editedAt: new Date(), approvedFields } });
+  const missing = await refreshMissing(rowId);
+  // Field names only, never the values typed.
+  await audit(prisma, { actorId: actor.id, action: "import.row_completed", entityType: "ImportRow", entityId: rowId, details: { batchId: row.batchId, fields: Object.keys(edits), useImported: approvals, stillMissing: missing } });
+  return { edits, missing };
+}
+
 type UpdateMode = "fill_blanks" | "overwrite";
+
+export type CommitOptions = {
+  // Rows still missing a street/mailing address: "flag" imports them tagged
+  // Address Needed; "require" stops the import until they're completed or skipped.
+  addressNeeded?: "flag" | "require";
+  // Tax-preparation rows with no return type / filing status (never assumed):
+  // "flag" imports them tagged Filing Status Needed; "require" stops the import.
+  filingStatusNeeded?: "flag" | "require";
+};
 
 /**
  * Applies staff decisions. Never writes consent records or suppressions, and
  * never sends anything. Staged row data is cleared afterwards.
  */
-export async function commitImport(actor: Actor, batchId: string, mode: UpdateMode) {
+export async function commitImport(actor: Actor, batchId: string, mode: UpdateMode, opts: CommitOptions = {}) {
   const batch = await prisma.importBatch.findUnique({ where: { id: batchId }, include: { rows: { orderBy: { rowNumber: "asc" } } } });
   if (!batch || batch.status !== "REVIEW") throw new ImportError("This import is no longer open.");
   const undecided = batch.rows.filter((r) => !r.decision);
@@ -253,9 +385,32 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
   const taxReturnDerived = batch.updateMode.endsWith(";tax");
   const source = `Import: ${batch.source} (${batch.fileName})`;
   const extraServices = batch.batchServices;
-  const mapped = new Set(Object.values(batch.mapping as Record<string, string>));
-  const wantsCase = extraServices.some((s) => TAX_SERVICES.has(s.toLowerCase())) || mapped.has("returnType") || mapped.has("filingStatus");
+  const wantsCase = batchWantsCase(batch);
   const summary = (batch.summary as unknown as ImportSummary | null) ?? null;
+
+  // Staff entries on top of the file, and what each row still lacks, checked
+  // against the matched client as it is now.
+  const targets = Array.from(new Set(batch.rows.map((r) => (r.decision === "skip" ? null : targetOf(r.decision))).filter((v): v is string => !!v)));
+  const existingInfo = new Map((await prisma.client.findMany({ where: { id: { in: targets } }, select: EXISTING_INFO })).map((c) => [c.id, c]));
+  const withReturnType = await casesWithReturnType(prisma, targets);
+  const states = new Map(
+    batch.rows
+      .filter((r) => r.data && r.decision !== "skip")
+      .map((r) => {
+        const target = targetOf(r.decision);
+        return [r.id, rowState(r.data as unknown as CleanRow, r.edits as RowEdits | null, target ? existingInfo.get(target) ?? null : null, { wantsCase, taxYear: batch.taxYear, withReturnType })] as const;
+      }),
+  );
+  const lacking = (what: MissingInfo) => batch.rows.filter((r) => states.get(r.id)?.missing.includes(what)).map((r) => r.rowNumber);
+  const rowList = (n: number[]) => `row${n.length > 1 ? "s" : ""} ${n.slice(0, 12).join(", ")}${n.length > 12 ? ` and ${n.length - 12} more` : ""}`;
+  const noAddress = lacking("Address");
+  if (noAddress.length && opts.addressNeeded === "require") {
+    throw new ImportError(`${noAddress.length} client(s) are missing an address (${rowList(noAddress)}). Complete them in the preview, skip them, or tick “Import clients with incomplete addresses and mark them Address Needed”.`);
+  }
+  const noFiling = lacking("Filing status");
+  if (noFiling.length && opts.filingStatusNeeded === "require") {
+    throw new ImportError(`${noFiling.length} client(s) have no return type / filing status (${rowList(noFiling)}). Choose it in the preview, skip them, or tick “Import without a filing status and mark them Filing Status Needed”. Client Connect never assumes one.`);
+  }
 
   return prisma.$transaction(
     async (tx) => {
@@ -269,6 +424,9 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
       let returnTypesPrefilled = 0;
       const touched: string[] = [];
       const namesRepaired: string[] = [];
+      let flaggedAddress = 0;
+      let flaggedFiling = 0;
+      let completedInPreview = 0;
       const groupCache = new Map<string, string>();
       const groupIds = async (names: string[]) => {
         const ids: string[] = [];
@@ -286,11 +444,14 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
       };
 
       for (const r of batch.rows) {
-        const row = r.data as unknown as CleanRow | null;
-        if (!row || r.decision === "skip") {
+        const state = states.get(r.id);
+        if (!state || r.decision === "skip") {
           skipped++;
           continue;
         }
+        const flags = [...(state.missing.includes("Address") ? [ADDRESS_NEEDED_TAG] : []), ...(state.missing.includes("Filing status") ? [FILING_STATUS_NEEDED_TAG] : [])];
+        const row: CleanRow = { ...state.eff, tags: mergeList(state.eff.tags, flags) };
+        const entered = Object.keys((r.edits as RowEdits | null) ?? {});
         let clientId: string;
         if (r.decision === "create") {
           // Last check before creating: never create a second record for an
@@ -334,6 +495,12 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
               city: row.city,
               state: row.state,
               postalCode: row.postalCode,
+              mailingSameAsAddress: row.mailingSameAsAddress ?? null,
+              mailingAddressLine1: row.mailingAddressLine1 ?? null,
+              mailingAddressLine2: row.mailingAddressLine2 ?? null,
+              mailingCity: row.mailingCity ?? null,
+              mailingState: row.mailingState ?? null,
+              mailingPostalCode: row.mailingPostalCode ?? null,
               clientType: row.clientType ?? "INDIVIDUAL",
               services: mergeList(row.services, extraServices),
               assignedToId: batch.batchAssignedToId,
@@ -345,7 +512,10 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
           });
           clientId = client.id;
           created++;
-          await audit(tx, { actorId: actor.id, action: "client.created_by_import", entityType: "Client", entityId: clientId, clientId, details: { batchId } });
+          if (flags.includes(ADDRESS_NEEDED_TAG)) flaggedAddress++;
+          if (flags.includes(FILING_STATUS_NEEDED_TAG)) flaggedFiling++;
+          if (entered.length) completedInPreview++;
+          await audit(tx, { actorId: actor.id, action: "client.created_by_import", entityType: "Client", entityId: clientId, clientId, details: { batchId, ...(entered.length ? { enteredInPreview: entered } : {}), ...(flags.length ? { flags } : {}) } });
         } else {
           clientId = r.decision!.slice(7);
           const current = await tx.client.findUnique({ where: { id: clientId } });
@@ -371,6 +541,16 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
             const next = { ...current, ...(data as object) } as typeof current;
             data.displayName = clientDisplayName({ ...next, clientType: next.clientType });
           }
+          // A flag from an earlier import clears once the record is complete.
+          const resolved = [...(!state.missing.includes("Address") ? [ADDRESS_NEEDED_TAG] : []), ...(!state.missing.includes("Filing status") ? [FILING_STATUS_NEEDED_TAG] : [])];
+          const tagsNow = (data.tags as string[] | undefined) ?? current.tags;
+          if (tagsNow.some((t) => resolved.includes(t))) {
+            data.tags = tagsNow.filter((t) => !resolved.includes(t));
+            if (!changed.includes("tags")) changed.push("tags");
+          }
+          if (flags.includes(ADDRESS_NEEDED_TAG)) flaggedAddress++;
+          if (flags.includes(FILING_STATUS_NEEDED_TAG)) flaggedFiling++;
+          if (entered.length) completedInPreview++;
           if (taxReturnDerived && !current.taxReturnDerived) {
             data.taxReturnDerived = true;
             changed.push("taxReturnDerived");
@@ -378,7 +558,7 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
           // Consent records and suppressions are intentionally untouched.
           if (changed.length) {
             await tx.client.update({ where: { id: clientId }, data });
-            await audit(tx, { actorId: actor.id, action: "client.updated_by_import", entityType: "Client", entityId: clientId, clientId, details: { batchId, fields: changed } });
+            await audit(tx, { actorId: actor.id, action: "client.updated_by_import", entityType: "Client", entityId: clientId, clientId, details: { batchId, fields: changed, ...(entered.length ? { enteredInPreview: entered } : {}), ...(flags.length ? { flags } : {}) } });
             updated++;
           } else unchanged++;
         }
@@ -412,10 +592,13 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
         needsReturnType: cases.filter((c) => !c.returnType).map((c) => c.clientId),
         needsConfirmation: cases.filter((c) => c.returnType && !c.returnTypeConfirmedAt).map((c) => c.clientId),
         namesRepaired,
+        addressNeeded: flaggedAddress,
+        filingStatusNeeded: flaggedFiling,
+        completedInPreview,
       };
 
-      // Keep the decision summary, drop the staged contact data.
-      await tx.importRow.updateMany({ where: { batchId }, data: { data: Prisma.DbNull } });
+      // Keep the decision summary, drop the staged contact data (and what staff typed).
+      await tx.importRow.updateMany({ where: { batchId }, data: { data: Prisma.DbNull, edits: Prisma.DbNull } });
       const done = await tx.importBatch.update({
         where: { id: batchId },
         data: {
@@ -433,7 +616,7 @@ export async function commitImport(actor: Actor, batchId: string, mode: UpdateMo
         action: "import.committed",
         entityType: "ImportBatch",
         entityId: batchId,
-        details: { created, updated, skipped, unchanged, mode, casesCreated, casesFilled, returnTypesPrefilled, services: extraServices, taxYear: batch.taxYear },
+        details: { created, updated, skipped, unchanged, mode, casesCreated, casesFilled, returnTypesPrefilled, services: extraServices, taxYear: batch.taxYear, addressNeeded: flaggedAddress, filingStatusNeeded: flaggedFiling, completedInPreview },
       });
       return done;
     },
@@ -445,7 +628,7 @@ export async function discardImport(actor: Actor, batchId: string) {
   const batch = await prisma.importBatch.findUnique({ where: { id: batchId } });
   if (!batch || batch.status !== "REVIEW") throw new ImportError("This import is no longer open.");
   await prisma.$transaction([
-    prisma.importRow.updateMany({ where: { batchId }, data: { data: Prisma.DbNull } }),
+    prisma.importRow.updateMany({ where: { batchId }, data: { data: Prisma.DbNull, edits: Prisma.DbNull } }),
     prisma.importBatch.update({ where: { id: batchId }, data: { status: "DISCARDED" } }),
     prisma.auditLog.create({ data: { actorId: actor.id, action: "import.discarded", entityType: "ImportBatch", entityId: batchId } }),
   ]);

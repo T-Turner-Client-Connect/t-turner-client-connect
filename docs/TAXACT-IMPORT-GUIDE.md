@@ -46,7 +46,15 @@ A sample of the layout Client Connect expects is in [`docs/samples/client-import
    - **Skip this row** — when unsure. You can add the person by hand later.
 
    Tags, services and groups are only ever **added**. Opt-outs and permission history are never changed by an import.
-8. When no rows are left undecided, click **Import _N_ rows**. **Discard import** cancels everything, and nothing is changed.
+   **Complete missing info right in the preview** (no need to open a client profile):
+   - Each row shows **Missing: address, phone, email, filing status** when the file lacks them. Click **Only rows missing info** to see just those rows.
+   - Open a row's **Complete missing info** section. Enter the **Street Address**, *Address Line 2* (optional), **City**, **State** and **ZIP**. *Mailing address is the same as physical address* is ticked unless there's a separate mailing address; untick it to enter the mailing street, line 2, city, state and ZIP. You can also correct the phone, email and (for tax batches) the **return type / filing status**. Click **Save row**.
+   - What you enter is saved on the import (on the server, per row). Refreshing the page or coming back later keeps it. Nothing reaches the client record until you click **Import**.
+   - **Filing status is never guessed.** If TaxAct didn't give one (for example "1040" alone, or a joint name), it stays *Not set* until you pick it.
+   - **Existing clients keep their details.** When a row matches a client who already has an address, phone or email, the row shows **Existing: … / Imported: …**. The existing value stays unless you tick **Use imported value** for that field. A blank in the file never erases anything.
+8. When no rows are left undecided, click **Import _N_ rows**. If some rows still have no complete address, either finish them, skip them, or tick **Import clients with incomplete addresses and mark them Address Needed**. Likewise, rows without a filing status need a choice, or tick **Import without a filing status and mark them Filing Status Needed**. Find the flagged clients later with **Clients → Any info status → Address Needed** (or *Filing Status Needed*). The flag clears by itself when a later import completes the address, or when someone saves the client's **Edit** screen with a complete address (street, city, 2-letter state, 5- or 9-digit ZIP, and the mailing address too if it's separate).
+
+**Physical vs mailing address.** Every client has a *Physical address*. The *Mailing address* is the same unless you untick "Mailing address is the same as physical address" on the Create/Edit client screen (or in the import preview) and enter a complete one. Invoices and quotes (the bill-to) use the mailing address when there is a separate one. The physical address stays on the profile and is used for tax-return residence. **Discard import** cancels everything, and nothing is changed.
 9. Check the result: open two or three of the imported clients and confirm name, contact details, services and group. Then run the rest of the file the same way. Batches of a few hundred keep the duplicate review manageable.
 
 Every import records the date, the source and who ran it, under **Imports**.

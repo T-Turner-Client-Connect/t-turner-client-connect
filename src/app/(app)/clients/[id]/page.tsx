@@ -28,6 +28,7 @@ import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { can } from "@/lib/auth/permissions";
 import { CommPrefsStaffCard } from "@/components/client-tabs/comm-prefs-staff";
 import { OwnersCard } from "@/components/client-tabs/owners-card";
+import { formatAddress, hasSeparateMailing, separateMailingOf, streetAddressOf } from "@/lib/client-address";
 
 export const metadata = { title: "Client" };
 
@@ -167,8 +168,17 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
               <div><dt className="font-semibold text-slate-600">Email</dt><dd>{client.email ?? "—"}</dd></div>
               <div><dt className="font-semibold text-slate-600">Mobile</dt><dd>{client.phoneNormalized ? formatPhone(client.phoneNormalized) : client.phone ?? "—"}</dd></div>
               <div className="sm:col-span-2">
+                <dt className="font-semibold text-slate-600">Physical address</dt>
+                <dd>{formatAddress(streetAddressOf(client)) || "—"}</dd>
+              </div>
+              <div className="sm:col-span-2">
                 <dt className="font-semibold text-slate-600">Mailing address</dt>
-                <dd>{[client.addressLine1, client.addressLine2, [client.city, client.state].filter(Boolean).join(", "), client.postalCode].filter(Boolean).join(" · ") || "—"}</dd>
+                <dd>
+                  {client.mailingSameAsAddress === false
+                    ? formatAddress(separateMailingOf(client)) || "—"
+                    : "Same as physical address"}
+                  {client.mailingSameAsAddress === false && !hasSeparateMailing(client) && <span className="ml-1 text-amber-800">(incomplete — mail uses the physical address)</span>}
+                </dd>
               </div>
               <div><dt className="font-semibold text-slate-600">Services</dt><dd>{client.services.join(", ") || "—"}</dd></div>
               <div><dt className="font-semibold text-slate-600">Assigned to</dt><dd>{client.assignedTo?.name ?? "Unassigned"}</dd></div>

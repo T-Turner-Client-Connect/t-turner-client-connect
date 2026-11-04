@@ -50,7 +50,19 @@ function clientInput(fd: FormData): ClientInput {
     assignedToId: str(fd, "assignedToId"),
     groupIds: fd.getAll("groupIds").map(String),
     // Only the client form has the spouse box; other forms leave it undefined.
-    ...(fd.get("spouseSection") ? { spouseNeeded: fd.get("spouseNeeded") === "on", spouseYear: Number(str(fd, "spouseYear")) || undefined } : {}),
+    // Only the Create/Edit client screens have the Physical + Mailing address blocks.
+    ...(fd.get("mailingSection")
+      ? {
+          mailingSection: true,
+          mailingSameAsAddress: fd.get("mailingSameAsAddress") === "1",
+          mailingAddressLine1: str(fd, "mailingAddressLine1"),
+          mailingAddressLine2: str(fd, "mailingAddressLine2"),
+          mailingCity: str(fd, "mailingCity"),
+          mailingState: str(fd, "mailingState"),
+          mailingPostalCode: str(fd, "mailingPostalCode"),
+        }
+      : {}),
+    ...(fd.get("spouseSection") ?{ spouseNeeded: fd.get("spouseNeeded") === "on", spouseYear: Number(str(fd, "spouseYear")) || undefined } : {}),
   };
 }
 

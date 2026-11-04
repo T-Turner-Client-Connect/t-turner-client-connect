@@ -24,6 +24,13 @@ export type CleanRow = {
   city: string | null;
   state: string | null;
   postalCode: string | null;
+  // Separate mailing address, when the file (or staff, in the preview) has one.
+  mailingSameAsAddress?: boolean | null;
+  mailingAddressLine1?: string | null;
+  mailingAddressLine2?: string | null;
+  mailingCity?: string | null;
+  mailingState?: string | null;
+  mailingPostalCode?: string | null;
   clientType: ClientType | null;
   services: string[];
   tags: string[];
@@ -81,7 +88,7 @@ export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors:
   if (ignored.length) warnings.push(`Ignored ${ignored.length} unapproved field(s)`);
 
   for (const key of Object.keys(raw)) {
-    if (!isImportField(key) || key === "phone" || key === "postalCode") continue;
+    if (!isImportField(key) || key === "phone" || key === "postalCode" || key === "mailingPostalCode") continue;
     const v = raw[key];
     if (typeof v === "string" && looksLikeTaxId(v)) {
       errors.push(`"${key}" looks like it contains an SSN/EIN — row blocked`);
@@ -193,6 +200,10 @@ export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors:
   const clientType = parseClientType(rawType ?? undefined);
   if (rawType && !clientType) warnings.push(`Unknown client type "${rawType}"`);
 
+  // Only a file with mailing columns says anything about the mailing address.
+  const mailingCols = { mailingAddressLine1: get("mailingAddressLine1"), mailingAddressLine2: get("mailingAddressLine2"), mailingCity: get("mailingCity"), mailingState: get("mailingState")?.toUpperCase() ?? null, mailingPostalCode: get("mailingPostalCode") };
+  const mailing = Object.values(mailingCols).some(Boolean) ? { ...mailingCols, mailingSameAsAddress: false } : {};
+
   const row: CleanRow = {
     firstName,
     middleName,
@@ -216,6 +227,7 @@ export function cleanRow(raw: Record<string, unknown>): { row: CleanRow; errors:
     city,
     state: state?.toUpperCase() ?? null,
     postalCode,
+    ...mailing,
     // Classification: the file's client type wins; otherwise the return type
     // decides (1065 / 1120-S / 1120 → Business, 990 → Nonprofit, 1040 → Individual).
     clientType: clientType ?? typeFromReturn(rt.code) ?? (bizName && !firstName && !lastName ? "BUSINESS" : null),

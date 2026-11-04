@@ -16,6 +16,7 @@ import { METHOD_LABELS } from "@/lib/billing/labels";
 import type { FirmInvoiceDoc } from "@/components/billing/firm-invoice-document";
 import { billingContactOf, billingSettings, issueInvoice, nextNumber, notifyBilling, withNumberRetry } from "./owner-billing";
 import { ValidationError } from "./clients";
+import { billingAddressOf, formatAddressBlock } from "@/lib/client-address";
 
 /**
  * Create Invoice — T. Turner & Associates invoicing its own clients. Built on the Owner's Office
@@ -284,19 +285,19 @@ export async function invoiceClientChoices(actor: Actor) {
   await assertOffice(actor, "billing", "view");
   const rows = await prisma.client.findMany({
     where: { archivedAt: null },
-    select: { id: true, displayName: true, businessName: true, email: true, phone: true, addressLine1: true, addressLine2: true, city: true, state: true, postalCode: true, clientType: true, contacts: { select: { email: true, phone: true }, orderBy: { createdAt: "asc" }, take: 3 } },
+    select: { id: true, displayName: true, businessName: true, email: true, phone: true, addressLine1: true, addressLine2: true, city: true, state: true, postalCode: true, mailingSameAsAddress: true, mailingAddressLine1: true, mailingAddressLine2: true, mailingCity: true, mailingState: true, mailingPostalCode: true, clientType: true, contacts: { select: { email: true, phone: true }, orderBy: { createdAt: "asc" }, take: 3 } },
     orderBy: { displayName: "asc" },
   });
   return rows.map((c) => {
     const contact = c.contacts.find((x) => x.email || x.phone);
-    const cityLine = [c.city, [c.state, c.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ");
     return {
       id: c.id,
       name: c.businessName || c.displayName,
       person: c.businessName && c.businessName !== c.displayName ? c.displayName : null,
       email: c.email || contact?.email || null,
       phone: c.phone || contact?.phone || null,
-      address: [c.addressLine1, c.addressLine2, cityLine].filter(Boolean).join("\n") || null,
+      // Bill-to: the separate mailing address when the client has one.
+      address: formatAddressBlock(billingAddressOf(c)) || null,
       type: c.clientType,
     };
   });
