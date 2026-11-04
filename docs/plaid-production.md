@@ -166,3 +166,44 @@ Netlify; `COETHA_MODEL` optionally picks the model, default `claude-sonnet-5-5`)
 descriptions are shortened to the last four digits, and no SSNs, EINs, names, addresses or contact
 details are sent. Coetha never posts or finalizes anything: only you approve her work, and only an
 approval posts it to the books. See `docs/coetha.md`.
+
+---
+
+## Credit cards, history, statements and what Plaid can't reach
+
+"Verified" below means confirmed from the code in this repository and how it behaves in tests
+against a simulated Plaid. "Not verified" means we could not confirm it from inside the project
+(Plaid's documentation site isn't reachable from the build environment and no Plaid SDK is
+vendored); confirm those points in the Plaid Dashboard or with Plaid before relying on them.
+
+| Question | Answer | Status |
+|---|---|---|
+| Credit card accounts | Yes. Link returns card accounts (`type: credit`, `subtype: credit card`) alongside checking/savings; each is mapped to its own **liability** GL account. Transactions arrive through the same Transactions product. | Verified (code path and tests) |
+| Transaction sync | Yes — `/transactions/sync` with a saved cursor, webhooks for new data, daily backstop. Pending rows are skipped; changed/removed rows are flagged, never silently changed after posting. | Verified |
+| Historical retrieval | Link asks for `transactions.days_requested: 730` (about two years). How much an institution actually returns varies (often 90 days to 24 months). Rows before the books' opening date are set aside automatically; Coetha drafts a Historical Records request for any gap between the opening date and the first retrieved month. | Setting verified in code; per-bank depth **not verified** |
+| Balances | `/accounts/get` balances are stored at link time; `/transactions/sync` balances are stored when the response includes them. Used for outstanding card balances and the employee-card check. | Verified (optional field handled) |
+| Statement PDFs (Plaid **Statements** product) | Built as an adapter seam only (`src/lib/statement-retrieval.ts`). No Statements endpoint is called, because its request/response shape could not be verified here. When a statement isn't available, Coetha drafts a request for that exact account and month. To turn it on later: enable Statements in the Plaid Dashboard, set `PLAID_STATEMENTS_ENABLED=true`, add the verified implementation, and re-link (Link update mode) so clients consent. Statements are supported only at some institutions. | **Not verified**; fallback verified |
+| Lines of credit and loans | A line of credit often appears as a `credit` account and can be monitored like a card (liability). Loans (`type: loan`) frequently show balances/details only through Plaid's **Liabilities** product, which Client Connect does not request; for those, staff register the loan by hand and Coetha requests the loan agreement and statements. | Partially verified; Liabilities **not used** |
+| Institutions Plaid doesn't support, or business accounts behind special logins | Register the account by hand (Manage Accounts) and use CSV statement import or statement uploads against Coetha's requests. Some banks need OAuth registration first (see step 1.4). | Process verified |
+
+### Employee / authorized-user cards
+
+Some issuers report each employee card as its own Plaid account even though they share ONE credit
+line; others report only the main account. Client Connect detects the first case when a bank is
+linked: credit-card accounts in the same login with the **same credit limit and the same current
+balance** (and the same product name) are suggested as one shared account. The first card is the
+primary; the others are shown as "Employee cards on one shared credit account?" with **Confirm — one
+account** (they all feed the primary's liability GL account) or **Separate account** (staff override:
+it gets its own account). While suggested or confirmed, the same charge reported under two cards
+(same date, amount and description) is stored once. When Plaid reports only the main account, staff
+add the employee cards in Manage Accounts as sub-cards of that account (no GL account of their own).
+Every decision is audited.
+
+### Card payments
+
+A payment from checking to a card, line of credit or loan is a **transfer** (bank asset → liability),
+never an expense. Coetha recognizes the payment from its description (the card's last 4, issuer or
+nickname next to "payment"/"autopay") even when only the bank side is connected, and suggests the
+card's liability account; when both sides are connected, posting one side links the other so it's
+recorded once. A payment already posted to an expense is flagged in the books and raised as a
+Coetha recommendation with the correcting entry for your approval.
