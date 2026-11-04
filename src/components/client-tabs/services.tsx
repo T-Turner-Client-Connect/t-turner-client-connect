@@ -5,7 +5,7 @@ import {
   createServiceAction, ownerOverrideAction, paymentAuthAction, prepareAgreementAction, sendAgreementAction, serviceStatusAction, voidAgreementAction,
 } from "@/app/actions/service-agreements";
 import { prisma } from "@/lib/prisma";
-import { ownerAccessFor } from "@/lib/auth/owner";
+import { can } from "@/lib/auth/permissions";
 import { downloadToken } from "@/lib/services/documents";
 import { clientServices, DEFAULT_PAYMENT_TERMS, methodLabel, SERVICE_STATUS, SERVICE_TYPES, startGate } from "@/lib/services/service-agreements";
 import { usd } from "@/lib/billing/payment-fees";
@@ -26,9 +26,9 @@ export async function ServicesTab({ clientId, user }: { clientId: string; user: 
   const [services, staff, owner] = await Promise.all([
     clientServices(clientId),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
-    ownerAccessFor(user.id),
+    can(user, "billing", "approve"),
   ]);
-  const isOwner = owner?.scope === "FULL";
+  const isOwner = owner;
   const thisYear = new Date().getFullYear();
   const years = Array.from({ length: 8 }, (_, i) => thisYear + 1 - i);
 

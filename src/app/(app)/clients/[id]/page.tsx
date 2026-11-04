@@ -25,7 +25,7 @@ import { returnTypeLabel } from "@/lib/tax/return-types";
 import { ServicesTab } from "@/components/client-tabs/services";
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
 import { InvoicesTab } from "@/components/client-tabs/invoices";
-import { ownerAccessFor } from "@/lib/auth/owner";
+import { can } from "@/lib/auth/permissions";
 
 export const metadata = { title: "Client" };
 
@@ -41,7 +41,7 @@ const TABS = [
   { key: "taxes", label: "Taxes" },
   { key: "services", label: "Services & Agreements" },
   { key: "appointments", label: "Appointments" },
-  // Owner's Office invoices: only for staff with owner access (full or delegated billing).
+  // Owner's Office invoices: only for staff holding Billing and invoicing → View.
   { key: "invoices", label: "Invoices" },
   { key: "portal", label: "Portal & signatures" },
 ] as const;
@@ -52,7 +52,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
   const sp = await searchParams;
   // Bookkeeping clients open on their Client Overview dashboard; the full profile stays one click away (?tab=overview).
   if (!sp.tab && (await prisma.bookkeepingProfile.count({ where: { clientId: id, active: true } }))) redirect(`/bookkeeping/${id}`);
-  const seesInvoices = !!(await ownerAccessFor(user.id));
+  const seesInvoices = await can(user, "billing", "view");
   const tabs = TABS.filter((t) => t.key !== "invoices" || seesInvoices);
   const tab = tabs.find((t) => t.key === sp.tab)?.key ?? "overview";
   const client = await prisma.client.findUnique({

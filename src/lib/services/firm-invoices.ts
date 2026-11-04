@@ -3,13 +3,14 @@ import type { Invoice } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
 import { ForbiddenError } from "@/lib/auth/actor";
-import { assertOwner, ownerAudit } from "@/lib/auth/owner";
+import { assertOffice, ownerAudit } from "@/lib/auth/owner";
+import { can } from "@/lib/auth/permissions";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { squareSettings } from "@/lib/square";
 import { changedFields } from "@/lib/audit";
 import { clientPaymentOptions, FIRM_METHOD_DEFAULTS, FIRM_METHODS, FIRM_SERVICES, isSquarePaymentUrl, squarePayUrl, TAX_RETURN_SERVICES, type FirmMethod, type InvoiceStatusKey } from "@/lib/billing/invoice-status";
-import { assertCanChangeBillingSettings } from "@/lib/auth/billing-permissions";
+import { assertCanChangePaymentIntegrations } from "@/lib/auth/billing-permissions";
 import { cashCollectedCents, creditedCents } from "@/lib/billing/pricing";
 import { METHOD_LABELS } from "@/lib/billing/labels";
 import type { FirmInvoiceDoc } from "@/components/billing/firm-invoice-document";
@@ -22,10 +23,10 @@ import { ValidationError } from "./clients";
  * receivables). Managed bookkeeping clients' invoicing of their own customers (ClientInvoice) is
  * separate and untouched.
  *
- * Staff with delegated billing access create drafts and submit them; only the owner (full access)
- * approves and sends. Sending through Square (square-invoicing.ts) happens on approval when the
- * owner's "Send invoices through Square" switch is on, or later from the invoice page. Nothing here
- * charges a card or stores card data.
+ * Permissions (Staff Access & Permissions, via lib/auth/billing-permissions.ts): Billing → Create /
+ * Edit for drafts and submitting, Billing → Send to approve and send. Sending through Square
+ * (square-invoicing.ts) happens on approval when the "Send invoices through Square" switch is on,
+ * or later from the invoice page. Nothing here charges a card or stores card data.
  */
 
 export type FirmInvoiceInput = {
@@ -109,7 +110,7 @@ const lineOf = (input: FirmInvoiceInput) => ({ service: input.service, descripti
 
 /** Draft from the Create Invoice screen. Owner or staff with billing access. */
 export async function createFirmInvoice(actor: Actor, input: FirmInvoiceInput) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "create");
   const checked = await validate(input);
   const contact = await billingContactOf(input.clientId);
   const inv = await withNumberRetry(() =>
@@ -126,7 +127,7 @@ export async function createFirmInvoice(actor: Actor, input: FirmInvoiceInput) {
 
 /** Drafts only; the client's billing contact is refreshed from the master record. */
 export async function updateFirmInvoice(actor: Actor, invoiceId: string, input: FirmInvoiceInput) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "edit");
   const before = await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { lines: true } });
   if (!before || before.formType !== "INVOICE") throw new ValidationError("Not found.");
   if (before.state !== "DRAFT") throw new ValidationError("Only drafts can be edited. Ask the owner to return it to draft first.");
@@ -152,7 +153,7 @@ export async function updateFirmInvoice(actor: Actor, invoiceId: string, input: 
 
 /** Staff (or the owner) hand a draft to the owner for approval. */
 export async function submitForApproval(actor: Actor, invoiceId: string) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "edit");
   const res = await prisma.invoice.updateMany({ where: { id: invoiceId, state: "DRAFT" }, data: { state: "PENDING_APPROVAL", submittedAt: new Date(), submittedById: actor.id } });
   if (res.count !== 1) throw new ValidationError("Only drafts can be submitted for approval.");
   await ownerAudit(actor.id, "billing.invoice_submitted", "Invoice", invoiceId);
@@ -160,10 +161,10 @@ export async function submitForApproval(actor: Actor, invoiceId: string) {
 
 /** The owner sends a submitted invoice back for changes; the submitter may also take it back. */
 export async function returnToDraft(actor: Actor, invoiceId: string, note?: string | null) {
-  const access = await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "edit");
   const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
   if (!inv || inv.state !== "PENDING_APPROVAL") throw new ValidationError("Only an invoice waiting for approval can be returned to draft.");
-  if (access.scope !== "FULL" && inv.submittedById !== actor.id) throw new ForbiddenError("Only the owner can return someone else's invoice.");
+  if (inv.submittedById !== actor.id && !(await can(actor, "billing", "send"))) throw new ForbiddenError("Only someone who can send invoices can return someone else's invoice.");
   const res = await prisma.invoice.updateMany({ where: { id: invoiceId, state: "PENDING_APPROVAL" }, data: { state: "DRAFT", submittedAt: null, submittedById: null } });
   if (res.count !== 1) throw new ValidationError("Only an invoice waiting for approval can be returned to draft.");
   await ownerAudit(actor.id, "billing.invoice_returned", "Invoice", invoiceId, { note: note?.trim().slice(0, 300) || null });
@@ -242,7 +243,7 @@ const ACTIONS: Record<string, string> = {
 
 /** Every change to this invoice and its payments, oldest first (owner audit log). */
 export async function invoiceHistory(actor: Actor, invoiceId: string) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "view");
   const payments = await prisma.payment.findMany({ where: { invoiceId }, select: { id: true } });
   const rows = await prisma.ownerAuditLog.findMany({
     where: { OR: [{ entityType: "Invoice", entityId: invoiceId }, { entityType: "Payment", entityId: { in: payments.map((p) => p.id) } }] },
@@ -264,7 +265,7 @@ export async function invoiceHistory(actor: Actor, invoiceId: string) {
  * invoices sent through the Square connection carry their own link and don't need this.
  */
 export async function setSquareLinksEnabled(actor: Actor, enabled: boolean) {
-  await assertCanChangeBillingSettings(actor);
+  await assertCanChangePaymentIntegrations(actor);
   await billingSettings();
   await prisma.billingSettings.update({ where: { id: "default" }, data: enabled ? { squareLinksEnabledAt: new Date(), squareLinksEnabledById: actor.id } : { squareLinksEnabledAt: null, squareLinksEnabledById: null } });
   await ownerAudit(actor.id, enabled ? "billing.square_links_enabled" : "billing.square_links_disabled", "BillingSettings", "default");
@@ -272,7 +273,7 @@ export async function setSquareLinksEnabled(actor: Actor, enabled: boolean) {
 
 /** Owner only: the Republic Bank fees she has confirmed, shown to clients exactly as written. */
 export async function setRefundTransferFeeNote(actor: Actor, note: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "settings");
   await billingSettings();
   await prisma.billingSettings.update({ where: { id: "default" }, data: { refundTransferFeeNote: note.trim().slice(0, 1000) || null } });
   await ownerAudit(actor.id, "billing.refund_transfer_fees_saved", "BillingSettings", "default");
@@ -280,7 +281,7 @@ export async function setRefundTransferFeeNote(actor: Actor, note: string) {
 
 /** Clients for the Create Invoice search: what staff would otherwise re-type. */
 export async function invoiceClientChoices(actor: Actor) {
-  await assertOwner(actor, "billing");
+  await assertOffice(actor, "billing", "view");
   const rows = await prisma.client.findMany({
     where: { archivedAt: null },
     select: { id: true, displayName: true, businessName: true, email: true, phone: true, addressLine1: true, addressLine2: true, city: true, state: true, postalCode: true, clientType: true, contacts: { select: { email: true, phone: true }, orderBy: { createdAt: "asc" }, take: 3 } },

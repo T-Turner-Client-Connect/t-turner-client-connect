@@ -1,8 +1,9 @@
+import { notFound } from "next/navigation";
 import clsx from "clsx";
 import { Building2, CheckCircle2, CircleSlash, Sparkles } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { PageHeader } from "@/components/ui";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ownerSwitches } from "@/lib/services/owner-switches";
 import { coethaKeyPresent, coethaModel } from "@/lib/coetha-model";
@@ -37,7 +38,9 @@ function Switch({ on, label, testId }: { on: boolean; label: string; testId: str
 }
 
 export default async function OwnerAutomationPage() {
-  const { actor } = await requireOwner("full");
+  // The owner's own switches: only Tabitha sees this page.
+  const { actor, access } = await requireOffice();
+  if (!access.isOwner) notFound();
   const [sw, primary, connCounts] = await Promise.all([
     ownerSwitches(),
     isReportApprover(actor),

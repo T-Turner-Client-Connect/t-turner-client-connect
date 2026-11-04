@@ -18,11 +18,11 @@ const SUGGESTED: Partial<Record<keyof typeof PAY_METHODS, string>> = {
 };
 
 /** Owner's Office → Settings: payment instructions by method, and the late-fee policy. */
-export async function PlanSettingsCards() {
+export async function PlanSettingsCards({ instructions = true, lateFees = true }: { instructions?: boolean; lateFees?: boolean } = {}) {
   const [rows, policy] = await Promise.all([prisma.paymentInstruction.findMany(), lateFeePolicy()]);
   return (
     <div className="mt-4 grid gap-4 lg:grid-cols-2">
-      <Card title="Payment instructions clients see">
+      {instructions && <Card title="Payment instructions clients see">
         <p className="mb-2 text-xs text-slate-600">One method is selected per invoice or plan; clients see only that method&apos;s instructions. Venmo and Cash App should be business profiles for business payments — please confirm with each app.</p>
         <div className="space-y-2" data-testid="instructions">
           {(Object.keys(PAY_METHODS) as (keyof typeof PAY_METHODS)[]).filter((m) => m !== "IN_HOUSE_PLAN").map((m) => {
@@ -39,9 +39,9 @@ export async function PlanSettingsCards() {
             );
           })}
         </div>
-      </Card>
+      </Card>}
 
-      <Card title="Late-fee policy">
+      {lateFees && <Card title="Late-fee policy">
         <div className="text-sm" data-testid="late-fee-policy">
           <p className="mb-2">{policy.enabled ? <Badge tone="red">On</Badge> : <Badge tone="gray">Off</Badge>} Proposed: {policy.graceDays}-day grace, then {policy.rateBps / 100}% of the unpaid principal for each further {policy.periodDays}-day period, never compounded{policy.capBps ? `, capped at ${policy.capBps / 100}%` : ""}.</p>
           <p className="mb-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-900">Keep this off until it&apos;s reviewed: 10% every 5 days is about 60% a month, and penalties at that level are often unenforceable and may conflict with Alabama law. It also must be in each client&apos;s signed agreement.</p>
@@ -56,7 +56,7 @@ export async function PlanSettingsCards() {
             {policy.reviewedAt && <p className="text-xs text-slate-600 sm:col-span-2">Reviewed {fmtDateTime(policy.reviewedAt)}</p>}
           </ActionForm>
         </div>
-      </Card>
+      </Card>}
     </div>
   );
 }

@@ -225,8 +225,8 @@ export function paymentStatus(a: { lastInvoiceStatus: string | null; nextDueDate
 
 export const todayCentral = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
 
-async function assertBilling(actor: Actor) {
-  if (!(await canManageBilling(actor))) throw new ForbiddenError("Only Tabitha (or staff she allows) can view or link Square billing.");
+async function assertBilling(actor: Actor, action: "view" | "edit" = "edit") {
+  if (!(await canManageBilling(actor, action))) throw new ForbiddenError("Only Tabitha (or staff she allows) can view or link Square billing.");
 }
 function requireSquare() {
   const s = squareSettings();
@@ -316,7 +316,7 @@ async function customersByName(text: string) {
 
 /** Finds Square customers by email, phone or customer ID and lists their recurring series. Reads only. */
 export async function lookupSquareBilling(actor: Actor, input: LookupInput) {
-  await assertBilling(actor);
+  await assertBilling(actor, "view");
   const s = requireSquare();
   const customers: SqCustomer[] = [];
   const add = (cs: SqCustomer[] | undefined) => cs?.forEach((c) => customers.some((x) => x.id === c.id) || customers.push(c));
@@ -395,7 +395,7 @@ export async function lookupSquareBilling(actor: Actor, input: LookupInput) {
  * then it's shown for the owner to confirm, never linked automatically.
  */
 export async function suggestSquareMatches(actor: Actor, clientId: string) {
-  await assertBilling(actor);
+  await assertBilling(actor, "view");
   const c = await prisma.client.findUnique({ where: { id: clientId }, select: { displayName: true, businessName: true, firstName: true, lastName: true, email: true, phone: true, contacts: { select: { email: true, phone: true }, take: 5 } } });
   if (!c) throw new ValidationError("Client not found.");
   const emails = [...new Set([c.email, ...c.contacts.map((x) => x.email)].map((e) => normalizeEmail(e ?? undefined)).filter(Boolean) as string[])];
@@ -750,7 +750,7 @@ export async function assertNotBilledInSquare(clientId: string, audience: "staff
 
 /** The staff overview: every bookkeeping client and its Square billing link. */
 export async function squareBillingOverview(actor: Actor) {
-  await assertBilling(actor);
+  await assertBilling(actor, "view");
   const profiles = await prisma.bookkeepingProfile.findMany({
     where: { active: true, client: { archivedAt: null } },
     select: { clientId: true, squareBillingExpected: true, client: { select: { displayName: true, businessName: true, squareBillings: { where: { arrangement: { active: true } }, orderBy: { createdAt: "asc" }, include: { arrangement: { include: { members: { include: { client: { select: { id: true, displayName: true, businessName: true } } } } } } } } } } },

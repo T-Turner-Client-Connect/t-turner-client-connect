@@ -1,9 +1,9 @@
-import { ownerFromSession } from "@/lib/auth/owner";
+import { officeFromSession } from "@/lib/auth/owner";
 import { readReceipt } from "@/lib/services/owner-expenses";
 
-// Expense receipts: owner-only, from the owner's private store.
+// Expense receipts: owner (or Revenue and expenses → View), from the owner's private store.
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const actor = await ownerFromSession("full");
+  const actor = await officeFromSession("revenue", "view");
   if (!actor) return new Response("Not found", { status: 404 });
   const r = await readReceipt(actor, (await ctx.params).id);
   if (!r) return new Response("Not found", { status: 404 });

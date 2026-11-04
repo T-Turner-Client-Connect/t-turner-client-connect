@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
+import { can } from "@/lib/auth/permissions";
 
 /**
  * Client bookkeeping ledger: real double-entry books, one set per client.
@@ -102,13 +103,21 @@ export const usd = (c: number) => `${c < 0 ? "-" : ""}$${(Math.abs(c) / 100).toL
 // --- Access ------------------------------------------------------------------------------------
 
 /** Admins, or the staff member assigned to this client (the same rule as the bookkeeping workspace's Coetha link). */
-export async function canUseLedger(actor: Actor, clientId: string) {
+export type BooksArea = "ledger" | "banking";
+
+/**
+ * Admins and the assigned staff member work in a client's books (unchanged). Staff Access &
+ * Permissions adds others: "General ledger" or "Banking and reconciliation" → View to see every
+ * managed client's books, → Edit to work in them. Checked in the database on every call.
+ */
+export async function canUseLedger(actor: Actor, clientId: string, area: BooksArea = "ledger", action: "view" | "edit" = "view") {
   if (actor.role === "ADMIN") return true;
   const c = await prisma.client.findUnique({ where: { id: clientId }, select: { assignedToId: true } });
-  return c?.assignedToId === actor.id;
+  if (c?.assignedToId === actor.id) return true;
+  return can(actor, area, action);
 }
-export async function assertLedger(actor: Actor, clientId: string) {
-  if (!(await canUseLedger(actor, clientId))) throw new ForbiddenError("Only Admins and the staff member assigned to this client can work in its books.");
+export async function assertLedger(actor: Actor, clientId: string, area: BooksArea = "ledger", action: "view" | "edit" = "view") {
+  if (!(await canUseLedger(actor, clientId, area, action))) throw new ForbiddenError("Only Admins, the staff member assigned to this client and staff Tabitha allows can work in its books.");
 }
 /**
  * Creating or changing business books, bank feeds or business invoices requires an
@@ -119,8 +128,8 @@ export async function assertManagedBusiness(clientId: string, db: Tx | typeof pr
   const c = await db.client.findUnique({ where: { id: clientId }, select: { businessAccess: true } });
   if (c?.businessAccess !== "ACTIVE") throw new ForbiddenError("This client is a Regular Tax Client. Business books, bank feeds and business invoicing need owner-approved Managed Business access.");
 }
-export async function assertLedgerWrite(actor: Actor, clientId: string) {
-  await assertLedger(actor, clientId);
+export async function assertLedgerWrite(actor: Actor, clientId: string, area: BooksArea = "ledger") {
+  await assertLedger(actor, clientId, area, "edit");
   await assertManagedBusiness(clientId);
 }
 async function assertOwner(actor: Actor, what: string) {
@@ -407,7 +416,7 @@ export function fingerprints(rows: ParsedRow[]) {
  * Imported rows are not posted until staff review them.
  */
 export async function importBankCsv(actor: Actor, clientId: string, accountId: string, input: { fileName: string; text: string }) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!account || (account.subtype !== "BANK" && account.subtype !== "CREDIT_CARD")) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
   if (input.text.length > 5_000_000) throw new ValidationError("That file is too large. Import one statement at a time.");
@@ -486,7 +495,7 @@ const TRANSFER_WINDOW_DAYS = 5;
  * the same entry, so the movement is recorded once, not twice.
  */
 export async function categorizeBankTransaction(actor: Actor, clientId: string, txnId: string, input: { accountId: string; memo?: string }) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   return prisma.$transaction((tx) => categorizeBankTransactionTx(tx, actor, clientId, txnId, input));
 }
 
@@ -530,7 +539,7 @@ export async function categorizeBankTransactionTx(tx: Tx, actor: Actor, clientId
 
 /** Excluded rows (a duplicate in the file, a personal item kept off the books) stay visible with the reason. */
 export async function excludeBankTransaction(actor: Actor, clientId: string, txnId: string, reason: string) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   if (reason.trim().length < 3) throw new ValidationError("Record why this transaction is excluded.");
   const r = await prisma.bankTransaction.updateMany({ where: { id: txnId, clientId, status: "UNREVIEWED" }, data: { status: "EXCLUDED", excludedReason: reason.trim().slice(0, 200), reviewedById: actor.id, reviewedAt: new Date(), flag: null, flagNote: null } });
   if (!r.count) throw new ValidationError("Only an unreviewed transaction can be excluded. Reverse a posted one instead.");
@@ -539,7 +548,7 @@ export async function excludeBankTransaction(actor: Actor, clientId: string, txn
 
 /** A person confirms a flagged, already-posted row is fine as it is (recorded with their note). */
 export async function clearBankFlag(actor: Actor, clientId: string, txnId: string, note: string) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   if (note.trim().length < 5) throw new ValidationError("Note what you checked.");
   const t = await prisma.bankTransaction.findFirst({ where: { id: txnId, clientId, flag: { not: null } } });
   if (!t) throw new ValidationError("That transaction isn't flagged.");
@@ -548,7 +557,7 @@ export async function clearBankFlag(actor: Actor, clientId: string, txnId: strin
 }
 
 export async function includeBankTransaction(actor: Actor, clientId: string, txnId: string) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   const r = await prisma.bankTransaction.updateMany({ where: { id: txnId, clientId, status: "EXCLUDED" }, data: { status: "UNREVIEWED", excludedReason: null, reviewedById: null, reviewedAt: null } });
   if (!r.count) throw new ValidationError("That transaction isn't excluded.");
   await audit(prisma, { actorId: actor.id, action: "ledger.bank_included", entityType: "BankTransaction", entityId: txnId, clientId });
@@ -577,7 +586,7 @@ export async function accountBalance(clientId: string, accountId: string, asOf: 
  * ledger matches the statement to the cent and every bank row through that date is reviewed.
  */
 export async function reconcileAccount(actor: Actor, clientId: string, accountId: string, input: { statementDate: string; statementBalance: string }) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   if (!isYmd(input.statementDate)) throw new ValidationError("Enter the statement's ending date.");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!account || (account.subtype !== "BANK" && account.subtype !== "CREDIT_CARD")) throw new ValidationError("Choose one of this client's bank or credit card accounts.");

@@ -94,6 +94,7 @@ model User {
   contracts        ContractAssignment[]
   portalInvites    PortalInvite[]
   ownerAccess      OwnerAccess?         @relation("OwnerAccessUser")
+  staffPermissions StaffPermission[]    @relation("StaffPermissionUser")
 }
 
 model Session {
@@ -2163,12 +2164,44 @@ model OwnerAccess {
   user        User       @relation("OwnerAccessUser", fields: [userId], references: [id], onDelete: Cascade)
   // The owner's own binding. Only the primary may grant or revoke others.
   isPrimary   Boolean    @default(false)
-  // FULL = the whole Owner's Office; BILLING = quotes, invoices and payments only
-  // (no expenses, no financial dashboard, no settings).
+  // Legacy (before Staff Access & Permissions): FULL = the whole Owner's Office; BILLING = quotes,
+  // invoices and payments only. Only the primary row still matters; other rows were migrated to
+  // StaffPermission grants (20261106205000_staff_permissions) and no longer grant anything.
   scope       OwnerScope @default(FULL)
   grantedById String?
   grantedAt   DateTime   @default(now())
   revokedAt   DateTime?
+}
+
+// Staff Access & Permissions: one row per staff member, area and action (see src/lib/permissions.ts).
+// No row = denied. The primary owner holds everything and has no rows. Checked on every request.
+model StaffPermission {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation("StaffPermissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  area        String
+  action      String
+  grantedById String?
+  grantedAt   DateTime @default(now())
+
+  @@unique([userId, area, action])
+}
+
+// Every grant and revoke: who changed whom, which area/action, old -> new, and when.
+model StaffPermissionEvent {
+  id          String   @id @default(cuid())
+  actorId     String
+  userId      String
+  area        String
+  action      String
+  fromAllowed Boolean
+  toAllowed   Boolean
+  // "matrix", "preset:<key>", "migration:<mapping>", "legacy:bookkeeping_billing", "invite"
+  source      String
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
 }
 
 enum OwnerScope {

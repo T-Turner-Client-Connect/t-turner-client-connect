@@ -10,6 +10,7 @@ import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, categor
 import { closeChecklist } from "./ledger-review";
 import { isReportApprover } from "./bookkeeping-clients";
 import { coethaOn } from "./owner-switches";
+import { assertCanApproveCoethaWork } from "@/lib/auth/permissions";
 
 /**
  * Coetha, the firm's AI Senior Accountant, working inside Client Connect.
@@ -36,10 +37,11 @@ export type ProposalKind = keyof typeof KIND_LABEL;
 const MAX_TO_CATEGORIZE = 80;
 const MAX_RECENT = 150;
 
-/** Thin wrapper over the Tabitha-only approver rule. Staff (even Admins) are refused. */
-export async function assertCanApproveCoethaWork(actor: Actor) {
-  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can approve or reject Coetha's work.");
-}
+/**
+ * The Tabitha-only approval rule has ONE definition: lib/auth/permissions.ts (primary owner only;
+ * no grant — not even Staff management — lets anyone else approve or reject Coetha's work).
+ */
+export { assertCanApproveCoethaWork };
 
 export async function coethaStatus() {
   const enabled = await coethaOn();

@@ -1,7 +1,7 @@
 import { PageHeader } from "@/components/ui";
 import { QuoteForm } from "@/components/owner/quote-form";
 import { saveQuoteAction } from "@/app/actions/owner";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { billingSettings, todayYmd } from "@/lib/services/owner-billing";
 import { addMonths } from "@/lib/billing/pricing";
 import { prisma } from "@/lib/prisma";
@@ -9,7 +9,7 @@ import { prisma } from "@/lib/prisma";
 const plain = (type: string, v: number) => (type === "FLAT" || type === "PERCENT" ? (v / 100).toString() : "");
 
 export default async function NewQuotePage({ searchParams }: { searchParams: Promise<{ client?: string }> }) {
-  const { access } = await requireOwner("billing");
+  const { access } = await requireOffice("billing", "create");
   const [s, clients, sp] = await Promise.all([billingSettings(), prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true }, orderBy: { displayName: "asc" } }), searchParams]);
   const today = todayYmd();
   return (
@@ -19,7 +19,7 @@ export default async function NewQuotePage({ searchParams }: { searchParams: Pro
         action={saveQuoteAction.bind(null, null)}
         clients={clients}
         fee={{ type: s.planFeeType, value: s.planFeeValue, maxInstallments: s.maxInstallments, confirmed: !!s.planFeeRulesConfirmedAt }}
-        canOverrideFee={access.scope === "FULL"}
+        canOverrideFee={access.can("billing", "approve")}
         submitLabel="Save draft"
         defaults={{
           clientId: sp.client ?? "",

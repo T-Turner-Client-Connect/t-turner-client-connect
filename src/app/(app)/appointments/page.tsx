@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth/session";
-import { ownerAccessFor } from "@/lib/auth/owner";
+import { can } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui";
 import { CalendarViews, viewRange, type View } from "@/components/appointments/calendar-views";
@@ -22,7 +22,7 @@ export default async function StaffAppointmentsPage({ searchParams }: { searchPa
     calendarAppointments(atOffice(from, "00:00"), atOffice(to, "00:00")),
     prisma.appointmentDateRule.findMany({ where: { date: { gte: from, lt: to }, kind: "BLOCK", staffId: null } }),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
-    ownerAccessFor(user.id),
+    can(user, "appointments", "view"),
   ]);
   const blocked: Record<string, string> = {};
   for (const r of rules) blocked[r.date] = `${r.label || "Blocked"}${r.startTime ? ` ${timeLabel(r.startTime)}–${timeLabel(r.endTime!)}` : ""}`;
@@ -31,7 +31,7 @@ export default async function StaffAppointmentsPage({ searchParams }: { searchPa
       <PageHeader
         title="Appointments"
         subtitle="Client bookings and staff-added appointments. Times are Central Time."
-        actions={owner?.scope === "FULL" ? <Link href="/owner/appointments" className="rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white">Manage availability &amp; requests</Link> : undefined}
+        actions={owner ? <Link href="/owner/appointments" className="rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white">Manage availability &amp; requests</Link> : undefined}
       />
       {sp.appt && <AppointmentDetail id={sp.appt} owner={false} staff={staff} closeHref={`/appointments?view=${view}&date=${anchor}`} />}
       <CalendarViews view={view} anchor={anchor} appts={appts} base="/appointments" today={today} blocked={blocked} />

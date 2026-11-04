@@ -64,13 +64,14 @@ const LINKS = [
   { href: "/settings", label: "Settings", icon: Settings, also: [] },
 ];
 
-export type OwnerNav = "none" | "claim" | "billing" | "full";
+/** "none", "claim", or the first Owner's Office page this account may open. */
+export type OwnerNav = "none" | "claim" | `/owner${string}`;
 
 // Rendered only when the server says this signed-in account holds owner access.
 function OwnerLink({ owner, onNavigate }: { owner: OwnerNav; onNavigate?: () => void }) {
   const pathname = usePathname();
   if (owner === "none") return null;
-  const href = owner === "claim" ? "/owner/claim" : owner === "billing" ? "/owner/invoices" : "/owner";
+  const href = owner === "claim" ? "/owner/claim" : owner;
   const active = pathname.startsWith("/owner");
   return (
     <Link
