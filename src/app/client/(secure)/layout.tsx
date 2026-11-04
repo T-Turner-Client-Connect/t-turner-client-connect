@@ -8,6 +8,7 @@ import { portalLogoutAction } from "@/app/actions/portal";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { ownerAndBusiness } from "@/lib/services/related-businesses";
+import { isPayrollApprover } from "@/lib/services/payroll-approval";
 
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
   const user = await requirePortalUser();
@@ -24,6 +25,7 @@ export default async function PortalLayout({ children }: { children: React.React
           // "Owner: …" under a business heading — the name already on the owner's record.
           owner: names?.owner ?? null,
           order: names?.order ?? 0,
+          payrollApprover: await isPayrollApprover(user.id, a.clientId),
         };
       }),
     )

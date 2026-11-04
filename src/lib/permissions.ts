@@ -83,10 +83,10 @@ export const AREAS = [
   {
     key: "payroll",
     label: "Payroll",
-    description: "The firm's own payroll. There's no payroll screen in the Owner's Office yet.",
+    description: "Business clients' payroll approvals (Owner's Office → Payroll approvers). Owners approve their own payroll; staff never approve on a client's behalf.",
     actions: [
       { key: "view", description: "See payroll.", reserved: true },
-      { key: "edit", description: "Prepare payroll.", reserved: true },
+      { key: "edit", description: "Choose which business owners approve each business's payroll, which approvals are required, and whether they see per-employee figures." },
       { key: "approve", description: "Approve payroll runs.", reserved: true },
     ],
   },

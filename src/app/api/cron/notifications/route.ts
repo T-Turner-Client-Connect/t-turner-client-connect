@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { dispatchPendingNotifications } from "@/lib/services/notifications";
+import { dispatchHeldPayrollTexts } from "@/lib/services/payroll-approval";
 import { dispatchStaffAlerts } from "@/lib/services/staff-alerts";
 import { heartbeat, scanQuarantined } from "@/lib/services/documents";
 import { autoOpenWorkMonth } from "@/lib/services/bookkeeping-questions";
@@ -27,8 +28,10 @@ export async function POST(req: Request) {
   // License expiration reminders (60/30/7 days) and Expired status; each sent once.
   const identity = await runIdentityReminders();
   await dispatchPendingNotifications();
+  // Payroll approval texts held for quiet hours go out once the window opens.
+  const payrollTexts = await dispatchHeldPayrollTexts();
   const staffAlerts = await dispatchStaffAlerts();
   // A few Resource Center links per run, each re-checked weekly.
   const links = await checkResourceLinks(5, 7);
-  return Response.json({ ok: true, staffAlerts, scan, links, identity, periods, nonprofits });
+  return Response.json({ ok: true, staffAlerts, payrollTexts, scan, links, identity, periods, nonprofits });
 }
