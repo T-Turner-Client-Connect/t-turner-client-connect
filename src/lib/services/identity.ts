@@ -134,6 +134,23 @@ export async function addPerson(who: { staff: Actor } | { portal: PortalActor },
   return p;
 }
 
+/**
+ * Removes a spouse or dependent from the list (kept in history, never erased).
+ * A client may remove someone they added only until anything has been submitted for that
+ * person; after that only our office can remove them, so submitted records stay intact.
+ */
+export async function removePerson(who: { staff: Actor } | { portal: PortalActor }, clientId: string, personId: string, reason?: string) {
+  if ("staff" in who) await requireStaff(who.staff, clientId);
+  else await requirePortal(who.portal, clientId, true);
+  const person = await prisma.identityPerson.findFirst({ where: { id: personId, clientId, archivedAt: null } });
+  if (!person) throw new ValidationError("That person isn't listed.");
+  if (person.role === "CLIENT") throw new ValidationError("The account holder can't be removed.");
+  const submitted = await prisma.identityDocument.count({ where: { personId } });
+  if ("portal" in who && submitted > 0) throw new ValidationError("Documents were already submitted for this person, so only our office can remove them. Please send us a message.");
+  await prisma.identityPerson.update({ where: { id: personId }, data: { archivedAt: new Date() } });
+  await audit(prisma, { actorId: "staff" in who ? who.staff.id : null, action: "identity.person_removed", entityType: "IdentityPerson", entityId: personId, clientId, details: { role: person.role, byClient: "portal" in who, documentsKept: submitted, reason: reason?.trim().slice(0, 300) || null } });
+}
+
 // --- Uploads ------------------------------------------------------------------------
 
 export type IdUploadInput = { clientId: string; personId: string; type: string; expiresOn?: string | null; replacementReason?: string | null; bytes: Uint8Array; originalName: string };

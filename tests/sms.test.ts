@@ -107,7 +107,7 @@ describe("STOP / HELP / START and Twilio webhooks", () => {
     expect((await handleInboundSms({ MessageSid: "SM200", From: "+15550100102", Body: "HELP" })).reply).toBeNull();
     process.env.SMS_KEYWORD_REPLIES = "app";
     const r = await handleInboundSms({ MessageSid: "SM201", From: "+15550100102", Body: "help" });
-    expect(r.reply).toMatch(/205-659-5448/);
+    expect(r.reply).toMatch(/205-639-1000/);
     delete process.env.SMS_KEYWORD_REPLIES;
   });
 

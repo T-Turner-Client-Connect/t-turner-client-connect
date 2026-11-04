@@ -20,6 +20,7 @@ export const isTaxDocType = (v: string): v is TaxDocType => v in TAX_DOC_TYPES;
 // What clients choose when they upload (stored in Document.docType).
 export const CLIENT_DOC_TYPES = {
   W2: "W-2 (wages)",
+  K1: "Schedule K-1 (partnership, S corporation, estate or trust)",
   FORM_1099: "1099 (contract, bank, investment, retirement income)",
   FORM_1098: "1098 (mortgage interest, tuition, student loan)",
   FORM_1095: "1095 (health coverage)",

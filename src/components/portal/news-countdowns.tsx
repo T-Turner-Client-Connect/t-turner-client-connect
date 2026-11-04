@@ -1,5 +1,5 @@
 import type { Announcement } from "@prisma/client";
-import { CalendarClock, Megaphone, Newspaper } from "lucide-react";
+import { CalendarClock, Newspaper } from "lucide-react";
 import { countdownText, fmtIso, PAY_NOTE, type CountdownCard, type CountdownLine } from "@/lib/tax/deadlines";
 import { TOPICS } from "@/lib/services/news";
 import { fmtChicago } from "@/lib/tz";
@@ -71,7 +71,8 @@ export function NewsAndCountdowns({ cards, news, showAll, allHref }: { cards: Co
           <path d="M240 200 C 520 188, 760 176, 1000 150" fill="none" stroke="#E6C76A" strokeWidth="4" />
         </svg>
         <div className="relative flex items-center gap-5 px-6 py-8 sm:px-10 sm:py-10 md:max-w-[68%]">
-          <Megaphone className="hidden size-20 shrink-0 -rotate-12 fill-gold-500 text-gold-400 sm:block" aria-hidden />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/news/megaphone.png" alt="" width={297} height={289} className="hidden h-24 w-auto shrink-0 drop-shadow-[0_6px_10px_rgb(0_0_0/0.35)] sm:block" />
           <div className="min-w-0">
             <h1 id="news-heading" className="font-serif text-3xl font-bold leading-tight text-white sm:text-[2.6rem]">News &amp; Tax Countdowns</h1>
             <p className="mt-2 text-[15px] text-navy-100 sm:text-lg">Stay informed with the latest IRS and state updates, filing <strong className="text-white">deadlines</strong>, and important announcements from our office.</p>
@@ -91,7 +92,7 @@ export function NewsAndCountdowns({ cards, news, showAll, allHref }: { cards: Co
         </section>
         <section className={luxCard} data-testid="countdowns-panel">
           <PanelHead icon={CalendarClock} title="Tax Countdowns" action={taxYear ? <span className="rounded-full border-2 border-gold-500 px-4 py-1.5 text-sm font-semibold text-navy-900">Tax Year {taxYear}</span> : undefined} />
-          <div className="pt-3"><CountdownCards lines={lines} max={4} /></div>
+          <div className="pt-3"><CountdownCards lines={lines} max={7} /></div>
           <ImportantToKnow>An extension gives you more time to file, not more time to pay.</ImportantToKnow>
         </section>
       </div>

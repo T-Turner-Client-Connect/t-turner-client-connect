@@ -1,7 +1,7 @@
 import { BadgeCheck, Clock, IdCard, ShieldCheck, UserRound } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Field } from "@/components/ui";
-import { portalAddPersonAction, portalIdentityUploadAction, rejectIdentityAction, staffAddPersonAction, staffIdentityUploadAction, verifyIdentityAction } from "@/app/actions/identity";
+import { portalAddPersonAction, portalIdentityUploadAction, rejectIdentityAction, staffAddPersonAction, staffIdentityUploadAction, staffRemovePersonAction, verifyIdentityAction } from "@/app/actions/identity";
 import { ID_ROLES, ID_STATUS, ID_TYPES, isAdminOnlyType, maskedSsn, type identityOverview, type IdRole, type IdType } from "@/lib/services/identity";
 import { fmtIso } from "@/lib/tax/deadlines";
 import { fmtDateTime } from "@/lib/format";
@@ -78,7 +78,7 @@ function ViewLink({ href, type, canOpen, mode }: { href: string; type: IdType; c
   );
 }
 
-function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean }) {
+export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean }) {
   const canOpen = mode === "portal" ? !isAdminOnlyType(slot.type) : !!viewerIsAdmin || !isAdminOnlyType(slot.type);
   const t = ID_TYPES[slot.type];
   const { current, pending } = slot;
@@ -174,6 +174,15 @@ export function IdentitySection({ overview, mode, clientId, linkFor, readOnly, v
           <ul className="divide-y divide-navy-100">
             {slots.map((s) => <SlotRow key={s.type} slot={s} mode={mode} clientId={clientId} personId={person.id} linkFor={linkFor} readOnly={readOnly} viewerIsAdmin={viewerIsAdmin} />)}
           </ul>
+          {mode === "staff" && !readOnly && person.role !== "CLIENT" && (
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer font-semibold text-red-800">Remove {person.name} from the list</summary>
+              <ActionForm action={staffRemovePersonAction.bind(null, clientId, person.id)} className="mt-2 flex flex-wrap items-end gap-2">
+                <label className="block min-w-0 flex-1"><span className="mb-1 block text-xs text-slate-600">Reason (kept in history; their documents are kept)</span><input className="input" name="reason" required maxLength={300} /></label>
+                <Button type="submit" variant="danger">Remove</Button>
+              </ActionForm>
+            </details>
+          )}
         </section>
       ))}
       {!readOnly && (

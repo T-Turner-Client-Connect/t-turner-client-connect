@@ -18,8 +18,8 @@ export const BUSINESS = {
   platformName: "TTurner Client Connect",
   // How the platform is identified on the consent form, Privacy Policy and Terms.
   platformIdentity: "TTurner Client Connect, operated by T. Turner & Associates, LLC",
-  officePhoneDisplay: "205-659-5448",
-  officePhoneTel: "+12056595448",
+  officePhoneDisplay: "205-639-1000",
+  officePhoneTel: "+12056391000",
 } as const;
 
 /** Date the Privacy Policy and Terms were published. Update when the text changes. */

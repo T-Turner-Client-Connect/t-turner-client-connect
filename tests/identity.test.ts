@@ -6,7 +6,7 @@ import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-acco
 import { authorizeDownload, downloadToken, portalDocuments } from "@/lib/services/documents";
 import { notificationText } from "@/lib/services/notifications";
 import {
-  addPerson, ensureClientPerson, identityAlerts, identityChecklist, maskedSsn, portalIdentityOverview, rejectIdentityDocument, runIdentityReminders, staffIdentityOverview, uploadIdentityDocument, verifyIdentityDocument,
+  addPerson, ensureClientPerson, removePerson, identityAlerts, identityChecklist, maskedSsn, portalIdentityOverview, rejectIdentityDocument, runIdentityReminders, staffIdentityOverview, uploadIdentityDocument, verifyIdentityDocument,
 } from "@/lib/services/identity";
 import { addDays, officeToday } from "@/lib/tax/deadlines";
 import { updateStaffAlertSettings } from "@/lib/services/staff-alerts";
@@ -231,5 +231,22 @@ describe("identity documents", () => {
     expect((await prisma.user.findUniqueOrThrow({ where: { id: daria.id } })).role).toBe("STAFF");
     await setIdentityAccessAll(tab, daria.id, false);
     expect(await authorizeDownload(downloadToken(dl.documentId, { staffId: daria.id }), { staffId: daria.id })).toBeNull();
+  });
+});
+
+describe("removing a spouse or dependent", () => {
+  it("the client can remove someone added by mistake only until something is submitted; then only staff can, and history is kept", async () => {
+    const { tab, client, user } = await setup();
+    const oops = await addPerson({ portal: user }, client.id, { role: "DEPENDENT", name: "Typo Fictional" });
+    await removePerson({ portal: user }, client.id, oops.id);
+    expect((await prisma.identityPerson.findUniqueOrThrow({ where: { id: oops.id } })).archivedAt).not.toBeNull();
+    const kid = await addPerson({ portal: user }, client.id, { role: "DEPENDENT", name: "Jordan Fictional" });
+    await uploadIdentityDocument({ portal: user }, { clientId: client.id, personId: kid.id, type: "BIRTH_CERTIFICATE", bytes: img(), originalName: "bc.pdf" });
+    await expect(removePerson({ portal: user }, client.id, kid.id)).rejects.toThrow(/only our office can remove/);
+    await removePerson({ staff: tab }, client.id, kid.id, "Client asked by phone");
+    expect(await prisma.identityDocument.count({ where: { personId: kid.id } })).toBe(1); // documents kept
+    const me = await ensureClientPerson(client.id);
+    await expect(removePerson({ staff: tab }, client.id, me.id)).rejects.toThrow(/can't be removed/);
+    expect(await prisma.auditLog.count({ where: { action: "identity.person_removed", clientId: client.id } })).toBe(2);
   });
 });

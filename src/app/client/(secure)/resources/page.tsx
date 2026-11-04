@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui";
+import { TaxDocsOnline } from "@/components/portal/tax-docs-online";
 import { ResourceCenter } from "@/components/resources/resource-center";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
@@ -36,6 +37,7 @@ export default async function ResourcesPage({ searchParams }: { searchParams: Pr
   return (
     <>
       <PageHeader title="Resources" subtitle="Official agency websites for all 50 states, Washington, D.C. and federal programs." />
+      <div className="mb-6"><TaxDocsOnline /></div>
       <ResourceCenter clientId={current.clientId} initialState={state} resources={items} faqs={faqs.map((f) => ({ id: f.id, question: f.question, answer: f.answer, tags: f.tags }))} coverage={coverage(state, rows)} />
     </>
   );
