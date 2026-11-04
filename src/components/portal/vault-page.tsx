@@ -207,7 +207,7 @@ export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityH
         <div className="flex items-start gap-3">
           <Layers className="size-10 shrink-0 text-gold-600" strokeWidth={1.5} aria-hidden />
           <div>
-            <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900">All Documents</h2>
+            <h2 className="font-serif text-xl sm:text-[1.375rem] font-bold leading-tight text-navy-900">All Documents</h2>
             <p className="text-sm text-navy-800">A complete list of your uploaded documents.</p>
           </div>
         </div>

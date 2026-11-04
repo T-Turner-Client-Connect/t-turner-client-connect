@@ -231,8 +231,8 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
         </div>
 
         <section className={`${luxPanel} overflow-hidden`} data-testid="make-a-payment">
-          <h2 className="flex items-center gap-3 rounded-2xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-4 font-serif text-2xl font-bold text-white">
-            <CreditCard className="size-8 shrink-0 text-white" aria-hidden /> Make a Payment
+          <h2 className="flex items-center gap-3 rounded-2xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-4 font-serif text-xl sm:text-[1.375rem] font-bold text-white">
+            <CreditCard className="size-7 shrink-0 text-white" aria-hidden /> Make a Payment
           </h2>
           <div className="space-y-3 p-4">
             <p className="text-sm text-navy-800">Choose your preferred payment method and pay securely.</p>

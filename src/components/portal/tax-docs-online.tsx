@@ -33,7 +33,7 @@ const LINKS = [
 export function TaxDocsOnline() {
   return (
     <section className="min-w-0 overflow-hidden rounded-2xl border border-gold-200 bg-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)]" data-testid="tax-docs-online">
-      <h2 className="bg-navy-900 px-5 py-3.5 font-serif text-xl font-bold text-white sm:text-2xl">Get Your Tax Documents Online</h2>
+      <h2 className="bg-navy-900 px-5 py-3.5 font-serif text-lg font-bold text-white sm:text-xl">Get Your Tax Documents Online</h2>
       <p className="px-5 pt-3 text-sm text-slate-600">Official sites open in a new tab. Download your form there, then upload it here under Upload Documents.</p>
       <ul className="grid grid-cols-1 gap-3 p-4 md:grid-cols-3">
         {LINKS.map((l) => (

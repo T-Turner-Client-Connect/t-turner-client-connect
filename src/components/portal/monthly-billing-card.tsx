@@ -43,7 +43,7 @@ export function MonthlyBillingCard({ b, testId, showHeading = true }: { b: Month
       <div className={`flex items-center gap-3 ${showHeading ? "" : "[&>span]:hidden [&_h2]:sr-only"}`}>
         <span aria-hidden className="grid size-12 place-items-center rounded-2xl border-2 border-gold-500 bg-gold-100/40 text-gold-600"><CreditCard className="size-6" /></span>
         <div>
-          <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900">Your Monthly Billing</h2>
+          <h2 className="font-serif text-xl sm:text-[1.375rem] font-bold leading-tight text-navy-900">Your Monthly Billing</h2>
           <p className="text-sm font-semibold text-gold-700">{b.title}</p>
         </div>
       </div>
@@ -55,7 +55,7 @@ export function MonthlyBillingCard({ b, testId, showHeading = true }: { b: Month
               <span aria-hidden className="hidden size-16 shrink-0 place-items-center rounded-full border-2 border-gold-500/70 text-gold-300 sm:grid"><CalendarDays className="size-8" /></span>
               <div>
                 <p className="text-sm text-slate-200">Monthly amount</p>
-                <p className="font-serif text-4xl font-bold text-gold-300">{usd(b.amountCents)}</p>
+                <p className="font-serif text-3xl font-bold text-gold-300">{usd(b.amountCents)}</p>
                 <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-100">
                   <span className="inline-flex items-center gap-1.5"><Repeat aria-hidden className="size-4" />{b.schedule}</span>
                   {b.dueDay && <><span aria-hidden className="text-white/30">|</span><span className="inline-flex items-center gap-1.5"><CalendarDays aria-hidden className="size-4" />{b.dueDay}</span></>}

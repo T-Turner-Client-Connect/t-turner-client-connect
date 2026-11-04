@@ -34,7 +34,7 @@ export function PortalTaxesView({ data, linkFor }: { data: Data; linkFor: (id: s
         ] as const;
         return (
           <section key={year} className="space-y-3">
-            <h2 className="text-2xl font-semibold">{year} tax year</h2>
+            <h2 className="text-xl font-semibold">{year} tax year</h2>
             {groups.filter(([, list]) => list.length).map(([label, list]) => (
               <Card key={label} title={label}>
                 <ul className="space-y-4">

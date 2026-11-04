@@ -105,7 +105,7 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
             </NavyCard>
           </div>
           <section className="min-w-0 rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] sm:p-6">
-            <h2 className="mb-4 flex items-center gap-3 font-serif text-2xl font-bold text-navy-900 sm:text-[1.9rem]"><Send className="size-7 text-gold-600" aria-hidden />Send a Message</h2>
+            <h2 className="mb-4 flex items-center gap-3 font-serif text-xl sm:text-[1.375rem] font-bold text-navy-900"><Send className="size-6 text-gold-600" aria-hidden />Send a Message</h2>
             {accounts.length > 1 && <p className="mb-4 text-xs text-slate-600" data-testid="message-target">Sending about: <strong className="text-navy-900">{current.client.businessName || current.client.displayName}</strong></p>}
             <MessageComposer action={portalMessageAction.bind(null, current.clientId)} canUpload={current.canUpload} textNumber={textNumber} email={office} uploadLabel={MAX_UPLOAD_LABEL} />
           </section>
