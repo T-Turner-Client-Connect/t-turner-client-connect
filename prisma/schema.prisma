@@ -282,66 +282,68 @@ model Client {
   createdAt               DateTime                @default(now())
   updatedAt               DateTime                @updatedAt
 
-  contacts              Contact[]
-  groups                ClientGroup[]
-  clientNotes           ClientNote[]
-  tasks                 Task[]
-  consentRecords        ConsentRecord[]
-  commPrefs             CommunicationPreference[]
-  commPrefChanges       CommunicationPreferenceChange[]
-  auditLogs             AuditLog[]
-  campaignInclusions    CampaignInclusion[]
-  campaignExclusions    CampaignExclusion[]
-  portalAccess          PortalAccess[]
-  refundTransfers       RefundTransferPayment[]
-  portalInvites         PortalInvite[]
-  conversations         Conversation[]
-  documents             Document[]
-  periods               BookkeepingPeriod[]
-  docRequests           DocumentRequest[]
-  announcements         Announcement[]
-  deadlines             ClientDeadline[]
-  signatureReqs         SignatureRequest[]
-  contracts             ContractAssignment[]
-  installmentPlans      InstallmentPlan[]
-  invoices              Invoice[]
-  clientServices        ClientService[]
-  payments              Payment[]
-  appointments          Appointment[]
-  pipelineCards         PipelineCard[]
-  filings               FilingRecord[]
-  taxSummaries          TaxReturnSummary[]
-  questionnaires        QuestionnaireSubmission[]
-  identityPeople        IdentityPerson[]
-  identityDocs          IdentityDocument[]
-  bookkeepingProfile    BookkeepingProfile?
-  bookkeepingAccounts   BookkeepingAccount[]
-  bookkeepingBilling    BookkeepingBilling?
-  squareBillings        SquareBillingMember[]
-  ledgerBook            LedgerBook?
-  nonprofitProfile      NonprofitProfile?
-  nonprofitPortfolio    NonprofitPortfolio?
-  chargeAuthorizations  RecurringChargeAuthorization[]
-  businessOnboarding    BusinessOnboarding?
-  taxPrepCases          TaxPrepCase[]
-  questionnaireRequests QuestionnaireRequest[]
+  contacts               Contact[]
+  groups                 ClientGroup[]
+  clientNotes            ClientNote[]
+  tasks                  Task[]
+  consentRecords         ConsentRecord[]
+  commPrefs              CommunicationPreference[]
+  commPrefChanges        CommunicationPreferenceChange[]
+  auditLogs              AuditLog[]
+  campaignInclusions     CampaignInclusion[]
+  campaignExclusions     CampaignExclusion[]
+  portalAccess           PortalAccess[]
+  refundTransfers        RefundTransferPayment[]
+  portalInvites          PortalInvite[]
+  conversations          Conversation[]
+  documents              Document[]
+  periods                BookkeepingPeriod[]
+  docRequests            DocumentRequest[]
+  announcements          Announcement[]
+  deadlines              ClientDeadline[]
+  signatureReqs          SignatureRequest[]
+  contracts              ContractAssignment[]
+  installmentPlans       InstallmentPlan[]
+  invoices               Invoice[]
+  clientServices         ClientService[]
+  payments               Payment[]
+  appointments           Appointment[]
+  pipelineCards          PipelineCard[]
+  filings                FilingRecord[]
+  taxSummaries           TaxReturnSummary[]
+  questionnaires         QuestionnaireSubmission[]
+  identityPeople         IdentityPerson[]
+  identityDocs           IdentityDocument[]
+  bookkeepingProfile     BookkeepingProfile?
+  bookkeepingAccounts    BookkeepingAccount[]
+  bookkeepingBilling     BookkeepingBilling?
+  squareBillings         SquareBillingMember[]
+  ledgerBook             LedgerBook?
+  nonprofitProfile       NonprofitProfile?
+  nonprofitPortfolio     NonprofitPortfolio?
+  chargeAuthorizations   RecurringChargeAuthorization[]
+  businessOnboarding     BusinessOnboarding?
+  taxPrepCases           TaxPrepCase[]
+  questionnaireRequests  QuestionnaireRequest[]
   // A person (Personal record) linked to the businesses they own, and back.
-  ownsBusinesses        ClientRelationship[]            @relation("RelPerson")
-  ownedBy               ClientRelationship[]            @relation("RelBusiness")
-  noticeCases           NoticeCase[]
-  businessInfoChanges   BusinessInfoChange[]
-  taxYearProgress       TaxYearProgress[]
-  manualBillingPayments ManualBillingPayment[]
-  businessLicenses      BusinessLicense[]
-  yearEndFilings        YearEndFiling[]
-  payrollImports        PayrollImport[]
-  payrollRuns           PayrollRun[]
-  payrollApprovers      PayrollApprover[]
-  payrollConnections    PayrollConnection[]
-  businessOwners        BusinessOwner[]
-  ownerK1Grants         OwnerK1Grant[]
-  jointFilingYears      JointFilingYear[]
-  personalTaxRequests   PersonalTaxRequest[]
+  ownsBusinesses         ClientRelationship[]            @relation("RelPerson")
+  ownedBy                ClientRelationship[]            @relation("RelBusiness")
+  noticeCases            NoticeCase[]
+  businessInfoChanges    BusinessInfoChange[]
+  taxYearProgress        TaxYearProgress[]
+  manualBillingPayments  ManualBillingPayment[]
+  businessLicenses       BusinessLicense[]
+  yearEndFilings         YearEndFiling[]
+  payrollImports         PayrollImport[]
+  payrollRuns            PayrollRun[]
+  payrollApprovers       PayrollApprover[]
+  payrollConnections     PayrollConnection[]
+  businessOwners         BusinessOwner[]
+  ownerK1Grants          OwnerK1Grant[]
+  jointFilingYears       JointFilingYear[]
+  personalTaxRequests    PersonalTaxRequest[]
+  accountReconciliations AccountReconciliation[]
+  interimStatements      InterimStatement[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -1250,6 +1252,8 @@ model BookkeepingPeriod {
 }
 
 enum RequestStatus {
+  // Prepared (by Coetha or staff) but not sent: the client never sees a draft.
+  DRAFT
   OPEN
   SUBMITTED
   ACCEPTED
@@ -1257,30 +1261,51 @@ enum RequestStatus {
 }
 
 model DocumentRequest {
-  id           String             @id @default(cuid())
-  clientId     String
-  client       Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  periodId     String?
-  period       BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
-  title        String
-  instructions String?
-  category     DocumentCategory   @default(CLIENT_UPLOADS)
-  dueAt        DateTime?
-  remindAt     DateTime?
-  status       RequestStatus      @default(OPEN)
-  createdById  String
-  createdBy    User               @relation(fields: [createdById], references: [id])
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
-  // Business tax-document requests made from the client's own facts (payroll, entity type,
-  // prior-year documents…): the tax year, the upload type a file is saved as, and the rule
-  // that asked for it (one request per rule per year). Null for requests staff write by hand.
-  taxYear      Int?
-  docType      String?
-  ruleKey      String?
+  id                   String              @id @default(cuid())
+  clientId             String
+  client               Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  periodId             String?
+  period               BookkeepingPeriod?  @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  title                String
+  instructions         String?
+  category             DocumentCategory    @default(CLIENT_UPLOADS)
+  dueAt                DateTime?
+  remindAt             DateTime?
+  status               RequestStatus       @default(OPEN)
+  createdById          String
+  createdBy            User                @relation(fields: [createdById], references: [id])
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  // GENERAL | MONTHLY | STATEMENT (one account, one month) | HISTORICAL (onboarding records) | YEAR_END (annual tax documents)
+  kind                 String              @default("GENERAL")
+  // What is asked for (a bookkeeping upload type, or a year-end tax form key).
+  docType              String?
+  // The exact account and date range asked for. An upload against the request is filed with these.
+  bookkeepingAccountId String?
+  bookkeepingAccount   BookkeepingAccount? @relation(fields: [bookkeepingAccountId], references: [id], onDelete: SetNull)
+  periodStart          DateTime?           @db.Date
+  periodEnd            DateTime?           @db.Date
+  // YEAR_END: the tax year the annual documents are for.
+  taxYear              Int?
+  // STAFF | COETHA — who prepared it. Coetha's requests start as DRAFT unless Tabitha turned on auto-send.
+  source               String              @default("STAFF")
+  // Why it is needed (shown to the client in plain words; Coetha writes it for her requests).
+  reason               String?
+  // Keeps Coetha from drafting the same request twice (e.g. "stmt:<account>:2026-10").
+  draftKey             String?
+  // Coetha's routing: ROUTINE (may go out automatically) or REVIEW (waits for Tabitha), and why.
+  routing              String?
+  routingReason        String?
+  sentAt               DateTime?
+  sentById             String?
+  // #78: business tax-document requests made from the client's own facts (payroll, entity type,
+  // prior-year documents...): the rule that asked for it (one request per rule per tax year).
+  // Null for requests staff write by hand and for Coetha's requests (those use draftKey).
+  ruleKey              String?
 
   documents Document[]
 
+  @@unique([clientId, draftKey])
   @@unique([clientId, taxYear, ruleKey])
   @@index([clientId, status])
 }
@@ -2925,75 +2950,140 @@ model BookkeepingProfile {
   updatedAt             DateTime  @updatedAt
 
   // Business information. Entity type and fiscal year end live on Client.
-  legalName           String?
-  dba                 String?
+  legalName             String?
+  dba                   String?
   // EIN: encrypted (encryptSecret); only the last four are shown by default.
   // The full number opens for Admins only, and each view is audited.
-  einEncrypted        String?
-  einLast4            String?
-  businessAddress1    String?
-  businessAddress2    String?
-  businessCity        String?
-  businessState       String?
-  businessPostalCode  String?
-  businessEmail       String?
-  contactName         String?
-  contactTitle        String?
-  contactPhone        String?
-  businessStartDate   DateTime?
+  einEncrypted          String?
+  einLast4              String?
+  businessAddress1      String?
+  businessAddress2      String?
+  businessCity          String?
+  businessState         String?
+  businessPostalCode    String?
+  businessEmail         String?
+  contactName           String?
+  contactTitle          String?
+  contactPhone          String?
+  businessStartDate     DateTime?
   // The tax/accounting year being worked; earlier years stay available.
-  workingYear         Int?
+  workingYear           Int?
   // CASH | ACCRUAL | MODIFIED_CASH — shown on every report.
-  accountingBasis     String?
+  accountingBasis       String?
   // Payroll account access: NOT_REQUESTED | REQUESTED | ACCOUNTANT_ACCESS | REPORTS_EMAILED | CLIENT_UPLOADS
-  payrollAccessStatus String?
+  payrollAccessStatus   String?
   // Payroll reports required each month (keys of PAYROLL_REPORT_TYPES).
-  payrollReports      String[]  @default([])
+  payrollReports        String[]  @default([])
   // Payroll system (keys of PAYROLL_SYSTEMS): ADP_RUN | ADP_WFN | PAYCHEX_FLEX | GUSTO | OTHER.
   // payrollProvider stays the display name shown everywhere.
-  payrollSystem       String?
+  payrollSystem         String?
   // How payroll data reaches us: REPORT_IMPORT (register files) | API (once the provider connection is approved).
-  payrollConnection   String?
+  payrollConnection     String?
   // HMAC of the EIN, so duplicate businesses can be spotted without decrypting.
-  einHash             String?
-  contactEmail        String?
+  einHash               String?
+  contactEmail          String?
   // When an Admin last verified the business information (client onboarding).
-  verifiedAt          DateTime?
-  verifiedById        String?
+  verifiedAt            DateTime?
+  verifiedById          String?
   // "Work with Coetha": this client's own Claude Project or conversation link
   // (https://claude.ai/...). Set by Tabitha; opened by authorized staff with
   // their own Claude access. Never a password; nothing syncs automatically.
-  coethaUrl           String?
-  coethaUpdatedById   String?
-  coethaUpdatedAt     DateTime?
+  coethaUrl             String?
+  coethaUpdatedById     String?
+  coethaUpdatedAt       DateTime?
+  // Business Tax Classification (internal; Tabitha sets and edits it, Coetha may only recommend):
+  // FORM_1065 (partnership / multi-member LLC) | FORM_1120S (S corporation) |
+  // SCHEDULE_C (sole proprietor / disregarded single-member LLC) | OTHER_REVIEW.
+  // Accounting method = accountingBasis (kept in step with LedgerBook.basis); fiscal year end =
+  // Client.fiscalYearEnd (kept in step with LedgerBook.fiscalYearStartMonth); tax year = workingYear.
+  taxClassification     String?
+  taxClassificationById String?
+  taxClassificationAt   DateTime?
 }
 
 /// A client's bank or credit-card account for bookkeeping. Never holds
 /// passwords, security answers or one-time codes: access is by delegated
 /// accountant access, an official connection, or statement uploads.
 model BookkeepingAccount {
-  id           String     @id @default(cuid())
-  clientId     String
-  client       Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  institution  String
+  id                  String                  @id @default(cuid())
+  clientId            String
+  client              Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  institution         String
   // CHECKING | SAVINGS | CREDIT_CARD | LINE_OF_CREDIT | LOAN | MERCHANT | OTHER
-  accountType  String
-  last4        String?
-  nickname     String?
+  accountType         String
+  last4               String?
+  nickname            String?
   // The bank's official sign-in page (https only), for delegated access.
-  loginUrl     String?
+  loginUrl            String?
   // NOT_REQUESTED | REQUESTED | DELEGATED_ACCESS | OFFICIAL_CONNECTION | STATEMENTS_ONLY | REVOKED
-  accessStatus String     @default("NOT_REQUESTED")
-  accessNote   String?
+  accessStatus        String                  @default("NOT_REQUESTED")
+  accessNote          String?
   // How the client gives access: DELEGATED (adds us as accountant user) | OFFICIAL_CONNECTION | STATEMENT_UPLOAD
-  accessMethod String?
-  active       Boolean    @default(true)
-  updatedById  String?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  documents    Document[]
+  accessMethod        String?
+  active              Boolean                 @default(true)
+  updatedById         String?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  documents           Document[]
+  // Banking & reconciliation (registry of the business's accounts; never usernames, passwords,
+  // full numbers or security codes — last 4 only).
+  // The GL account this account posts to: an asset (checking, savings) or a liability (card, LOC, loan).
+  ledgerAccountId     String?                 @unique
+  ledgerAccount       LedgerAccount?          @relation(fields: [ledgerAccountId], references: [id], onDelete: SetNull)
+  // Opening balance as the statement shows it (positive = normal side: money in the bank, or owed on a card/loan).
+  openingBalanceCents Int?
+  openingBalanceDate  DateTime?               @db.Date
+  // Day of the month the statement closes (31 = last day). Null = calendar month end.
+  statementDay        Int?
+  // Coetha watches this account each month (sync, reconciliation, missing statements).
+  monitored           Boolean                 @default(true)
+  // Employee / authorized-user card: one shared credit account (the parent liability) with several cards.
+  parentAccountId     String?
+  parentAccount       BookkeepingAccount?     @relation("SharedCards", fields: [parentAccountId], references: [id], onDelete: SetNull)
+  subCards            BookkeepingAccount[]    @relation("SharedCards")
+  cardholderLabel     String?
+  requests            DocumentRequest[]
+  reconciliations     AccountReconciliation[]
 
   @@index([clientId])
+}
+
+// One per account per month: Coetha prepares it from the bank feed and the statement, flags
+// exceptions, and only Tabitha approves it (approval also records the ledger's BankReconciliation).
+model AccountReconciliation {
+  id                    String             @id @default(cuid())
+  clientId              String
+  client                Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  bookkeepingAccountId  String
+  bookkeepingAccount    BookkeepingAccount @relation(fields: [bookkeepingAccountId], references: [id], onDelete: Cascade)
+  year                  Int
+  month                 Int
+  statementClosingDate  DateTime?          @db.Date
+  beginningBalanceCents Int?
+  endingBalanceCents    Int?
+  // Where the ending balance came from: STATEMENT_UPLOAD | PLAID_STATEMENT | STAFF_ENTRY
+  balanceSource         String?
+  transactionsImported  Int                @default(0)
+  paymentsCreditsCents  Int                @default(0)
+  chargesDebitsCents    Int                @default(0)
+  unmatchedCount        Int                @default(0)
+  differenceCents       Int?
+  // RECEIVED | MISSING | REQUESTED | NOT_NEEDED
+  statementStatus       String             @default("MISSING")
+  statementDocumentId   String?
+  // NOT_DUE | AWAITING_DATA | IN_PROGRESS | EXCEPTION | READY | APPROVED
+  status                String             @default("NOT_DUE")
+  exceptions            String[]           @default([])
+  preparedAt            DateTime?
+  preparedById          String?
+  approvedById          String?
+  approvedAt            DateTime?
+  bankReconciliationId  String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@unique([bookkeepingAccountId, year, month])
+  @@index([clientId, year, month])
 }
 
 /// Monthly bookkeeping billing for a client. Card details are never stored:
@@ -3816,6 +3906,7 @@ model LedgerAccount {
   lines            JournalLine[]
   bankTransactions BankTransaction[]
   reconciliations  BankReconciliation[]
+  registryAccount  BookkeepingAccount?
 
   @@unique([clientId, code])
   @@index([clientId, type])
@@ -3897,6 +3988,8 @@ model BankTransaction {
   source               String        @default("CSV")
   // The bank's own transaction ID (Plaid). A row is never added twice for one ID.
   providerId           String?
+  // The Plaid account (card) the row came from: several employee cards can feed one shared liability.
+  providerAccountId    String?
   // Set when a statement row confirmed a row that daily retrieval already brought in.
   statementFingerprint String?
   // POSSIBLE_DUPLICATE | CHANGED_AFTER_POSTING | REMOVED_AFTER_POSTING — for staff, never resolved automatically
@@ -4122,26 +4215,44 @@ model BankConnection {
 }
 
 model BankConnectionAccount {
-  id                    String             @id @default(cuid())
-  connectionId          String
-  connection            BankConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  providerAccountId     String
-  name                  String
-  mask                  String?
+  id                        String             @id @default(cuid())
+  connectionId              String
+  connection                BankConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  providerAccountId         String
+  name                      String
+  mask                      String?
   // depository / credit / loan … as the bank reports it
-  type                  String
-  subtype               String?
+  type                      String
+  subtype                   String?
   // The client's ledger bank or card account it feeds. Unmapped accounts are not retrieved.
-  ledgerAccountId       String?            @unique
-  // Balances as the bank last reported them through Plaid (read-only), and when.
-  currentBalanceCents   Int?
-  availableBalanceCents Int?
-  isoCurrency           String?
-  balanceAsOf           DateTime?
-  createdAt             DateTime           @default(now())
-  dailyBalances         BankBalanceDaily[]
+  // Several Plaid accounts may feed ONE ledger account only when they are cards on one shared
+  // credit account (sharedWithId set and confirmed); otherwise one-to-one.
+  ledgerAccountId           String?
+  // Balances as Plaid last reported them (cents; credit: amount owed).
+  currentBalanceCents       Int?
+  // #78: available balance and currency as the bank reported them (client balance ticker).
+  availableBalanceCents     Int?
+  isoCurrency               String?
+  creditLimitCents          Int?
+  balanceAsOf               DateTime?
+  // Authorized-user / employee card detection: the primary card's account in this connection.
+  sharedWithId              String?
+  // SUGGESTED (detected, not yet confirmed) | CONFIRMED | SEPARATE (staff override: its own account)
+  sharedStatus              String?
+  sharedReason              String?
+  // Plaid Liabilities (credit cards and eligible loans), when enabled: the last statement and payment terms.
+  aprPercent                Float?
+  minimumPaymentCents       Int?
+  nextPaymentDueDate        DateTime?          @db.Date
+  lastStatementBalanceCents Int?
+  lastStatementDate         DateTime?          @db.Date
+  liabilityOverdue          Boolean?
+  liabilitiesAt             DateTime?
+  createdAt                 DateTime           @default(now())
+  dailyBalances             BankBalanceDaily[]
 
   @@unique([connectionId, providerAccountId])
+  @@index([ledgerAccountId])
 }
 
 // One balance per bank account per day (Central time), kept up to date by each retrieval.
@@ -4243,22 +4354,27 @@ model JotformInbox {
 
 // Owner switches for integrations (one row, id "default").
 model IntegrationSettings {
-  id                     String    @id @default("default")
+  id                        String    @id @default("default")
   // Off until Tabitha approves: questionnaire webhooks go to the staff inbox
   // instead of being filed to client records automatically.
-  jotformAutoFileEnabled Boolean   @default(false)
+  jotformAutoFileEnabled    Boolean   @default(false)
   // Owner-only switch (primary owner): real bank connections through Plaid production.
   // Real connections need BOTH this switch and the production keys in Netlify.
-  liveBankingEnabled     Boolean   @default(false)
-  liveBankingChangedById String?
-  liveBankingChangedAt   DateTime?
+  liveBankingEnabled        Boolean   @default(false)
+  liveBankingChangedById    String?
+  liveBankingChangedAt      DateTime?
   // Owner-only switch (primary owner): Coetha AI drafts bookkeeping work through the
   // Anthropic API. Drafts only: Tabitha approves everything before it is posted.
-  coethaEnabled          Boolean   @default(false)
-  coethaChangedById      String?
-  coethaChangedAt        DateTime?
-  updatedById            String?
-  updatedAt              DateTime  @updatedAt
+  coethaEnabled             Boolean   @default(false)
+  coethaChangedById         String?
+  coethaChangedAt           DateTime?
+  // Owner-only: Coetha's ROUTINE document requests go to clients automatically (on by default, Tabitha's
+  // approval of 2026-11). Unusual, sensitive or unclear requests always wait for her review.
+  coethaAutoSendRequests    Boolean   @default(true)
+  coethaAutoSendChangedById String?
+  coethaAutoSendChangedAt   DateTime?
+  updatedById               String?
+  updatedAt                 DateTime  @updatedAt
 }
 
 // ===========================================================================
@@ -5101,4 +5217,23 @@ model SquarePaymentSeen {
   updatedAt        DateTime  @updatedAt
 
   @@index([state])
+}
+
+// An interim financial statement Tabitha approved and released (e.g. for a lender) without closing
+// the period. Always labeled "Interim — unaudited, prepared as of <date>" for the client.
+model InterimStatement {
+  id           String    @id @default(cuid())
+  clientId     String
+  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Profit and Loss covers fromDate..asOf; the Balance Sheet is as of asOf.
+  fromDate     DateTime  @db.Date
+  asOf         DateTime  @db.Date
+  // A short purpose shown to the client, e.g. "For Pretend Community Bank".
+  purpose      String?
+  releasedById String
+  releasedAt   DateTime  @default(now())
+  revokedAt    DateTime?
+  revokedById  String?
+
+  @@index([clientId, releasedAt])
 }

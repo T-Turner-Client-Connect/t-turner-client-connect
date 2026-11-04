@@ -271,10 +271,19 @@ export async function portalUploadDocument(
   const thisYear = new Date().getFullYear();
   if (typeof input.year === "number" && (input.year < thisYear - 15 || input.year > thisYear + 1)) throw new ValidationError("Choose a tax year from the list.");
   let periodId = input.periodId ?? null;
+  // A targeted request names the document, account and period: the upload is filed with them.
+  let linked: { docType: string | null; bookkeepingAccountId: string | null; coverage: Coverage | null } = { docType: null, bookkeepingAccountId: null, coverage: null };
   if (input.requestId) {
     const req = await prisma.documentRequest.findFirst({ where: { id: input.requestId, clientId: input.clientId } });
-    if (!req || req.status === "CANCELLED" || req.status === "ACCEPTED") throw new ValidationError("That request is closed.");
+    // A draft was never sent, so the client can't answer it.
+    if (!req || req.status === "CANCELLED" || req.status === "ACCEPTED" || req.status === "DRAFT") throw new ValidationError("That request is closed.");
     periodId = req.periodId;
+    const sameMonth = req.periodStart && req.periodEnd && req.periodStart.getUTCFullYear() === req.periodEnd.getUTCFullYear() && req.periodStart.getUTCMonth() === req.periodEnd.getUTCMonth();
+    linked = {
+      docType: req.docType,
+      bookkeepingAccountId: req.bookkeepingAccountId,
+      coverage: req.periodStart && req.periodEnd ? { kind: sameMonth ? "MONTH" : "RANGE", year: req.periodEnd.getUTCFullYear(), month: sameMonth ? req.periodEnd.getUTCMonth() + 1 : null, start: req.periodStart, end: req.periodEnd } : null,
+    };
   } else if (periodId && !(await prisma.bookkeepingPeriod.count({ where: { id: periodId, clientId: input.clientId } }))) {
     throw new ForbiddenError();
   }
@@ -291,9 +300,10 @@ export async function portalUploadDocument(
           category: input.payroll ? "PAYROLL" : "CLIENT_UPLOADS",
           title: input.title?.trim().slice(0, 200) || file.title,
           // The client confirms the year; "Not sure" stays empty for staff to classify.
-          year: period?.year ?? input.coverage?.year ?? (typeof input.year === "number" ? input.year : null),
-          month: period?.month ?? input.coverage?.month ?? null,
-          ...coverageData(input.coverage, input.asOf),
+          year: period?.year ?? linked.coverage?.year ?? input.coverage?.year ?? (typeof input.year === "number" ? input.year : null),
+          month: period?.month ?? linked.coverage?.month ?? input.coverage?.month ?? null,
+          ...coverageData(linked.coverage ?? input.coverage, input.asOf),
+          bookkeepingAccountId: linked.bookkeepingAccountId,
           // Uploads by the client are visible back to the client.
           visibility: "PUBLISHED",
           publishedAt: new Date(),
@@ -305,7 +315,7 @@ export async function portalUploadDocument(
           needsReview: true,
           periodId,
           requestId: input.requestId ?? null,
-          docType: input.docType ?? null,
+          docType: linked.docType ?? input.docType ?? null,
           retainUntil: await retentionDate(input.payroll ? "PAYROLL" : "CLIENT_UPLOADS"),
         },
       });
@@ -326,12 +336,14 @@ export async function portalUploadDocument(
 /** Documents a portal user may see for one client. */
 export async function portalDocuments(user: PortalActor, clientId: string) {
   const access = await requireClientAccess(user.id, clientId);
-  return prisma.document.findMany({
+  const docs = await prisma.document.findMany({
     // Quarantined files (not yet scanned clean) never reach the portal.
     where: { clientId, deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN", AND: [clientReceivableWhere, portalDocumentScope(access, user.id)] },
     include: { file: { select: { mimeType: true, sizeBytes: true, originalName: true } } },
     orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
   });
+  // Internal review fields never leave the office, even in data handed to a client page.
+  return docs.map((d) => ({ ...d, reviewNote: null, submittedForReviewById: null, approvedById: null, reviewedById: null, deletionReason: null, deletedById: null, lastScanError: null }));
 }
 
 // --- Expiring download links ----------------------------------------------

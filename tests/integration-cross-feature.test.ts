@@ -30,6 +30,7 @@ const pdf = () => new TextEncoder().encode(`%PDF-1.4\n% fictional ${seq++}\n`);
 const CSV = (rows: string[]) => ["Date,Description,Amount", ...rows].join("\n");
 const mail: { to: string; subject: string }[] = [];
 const sms: { to: string; body: string }[] = [];
+let mailFails = false;
 
 // Local stand-ins: Anthropic (Coetha), the malware scanner, Resend and Twilio.
 function fakeNetwork() {
@@ -37,6 +38,7 @@ function fakeNetwork() {
     const u = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url);
     if (u.host === "scanner.test") return new Response(JSON.stringify({ clean: true }), { status: 200 });
     if (u.host === "resend.mock") {
+      if (mailFails) return new Response(JSON.stringify({ name: "application_error", message: "Fictional outage" }), { status: 500 });
       const b = JSON.parse(String(init?.body));
       mail.push({ to: Array.isArray(b.to) ? b.to[0] : b.to, subject: b.subject });
       return new Response(JSON.stringify({ id: `em${mail.length}` }), { status: 200 });
@@ -65,6 +67,7 @@ beforeEach(async () => {
   await resetDb();
   mail.length = 0;
   sms.length = 0;
+  mailFails = false;
   for (const [k, v] of Object.entries({
     MALWARE_SCAN_URL: "https://scanner.test/scan",
     ANTHROPIC_API_KEY: "sk-ant-test-fictional",
@@ -242,5 +245,81 @@ describe("Daria's Billing clerk preset reaches Square reconciliation, not owner-
     const no = ["billing.refund", "billing.void", "billing.adjust", "billing.settings", "billing.delete_history", "square.integrations", "square.edit", "coetha.approve", "statements.approve", "payroll.edit", "staff.manage"] as const;
     for (const k of yes) expect(await can(daria, ...(k.split(".") as [never, never]))).toBe(true);
     for (const k of no) expect(await can(daria, ...(k.split(".") as [never, never]))).toBe(false);
+  });
+});
+
+describe("#82 bookkeeping workflow x #78 client portal", () => {
+  it("a client login never reaches the staff bookkeeping dashboard (/bookkeeping/[id]/close): redirected to staff sign-in, and API calls get 401", async () => {
+    const { NextRequest } = await import("next/server");
+    const { proxy } = await import("@/proxy");
+    const asClient = (path: string) => new NextRequest(new URL(path, "https://client.example.test"), { headers: { cookie: "__Host-tcc_portal=fictional-portal-session" } });
+    for (const path of ["/bookkeeping/c_fictional/close", "/bookkeeping/c_fictional", "/bookkeeping/c_fictional/statements"]) {
+      const res = proxy(asClient(path));
+      expect(res.status).toBe(307);
+      expect(new URL(res.headers.get("location")!).pathname).toBe("/staff/login");
+    }
+    expect(proxy(asClient("/api/bookkeeping/fictional")).status).toBe(401);
+    // The client's own portal still opens with the client session.
+    expect(proxy(asClient("/client")).headers.get("x-middleware-next")).toBe("1");
+  });
+
+  it("Coetha's draft requests (waiting for Tabitha) never appear on the client's business checklist; once sent they do", async () => {
+    const { tabitha } = await office();
+    const { biz } = await llc(tabitha);
+    const { businessRequestChecklist } = await import("@/lib/services/business-tax-requests");
+    const year = new Date().getFullYear();
+    const draft = await prisma.documentRequest.create({ data: { clientId: biz.id, title: "Bank statement — Checking — October 2026", status: "DRAFT", source: "COETHA", kind: "STATEMENT", draftKey: "stmt:fictional:2026-10", createdById: tabitha.id } });
+    expect((await businessRequestChecklist(biz.id, year, "BOOKKEEPING")).map((r) => r.id)).not.toContain(draft.id);
+    await prisma.documentRequest.update({ where: { id: draft.id }, data: { status: "OPEN", sentAt: new Date() } });
+    expect((await businessRequestChecklist(biz.id, year, "BOOKKEEPING")).map((r) => r.id)).toContain(draft.id);
+  });
+});
+
+describe("failure scenarios", () => {
+  it("wrong statement upload: another business's account, the wrong month, and a closed or draft request are all refused or left unanswered", async () => {
+    const { tabitha, daria } = await office();
+    const a = await createClient(tabitha, { businessName: "Pretend Alder Cafe LLC", clientType: "BUSINESS", status: "ACTIVE" });
+    const b = await createClient(tabitha, { businessName: "Pretend Birch Diner LLC", clientType: "BUSINESS", status: "ACTIVE" });
+    await prisma.client.updateMany({ where: { id: { in: [a.id, b.id] } }, data: { businessAccess: "ACTIVE" } });
+    const { staffUploadStatement } = await import("@/lib/services/client-requests");
+    const acctA = await prisma.bookkeepingAccount.create({ data: { clientId: a.id, institution: "Fictional Bank", accountType: "CHECKING", last4: "1111" } });
+    const acctB = await prisma.bookkeepingAccount.create({ data: { clientId: b.id, institution: "Fictional Bank", accountType: "CHECKING", last4: "2222" } });
+    const october = await prisma.documentRequest.create({ data: { clientId: a.id, title: "Bank statement — October 2026", status: "OPEN", kind: "STATEMENT", docType: "BANK_STATEMENT", bookkeepingAccountId: acctA.id, periodStart: new Date("2026-10-01"), periodEnd: new Date("2026-10-31"), createdById: tabitha.id } });
+
+    // Business B's account can't be used for business A.
+    await expect(staffUploadStatement(tabitha, a.id, { accountId: acctB.id, month: "2026-10", bytes: pdf(), originalName: "oct.pdf" })).rejects.toThrow(/registered accounts/);
+    // Unassigned staff can't upload for this business at all.
+    await expect(staffUploadStatement(daria, a.id, { accountId: acctA.id, month: "2026-10", bytes: pdf(), originalName: "oct.pdf" })).rejects.toBeInstanceOf(ForbiddenError);
+    // A September statement doesn't answer the October request.
+    await staffUploadStatement(tabitha, a.id, { accountId: acctA.id, month: "2026-09", bytes: pdf(), originalName: "sep.pdf" });
+    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: october.id } })).status).toBe("OPEN");
+    // A file that isn't a document is refused before anything is stored.
+    await expect(staffUploadStatement(tabitha, a.id, { accountId: acctA.id, month: "2026-10", bytes: new TextEncoder().encode("MZ\u0090\u0000 not a pdf"), originalName: "oct.exe" })).rejects.toThrow();
+    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: october.id } })).status).toBe("OPEN");
+    // The right one answers it.
+    await staffUploadStatement(tabitha, a.id, { accountId: acctA.id, month: "2026-10", bytes: pdf(), originalName: "oct.pdf" });
+    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: october.id } })).status).toBe("SUBMITTED");
+    // A client can't answer a draft (never sent) request.
+    const { rowan } = await llc(tabitha);
+    const { portalUploadDocument } = await import("@/lib/services/documents");
+    const draft = await prisma.documentRequest.create({ data: { clientId: a.id, title: "Draft", status: "DRAFT", kind: "STATEMENT", createdById: tabitha.id } });
+    await prisma.portalAccess.create({ data: { portalUserId: rowan.user.id, clientId: a.id, canUpload: true } });
+    await expect(portalUploadDocument(rowan.user, { clientId: a.id, requestId: draft.id, bytes: pdf(), originalName: "x.pdf", year: 2026 } as never)).rejects.toThrow(/closed/);
+  });
+
+  it("failed notification: a provider error is recorded FAILED (never SENT), nothing else breaks, and the next notice still goes out", async () => {
+    const { tabitha } = await office();
+    const { rowan } = await llc(tabitha);
+    mailFails = true;
+    await queuePortalNotification(rowan.user.id, "NEW_DOCUMENT", "doc:fictional-1");
+    const failed = await prisma.notification.findFirstOrThrow({ where: { portalUserId: rowan.user.id, channel: "EMAIL" } });
+    expect(failed).toMatchObject({ status: "FAILED", sentAt: null });
+    expect(failed.statusDetail).toMatch(/not set up or rejected/);
+    mailFails = false;
+    await queuePortalNotification(rowan.user.id, "NEW_DOCUMENT", "doc:fictional-2");
+    expect(await prisma.notification.count({ where: { portalUserId: rowan.user.id, status: "SENT" } })).toBe(1);
+    // Retrying the same notice never sends it twice (idempotency key).
+    await queuePortalNotification(rowan.user.id, "NEW_DOCUMENT", "doc:fictional-2");
+    expect(mail.filter((m) => m.to === rowan.user.email)).toHaveLength(1);
   });
 });

@@ -3,7 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
-import { accountBalance, assertLedger, bookOf, ledgerFlags, normDesc, toDate, ymdOf } from "./ledger";
+import { cardPaymentTarget, cardRefs, isCardPaymentReceived } from "./bank-accounts";
+import { accountBalance, assertLedger, FEED_SUBTYPES, bookOf, ledgerFlags, normDesc, toDate, ymdOf } from "./ledger";
 
 /**
  * Groundwork for Coetha (categorizing and the monthly close). Everything here only SUGGESTS or
@@ -50,7 +51,11 @@ export async function suggestCategories(actor: Actor, clientId: string): Promise
     prisma.categorizationRule.findMany({ where: { clientId, active: true } }),
     prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED", journalEntryId: { not: null } }, select: { accountId: true, amountCents: true, description: true, journalEntry: { select: { reversedBy: { select: { id: true } }, lines: { select: { accountId: true } } } } } }),
   ]);
-  const active = new Set((await prisma.ledgerAccount.findMany({ where: { clientId, active: true }, select: { id: true } })).map((a) => a.id));
+  const activeAccts = await prisma.ledgerAccount.findMany({ where: { clientId, active: true }, select: { id: true, subtype: true } });
+  const active = new Set(activeAccts.map((a) => a.id));
+  const bankIds = activeAccts.filter((a) => a.subtype === "BANK").map((a) => a.id);
+  const cards = (await cardRefs(clientId)).filter((c) => active.has(c.ledgerAccountId));
+  const cardIds = new Set(cards.map((c) => c.ledgerAccountId));
   // Past postings: description + direction → the category account(s) used.
   const past = new Map<string, Set<string>>();
   for (const h of history) {
@@ -66,6 +71,20 @@ export async function suggestCategories(actor: Actor, clientId: string): Promise
     const pair = rows.filter((o) => o.accountId !== r.accountId && o.amountCents === -r.amountCents && Math.abs(o.date.getTime() - r.date.getTime()) <= 5 * 86_400_000);
     if (pair.length === 1 && active.has(pair[0].accountId)) {
       out.set(r.id, { accountId: pair[0].accountId, source: "TRANSFER", why: "Possible transfer between this client's accounts (matching amount on the other account)" });
+      continue;
+    }
+    // A payment from checking to a card (or LOC / loan) is a transfer to the liability, never an
+    // expense — also when only the bank side is connected.
+    if (bankIds.includes(r.accountId)) {
+      const card = cardPaymentTarget(r.description, r.amountCents, cards);
+      if (card) {
+        out.set(r.id, { accountId: card.ledgerAccountId, source: "TRANSFER", why: `${card.accountType === "CREDIT_CARD" ? "Credit card" : card.accountType === "LOAN" ? "Loan" : "Line of credit"} payment — a transfer to the liability account, not an expense` });
+        continue;
+      }
+    }
+    // The other side: a payment received on the card, from the business's only bank account.
+    if (cardIds.has(r.accountId) && isCardPaymentReceived(r.description, r.amountCents) && bankIds.length === 1) {
+      out.set(r.id, { accountId: bankIds[0], source: "TRANSFER", why: "Card payment received from the business bank account — a transfer, not income" });
       continue;
     }
     const desc = normDesc(r.description);
@@ -105,7 +124,7 @@ export async function closeChecklist(actor: Actor, clientId: string, month: stri
   const to = toDate(end);
   const items: CloseItem[] = [];
   items.push({ key: "opening", label: "Opening balances entered", ok: !!book.openingDate && ymdOf(book.openingDate) <= end, detail: book.openingDate ? `As of ${ymdOf(book.openingDate)}` : "Not entered yet" });
-  const banks = await prisma.ledgerAccount.findMany({ where: { clientId, active: true, subtype: { in: ["BANK", "CREDIT_CARD"] } }, orderBy: { code: "asc" } });
+  const banks = await prisma.ledgerAccount.findMany({ where: { clientId, active: true, subtype: { in: FEED_SUBTYPES } }, orderBy: { code: "asc" } });
   for (const b of banks) {
     const [rows, unreviewed, recon] = await Promise.all([
       prisma.bankTransaction.count({ where: { accountId: b.id, date: { gte: from, lte: to } } }),

@@ -7,7 +7,10 @@ import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { BusinessTabs } from "@/components/business-tabs";
 import { ActionForm } from "@/components/action-form";
-import { canUseLedger, usd } from "@/lib/services/ledger";
+import { canUseLedger, officeMayWorkBooks, usd } from "@/lib/services/ledger";
+import { taxProfile } from "@/lib/services/tax-classification";
+import { coethaCurrentWork } from "@/lib/services/monthly-workflow";
+import { RecommendationCard } from "@/components/bk/parts";
 import { COETHA_NO_KEY, COETHA_PRIVACY, coethaView, KIND_LABEL } from "@/lib/services/coetha";
 import { approveCoethaAction, bulkCoethaAction, rejectCoethaAction, runCoethaAction } from "@/app/actions/coetha";
 import { fmtDateTime } from "@/lib/format";
@@ -72,7 +75,13 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
   const refRows = refIds.length ? await prisma.bankTransaction.findMany({ where: { clientId, id: { in: refIds } }, select: { id: true, date: true, amountCents: true, description: true, status: true } }) : [];
   const refById = new Map(refRows.map((r) => [r.id, r]));
   const lastRun = v.runs[0];
-  const canRun = v.status.ready && !!v.book && client.businessAccess === "ACTIVE";
+  // Office work: any Bookkeeping Client (client portal access is a separate matter).
+  const office = await officeMayWorkBooks(clientId);
+  const canRun = v.status.ready && !!v.book && office;
+  const recs = byKind("RECOMMENDATION");
+  const classes = byKind("CLASSIFICATION");
+  const tp = await taxProfile(clientId);
+  const work = await coethaCurrentWork(clientId);
   const BULK = "coetha-bulk";
 
   return (
@@ -117,7 +126,7 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
         </div>
       )}
       {!v.book && <div className={clsx(card, "p-4 text-sm text-navy-900")}>Set up this business&apos;s books first in <Link className="font-semibold underline" href={`${base}/books`}>Books &amp; Ledger</Link>.</div>}
-      {client.businessAccess !== "ACTIVE" && <div className={clsx(card, "p-4 text-sm text-navy-900")}>Coetha works only for owner-approved Managed Businesses.</div>}
+      {!office && <div className={clsx(card, "p-4 text-sm text-navy-900")}>Coetha works on Bookkeeping Clients. Add {biz} to the Bookkeeping Client list first.</div>}
 
       {/* Figures */}
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="Coetha at a glance">
@@ -152,6 +161,18 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
           <span className="w-full text-xs text-slate-600">Bulk approval uses Coetha&apos;s recommended account. To change a category first, use that row&apos;s own Approve.</span>
         </ActionForm>
       )}
+
+      {/* Findings & recommendations (rules-based monitor and AI runs), each with full rationale */}
+      <section className={clsx(card, "p-4 sm:p-5")} data-testid="kind-RECOMMENDATION">
+        <SectionTitle icon={AlertTriangle} title={KIND_LABEL.RECOMMENDATION} count={recs.length} />
+        <p className="mt-1 text-sm text-navy-800">Tax classification: <strong>{tp.label ?? "Not set"}</strong>{tp.basis ? ` · ${tp.basis === "ACCRUAL" ? "Accrual" : "Cash"} basis` : ""} · Fiscal year ends month {tp.fiscalYearEnd}{tp.taxYear ? ` · Tax year ${tp.taxYear}` : ""}. Coetha applies its equity and compensation rules; she can only recommend a change.</p>
+        <p className="mt-1 text-xs text-slate-600">Internal only — never shown to the client. {work.drafts} draft request{work.drafts === 1 ? "" : "s"} · {work.outstanding} sent and waiting · {work.recsWaiting} reconciliation{work.recsWaiting === 1 ? "" : "s"} awaiting approval · <Link className="underline" href={base}>Bookkeeping management</Link></p>
+        {recs.length + classes.length === 0 ? <p className="mt-2 text-sm text-slate-600">No open findings.</p> : (
+          <ul className="mt-3 space-y-3">
+            {[...classes, ...recs].map((p) => <RecommendationCard key={p.id} p={p} clientId={clientId} canApprove={v.canApprove} booksHref={`${base}/books?tab=bank`} />)}
+          </ul>
+        )}
+      </section>
 
       {/* Category recommendations */}
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="kind-CATEGORY">

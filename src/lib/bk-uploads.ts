@@ -25,6 +25,9 @@ export const BK_UPLOAD_TYPES = {
   SALES_TAX_RETURN: "Sales tax return",
   BUSINESS_LICENSE: "Business license",
   SUPPORTING_SCHEDULE: "Supporting schedule",
+  MERCHANT_STATEMENT: "Merchant processing statement",
+  LOAN_AGREEMENT: "Loan or line-of-credit agreement",
+  PRIOR_FINANCIALS: "Prior financial statements",
   BK_OTHER: "Other",
 } as const;
 export type BkUploadType = keyof typeof BK_UPLOAD_TYPES;

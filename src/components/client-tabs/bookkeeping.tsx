@@ -9,7 +9,7 @@ import { REPORT_LABELS } from "@/lib/services/documents";
 import { fmtDate } from "@/lib/format";
 
 const PERIOD_TONE = { AWAITING_DOCUMENTS: "amber", IN_PROGRESS: "navy", READY_FOR_REVIEW: "gold", COMPLETE: "green" } as const;
-const REQ_TONE = { OPEN: "amber", SUBMITTED: "gold", ACCEPTED: "green", CANCELLED: "gray" } as const;
+const REQ_TONE = { DRAFT: "gray", OPEN: "amber", SUBMITTED: "gold", ACCEPTED: "green", CANCELLED: "gray" } as const;
 
 export async function BookkeepingTab({ clientId }: { clientId: string }) {
   const periods = await prisma.bookkeepingPeriod.findMany({
@@ -58,7 +58,7 @@ export async function BookkeepingTab({ clientId }: { clientId: string }) {
           <Button type="submit">Open month</Button>
         </ActionForm>
         <p className="mt-2 text-xs text-slate-600">Reports are uploaded by staff. No accounting software (QuickBooks etc.) is connected.</p>
-        <Link href={`/bookkeeping/${clientId}/close`} className="mt-2 inline-block text-sm font-semibold underline" data-testid="open-bk-workspace">Open the monthly workspace (checklist, statements, payroll, reports and approvals) →</Link>
+        <Link href={`/bookkeeping/${clientId}`} className="mt-2 inline-block text-sm font-semibold underline" data-testid="open-bk-workspace">Open the monthly workspace (checklist, statements, payroll, reports and approvals) →</Link>
       </Card>
 
       {periods.length === 0 && <EmptyState title="No bookkeeping months yet">Open a month to start collecting documents and publishing reports.</EmptyState>}

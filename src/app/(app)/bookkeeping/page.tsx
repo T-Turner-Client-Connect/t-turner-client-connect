@@ -56,7 +56,7 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
             {awaiting.map((d) => (
               <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                 <span><strong>{d.client.displayName}</strong> · {d.reportType ? REPORT_LABELS[d.reportType] : "Report"} · {d.period ? periodLabel("MONTHLY", d.period.year, d.period.month) : d.title} · submitted {d.submittedForReviewAt ? fmtDateTime(d.submittedForReviewAt) : ""}</span>
-                <Link className="font-semibold underline" href={`/bookkeeping/${d.client.id}/close${d.period ? `?period=${d.period.id}` : ""}#reports`}>Review</Link>
+                <Link className="font-semibold underline" href={`/bookkeeping/${d.client.id}${d.period ? `?period=${d.period.id}` : ""}#reports`}>Review</Link>
               </li>
             ))}
           </ul>

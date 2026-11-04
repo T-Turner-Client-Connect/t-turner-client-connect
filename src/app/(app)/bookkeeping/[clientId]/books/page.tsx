@@ -7,7 +7,7 @@ import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { recordHeading } from "@/lib/services/related-businesses";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
-import { ACCOUNT_TYPES, SUBTYPES, balanceSheet, canUseLedger, ledgerFlags, ledgerOverview, profitAndLoss, todayCentral, ymdOf, type Basis, type ReportRow } from "@/lib/services/ledger";
+import { ACCOUNT_TYPES, SUBTYPES, balanceSheet, canUseLedger, isFeedSubtype, ledgerFlags, officeMayWorkBooks, ledgerOverview, profitAndLoss, todayCentral, ymdOf, type Basis, type ReportRow } from "@/lib/services/ledger";
 import { closeChecklist, suggestCategories } from "@/lib/services/ledger-review";
 import { receivablesAging, stripeMode } from "@/lib/services/client-invoicing";
 import { BANK_CONSENT_TEXT, bankConnectionsView } from "@/lib/services/banking";
@@ -49,12 +49,13 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
   const owner = await isReportApprover(user);
   const ov = await ledgerOverview(user, clientId);
   // Business books are only built for an owner-approved Managed Business; existing history stays readable.
-  const managed = (await prisma.client.findUnique({ where: { id: clientId }, select: { businessAccess: true } }))?.businessAccess === "ACTIVE";
+  // The office works on any Bookkeeping Client (or Managed Business); client portal access is a separate matter.
+  const managed = await officeMayWorkBooks(clientId);
   const notManaged = (
     <Notice tone="warn" title="Regular Tax Client — books are read-only">
-      This business isn&apos;t approved as a Managed Business Client yet, so its books can&apos;t be set up or changed. Tabitha can approve it in{" "}
-      <Link className="underline" href="/owner/business-access">Owner&apos;s Office → Business access</Link>, or request it from the client&apos;s{" "}
-      <Link className="underline" href={`/clients/${clientId}?tab=portal`}>Portal tab</Link>.
+      This business isn&apos;t on the Bookkeeping Client list, so its books can&apos;t be set up or changed. Add it in{" "}
+      <Link className="underline" href={`/bookkeeping/new?client=${clientId}`}>Add Bookkeeping Client</Link>. (Managed Business access in{" "}
+      <Link className="underline" href="/owner/business-access">Owner&apos;s Office → Business access</Link> controls only what the client sees in their portal.)
     </Notice>
   );
   const tab: Tab = (TABS.map((t) => t[0]) as string[]).includes(sp.tab ?? "") ? (sp.tab as Tab) : "overview";
@@ -78,7 +79,7 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
   }
   const { book, accounts, entries, bank, imports, recons } = ov;
   const active = accounts.filter((a) => a.active);
-  const banks = active.filter((a) => a.subtype === "BANK" || a.subtype === "CREDIT_CARD");
+  const banks = active.filter((a) => isFeedSubtype(a.subtype));
   const acctLabel = (a: { code: string; name: string }) => `${a.code} · ${a.name}`;
   const options = (list = active) => list.map((a) => <option key={a.id} value={a.id}>{acctLabel(a)}</option>);
   const today = todayCentral();

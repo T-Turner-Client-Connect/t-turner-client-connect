@@ -5,6 +5,7 @@ import { syncStaleSquareBilling } from "@/lib/services/square-billing";
 import { reconcileSquareInvoices } from "@/lib/services/square-invoicing";
 import { runDailyBankRetrieval } from "@/lib/services/banking";
 import { runDailyCoetha } from "@/lib/services/coetha";
+import { runDailyWorkflowMonitor } from "@/lib/services/monthly-workflow";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {
@@ -26,5 +27,8 @@ export async function POST(req: Request) {
   // Then Coetha drafts proposals for businesses with newly retrieved rows (her switch and an
   // Anthropic key are required; drafts only, nothing is posted).
   const coetha = await runDailyCoetha().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha });
+  // Coetha's monthly workflow monitor (rules only, no AI call): reconciliations, draft requests and
+  // recommendations for Tabitha. Requests go out only if Tabitha's auto-send setting is on.
+  const workflow = await runDailyWorkflowMonitor().catch(() => ({ error: "failed" }));
+  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow });
 }

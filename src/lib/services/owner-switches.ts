@@ -11,20 +11,27 @@ import { isReportApprover } from "./bookkeeping-clients";
  * written to both the office audit log and the Owner's Office log.
  */
 
-export type OwnerSwitch = "liveBanking" | "coetha";
+export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend";
 
-const LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI" };
+export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically" };
+const LABEL = SWITCH_LABEL;
 
 export async function ownerSwitches() {
   const s = await prisma.integrationSettings.findUnique({ where: { id: "default" } });
   return {
     liveBanking: { on: s?.liveBankingEnabled ?? false, changedAt: s?.liveBankingChangedAt ?? null, changedById: s?.liveBankingChangedById ?? null },
     coetha: { on: s?.coethaEnabled ?? false, changedAt: s?.coethaChangedAt ?? null, changedById: s?.coethaChangedById ?? null },
+    coethaAutoSend: { on: s?.coethaAutoSendRequests ?? true, changedAt: s?.coethaAutoSendChangedAt ?? null, changedById: s?.coethaAutoSendChangedById ?? null },
   };
 }
 
 export async function liveBankingOn(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { liveBankingEnabled: true } }))?.liveBankingEnabled ?? false;
+}
+
+/** Tabitha's setting: Coetha's ROUTINE document requests go to clients without a staff click. On by default (her approval, PR #82); she can turn it off. */
+export async function coethaAutoSendOn(): Promise<boolean> {
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoSendRequests: true } }))?.coethaAutoSendRequests ?? true;
 }
 
 export async function coethaOn(): Promise<boolean> {
@@ -38,10 +45,12 @@ export async function setOwnerSwitch(actor: Actor, which: OwnerSwitch, on: boole
   const data =
     which === "liveBanking"
       ? { liveBankingEnabled: on, liveBankingChangedById: actor.id, liveBankingChangedAt: now, updatedById: actor.id }
-      : { coethaEnabled: on, coethaChangedById: actor.id, coethaChangedAt: now, updatedById: actor.id };
+      : which === "coetha"
+        ? { coethaEnabled: on, coethaChangedById: actor.id, coethaChangedAt: now, updatedById: actor.id }
+        : { coethaAutoSendRequests: on, coethaAutoSendChangedById: actor.id, coethaAutoSendChangedAt: now, updatedById: actor.id };
   const before = await ownerSwitches();
   await prisma.integrationSettings.upsert({ where: { id: "default" }, create: { id: "default", ...data }, update: data });
-  const action = `${which === "liveBanking" ? "banking.live_connections" : "coetha.enabled"}_${on ? "on" : "off"}`;
+  const action = `${which === "liveBanking" ? "banking.live_connections" : which === "coetha" ? "coetha.enabled" : "coetha.auto_send_requests"}_${on ? "on" : "off"}`;
   const details = { switch: LABEL[which], from: before[which].on, to: on };
   await audit(prisma, { actorId: actor.id, action, entityType: "IntegrationSettings", entityId: "default", details });
   await ownerAudit(actor.id, action, "IntegrationSettings", "default", details);
