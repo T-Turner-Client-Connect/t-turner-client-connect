@@ -25,6 +25,7 @@ import { termsSnapshot } from "@/lib/billing/terms";
 import { invoiceStatus, type InvoiceStatusKey } from "@/lib/billing/invoice-status";
 import { ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
+import { billingAddressOf, formatAddressBlock } from "@/lib/client-address";
 
 /**
  * Owner's Office billing: quotes, invoices, payment plans and payments.
@@ -279,14 +280,14 @@ export async function updateDraft(actor: Actor, invoiceId: string, input: QuoteI
 /**
  * The client's name and billing contact, copied from the master client record so staff never
  * re-type them: the business name (or display name), the record's email/phone, or the first
- * contact's when the record has none, and the mailing address.
+ * contact's when the record has none, and the billing (mailing) address from billingAddressOf().
  */
 export async function billingContactOf(clientId: string) {
   const c = await prisma.client.findUnique({ where: { id: clientId }, include: { contacts: { orderBy: { createdAt: "asc" } } } });
   if (!c) throw new ValidationError("Choose a client.");
   const contact = c.contacts.find((x) => x.email || x.phone);
-  const cityLine = [c.city, [c.state, c.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ");
-  const address = [c.addressLine1, c.addressLine2, cityLine].filter(Boolean).join("\n");
+  // The separate mailing address when the client has one, otherwise the physical address.
+  const address = formatAddressBlock(billingAddressOf(c));
   return {
     billingName: c.businessName || c.displayName,
     billingEmail: c.email || contact?.email || null,

@@ -8,6 +8,8 @@ import { audit, changedFields } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { buildDisplayName, formatPhone, householdName, normalizeEmail, normalizePhone, splitList } from "@/lib/normalize";
 import { TAX_INFO_KINDS } from "@/lib/consent";
+import { addressComplete, isCompleteAddress, type AddressFields } from "@/lib/client-address";
+import { ADDRESS_NEEDED_TAG } from "@/lib/import/edits";
 
 export class ValidationError extends Error {}
 
@@ -48,6 +50,16 @@ export const clientSchema = z.object({
   // (imports, other callers) keeps the old behavior: spouse fields saved as given.
   spouseNeeded: z.boolean().optional(),
   spouseYear: z.number().int().min(2000).max(2100).optional(),
+  // The Create/Edit client screens' Physical + Mailing address blocks. Undefined
+  // (imports, sign-ups, other callers) leaves the mailing columns and the
+  // Address Needed flag as they are.
+  mailingSection: z.boolean().optional(),
+  mailingSameAsAddress: z.boolean().optional(),
+  mailingAddressLine1: opt,
+  mailingAddressLine2: opt,
+  mailingCity: opt,
+  mailingState: opt,
+  mailingPostalCode: opt,
 });
 
 export type ClientInput = z.input<typeof clientSchema>;
@@ -101,7 +113,22 @@ function toClientData(input: ClientInput, before?: SpouseFields | null) {
     : kept
       ? {}
       : { spouseFirstName: null, spouseMiddleName: null, spouseLastName: null, spouseEmail: null, spousePhone: null, spousePhoneNormalized: null };
+  // Mailing address: "same as physical" clears the mailing columns; a separate
+  // one must be complete (street, city, 2-letter state, 5- or 9-digit ZIP).
+  let mailingData: Partial<Pick<Client, "mailingSameAsAddress" | "mailingAddressLine1" | "mailingAddressLine2" | "mailingCity" | "mailingState" | "mailingPostalCode">> = {};
+  if (raw.mailingSection) {
+    if (raw.mailingSameAsAddress !== false) {
+      mailingData = { mailingSameAsAddress: true, mailingAddressLine1: null, mailingAddressLine2: null, mailingCity: null, mailingState: null, mailingPostalCode: null };
+    } else {
+      const m = { line1: raw.mailingAddressLine1 ?? null, line2: raw.mailingAddressLine2 ?? null, city: raw.mailingCity ?? null, state: raw.mailingState ?? null, postalCode: raw.mailingPostalCode ?? null };
+      if (!isCompleteAddress(m)) {
+        throw new ValidationError("Enter the complete mailing address (street, city, 2-letter state and 5- or 9-digit ZIP), or tick “Mailing address is the same as physical address”.");
+      }
+      mailingData = { mailingSameAsAddress: false, mailingAddressLine1: m.line1, mailingAddressLine2: m.line2, mailingCity: m.city, mailingState: m.state!.toUpperCase(), mailingPostalCode: m.postalCode };
+    }
+  }
   return {
+    trackAddressNeeded: !!raw.mailingSection,
     joint: individual && raw.spouseNeeded !== undefined ? { needed: raw.spouseNeeded, year: raw.spouseYear ?? currentTaxYear() } : null,
     data: {
       firstName: v.firstName ?? null,
@@ -120,6 +147,7 @@ function toClientData(input: ClientInput, before?: SpouseFields | null) {
       city: v.city ?? null,
       state: v.state?.toUpperCase() ?? null,
       postalCode: v.postalCode ?? null,
+      ...mailingData,
       clientType: v.clientType as ClientType,
       status: v.status as ClientStatus,
       services: splitList(v.services),
@@ -137,8 +165,27 @@ async function assertAssignable(userId: string | null) {
   if (!user) throw new ValidationError("Choose an active staff member.");
 }
 
+/**
+ * Saving the client screen with a complete, valid address (and mailing address,
+ * if separate) clears the "Address Needed" flag; saving it still incomplete
+ * keeps or sets it (even if it was deleted from the Tags box). Returns the
+ * change for the audit, if any.
+ */
+function applyAddressNeeded(data: { tags: string[] } & AddressFields, before?: (AddressFields & { tags: string[] }) | null): "cleared" | "set" | null {
+  const hadBefore = !!before?.tags.includes(ADDRESS_NEEDED_TAG);
+  const has = data.tags.includes(ADDRESS_NEEDED_TAG);
+  // An edit that doesn't touch the mailing block keeps the record's mailing values.
+  if (addressComplete({ ...(before ?? {}), ...data })) {
+    if (has) data.tags = data.tags.filter((t) => t !== ADDRESS_NEEDED_TAG);
+    return has || hadBefore ? "cleared" : null;
+  }
+  if (!has) data.tags = [...data.tags, ADDRESS_NEEDED_TAG];
+  return hadBefore ? null : "set";
+}
+
 export async function createClient(actor: Actor, input: ClientInput) {
-  const { data, groupIds, joint } = toClientData(input);
+  const { data, groupIds, joint, trackAddressNeeded } = toClientData(input);
+  const flag = trackAddressNeeded ? applyAddressNeeded(data) : null;
   await assertAssignable(data.assignedToId);
   return prisma.$transaction(async (tx) => {
     const client = await tx.client.create({ data: { ...data, source: "Added by staff" } });
@@ -147,6 +194,7 @@ export async function createClient(actor: Actor, input: ClientInput) {
     }
     if (joint?.needed) await setJointFiling(tx, client.id, joint.year, true, { staffId: actor.id });
     await audit(tx, { actorId: actor.id, action: "client.created", entityType: "Client", entityId: client.id, clientId: client.id });
+    if (flag) await audit(tx, { actorId: actor.id, action: `client.address_needed_${flag}`, entityType: "Client", entityId: client.id, clientId: client.id, details: { tag: ADDRESS_NEEDED_TAG } });
     return client;
   });
 }
@@ -154,7 +202,8 @@ export async function createClient(actor: Actor, input: ClientInput) {
 export async function updateClient(actor: Actor, clientId: string, input: ClientInput) {
   const before = await prisma.client.findUnique({ where: { id: clientId }, include: { groups: true } });
   if (!before) throw new ValidationError("Client not found.");
-  const { data, groupIds, joint } = toClientData(input, before);
+  const { data, groupIds, joint, trackAddressNeeded } = toClientData(input, before);
+  const flag = trackAddressNeeded ? applyAddressNeeded(data, before) : null;
   await assertAssignable(data.assignedToId);
   const fields = changedFields(before as unknown as Record<string, unknown>, data);
   return prisma.$transaction(async (tx) => {
@@ -172,6 +221,7 @@ export async function updateClient(actor: Actor, clientId: string, input: Client
     if (fields.length) {
       await audit(tx, { actorId: actor.id, action: "client.updated", entityType: "Client", entityId: clientId, clientId, details: { fields } });
     }
+    if (flag) await audit(tx, { actorId: actor.id, action: `client.address_needed_${flag}`, entityType: "Client", entityId: clientId, clientId, details: { tag: ADDRESS_NEEDED_TAG } });
     if (joint) await setJointFiling(tx, clientId, joint.year, joint.needed, { staffId: actor.id });
     return client;
   });

@@ -3,6 +3,7 @@ import { ActionForm } from "@/components/action-form";
 import { Button, Field, LinkButton } from "@/components/ui";
 import type { ActionState } from "@/lib/action";
 import { SpouseSection } from "@/components/spouse-section";
+import { ClientAddressFields } from "@/components/client-address-fields";
 import { CLIENT_SERVICE_OPTIONS } from "@/lib/service-options";
 import { currentTaxYear } from "@/lib/services/clients";
 
@@ -50,11 +51,13 @@ export function ClientForm({
         values={{ spouseFirstName: v("spouseFirstName"), spouseMiddleName: v("spouseMiddleName"), spouseLastName: v("spouseLastName"), spouseEmail: v("spouseEmail"), spousePhone: v("spousePhone") }}
       />
       <section className="grid gap-4 sm:grid-cols-6">
-        <Field label="Mailing address" className="sm:col-span-6"><input className="input" name="addressLine1" defaultValue={v("addressLine1")} autoComplete="off" /></Field>
-        <Field label="Address line 2" className="sm:col-span-6"><input className="input" name="addressLine2" defaultValue={v("addressLine2")} autoComplete="off" /></Field>
-        <Field label="City" className="sm:col-span-3"><input className="input" name="city" defaultValue={v("city")} autoComplete="off" /></Field>
-        <Field label="State" className="sm:col-span-1"><input className="input" name="state" maxLength={2} defaultValue={v("state")} autoComplete="off" /></Field>
-        <Field label="ZIP" className="sm:col-span-2"><input className="input" name="postalCode" defaultValue={v("postalCode")} autoComplete="off" /></Field>
+        <ClientAddressFields
+          values={{
+            addressLine1: client?.addressLine1, addressLine2: client?.addressLine2, city: client?.city, state: client?.state, postalCode: client?.postalCode,
+            mailingSameAsAddress: client?.mailingSameAsAddress, mailingAddressLine1: client?.mailingAddressLine1, mailingAddressLine2: client?.mailingAddressLine2,
+            mailingCity: client?.mailingCity, mailingState: client?.mailingState, mailingPostalCode: client?.mailingPostalCode,
+          }}
+        />
       </section>
       <section className="grid gap-4 sm:grid-cols-3">
         <Field label="Client type">
