@@ -182,8 +182,8 @@ vendored); confirm those points in the Plaid Dashboard or with Plaid before rely
 | Transaction sync | Yes — `/transactions/sync` with a saved cursor, webhooks for new data, daily backstop. Pending rows are skipped; changed/removed rows are flagged, never silently changed after posting. | Verified |
 | Historical retrieval | Link asks for `transactions.days_requested: 730` (about two years). How much an institution actually returns varies (often 90 days to 24 months). Rows before the books' opening date are set aside automatically; Coetha drafts a Historical Records request for any gap between the opening date and the first retrieved month. | Setting verified in code; per-bank depth **not verified** |
 | Balances | `/accounts/get` balances are stored at link time; `/transactions/sync` balances are stored when the response includes them. Used for outstanding card balances and the employee-card check. | Verified (optional field handled) |
-| Statement PDFs (Plaid **Statements** product) | Built as an adapter seam only (`src/lib/statement-retrieval.ts`). No Statements endpoint is called, because its request/response shape could not be verified here. When a statement isn't available, Coetha drafts a request for that exact account and month. To turn it on later: enable Statements in the Plaid Dashboard, set `PLAID_STATEMENTS_ENABLED=true`, add the verified implementation, and re-link (Link update mode) so clients consent. Statements are supported only at some institutions. | **Not verified**; fallback verified |
-| Lines of credit and loans | A line of credit often appears as a `credit` account and can be monitored like a card (liability). Loans (`type: loan`) frequently show balances/details only through Plaid's **Liabilities** product, which Client Connect does not request; for those, staff register the loan by hand and Coetha requests the loan agreement and statements. | Partially verified; Liabilities **not used** |
+| Statement PDFs (Plaid **Statements** product) | Built and **off** (`PLAID_STATEMENTS_ENABLED`). When on, Coetha lists the item's statements (`/statements/list`), downloads the one for the account and month (`/statements/download`) and files it to that account and period; only if the bank doesn't provide it does she request it from the client. `/statements/refresh` is wired for a later backfill. Link asks for consent only when the flag is on. Supported only at some institutions. | Endpoints and fields written from Plaid's API as we know it — **not verified** against plaid.com; test in sandbox before enabling |
+| Credit cards, lines of credit and loans (Plaid **Liabilities**) | Built and **off** (`PLAID_LIABILITIES_ENABLED`). When on, after each sync `/liabilities/get` stores per card/loan: APR, minimum payment, next due date, last statement balance and date, and overdue. Coetha uses the last statement balance as the reconciliation's ending balance (so no statement request is needed for it) and flags overdue payments. Loans that Plaid exposes only through Liabilities (mortgages, student loans) are covered; other business loans may not be available — register them by hand and Coetha requests the loan agreement and statements. | Response fields used are a subset of Plaid's documented shape — **not verified** against plaid.com |
 | Institutions Plaid doesn't support, or business accounts behind special logins | Register the account by hand (Manage Accounts) and use CSV statement import or statement uploads against Coetha's requests. Some banks need OAuth registration first (see step 1.4). | Process verified |
 
 ### Employee / authorized-user cards
@@ -207,3 +207,27 @@ nickname next to "payment"/"autopay") even when only the bank side is connected,
 card's liability account; when both sides are connected, posting one side links the other so it's
 recorded once. A payment already posted to an expense is flagged in the books and raised as a
 Coetha recommendation with the correcting entry for your approval.
+
+
+## Before turning on Statements or Liabilities (checklist for Tabitha)
+
+Both stay off until you do all of this. Neither changes the books or posts anything.
+
+1. **Plaid Dashboard → Products**: request access to **Statements** and/or **Liabilities** for
+   Production. They are separate approvals from Transactions; Plaid may ask about the use case
+   (bookkeeping reconciliations for the firm's clients).
+2. **Pricing**: Statements and Liabilities are billed separately from Transactions (per connected
+   item and/or per request, depending on the product). *Verify the exact pricing in your Plaid
+   contract or Dashboard before enabling* — it isn't known to Client Connect.
+3. **Institution coverage**: Statements is supported only at some banks; Liabilities covers credit
+   cards and certain loans (e.g. mortgages, student loans), not every business loan. Check Plaid's
+   institution coverage for your clients' banks. OAuth banks need the same OAuth registration and
+   redirect URI as Transactions (step 1.4); some may need product-specific approval.
+4. **Test in sandbox first**: set `PLAID_ENV=sandbox` with the flags on and confirm a statement
+   downloads and liabilities show on Banking & Credit Card Connections. The request/response shapes
+   in `src/lib/plaid.ts` are marked UNVERIFIED until this passes.
+5. **Netlify**: add `PLAID_STATEMENTS_ENABLED=true` and/or `PLAID_LIABILITIES_ENABLED=true`, then
+   redeploy. Production calls still require your **Live bank connections** switch.
+6. **Consent for existing connections**: new connections ask for consent automatically (Link adds
+   the products only while the flags are on). Existing connections need the client to go through
+   **Reconnect** (Link update mode) once so they consent to the new products.

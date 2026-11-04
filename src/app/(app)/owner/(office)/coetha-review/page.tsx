@@ -6,6 +6,8 @@ import { AlertTriangle, ClipboardList, Inbox, Landmark, Scale, Sparkles } from "
 import { requireOffice } from "@/lib/auth/owner";
 import { prisma } from "@/lib/prisma";
 import { card, h2, RecommendationCard } from "@/components/bk/parts";
+import { RequestList } from "@/components/bk/requests";
+import { coethaAutoSendOn } from "@/lib/services/owner-switches";
 import { officeBookClientIds } from "@/lib/services/ledger";
 import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { TAX_CLASSIFICATIONS, isTaxClassification } from "@/lib/services/tax-classification";
@@ -32,6 +34,10 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
     prisma.accountReconciliation.groupBy({ by: ["clientId"], where: { clientId: { in: ids }, status: "READY" }, _count: true }),
     prisma.accountReconciliation.groupBy({ by: ["clientId"], where: { clientId: { in: ids }, status: "EXCEPTION" }, _count: true }),
     canApproveCoethaWork(actor),
+  ]);
+  const [held, autoSend] = await Promise.all([
+    prisma.documentRequest.findMany({ where: { clientId: { in: ids }, status: "DRAFT", routing: "REVIEW" }, orderBy: { createdAt: "desc" }, take: 50, include: { bookkeepingAccount: true } }),
+    coethaAutoSendOn(),
   ]);
   const n = (rows: { clientId: string; _count: number }[], id: string) => rows.find((r) => r.clientId === id)?._count ?? 0;
   const kinds = (id: string, k: string[]) => proposals.filter((p) => p.clientId === id && k.includes(p.kind)).length;
@@ -78,6 +84,21 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className={clsx(card, "p-4 sm:p-5")} data-testid="review-requests">
+        <h2 className={h2}><Inbox className="size-5 text-gold-600" aria-hidden /> Requests held for your review <span className="rounded-full bg-navy-900 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-300">{held.length}</span></h2>
+        <p className="mt-1 text-xs text-slate-600">Routine requests (statements, receipts, payroll records, loan documents for known loans) go out automatically{autoSend ? "" : " — currently turned off, so they wait as drafts"}. Unusual, sensitive or unclear ones wait here.</p>
+        {!held.length ? <p className="mt-2 text-sm text-slate-600">Nothing held.</p> : (
+          <ul className="mt-2 space-y-3">
+            {held.map((r) => (
+              <li key={r.id}>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{nameOf.get(r.clientId)}</p>
+                <RequestList items={[r]} clientId={r.clientId} canSend canApprove={approver} empty="" />
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="review-findings">

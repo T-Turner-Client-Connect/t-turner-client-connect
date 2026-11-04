@@ -12,6 +12,7 @@ import { HISTORICAL_TYPES, requestsFor } from "@/lib/services/client-requests";
 import { registryLabel } from "@/lib/services/bank-accounts";
 import { canSendClientRequests, canViewBanking } from "@/lib/services/bk-permissions";
 import { historicalRequestAction } from "@/app/actions/bk-workflow";
+import { canApproveCoethaWork } from "@/lib/auth/permissions";
 
 export const metadata = { title: "Historical Records & Statements" };
 
@@ -24,7 +25,7 @@ export default async function RecordsPage({ params }: { params: Promise<{ client
   const biz = client.businessName || client.displayName;
   const base = `/bookkeeping/${clientId}`;
   if (!(await canViewBanking(user, clientId))) return <div className={clsx(card, "p-6 text-navy-900")}>Only Admins, the staff member assigned to {biz} and staff Tabitha allows can see its records requests.</div>;
-  const [reqs, send, accounts] = await Promise.all([requestsFor(clientId), canSendClientRequests(user, clientId), prisma.bookkeepingAccount.findMany({ where: { clientId, active: true }, orderBy: [{ accountType: "asc" }, { institution: "asc" }] })]);
+  const [reqs, send, owner, accounts] = await Promise.all([requestsFor(clientId), canSendClientRequests(user, clientId), canApproveCoethaWork(user), prisma.bookkeepingAccount.findMany({ where: { clientId, active: true }, orderBy: [{ accountType: "asc" }, { institution: "asc" }] })]);
   const thisYear = new Date().getFullYear();
 
   return (
@@ -54,12 +55,12 @@ export default async function RecordsPage({ params }: { params: Promise<{ client
 
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="historical-requests">
         <h2 className={h2}><Archive className="size-5 text-gold-600" aria-hidden /> Historical requests <span className="rounded-full bg-navy-900 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-300">{reqs.historical.length}</span></h2>
-        <RequestList items={reqs.historical} clientId={clientId} canSend={send} empty="No historical records requested yet." />
+        <RequestList items={reqs.historical} clientId={clientId} canSend={send} canApprove={owner} empty="No historical records requested yet." />
       </section>
 
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="all-requests">
         <h2 className={h2}><FileClock className="size-5 text-gold-600" aria-hidden /> Monthly and supporting requests</h2>
-        <RequestList items={reqs.all.filter((r) => r.kind !== "HISTORICAL" && r.kind !== "YEAR_END")} clientId={clientId} canSend={send} empty="None." />
+        <RequestList items={reqs.all.filter((r) => r.kind !== "HISTORICAL" && r.kind !== "YEAR_END")} clientId={clientId} canSend={send} canApprove={owner} empty="None." />
       </section>
     </div>
   );

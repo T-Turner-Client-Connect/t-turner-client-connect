@@ -7,6 +7,7 @@ import { approveReconciliation, decideSharedCard, enterStatementBalances, monito
 import { discardDraftRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest } from "@/lib/services/client-requests";
 import { runWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { setTaxClassification } from "@/lib/services/tax-classification";
+import { releaseInterimStatement, revokeInterimStatement } from "@/lib/services/client-statements";
 
 const refresh = (clientId: string) => {
   for (const p of ["", "/close", "/banking", "/banking/reconciliation", "/records", "/year-end", "/coetha"]) revalidatePath(`/bookkeeping/${clientId}${p}`);
@@ -119,6 +120,24 @@ export async function yearEndRequestAction(clientId: string, _prev: ActionState,
     const out = await requestYearEndDocuments(actor, clientId, forms, { send: true });
     refresh(clientId);
     return `${out.length} year-end request${out.length === 1 ? "" : "s"} sent.`;
+  });
+}
+
+export async function releaseInterimAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await releaseInterimStatement(actor, clientId, { from: str(fd, "from"), asOf: str(fd, "asOf"), purpose: str(fd, "purpose") });
+    refresh(clientId);
+    return "Interim statement released to the client's portal.";
+  });
+}
+
+export async function revokeInterimAction(clientId: string, id: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await revokeInterimStatement(actor, clientId, id);
+    refresh(clientId);
+    return "Withdrawn.";
   });
 }
 

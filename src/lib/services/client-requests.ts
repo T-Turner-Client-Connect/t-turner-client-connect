@@ -2,11 +2,12 @@ import "server-only";
 import type { DocumentRequest } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import type { Actor } from "@/lib/auth/actor";
+import { ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { BK_UPLOAD_TYPES } from "@/lib/bk-uploads";
 import { chicagoToday } from "@/lib/dates";
 import { ValidationError } from "./clients";
-import { isYmd, toDate, ymdOf } from "./ledger";
+import { isYmd, todayCentral, toDate, ymdOf } from "./ledger";
 import { notifyClientUsers } from "./documents";
 import { assertCanSendClientRequests } from "./bk-permissions";
 import { registryLabel } from "./bank-accounts";
@@ -78,6 +79,70 @@ async function coethaAuthor(clientId: string) {
   return c?.assignedToId ?? (await prisma.user.findFirst({ where: { role: "ADMIN", active: true }, select: { id: true } }))?.id ?? null;
 }
 
+// --- Routing: which of Coetha's requests may go out on their own -----------------------------
+
+/** Deposits Coetha asks about: up to this total the request is routine; above it, Tabitha reviews first. */
+export const DEPOSIT_REVIEW_THRESHOLD_CENTS = 250_000;
+/** Below this confidence Coetha never sends anything on her own. */
+export const MIN_AUTO_CONFIDENCE = 0.7;
+/** Personal or tax-sensitive wording in the request or the transactions behind it. */
+export const SENSITIVE = /\b(ssn|social security|tax return|irs|1040|personal|medical|health|divorce|alimony|child support|gift|inheritance|related[- ]party|owner|shareholder|partner|officer|family|loan (from|to) (the )?(owner|shareholder|officer|member)|bankruptcy|lawsuit|legal|garnish\w*|levy|lien)\b/i;
+
+export type RoutingInput = {
+  kind: string;
+  docType?: string | null;
+  bookkeepingAccountId?: string | null;
+  /** The registered account's type, when the request is for one. */
+  accountType?: string | null;
+  /** DEPOSITS / TRANSFERS for "explain these" requests. */
+  topic?: "DEPOSITS" | "TRANSFERS" | null;
+  /** Total amount the request is about (deposits). */
+  amountCents?: number | null;
+  /** Coetha's confidence that the request is right (0–1); omitted = certain (data-driven). */
+  confidence?: number | null;
+  /** Client data behind the request (transaction descriptions) and any staff wording. */
+  evidence?: string | null;
+};
+export type Routing = { routing: "ROUTINE" | "REVIEW"; reason: string };
+
+/**
+ * Tabitha's rule (PR #82 review): ROUTINE requests — a missing bank or card statement for a
+ * registered account, receipts, payroll records, merchant statements, prior financial statements,
+ * small deposit explanations, loan documents for a known loan account — may go out automatically.
+ * Everything UNUSUAL, SENSITIVE or UNCLEAR waits for her: low confidence, personal or
+ * tax-sensitive wording, owner / related-party items, transfers to unknown accounts, deposits
+ * above the threshold, loan documents not tied to a known loan account, statements without an
+ * account, year-end tax documents, and anything not on the routine list.
+ */
+export function classifyRequest(r: RoutingInput): Routing {
+  const review = (reason: string): Routing => ({ routing: "REVIEW", reason });
+  const routine = (reason: string): Routing => ({ routing: "ROUTINE", reason });
+  if (r.confidence != null && r.confidence < MIN_AUTO_CONFIDENCE) return review("Coetha isn't confident this request is right.");
+  if (r.evidence && SENSITIVE.test(r.evidence)) return review("Involves personal, owner / related-party or tax-sensitive matters.");
+  if (r.kind === "YEAR_END") return review("Annual tax documents are reviewed by Tabitha.");
+  switch (r.docType) {
+    case "BANK_STATEMENT":
+    case "CARD_STATEMENT":
+      return r.bookkeepingAccountId ? routine("Statement for a registered account and period.") : review("Statement request without a specific account.");
+    case "PAYROLL_REPORT":
+      return routine("Payroll records for the period.");
+    case "RECEIPTS":
+      return routine("Receipts for specific purchases.");
+    case "MERCHANT_STATEMENT":
+      return routine("Merchant processing statement for the period.");
+    case "PRIOR_FINANCIALS":
+      return routine("Prior financial statements for onboarding.");
+    case "LOAN_AGREEMENT":
+      return r.bookkeepingAccountId && (r.accountType === "LOAN" || r.accountType === "LINE_OF_CREDIT") ? routine("Loan documents for a registered loan account.") : review("Loan documents not tied to a known loan account.");
+    case "BK_OTHER":
+      if (r.topic === "DEPOSITS") return (r.amountCents ?? Infinity) <= DEPOSIT_REVIEW_THRESHOLD_CENTS ? routine("Explanation of small deposits.") : review("Unexplained deposits above the review threshold.");
+      if (r.topic === "TRANSFERS") return review("Transfers to an account we don't know — may be owner or related-party.");
+      return review("Not a routine request.");
+    default:
+      return review("Not a routine request.");
+  }
+}
+
 export type RequestInput = {
   kind: "MONTHLY" | "STATEMENT" | "HISTORICAL" | "YEAR_END" | "SUPPORTING" | "GENERAL";
   title: string;
@@ -91,6 +156,8 @@ export type RequestInput = {
   dueAt?: Date | null;
   periodId?: string | null;
   draftKey?: string | null;
+  /** Coetha's routing signals (see classifyRequest). */
+  routingHints?: Omit<RoutingInput, "kind" | "docType" | "bookkeepingAccountId" | "accountType">;
 };
 
 /** True when what this request would ask for is already on file (never re-request what was received). */
@@ -121,7 +188,8 @@ export async function createClientRequest(actor: Actor | null, clientId: string,
   if ((input.start && !isYmd(input.start)) || (input.end && !isYmd(input.end))) throw new ValidationError("Enter valid dates.");
   if (input.start && input.end && input.end < input.start) throw new ValidationError("The end date is before the start date.");
   if ((input.kind === "HISTORICAL" || input.kind === "STATEMENT") && (!input.start || !input.end)) throw new ValidationError("Enter the date range the records should cover.");
-  if (input.bookkeepingAccountId && !(await prisma.bookkeepingAccount.count({ where: { id: input.bookkeepingAccountId, clientId } }))) throw new ValidationError("That account isn't registered for this business.");
+  const acct = input.bookkeepingAccountId ? await prisma.bookkeepingAccount.findFirst({ where: { id: input.bookkeepingAccountId, clientId }, select: { accountType: true } }) : null;
+  if (input.bookkeepingAccountId && !acct) throw new ValidationError("That account isn't registered for this business.");
   if (input.draftKey) {
     const existing = await prisma.documentRequest.findUnique({ where: { clientId_draftKey: { clientId, draftKey: input.draftKey } } });
     if (existing) return { request: existing, created: false };
@@ -130,7 +198,9 @@ export async function createClientRequest(actor: Actor | null, clientId: string,
   const source = opts.source ?? (actor ? "STAFF" : "COETHA");
   const createdById = actor?.id ?? (await coethaAuthor(clientId));
   if (!createdById) throw new ValidationError("No staff account to record the request under.");
-  const send = opts.send ?? !!actor;
+  // Coetha's requests carry an explicit routing; staff requests are the staff member's own decision.
+  const routing = source === "COETHA" ? classifyRequest({ kind: input.kind, docType: input.docType, bookkeepingAccountId: input.bookkeepingAccountId, accountType: acct?.accountType ?? null, ...input.routingHints, evidence: [input.routingHints?.evidence, input.instructions].filter(Boolean).join(" ") || null }) : null;
+  const send = (opts.send ?? !!actor) && routing?.routing !== "REVIEW";
   const req = await prisma.documentRequest.create({
     data: {
       clientId, title, reason: input.reason?.trim().slice(0, 500) || null, instructions: input.instructions?.trim().slice(0, 1000) || null,
@@ -138,16 +208,26 @@ export async function createClientRequest(actor: Actor | null, clientId: string,
       periodStart: input.start ? toDate(input.start) : null, periodEnd: input.end ? toDate(input.end) : null, taxYear: input.taxYear ?? null,
       dueAt: input.dueAt ?? null, periodId: input.periodId ?? null, category: "CLIENT_UPLOADS", source, draftKey: input.draftKey ?? null,
       status: send ? "OPEN" : "DRAFT", sentAt: send ? new Date() : null, sentById: send ? actor?.id ?? null : null, createdById,
+      routing: routing?.routing ?? null, routingReason: routing?.reason ?? null,
     },
   });
-  await audit(prisma, { actorId: actor?.id ?? null, action: source === "COETHA" ? "coetha.request_drafted" : "request.created", entityType: "DocumentRequest", entityId: req.id, clientId, details: { kind: req.kind, docType: req.docType, account: req.bookkeepingAccountId, start: input.start ?? null, end: input.end ?? null, sent: send } });
+  await audit(prisma, { actorId: actor?.id ?? null, action: source === "COETHA" ? "coetha.request_drafted" : "request.created", entityType: "DocumentRequest", entityId: req.id, clientId, details: { kind: req.kind, docType: req.docType, account: req.bookkeepingAccountId, start: input.start ?? null, end: input.end ?? null, sent: send, routing: routing?.routing ?? null, routingReason: routing?.reason ?? null } });
   if (send) await notifyClientUsers(clientId, "DOCUMENT_REQUEST", `request:${req.id}`);
   return { request: req, created: true };
 }
 
 /** One-click send of a draft (staff), or Coetha's automatic send when Tabitha allowed it (actor null). */
-export async function sendClientRequest(actor: Actor | null, clientId: string, requestId: string) {
+export async function sendClientRequest(actor: Actor | null, clientId: string, requestId: string, opts: { today?: string } = {}) {
   if (actor) await assertCanSendClientRequests(actor, clientId);
+  const draft = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, status: "DRAFT" } });
+  if (!draft) throw new ValidationError("Only a draft request can be sent.");
+  // Unusual, sensitive or unclear requests: only Tabitha sends them, never Coetha on her own.
+  if (draft.routing === "REVIEW" && !(actor && (await canApproveCoethaWork(actor)))) throw new ForbiddenError("Tabitha reviews this request before it goes to the client.");
+  if (!actor) {
+    // Coetha never sends what was already received or what isn't due yet.
+    if (draft.periodEnd && ymdOf(draft.periodEnd) >= (opts.today ?? todayCentral())) throw new ValidationError("That period hasn't ended yet.");
+    if (await alreadyReceived(clientId, { kind: draft.kind as RequestInput["kind"], docType: draft.docType, bookkeepingAccountId: draft.bookkeepingAccountId, start: draft.periodStart ? ymdOf(draft.periodStart) : null, end: draft.periodEnd ? ymdOf(draft.periodEnd) : null, taxYear: draft.taxYear })) throw new ValidationError("Already received.");
+  }
   const r = await prisma.documentRequest.updateMany({ where: { id: requestId, clientId, status: "DRAFT" }, data: { status: "OPEN", sentAt: new Date(), sentById: actor?.id ?? null } });
   if (!r.count) throw new ValidationError("Only a draft request can be sent.");
   await audit(prisma, { actorId: actor?.id ?? null, action: actor ? "request.sent" : "coetha.request_auto_sent", entityType: "DocumentRequest", entityId: requestId, clientId });
@@ -200,6 +280,6 @@ export async function requestsFor(clientId: string) {
   };
 }
 
-export const REQUEST_STATUS_LABEL: Record<string, string> = { DRAFT: "Draft — not sent", OPEN: "Waiting on client", SUBMITTED: "Received — Coetha reviewing", ACCEPTED: "Accepted", CANCELLED: "Cancelled" };
+export const REQUEST_STATUS_LABEL: Record<string, string> = { REVIEW: "Waiting for Tabitha's review", DRAFT: "Draft — not sent", OPEN: "Waiting on client", SUBMITTED: "Received — Coetha reviewing", ACCEPTED: "Accepted", CANCELLED: "Cancelled" };
 export const docTypeLabel = (t: string | null) => (t ? (BK_UPLOAD_TYPES as Record<string, string>)[t] ?? (YEAR_END_FORMS as Record<string, string>)[t] ?? t : null);
 export { ymdOf };

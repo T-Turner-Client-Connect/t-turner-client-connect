@@ -7,7 +7,7 @@ import { categorizeBankTransaction, postJournalEntry, postOpeningBalances, profi
 import { suggestCategories } from "@/lib/services/ledger-review";
 import { completeBankLink, syncConnection } from "@/lib/services/banking";
 import { approveReconciliation, detectSharedCards, enterStatementBalances, monitorConnectionAccount, monthlyAccountProgress, reconMath, registerAccount, decideSharedCard } from "@/lib/services/bank-accounts";
-import { createClientRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, yearEndWindow } from "@/lib/services/client-requests";
+import { classifyRequest, createClientRequest, DEPOSIT_REVIEW_THRESHOLD_CENTS, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, yearEndWindow } from "@/lib/services/client-requests";
 import { monthlyChecklist, runWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -161,41 +161,83 @@ describe("onboarding gaps", () => {
     await syncConnection(conn.id, "MANUAL", w.daria);
     await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
     const h = await prisma.documentRequest.findFirstOrThrow({ where: { clientId: w.biz.id, kind: "HISTORICAL" } });
-    expect(h).toMatchObject({ status: "DRAFT", bookkeepingAccountId: chk.id, docType: "BANK_STATEMENT" });
+    expect(h).toMatchObject({ status: "OPEN", routing: "ROUTINE", bookkeepingAccountId: chk.id, docType: "BANK_STATEMENT" });
     expect([h.periodStart!.toISOString().slice(0, 10), h.periodEnd!.toISOString().slice(0, 10)]).toEqual(["2026-07-01", "2026-09-30"]);
   });
 });
 
-describe("Coetha drafts requests; they go out only when Tabitha allows it", () => {
-  it("a missing statement becomes a draft for that exact account and month; nothing is sent until the setting is on", async () => {
+describe("request routing: routine requests go out on their own, the rest wait for Tabitha", () => {
+  it("classifies requests explicitly", () => {
+    const cases: [Parameters<typeof classifyRequest>[0], "ROUTINE" | "REVIEW"][] = [
+      [{ kind: "STATEMENT", docType: "BANK_STATEMENT", bookkeepingAccountId: "a1", accountType: "CHECKING" }, "ROUTINE"],
+      [{ kind: "STATEMENT", docType: "CARD_STATEMENT", bookkeepingAccountId: "a2", accountType: "CREDIT_CARD" }, "ROUTINE"],
+      [{ kind: "STATEMENT", docType: "BANK_STATEMENT", bookkeepingAccountId: null }, "REVIEW"], // no specific account
+      [{ kind: "MONTHLY", docType: "PAYROLL_REPORT" }, "ROUTINE"],
+      [{ kind: "SUPPORTING", docType: "RECEIPTS", evidence: "PRETEND FLOUR SUPPLY" }, "ROUTINE"],
+      [{ kind: "SUPPORTING", docType: "MERCHANT_STATEMENT" }, "ROUTINE"],
+      [{ kind: "SUPPORTING", docType: "LOAN_AGREEMENT", bookkeepingAccountId: "l1", accountType: "LOAN" }, "ROUTINE"],
+      [{ kind: "SUPPORTING", docType: "LOAN_AGREEMENT", bookkeepingAccountId: "c1", accountType: "CREDIT_CARD" }, "REVIEW"], // not a known loan account
+      [{ kind: "SUPPORTING", docType: "LOAN_AGREEMENT" }, "REVIEW"],
+      [{ kind: "SUPPORTING", docType: "BK_OTHER", topic: "DEPOSITS", amountCents: DEPOSIT_REVIEW_THRESHOLD_CENTS }, "ROUTINE"],
+      [{ kind: "SUPPORTING", docType: "BK_OTHER", topic: "DEPOSITS", amountCents: DEPOSIT_REVIEW_THRESHOLD_CENTS + 1 }, "REVIEW"], // above the threshold
+      [{ kind: "SUPPORTING", docType: "BK_OTHER", topic: "TRANSFERS" }, "REVIEW"], // owner / related party possible
+      [{ kind: "SUPPORTING", docType: "RECEIPTS", evidence: "TRANSFER TO OWNER PERSONAL" }, "REVIEW"], // sensitive wording
+      [{ kind: "SUPPORTING", docType: "RECEIPTS", evidence: "IRS PAYMENT 1040" }, "REVIEW"], // tax-sensitive
+      [{ kind: "STATEMENT", docType: "BANK_STATEMENT", bookkeepingAccountId: "a1", confidence: 0.5 }, "REVIEW"], // low confidence
+      [{ kind: "YEAR_END", docType: "NEC_1099" }, "REVIEW"],
+      [{ kind: "SUPPORTING", docType: "BK_OTHER" }, "REVIEW"], // unclear
+    ];
+    for (const [input, want] of cases) expect(classifyRequest(input).routing, JSON.stringify(input)).toBe(want);
+  });
+
+  it("by default a routine statement request goes out at once with the exact account, period and document; history is kept", async () => {
     const w = await world();
     const chk = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", nickname: "Operating", last4: "0042" });
     const { token } = await invitePortalUser(w.tabitha, w.biz.id, { email: "pat@pretend.example", name: "Pat Pretend", role: "OWNER" });
     await acceptPortalInvite(token!, "Pretend-Strong-Pass-1");
     const before = await prisma.notification.count();
     const r1 = await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
-    expect(r1).toMatchObject({ sent: 0 });
-    const reqs = await prisma.documentRequest.findMany({ where: { clientId: w.biz.id, kind: "STATEMENT" } });
-    expect(reqs).toHaveLength(1);
-    expect(reqs[0]).toMatchObject({ status: "DRAFT", source: "COETHA", bookkeepingAccountId: chk.id, docType: "BANK_STATEMENT" });
-    expect(reqs[0].periodStart!.toISOString().slice(0, 10)).toBe("2026-10-01");
-    expect(reqs[0].periodEnd!.toISOString().slice(0, 10)).toBe("2026-10-31");
-    expect(reqs[0].reason).toMatch(/reconcile Operating ••0042 for October 2026/);
-    expect(await prisma.notification.count()).toBe(before); // a draft notifies no one
-    // Running again doesn't duplicate.
+    expect(r1.sent).toBe(1);
+    const [req] = await prisma.documentRequest.findMany({ where: { clientId: w.biz.id, kind: "STATEMENT" } });
+    expect(req).toMatchObject({ status: "OPEN", source: "COETHA", routing: "ROUTINE", bookkeepingAccountId: chk.id, docType: "BANK_STATEMENT", title: "Bank statement — Operating ••0042 — October 2026" });
+    expect([req.periodStart!.toISOString().slice(0, 10), req.periodEnd!.toISOString().slice(0, 10)]).toEqual(["2026-10-01", "2026-10-31"]);
+    expect(req.reason).toMatch(/reconcile Operating ••0042 for October 2026/);
+    expect(await prisma.notification.count()).toBeGreaterThan(before); // through the client's notification preferences
+    expect(await prisma.auditLog.count({ where: { entityId: req.id, action: { in: ["coetha.request_drafted", "coetha.request_auto_sent"] } } })).toBe(2);
+    // Running again never sends it twice.
     await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
     expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(1);
-    // One-click send by staff.
-    await sendClientRequest(w.daria, w.biz.id, reqs[0].id);
-    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: reqs[0].id } })).status).toBe("OPEN");
-    expect(await prisma.notification.count()).toBeGreaterThan(before);
-    // With Tabitha's setting on, the next draft goes out by itself (only she can turn it on).
-    await expect(setOwnerSwitch(w.daria, "coethaAutoSend", true)).rejects.toBeInstanceOf(ForbiddenError);
-    await setOwnerSwitch(w.tabitha, "coethaAutoSend", true);
+    // The current month isn't due: nothing is requested for it.
+    await runWorkflowMonitor(null, w.biz.id, 2026, 11, { today: TODAY });
+    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT", periodEnd: new Date("2026-11-30T00:00:00Z") } })).toBe(0);
+  });
+
+  it("unusual or sensitive requests wait for Tabitha; staff can't send them; with the switch off routine ones wait for staff", async () => {
+    const w = await world();
+    const chk = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", last4: "0042", gl: "NEW" });
+    const conn = await connect(w, w.biz.id);
+    await monitorConnectionAccount(w.daria, w.biz.id, conn.accounts[0].id, chk.id);
+    pages = [{ added: [
+      t("d1", "p-chk", -4800, "2026-10-06", "MOBILE DEPOSIT"), // $4,800 unexplained deposit: above the threshold
+      t("d2", "p-chk", 900, "2026-10-09", "ZELLE TO J PRETEND"), // transfer to an unknown account
+    ] }];
+    await syncConnection(conn.id, "MANUAL", w.daria);
+    await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
+    const held = await prisma.documentRequest.findMany({ where: { clientId: w.biz.id, routing: "REVIEW" }, orderBy: { draftKey: "asc" } });
+    expect(held.map((r) => [r.draftKey?.split(":")[0], r.status])).toEqual([["deposits", "DRAFT"], ["transfers", "DRAFT"]]);
+    expect(held[0].routingReason).toMatch(/above the review threshold/);
+    await expect(sendClientRequest(w.daria, w.biz.id, held[0].id)).rejects.toThrow(/Tabitha reviews this request/);
+    await expect(sendClientRequest(null, w.biz.id, held[0].id)).rejects.toBeInstanceOf(ForbiddenError);
+    await sendClientRequest(w.tabitha, w.biz.id, held[0].id);
+    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: held[0].id } })).status).toBe("OPEN");
+    // Tabitha can turn automatic sending off; then routine requests wait for staff.
+    await expect(setOwnerSwitch(w.daria, "coethaAutoSend", false)).rejects.toBeInstanceOf(ForbiddenError);
+    await setOwnerSwitch(w.tabitha, "coethaAutoSend", false);
     await runWorkflowMonitor(null, w.biz.id, 2026, 11, { today: "2026-12-03" });
     const nov = await prisma.documentRequest.findFirstOrThrow({ where: { clientId: w.biz.id, kind: "STATEMENT", periodEnd: new Date("2026-11-30T00:00:00Z") } });
-    expect(nov.status).toBe("OPEN");
-    expect(await prisma.auditLog.count({ where: { action: "coetha.request_auto_sent", entityId: nov.id } })).toBe(1);
+    expect(nov).toMatchObject({ status: "DRAFT", routing: "ROUTINE" });
+    await sendClientRequest(w.daria, w.biz.id, nov.id); // one-click send by staff
+    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: nov.id } })).status).toBe("OPEN");
   });
 
   it("a statement the adapter can retrieve is filed instead of requested", async () => {
@@ -369,10 +411,16 @@ describe("monthly reconciliation", () => {
     const a = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", last4: "0042", openingBalance: "0", openingBalanceDate: "2026-09-30" });
     const b = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "SAVINGS", last4: "0043" });
     await registerAccount(w.daria, w.biz.id, { institution: "Pretend Card Co", accountType: "CREDIT_CARD", last4: "7001", openingBalance: "0", openingBalanceDate: "2026-09-30" });
-    await enterStatementBalances(w.daria, w.biz.id, a.id, 2026, 10, { ending: "0" }); // balanced, nothing to review → green
+    const balanced = await enterStatementBalances(w.daria, w.biz.id, a.id, 2026, 10, { ending: "0" }); // balanced, nothing to review
     await createClientRequest(w.daria, w.biz.id, { kind: "STATEMENT", title: "Savings statement", docType: "BANK_STATEMENT", bookkeepingAccountId: b.id, start: "2026-10-01", end: "2026-10-31" });
-    const p = await monthlyAccountProgress(w.daria, w.biz.id, 2026, 10, { today: TODAY });
-    expect(p.counts).toEqual({ GREEN: 1, RED: 1, YELLOW: 1, GRAY: 0 }); // savings: requested (yellow); card: no statement (red)
+    let p = await monthlyAccountProgress(w.daria, w.biz.id, 2026, 10, { today: TODAY });
+    // Balanced is NOT green until Tabitha approves: checking and savings (requested) yellow, card (no statement) red.
+    expect(p.counts).toEqual({ GREEN: 0, RED: 1, YELLOW: 2, GRAY: 0 });
+    expect(p).toMatchObject({ reconciled: 0, awaitingApproval: 1 });
+    expect((await monthlyChecklist(w.biz.id, 2026, 10, { today: TODAY })).items.find((i) => i.key === "RECONCILED")).toMatchObject({ state: "MISSING", detail: expect.stringMatching(/0 of 3 accounts reconciled and approved · 1 balanced, awaiting Tabitha/) });
+    await approveReconciliation(w.tabitha, w.biz.id, balanced!.id);
+    p = await monthlyAccountProgress(w.daria, w.biz.id, 2026, 10, { today: TODAY });
+    expect(p.counts).toEqual({ GREEN: 1, RED: 1, YELLOW: 1, GRAY: 0 });
     expect(p.reconciled).toBe(1);
     const nov = await monthlyAccountProgress(w.daria, w.biz.id, 2026, 11, { today: TODAY });
     expect(nov.counts.GRAY).toBe(3);

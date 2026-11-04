@@ -1,21 +1,13 @@
 import "server-only";
 
 /**
- * Automatic monthly statement retrieval — adapter interface plus the fallback.
+ * Automatic monthly statement retrieval — the adapter interface and the fallback.
  *
- * Plaid offers a separate "Statements" product (statement PDFs from the bank), available only
- * at some institutions and only when enabled for the firm's Plaid account and consented to in
- * Link. Its request/response shapes could NOT be verified from inside this project (no Plaid
- * SDK or docs are vendored here, and plaid.com is not reachable from the build environment),
- * so no Statements endpoint is called. Per the rule "don't invent endpoints you can't verify":
- *
- * - `StatementSource` is the seam a verified implementation plugs into (list the statements for
- *   one connected account and month, then download the PDF).
- * - Until then `statementSource()` returns the fallback, which always says "not available", and
- *   Coetha creates a document request for that exact account and month instead.
- * - Turning it on later needs: PLAID_STATEMENTS_ENABLED=true, the Statements product enabled in
- *   the Plaid Dashboard, the product added to Link for new connections (existing connections
- *   need Link update mode for consent), and an implementation verified against Plaid's docs.
+ * The Plaid Statements implementation lives in services/plaid-products.ts (PLAID_STATEMENTS) and is
+ * used only when PLAID_STATEMENTS_ENABLED=true and Plaid is usable for the connection. Its API
+ * shapes are marked UNVERIFIED (they couldn't be checked against plaid.com from this project).
+ * Otherwise the fallback says "not available" and Coetha requests that exact account and month
+ * from the client.
  */
 
 export type StatementQuery = { connectionId: string; providerAccountId: string; year: number; month: number };

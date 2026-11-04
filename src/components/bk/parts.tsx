@@ -14,7 +14,7 @@ export const outlineBtn = "inline-flex min-h-10 items-center justify-center gap-
 export const h2 = "flex flex-wrap items-center gap-2 font-serif text-lg font-bold text-navy-900 sm:text-xl";
 
 export const LIGHT_DOT: Record<Light, string> = { GREEN: "bg-emerald-600", RED: "bg-red-600", YELLOW: "bg-amber-400", GRAY: "bg-slate-300" };
-export const LIGHT_TEXT: Record<Light, string> = { GREEN: "Reconciled", RED: "Missing info or issue", YELLOW: "In progress / awaiting data", GRAY: "Not yet due" };
+export const LIGHT_TEXT: Record<Light, string> = { GREEN: "Reconciled & approved by Tabitha", RED: "Missing info or unresolved difference", YELLOW: "Balanced, awaiting approval — or in progress", GRAY: "Not yet due" };
 
 export function Dot({ light, className }: { light: Light; className?: string }) {
   return <span className={clsx("inline-block size-3 shrink-0 rounded-full", LIGHT_DOT[light], className)} aria-hidden />;

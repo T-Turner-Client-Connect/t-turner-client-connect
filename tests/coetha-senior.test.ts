@@ -8,7 +8,7 @@ import { registerAccount } from "@/lib/services/bank-accounts";
 import { runWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { approveCoethaProposal, rejectCoethaProposal } from "@/lib/services/coetha";
 import { setTaxClassification, taxProfile } from "@/lib/services/tax-classification";
-import { clientBalanceSheet, clientGeneralLedger, clientProfitAndLoss, clientStatementPdf, clientStatementStatus, clientText } from "@/lib/services/client-statements";
+import { clientBalanceSheet, clientGeneralLedger, clientInterimStatements, clientProfitAndLoss, clientStatementPdf, clientStatementStatus, clientText, interimBalanceSheet, interimProfitAndLoss, releaseInterimStatement, revokeInterimStatement } from "@/lib/services/client-statements";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { portalDocuments } from "@/lib/services/documents";
 import { GET as statementsRoute } from "@/app/api/client/statements/route";
@@ -168,6 +168,45 @@ describe("client-facing statements carry no internal commentary", () => {
       expect(String(text)).toMatch(/Lakeside Pretend Bakery LLC/);
       expect(String(text)).not.toMatch(INTERNAL);
     }
+  });
+
+  it("an interim statement: only Tabitha releases it, without closing the period; labeled interim and unaudited; clean; audited", async () => {
+    const w = await world();
+    await released(w); // books with internal wording, Coetha proposals and notes; October NOT closed
+    await expect(releaseInterimStatement(w.daria, w.biz.id, { from: "2026-10-01", asOf: "2026-10-20" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(releaseInterimStatement(w.admin, w.biz.id, { from: "2026-10-01", asOf: "2026-10-20" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(releaseInterimStatement(w.tabitha, w.biz.id, { from: "2026-10-01", asOf: "2026-12-31" }, TODAY)).rejects.toThrow(/future/);
+    const s = await releaseInterimStatement(w.tabitha, w.biz.id, { from: "2026-10-01", asOf: "2026-10-20", purpose: "For Pretend Community Bank" }, TODAY);
+    expect((await prisma.ledgerBook.findUniqueOrThrow({ where: { clientId: w.biz.id } })).lockedThrough).toBeNull(); // period not closed
+    expect(await prisma.auditLog.count({ where: { action: "statements.interim_released", actorId: w.tabitha.id, entityId: s.id } })).toBe(1);
+    const pl = await interimProfitAndLoss(s.id);
+    const bs = await interimBalanceSheet(s.id);
+    expect(pl.interim).toBe("Interim — unaudited, prepared as of October 20, 2026");
+    expect(pl.period).toBe("For the Period October 1, 2026 – October 20, 2026");
+    expect(pl.totals.find((x) => x.label === "Net Income")!.amountCents).toBe(116_000);
+    for (const x of [pl, bs]) expect(JSON.stringify(x)).not.toMatch(INTERNAL);
+    const { extractText, getDocumentProxy } = await import("unpdf");
+    const { pdf, filename } = await clientStatementPdf(pl);
+    const { text } = await extractText(await getDocumentProxy(new Uint8Array(pdf)), { mergePages: true });
+    expect(String(text)).toMatch(/Interim — unaudited, prepared as of October 20, 2026/);
+    expect(String(text)).not.toMatch(INTERNAL);
+    expect(filename).toMatch(/Interim 2026-10-20/);
+    // The client downloads it through the portal (bookkeeping access), labeled the same way.
+    await managed(w.biz.id);
+    const { token } = await invitePortalUser(w.tabitha, w.biz.id, { email: "pat@pretend.example", name: "Pat Pretend", role: "OWNER" });
+    const u = await acceptPortalInvite(token!, "Pretend-Strong-Pass-1");
+    await prisma.portalAccess.updateMany({ where: { clientId: w.biz.id }, data: { canViewBookkeeping: true } });
+    portalSession = { id: u.id };
+    expect((await clientInterimStatements(w.biz.id))[0]).toMatchObject({ label: "Interim — unaudited, prepared as of October 20, 2026", purpose: "For Pretend Community Bank" });
+    expect((await statementsRoute(new Request(`https://portal.example/api/client/statements?interim=${s.id}&kind=bs`))).status).toBe(200);
+    // The monthly statements for the same month still aren't available (not released and closed).
+    const period = await prisma.bookkeepingPeriod.findFirstOrThrow({ where: { clientId: w.biz.id, month: 10 } });
+    expect((await statementsRoute(new Request(`https://portal.example/api/client/statements?period=${period.id}&kind=pl`))).status).toBe(404);
+    // Withdrawn: gone from the portal, audited.
+    await expect(revokeInterimStatement(w.daria, w.biz.id, s.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await revokeInterimStatement(w.tabitha, w.biz.id, s.id);
+    expect((await statementsRoute(new Request(`https://portal.example/api/client/statements?interim=${s.id}&kind=pl`))).status).toBe(404);
+    expect(await prisma.auditLog.count({ where: { action: "statements.interim_withdrawn", entityId: s.id } })).toBe(1);
   });
 
   it("the sanitizer removes internal markers", () => {

@@ -13,7 +13,7 @@ import { downloadToken, REPORT_LABELS } from "@/lib/services/documents";
 import { fmtDate } from "@/lib/format";
 import { PERIOD_TYPES, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
 import { reportCaption } from "@/lib/services/bookkeeping-clients";
-import { CLIENT_STATUS_LABEL, clientStatementStatus, ledgerStatementsReleased } from "@/lib/services/client-statements";
+import { CLIENT_STATUS_LABEL, clientInterimStatements, clientStatementStatus, ledgerStatementsReleased } from "@/lib/services/client-statements";
 import { rangeText } from "@/lib/services/client-requests";
 import { registryLabel } from "@/lib/services/bank-accounts";
 
@@ -43,6 +43,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
     prisma.documentRequest.findMany({ where: { clientId: current.clientId, periodId: null, status: { in: ["OPEN", "SUBMITTED"] } }, orderBy: { createdAt: "desc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } }),
   ]);
   // Only operational status reaches the client: "in preparation" or "available for download".
+  const interims = current.canViewBookkeeping ? await clientInterimStatements(current.clientId) : [];
   const statuses = new Map(await Promise.all(periods.map(async (p) => [p.id, { status: await clientStatementStatus(p.id), ledger: !!(await ledgerStatementsReleased(p.id)) }] as const)));
   const link = (id: string) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`;
   const fye = (await prisma.client.findUnique({ where: { id: current.clientId }, select: { fiscalYearEnd: true } }))?.fiscalYearEnd ?? null;
@@ -90,6 +91,22 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       <PageHeader title="Bookkeeping & requests" subtitle={<span data-testid="bk-business">Checklist, reports and questions for <strong>{current.client.businessName || current.client.displayName}</strong> only.</span>} />
       {looseRequests.length > 0 && (
         <Card title="Documents we need" className="mb-4"><ul className="divide-y divide-navy-100">{looseRequests.map((r) => requestItem(r, null))}</ul></Card>
+      )}
+      {interims.length > 0 && (
+        <Card title="Interim financial statements" className="mb-4">
+          <ul className="divide-y divide-navy-100" data-testid="client-interim">
+            {interims.map((r) => (
+              <li key={r.id} className="py-2 text-sm">
+                <p className="font-semibold">{r.purpose ?? "Interim financial statements"}</p>
+                <p className="text-xs font-semibold text-amber-800">{r.label}</p>
+                <p className="mt-1 flex flex-wrap gap-2 text-xs">
+                  <a className="rounded-full border border-navy-900 px-3 py-1 font-semibold text-navy-900" href={`/api/client/statements?interim=${r.id}&kind=pl&download=1`}>Profit and Loss (PDF)</a>
+                  <a className="rounded-full border border-navy-900 px-3 py-1 font-semibold text-navy-900" href={`/api/client/statements?interim=${r.id}&kind=bs&download=1`}>Balance Sheet (PDF)</a>
+                </p>
+              </li>
+            ))}
+          </ul>
+        </Card>
       )}
       {!current.canViewBookkeeping ? (
         <Notice>Business bookkeeping isn&apos;t part of the services on this account. If you&apos;d like our firm to manage your business books, send us a message.</Notice>

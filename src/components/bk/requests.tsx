@@ -6,13 +6,14 @@ import { discardRequestAction, sendRequestAction } from "@/app/actions/bk-workfl
 import { navyBtn, outlineBtn } from "./parts";
 
 type Req = {
-  id: string; title: string; status: string; kind: string; source: string; reason: string | null; docType: string | null; periodStart: Date | null; periodEnd: Date | null; dueAt: Date | null; createdAt: Date; sentAt: Date | null;
+  id: string; title: string; status: string; kind: string; source: string; reason: string | null; routing?: string | null; routingReason?: string | null; docType: string | null; periodStart: Date | null; periodEnd: Date | null; dueAt: Date | null; createdAt: Date; sentAt: Date | null;
   bookkeepingAccount: { institution: string; nickname: string | null; last4: string | null; accountType: string } | null; _count?: { documents: number };
 };
+const review = (r: { status: string; routing?: string | null }) => r.status === "DRAFT" && r.routing === "REVIEW";
 const TONE: Record<string, string> = { DRAFT: "bg-slate-100 text-slate-700", OPEN: "bg-amber-50 text-amber-800", SUBMITTED: "bg-gold-100 text-gold-800", ACCEPTED: "bg-emerald-50 text-emerald-800" };
 
 /** One request line: the exact document, account, period and reason; drafts get one-click Send. */
-export function RequestList({ items, clientId, canSend, empty }: { items: Req[]; clientId: string; canSend: boolean; empty: string }) {
+export function RequestList({ items, clientId, canSend, canApprove = false, empty }: { items: Req[]; clientId: string; canSend: boolean; canApprove?: boolean; empty: string }) {
   if (!items.length) return <p className="mt-2 text-sm text-slate-600">{empty}</p>;
   return (
     <ul className="mt-2 divide-y divide-ivory-200" data-testid="request-list">
@@ -30,9 +31,11 @@ export function RequestList({ items, clientId, canSend, empty }: { items: Req[];
               </p>
               {r.reason && <p className="mt-0.5 text-sm text-navy-800">{r.reason}</p>}
             </div>
-            <span className={clsx("shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold", TONE[r.status] ?? "bg-slate-100")}>{REQUEST_STATUS_LABEL[r.status] ?? r.status}</span>
+            <span className={clsx("shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold", review(r) ? "bg-gold-100 text-gold-800" : TONE[r.status] ?? "bg-slate-100")}>{review(r) ? REQUEST_STATUS_LABEL.REVIEW : REQUEST_STATUS_LABEL[r.status] ?? r.status}</span>
           </div>
-          {canSend && r.status === "DRAFT" && (
+          {review(r) && r.routingReason && <p className="mt-0.5 text-xs font-semibold text-gold-800" data-testid="routing-reason">Held for Tabitha: {r.routingReason}</p>}
+          {r.routing === "ROUTINE" && r.status !== "DRAFT" && r.source === "COETHA" && <p className="mt-0.5 text-xs text-slate-500">Routine — sent automatically</p>}
+          {canSend && r.status === "DRAFT" && (!review(r) || canApprove) && (
             <div className="mt-1.5 flex flex-wrap gap-2">
               <ActionForm action={sendRequestAction.bind(null, clientId, r.id)} showSuccess={false}><button type="submit" className={navyBtn} data-testid="send-request">Send to client</button></ActionForm>
               <ActionForm action={discardRequestAction.bind(null, clientId, r.id)} showSuccess={false}><button type="submit" className={outlineBtn}>Discard</button></ActionForm>

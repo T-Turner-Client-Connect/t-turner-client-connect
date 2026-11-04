@@ -50,8 +50,22 @@ The hourly cron runs Coetha's monthly monitor once a day per bookkeeping client 
 call, nothing leaves Client Connect). She prepares reconciliations, drafts targeted requests (exact
 document, account, period, reason; never re-requesting what's on file) and records recommendations
 with full rationale (what she found, why, the correction, accounts, supporting transactions, impact).
-Drafts go out only with one click from staff, or automatically if Tabitha turns on "Coetha sends
-document requests automatically" (Owner's Office → Coetha & bank feeds).
+**Routine** requests go out automatically (Tabitha's approval, on by default; she can turn it off in
+Owner's Office → Coetha & bank feeds): a statement for a registered account and period, payroll
+records, receipts, merchant statements, prior financial statements, loan documents for a known loan
+or line-of-credit account, and deposit explanations up to $2,500 in total. Everything else waits as a
+draft in Tabitha's review queue (Coetha Accounting Review): deposits above $2,500, transfers to
+unknown accounts (possible owner / related party), loan documents not tied to a known loan account,
+a statement request without a specific account, year-end tax forms, anything Coetha is less than 70%
+confident about, and any request whose wording or transactions are personal or tax-sensitive
+(owner, shareholder, partner, family, IRS, tax return, medical, legal…). Only Tabitha sends those.
+Coetha never sends what was already received, is available from the bank feed / Statements, or isn't
+due yet. The rule is `classifyRequest` in `services/client-requests.ts`; every request, its routing
+and its sending are kept in the request history and audit log.
+
+**Reconciliation colors**: green = reconciled AND approved by Tabitha; yellow = balanced but awaiting
+her approval, or in progress; red = missing information or an unresolved difference; gray = not yet
+due. "X of Y reconciled" counts approved accounts only.
 
 **Business Tax Classification** (Form 1065, 1120-S, Schedule C, Other / Requires Review) is set by
 Tabitha under Settings on the management screen. Coetha applies its rules (owner draws, shareholder
@@ -66,3 +80,8 @@ P&L, Balance Sheet and General Ledger PDFs (`/api/client/statements`) exist only
 approved and released the month's statements and closed the books through month end. The builders in
 `services/client-statements.ts` never read Coetha tables, review notes, entry reasons or staff names,
 and every text passes a sanitizer that removes internal markers.
+
+**Interim statements**: Tabitha can approve and release an interim P&L and Balance Sheet (e.g. for a
+lender) without closing the period (management screen → Financial statements). The client sees it as
+"Interim — unaudited, prepared as of <date>" in the portal and on the PDF header, under the same
+separation rules. Only Tabitha releases or withdraws one; both are audited.

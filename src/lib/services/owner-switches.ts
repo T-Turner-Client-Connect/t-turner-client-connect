@@ -13,7 +13,7 @@ import { isReportApprover } from "./bookkeeping-clients";
 
 export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend";
 
-export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends document requests automatically" };
+export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically" };
 const LABEL = SWITCH_LABEL;
 
 export async function ownerSwitches() {
@@ -21,7 +21,7 @@ export async function ownerSwitches() {
   return {
     liveBanking: { on: s?.liveBankingEnabled ?? false, changedAt: s?.liveBankingChangedAt ?? null, changedById: s?.liveBankingChangedById ?? null },
     coetha: { on: s?.coethaEnabled ?? false, changedAt: s?.coethaChangedAt ?? null, changedById: s?.coethaChangedById ?? null },
-    coethaAutoSend: { on: s?.coethaAutoSendRequests ?? false, changedAt: s?.coethaAutoSendChangedAt ?? null, changedById: s?.coethaAutoSendChangedById ?? null },
+    coethaAutoSend: { on: s?.coethaAutoSendRequests ?? true, changedAt: s?.coethaAutoSendChangedAt ?? null, changedById: s?.coethaAutoSendChangedById ?? null },
   };
 }
 
@@ -29,9 +29,9 @@ export async function liveBankingOn(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { liveBankingEnabled: true } }))?.liveBankingEnabled ?? false;
 }
 
-/** Tabitha's setting: Coetha's drafted document requests go to clients without a staff click. Off by default. */
+/** Tabitha's setting: Coetha's ROUTINE document requests go to clients without a staff click. On by default (her approval, PR #82); she can turn it off. */
 export async function coethaAutoSendOn(): Promise<boolean> {
-  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoSendRequests: true } }))?.coethaAutoSendRequests ?? false;
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoSendRequests: true } }))?.coethaAutoSendRequests ?? true;
 }
 
 export async function coethaOn(): Promise<boolean> {

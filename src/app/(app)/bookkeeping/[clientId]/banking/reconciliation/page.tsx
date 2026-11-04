@@ -44,7 +44,7 @@ export default async function ReconciliationPage({ params, searchParams }: { par
             <p className="text-xs uppercase tracking-[0.2em] text-gold-300">{biz}</p>
             <h1 className="mt-1 font-serif text-2xl font-bold text-white">Monthly Reconciliation — {label}</h1>
             <p className="mt-1 text-lg font-semibold text-gold-300" data-testid="recon-count">{p.reconciled} of {p.total} accounts reconciled</p>
-            <p className="text-sm text-navy-100">{p.approved} approved by Tabitha · Coetha prepares each one and flags exceptions; only Tabitha approves.</p>
+            <p className="text-sm text-navy-100">{p.awaitingApproval} balanced and awaiting Tabitha&apos;s approval · Coetha prepares each one and flags exceptions; an account counts as reconciled only once Tabitha approves it.</p>
           </div>
           <form method="get" className="flex items-end gap-2 text-navy-900">
             <select className="input w-auto" name="month" defaultValue={`${y}-${String(m).padStart(2, "0")}`} aria-label="Month">{months.map((x) => <option key={x} value={x}>{MONTH_NAMES[Number(x.slice(5)) - 1]} {x.slice(0, 4)}</option>)}</select>

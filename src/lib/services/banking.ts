@@ -5,10 +5,11 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { appUrl } from "@/lib/integrations";
-import { createLinkToken, currentPlaidMode, envOfMode, exchangePublicToken, getAccounts, PLAID_MODE_TEXT, PlaidError, plaidWebhookUrl, REAUTH_CODES, removeItem, syncPage, type PlaidAccount, type PlaidTxn } from "@/lib/plaid";
+import { createLinkToken, currentPlaidMode, envOfMode, exchangePublicToken, getAccounts, PLAID_MODE_TEXT, PlaidError, plaidWebhookUrl, REAUTH_CODES, removeItem, syncPage, liabilitiesFlag, type PlaidAccount, type PlaidTxn } from "@/lib/plaid";
 import { ValidationError } from "./clients";
 import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, crossSourceMatch, FEED_SUBTYPES, normDesc, officeBookClientIds, toDate, ymdOf } from "./ledger";
 import { applySharedCardDetection, feedsShared } from "./bank-accounts";
+import { refreshLiabilities } from "./plaid-products";
 import { isReportApprover } from "./bookkeeping-clients";
 
 /**
@@ -254,6 +255,8 @@ export async function syncConnection(connectionId: string, trigger: SyncTrigger,
       await tx.bankConnection.update({ where: { id: connectionId }, data: { cursor, lastSuccessAt: new Date(), lastError: null, errorCode: null, reauthRequiredAt: null, status: "ACTIVE" } });
     });
     await prisma.bankSyncRun.update({ where: { id: run.id }, data: { status: "OK", finishedAt: new Date(), ...r } });
+    // Card and loan terms (Plaid Liabilities), only when Tabitha enabled the product.
+    if (liabilitiesFlag()) await refreshLiabilities(connectionId).catch(() => undefined);
     await audit(prisma, { actorId: actor?.id ?? null, action: "banking.synced", entityType: "BankConnection", entityId: connectionId, clientId: conn.clientId, details: { trigger, ...r } });
     if (conn.status === "NEEDS_REAUTH") await closeReauthTask(conn.clientId);
     await notifyIfNeeded(conn.clientId);

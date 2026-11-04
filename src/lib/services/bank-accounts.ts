@@ -340,7 +340,12 @@ export async function prepareReconciliation(clientId: string, registryId: string
   const before = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: r.id, year: prev.y, month: prev.m } } });
   let beginning = existing?.beginningBalanceCents ?? before?.endingBalanceCents ?? null;
   if (beginning == null && r.openingBalanceCents != null && r.openingBalanceDate && ymdOf(r.openingBalanceDate) < w.start) beginning = r.openingBalanceCents;
-  const ending = existing?.endingBalanceCents ?? null;
+  // Plaid Liabilities (when enabled): the issuer's last statement balance for this statement period.
+  const liab = existing?.endingBalanceCents == null && kind === "LIABILITY" && r.ledgerAccountId
+    ? await prisma.bankConnectionAccount.findFirst({ where: { ledgerAccountId: r.ledgerAccountId, liabilitiesAt: { not: null }, connection: { clientId, status: { not: "DISCONNECTED" } } }, orderBy: { liabilitiesAt: "desc" } })
+    : null;
+  const liabFits = !!liab?.lastStatementDate && liab.lastStatementBalanceCents != null && ymdOf(liab.lastStatementDate) >= w.start && ymdOf(liab.lastStatementDate) <= ymdOf(new Date(toDate(w.end).getTime() + 5 * 86_400_000));
+  const ending = existing?.endingBalanceCents ?? (liabFits ? liab!.lastStatementBalanceCents : null);
   // The statement on file for this account and month (uploaded, retrieved, or sent against a request).
   const [y0, m0] = w.end.split("-").map(Number);
   const statement = await prisma.document.findFirst({
@@ -355,6 +360,7 @@ export async function prepareReconciliation(clientId: string, registryId: string
   const exceptions: string[] = [];
   if (math.differenceCents) exceptions.push(`Difference of ${usd(math.differenceCents)} between the statement and the imported activity — a transaction may be missing or duplicated.`);
   if (!rows.length && today > w.end) exceptions.push("No transactions imported for this statement period. Check the bank feed or the statement.");
+  if (liab?.liabilityOverdue) exceptions.push("The card issuer reports this account's payment as overdue.");
   const flagged = rows.filter((x) => x.flag).length;
   if (flagged) exceptions.push(`${flagged} transaction${flagged === 1 ? "" : "s"} flagged as possible duplicates or changed by the bank.`);
   const typical = median(rows.map((x) => Math.abs(x.amountCents)));
@@ -368,6 +374,7 @@ export async function prepareReconciliation(clientId: string, registryId: string
   else status = "READY";
   const data = {
     clientId, statementClosingDate: toDate(w.end), beginningBalanceCents: beginning, endingBalanceCents: ending,
+    ...(existing?.endingBalanceCents == null && liabFits ? { balanceSource: "PLAID_LIABILITIES" } : {}),
     transactionsImported: rows.length, paymentsCreditsCents: math.paymentsCreditsCents, chargesDebitsCents: math.chargesDebitsCents,
     unmatchedCount: unmatched, differenceCents: math.differenceCents, statementStatus, statementDocumentId: statement?.id ?? null,
     status, exceptions, preparedAt: new Date(), preparedById: opts.preparedById ?? null,
@@ -414,17 +421,21 @@ export async function approveReconciliation(actor: Actor, clientId: string, reco
 }
 
 export type Light = "GREEN" | "RED" | "YELLOW" | "GRAY";
+/**
+ * Green = reconciled AND approved by Tabitha. Yellow = balanced but awaiting her approval, or in
+ * progress / awaiting data. Red = missing information or an unresolved difference. Gray = not yet due.
+ */
 export function lightOf(rec: { status: string; statementStatus: string } | null): Light {
   if (!rec || rec.status === "NOT_DUE") return "GRAY";
-  if (rec.status === "APPROVED" || rec.status === "READY") return "GREEN";
+  if (rec.status === "APPROVED") return "GREEN";
   if (rec.status === "EXCEPTION" || (rec.status === "AWAITING_DATA" && rec.statementStatus === "MISSING")) return "RED";
   return "YELLOW";
 }
 export const REC_LABEL: Record<string, string> = {
-  NOT_DUE: "Not yet due", AWAITING_DATA: "Awaiting statement data", IN_PROGRESS: "In progress — transactions to review", EXCEPTION: "Issue — difference to resolve", READY: "Reconciled — awaiting Tabitha's approval", APPROVED: "Reconciled and approved",
+  NOT_DUE: "Not yet due", AWAITING_DATA: "Awaiting statement data", IN_PROGRESS: "In progress — transactions to review", EXCEPTION: "Issue — difference to resolve", READY: "Balanced — awaiting Tabitha's approval", APPROVED: "Reconciled and approved by Tabitha",
 };
 
-/** Consolidated monthly account progress: every account with its light, plus "X of Y accounts reconciled". */
+/** Consolidated monthly account progress: every account with its light, plus "X of Y accounts reconciled" (approved by Tabitha only). */
 export async function monthlyAccountProgress(actor: Actor, clientId: string, year: number, month: number, opts: { today?: string; refresh?: boolean } = {}) {
   await assertCanViewBanking(actor, clientId);
   const accounts = await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null }, orderBy: [{ accountType: "asc" }, { institution: "asc" }, { last4: "asc" }], include: { subCards: { where: { active: true }, select: { id: true, last4: true, nickname: true, cardholderLabel: true } } } });
@@ -440,7 +451,7 @@ export async function monthlyAccountProgress(actor: Actor, clientId: string, yea
   const reconciled = rows.filter((r) => r.light === "GREEN").length;
   const counts = { GREEN: 0, RED: 0, YELLOW: 0, GRAY: 0 } as Record<Light, number>;
   for (const r of rows) counts[r.light]++;
-  return { rows, reconciled, total: rows.length, due: due.length, counts, approved: rows.filter((r) => r.rec?.status === "APPROVED").length };
+  return { rows, reconciled, total: rows.length, due: due.length, counts, approved: reconciled, awaitingApproval: rows.filter((r) => r.rec?.status === "READY").length };
 }
 
 // --- Card payments are transfers, never expenses -------------------------------------------------

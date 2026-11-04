@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
-import { statementSource } from "@/lib/statement-retrieval";
+import { activeStatementSource } from "./plaid-products";
 import { assertLedger, normDesc, officeBookClientIds, todayCentral, toDate, usd, ymdOf } from "./ledger";
 import { cardPaymentTarget, cardRefs, monthlyAccountProgress, prepareReconciliation, registryLabel, statementWindow, type Light } from "./bank-accounts";
 import { createClientRequest, rangeText, sendClientRequest, YEAR_END_FORMS, yearEndWindow } from "./client-requests";
@@ -107,7 +107,7 @@ export async function monthlyChecklist(clientId: string, year: number, month: nu
   items.push({
     key: "RECONCILED", label: "Accounts reconciled",
     state: !recon.total ? (due ? "MISSING" : "NOT_DUE") : !due ? "NOT_DUE" : recon.reconciled === recon.total ? "DONE" : reds ? "MISSING" : "IN_PROGRESS",
-    detail: recon.total ? `${recon.reconciled} of ${recon.total} accounts reconciled${reds ? ` · ${reds} with an issue or missing statement` : ""}` : "No accounts to reconcile",
+    detail: recon.total ? `${recon.reconciled} of ${recon.total} accounts reconciled and approved${recon.awaitingApproval ? ` · ${recon.awaitingApproval} balanced, awaiting Tabitha` : ""}${reds ? ` · ${reds} with an issue or missing statement` : ""}` : "No accounts to reconcile",
   });
 
   const reportMonth = reportsDue(profile?.frequency ?? "MONTHLY", month);
@@ -269,7 +269,7 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
     if (!rec || !ended || rec.statementStatus !== "MISSING" || rec.endingBalanceCents != null) continue;
     const w = statementWindow(year, month, a.statementDay);
     const feed = a.ledgerAccountId ? await prisma.bankConnectionAccount.findFirst({ where: { ledgerAccountId: a.ledgerAccountId, connection: { clientId, status: "ACTIVE" } }, select: { connectionId: true, providerAccountId: true } }) : null;
-    const got = feed ? await statementSource().fetchMonthly({ connectionId: feed.connectionId, providerAccountId: feed.providerAccountId, year, month }) : { available: false as const, reason: "Not connected" };
+    const got = feed ? await activeStatementSource().fetchMonthly({ connectionId: feed.connectionId, providerAccountId: feed.providerAccountId, year, month }) : { available: false as const, reason: "Not connected" };
     if (got.available) {
       const stored = await storeDocumentFile(got.pdf, `statement-${ym}.pdf`, { system: "statement-retrieval" }, clientId).catch(() => null);
       if (stored) {
@@ -279,7 +279,7 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
           await tx.document.create({ data: { clientId, category: "BOOKKEEPING", title: `${registryLabel(a)} statement — ${ml}`, year, month, visibility: "STAFF_ONLY", fileId: file.id, scanStatus: stored.scan, ...stored.scanMeta, docType: isCard ? "CARD_STATEMENT" : "BANK_STATEMENT", bookkeepingAccountId: a.id, periodStart: toDate(w.start), periodEnd: toDate(w.end), reportPeriodType: "MONTH", retainUntil: await retentionDate("BOOKKEEPING") } });
         });
         if (got.endingBalanceCents != null) await prisma.accountReconciliation.update({ where: { id: rec.id }, data: { endingBalanceCents: got.endingBalanceCents, balanceSource: "PLAID_STATEMENT" } });
-        await audit(prisma, { actorId: null, action: "coetha.statement_retrieved", entityType: "BookkeepingAccount", entityId: a.id, clientId, details: { month: ym, source: statementSource().name } });
+        await audit(prisma, { actorId: null, action: "coetha.statement_retrieved", entityType: "BookkeepingAccount", entityId: a.id, clientId, details: { month: ym, source: activeStatementSource().name } });
         await prepareReconciliation(clientId, a.id, year, month, { today });
         continue;
       }
@@ -305,11 +305,11 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
     const cards = await cardRefs(clientId);
     const list = (xs: typeof rows) => xs.slice(0, 10).map((x) => `${ymdOf(x.date)} ${usd(x.amountCents)} “${x.description}” (${x.account.name})`).join("; ");
     const big = rows.filter((r) => r.amountCents <= -50_000 && !isPair(r) && !cardPaymentTarget(r.description, r.amountCents, cards) && !TRANSFER_WORDS.test(normDesc(r.description)));
-    if (big.length) await draft({ kind: "SUPPORTING", docType: "RECEIPTS", start: `${ym}-01`, end: monthEnd(year, month), draftKey: `receipts:${ym}`, title: `Receipts for ${big.length} purchase${big.length === 1 ? "" : "s"} — ${ml}`, reason: `We need a receipt or invoice for these to categorize them correctly: ${list(big)}.` });
+    if (big.length) await draft({ kind: "SUPPORTING", docType: "RECEIPTS", routingHints: { evidence: big.map((d) => d.description).join(" ") }, start: `${ym}-01`, end: monthEnd(year, month), draftKey: `receipts:${ym}`, title: `Receipts for ${big.length} purchase${big.length === 1 ? "" : "s"} — ${ml}`, reason: `We need a receipt or invoice for these to categorize them correctly: ${list(big)}.` });
     const deposits = rows.filter((r) => r.amountCents >= 50_000 && r.account.subtype === "BANK" && !isPair(r) && !PROCESSORS.test(normDesc(r.description)));
-    if (deposits.length) await draft({ kind: "SUPPORTING", docType: "BK_OTHER", start: `${ym}-01`, end: monthEnd(year, month), draftKey: `deposits:${ym}`, title: `Explain ${deposits.length} deposit${deposits.length === 1 ? "" : "s"} — ${ml}`, reason: `Please tell us what these deposits were (sale, loan, owner money, refund…) and send any supporting document: ${list(deposits)}.` });
+    if (deposits.length) await draft({ kind: "SUPPORTING", docType: "BK_OTHER", routingHints: { topic: "DEPOSITS", amountCents: deposits.reduce((n, d) => n + d.amountCents, 0), evidence: deposits.map((d) => d.description).join(" ") }, start: `${ym}-01`, end: monthEnd(year, month), draftKey: `deposits:${ym}`, title: `Explain ${deposits.length} deposit${deposits.length === 1 ? "" : "s"} — ${ml}`, reason: `Please tell us what these deposits were (sale, loan, owner money, refund…) and send any supporting document: ${list(deposits)}.` });
     const transfers = rows.filter((r) => r.amountCents < 0 && TRANSFER_WORDS.test(normDesc(r.description)) && !isPair(r));
-    if (transfers.length) await draft({ kind: "SUPPORTING", docType: "BK_OTHER", start: `${ym}-01`, end: monthEnd(year, month), draftKey: `transfers:${ym}`, title: `Identify ${transfers.length} transfer${transfers.length === 1 ? "" : "s"} — ${ml}`, reason: `These went to an account we don't have on file. Tell us where they went (another business account, a loan, the owner…): ${list(transfers)}.` });
+    if (transfers.length) await draft({ kind: "SUPPORTING", docType: "BK_OTHER", routingHints: { topic: "TRANSFERS", evidence: transfers.map((d) => d.description).join(" ") }, start: `${ym}-01`, end: monthEnd(year, month), draftKey: `transfers:${ym}`, title: `Identify ${transfers.length} transfer${transfers.length === 1 ? "" : "s"} — ${ml}`, reason: `These went to an account we don't have on file. Tell us where they went (another business account, a loan, the owner…): ${list(transfers)}.` });
     const proc = await prisma.bankTransaction.count({ where: { clientId, date: { gte: from, lte: to }, amountCents: { gt: 0 }, OR: ["STRIPE", "SQUARE", "PAYPAL", "SHOPIFY", "CLOVER", "TOAST"].map((w) => ({ description: { contains: w, mode: "insensitive" as const } })) } });
     if (proc) await draft({ kind: "SUPPORTING", docType: "MERCHANT_STATEMENT", start: `${ym}-01`, end: monthEnd(year, month), draftKey: `merchant:${ym}`, title: `Merchant processing statement — ${ml}`, reason: `${proc} card-processor payout${proc === 1 ? "" : "s"} arrived in ${ml}. The processor's monthly statement shows gross sales, fees and refunds, so sales are recorded at the full amount.` });
     for (const a of accounts.filter((x) => x.accountType === "LOAN" || x.accountType === "LINE_OF_CREDIT")) {
@@ -343,8 +343,12 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
   }
   // Auto-send only when Tabitha turned it on.
   let sent = 0;
+  // Routine requests go out automatically (Tabitha's setting, on by default); the rest wait for her.
   if (drafted.length && (await coethaAutoSendOn())) {
-    for (const id of drafted) { await sendClientRequest(null, clientId, id); sent++; }
+    const routine = await prisma.documentRequest.findMany({ where: { id: { in: drafted }, status: "DRAFT", routing: "ROUTINE" }, select: { id: true } });
+    for (const r of routine) {
+      try { await sendClientRequest(null, clientId, r.id, { today }); sent++; } catch { /* not due or already received: stays a draft */ }
+    }
   }
   // Requests answered since last time: Coetha notes the arrival and resumes the review.
   const arrived = await prisma.documentRequest.findMany({ where: { clientId, source: "COETHA", status: "SUBMITTED" }, select: { id: true } });

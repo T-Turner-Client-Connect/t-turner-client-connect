@@ -13,7 +13,8 @@ import { recordHeading } from "@/lib/services/related-businesses";
 import {
   askQuestionAction, classifyDocumentAction, coethaLinkAction, deliverApprovedAction, openPeriodForClientAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
 } from "@/app/actions/bookkeeping-clients";
-import { runMonitorAction, taxClassificationAction } from "@/app/actions/bk-workflow";
+import { releaseInterimAction, revokeInterimAction, runMonitorAction, taxClassificationAction } from "@/app/actions/bk-workflow";
+import { clientInterimStatements } from "@/lib/services/client-statements";
 import { BK_DOC_TYPES, bookkeepingWorkspace, FREQUENCIES, isReportApprover, PAYROLL_FREQUENCIES, periodLabel, reportCaption, REVIEW_LABELS, workMonth } from "@/lib/services/bookkeeping-clients";
 import { BASIS, PERIOD_TYPES, type PeriodType } from "@/lib/bookkeeping-periods";
 import { accountLabel } from "@/lib/services/bookkeeping-profile";
@@ -72,6 +73,7 @@ export default async function BookkeepingManagement({ params, searchParams }: { 
     prisma.bookkeepingAccount.findMany({ where: { clientId, active: true }, orderBy: { institution: "asc" } }),
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { fiscalYearEnd: true } }),
   ]);
+  const interims = await clientInterimStatements(clientId);
   const history = await Promise.all(ws.periods.slice(0, 6).map(async (p) => ({ p, c: await monthlyChecklist(clientId, p.year, p.month) })));
   const done = wf.items.filter((i) => i.state === "DONE");
   const missing = wf.items.filter((i) => i.state !== "DONE");
@@ -142,7 +144,7 @@ export default async function BookkeepingManagement({ params, searchParams }: { 
                 <div className="rounded-xl bg-ivory-50 px-2 py-2"><dt className="text-xs text-slate-600">Last synced</dt><dd className="text-sm font-semibold text-navy-900">{reg.lastSync ? fmtDateTime(reg.lastSync) : "—"}</dd></div>
               </dl>
               <ul className="mt-3 divide-y divide-ivory-200 text-sm">
-                {wf.recon.rows.slice(0, 8).map((r) => <li key={r.account.id} className="flex items-center justify-between gap-2 py-1.5"><span className="flex min-w-0 items-center gap-2"><Dot light={r.light} /><span className="truncate">{r.account.nickname || r.account.institution}{r.account.last4 ? ` ••${r.account.last4}` : ""}</span></span><span className="shrink-0 text-xs text-slate-600">{r.rec?.status === "APPROVED" ? "Approved" : r.rec?.differenceCents ? "Difference" : r.light === "GREEN" ? "Balanced" : r.light === "GRAY" ? "Not due" : r.rec?.statementStatus === "MISSING" ? "Statement missing" : "In progress"}</span></li>)}
+                {wf.recon.rows.slice(0, 8).map((r) => <li key={r.account.id} className="flex items-center justify-between gap-2 py-1.5"><span className="flex min-w-0 items-center gap-2"><Dot light={r.light} /><span className="truncate">{r.account.nickname || r.account.institution}{r.account.last4 ? ` ••${r.account.last4}` : ""}</span></span><span className="shrink-0 text-xs text-slate-600">{r.rec?.status === "APPROVED" ? "Approved" : r.rec?.differenceCents ? "Difference" : r.rec?.status === "READY" ? "Awaiting approval" : r.light === "GRAY" ? "Not due" : r.rec?.statementStatus === "MISSING" ? "Statement missing" : "In progress"}</span></li>)}
               </ul>
               {wf.recon.rows.length > 8 && <p className="text-xs text-slate-500">+ {wf.recon.rows.length - 8} more</p>}
               <div className="mt-3 flex flex-wrap gap-2">
@@ -158,7 +160,7 @@ export default async function BookkeepingManagement({ params, searchParams }: { 
         {/* Outstanding requests */}
         <div className={clsx(card, "p-4 sm:p-5")} data-testid="outstanding-requests">
           <h2 className={h2}><Inbox className="size-5 text-gold-600" aria-hidden /> Outstanding document requests <span className="rounded-full bg-navy-900 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-300">{outstanding.length}</span></h2>
-          <RequestList items={outstanding.slice(0, 5)} clientId={clientId} canSend={canSend} empty="Nothing outstanding." />
+          <RequestList items={outstanding.slice(0, 5)} clientId={clientId} canSend={canSend} canApprove={approver} empty="Nothing outstanding." />
           {outstanding.length > 5 && <p className="text-xs text-slate-600">+ {outstanding.length - 5} more · <Link className="underline" href={`${base}/records`}>see all requests</Link></p>}
           {period && (
             <details className="mt-2 text-sm">
@@ -228,6 +230,19 @@ export default async function BookkeepingManagement({ params, searchParams }: { 
         {period && reports.some((d) => d.reviewStatus === "APPROVED" && d.visibility !== "PUBLISHED") && (
           <ActionForm action={deliverApprovedAction.bind(null, clientId, period.id, null)} className="mt-2" confirm="Release every approved statement for this month to the client's portal?"><button type="submit" className={outlineBtn}>Release all approved</button></ActionForm>
         )}
+        <div className="mt-3 rounded-xl border border-gold-300 bg-ivory-50 p-3" data-testid="interim">
+          <p className="text-sm font-semibold text-navy-900">Interim financial statements (lender, financing)</p>
+          <p className="text-xs text-slate-600">Released without closing the period. The client sees them labeled &ldquo;Interim — unaudited, prepared as of &lt;date&gt;&rdquo;, with no internal commentary.</p>
+          {interims.length > 0 && <ul className="mt-1 space-y-1 text-sm">{interims.map((r) => <li key={r.id} className="flex flex-wrap items-center gap-2"><span>{r.purpose ?? "Interim"} · {r.label}</span>{approver && <ActionForm action={revokeInterimAction.bind(null, clientId, r.id)} confirm="Withdraw this interim statement from the client's portal?" showSuccess={false}><button type="submit" className="text-xs underline">Withdraw</button></ActionForm>}</li>)}</ul>}
+          {approver ? (
+            <ActionForm action={releaseInterimAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-end gap-2 text-sm" resetOnSuccess confirm="Approve and release this interim statement to the client's portal?">
+              <label>From<input className="input mt-1" type="date" name="from" required defaultValue={`${target.year}-01-01`} /></label>
+              <label>As of<input className="input mt-1" type="date" name="asOf" required /></label>
+              <label>Purpose (shown to the client)<input className="input mt-1" name="purpose" placeholder="e.g. For Pretend Community Bank" /></label>
+              <button type="submit" className={navyBtn}>Approve &amp; release interim</button>
+            </ActionForm>
+          ) : <p className="mt-1 text-xs text-slate-600">Only Tabitha releases interim statements.</p>}
+        </div>
         {period && <p className="mt-2 text-xs text-slate-600"><a className="underline" href={`/api/bookkeeping/packet?period=${period.id}&type=MONTH`} target="_blank" rel="noopener">Preview the month&apos;s packet PDF</a> · Statements are always drafts until Tabitha approves; nothing reaches the client before she does.</p>}
       </section>
 
@@ -273,7 +288,7 @@ export default async function BookkeepingManagement({ params, searchParams }: { 
       <section className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         <div className={clsx(card, "p-4 sm:p-5")} data-testid="historical-summary">
           <h2 className={h2}><Archive className="size-5 text-gold-600" aria-hidden /> Historical statement requests</h2>
-          <RequestList items={reqs.historical.slice(0, 5)} clientId={clientId} canSend={canSend} empty="None yet." />
+          <RequestList items={reqs.historical.slice(0, 5)} clientId={clientId} canSend={canSend} canApprove={approver} empty="None yet." />
           <Link className={clsx(outlineBtn, "mt-2")} href={`${base}/records`}>Historical Records &amp; Statements</Link>
         </div>
         <div className={clsx(card, "p-4 sm:p-5")} data-testid="progress-history">

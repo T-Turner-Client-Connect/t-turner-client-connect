@@ -329,6 +329,7 @@ model Client {
   businessLicenses       BusinessLicense[]
   yearEndFilings         YearEndFiling[]
   accountReconciliations AccountReconciliation[]
+  interimStatements      InterimStatement[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -1242,6 +1243,9 @@ model DocumentRequest {
   reason               String?
   // Keeps Coetha from drafting the same request twice (e.g. "stmt:<account>:2026-10").
   draftKey             String?
+  // Coetha's routing: ROUTINE (may go out automatically) or REVIEW (waits for Tabitha), and why.
+  routing              String?
+  routingReason        String?
   sentAt               DateTime?
   sentById             String?
 
@@ -4145,29 +4149,37 @@ model BankConnection {
 }
 
 model BankConnectionAccount {
-  id                  String         @id @default(cuid())
-  connectionId        String
-  connection          BankConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  providerAccountId   String
-  name                String
-  mask                String?
+  id                        String         @id @default(cuid())
+  connectionId              String
+  connection                BankConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  providerAccountId         String
+  name                      String
+  mask                      String?
   // depository / credit / loan … as the bank reports it
-  type                String
-  subtype             String?
+  type                      String
+  subtype                   String?
   // The client's ledger bank or card account it feeds. Unmapped accounts are not retrieved.
   // Several Plaid accounts may feed ONE ledger account only when they are cards on one shared
   // credit account (sharedWithId set and confirmed); otherwise one-to-one.
-  ledgerAccountId     String?
+  ledgerAccountId           String?
   // Balances as Plaid last reported them (cents; credit: amount owed).
-  currentBalanceCents Int?
-  creditLimitCents    Int?
-  balanceAsOf         DateTime?
+  currentBalanceCents       Int?
+  creditLimitCents          Int?
+  balanceAsOf               DateTime?
   // Authorized-user / employee card detection: the primary card's account in this connection.
-  sharedWithId        String?
+  sharedWithId              String?
   // SUGGESTED (detected, not yet confirmed) | CONFIRMED | SEPARATE (staff override: its own account)
-  sharedStatus        String?
-  sharedReason        String?
-  createdAt           DateTime       @default(now())
+  sharedStatus              String?
+  sharedReason              String?
+  // Plaid Liabilities (credit cards and eligible loans), when enabled: the last statement and payment terms.
+  aprPercent                Float?
+  minimumPaymentCents       Int?
+  nextPaymentDueDate        DateTime?      @db.Date
+  lastStatementBalanceCents Int?
+  lastStatementDate         DateTime?      @db.Date
+  liabilityOverdue          Boolean?
+  liabilitiesAt             DateTime?
+  createdAt                 DateTime       @default(now())
 
   @@unique([connectionId, providerAccountId])
   @@index([ledgerAccountId])
@@ -4270,8 +4282,9 @@ model IntegrationSettings {
   coethaEnabled             Boolean   @default(false)
   coethaChangedById         String?
   coethaChangedAt           DateTime?
-  // Owner-only: Coetha's drafted document requests go to clients automatically (otherwise staff send each one).
-  coethaAutoSendRequests    Boolean   @default(false)
+  // Owner-only: Coetha's ROUTINE document requests go to clients automatically (on by default, Tabitha's
+  // approval of 2026-11). Unusual, sensitive or unclear requests always wait for her review.
+  coethaAutoSendRequests    Boolean   @default(true)
   coethaAutoSendChangedById String?
   coethaAutoSendChangedAt   DateTime?
   updatedById               String?
@@ -4671,4 +4684,23 @@ model SquarePaymentSeen {
   updatedAt        DateTime  @updatedAt
 
   @@index([state])
+}
+
+// An interim financial statement Tabitha approved and released (e.g. for a lender) without closing
+// the period. Always labeled "Interim — unaudited, prepared as of <date>" for the client.
+model InterimStatement {
+  id           String    @id @default(cuid())
+  clientId     String
+  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Profit and Loss covers fromDate..asOf; the Balance Sheet is as of asOf.
+  fromDate     DateTime  @db.Date
+  asOf         DateTime  @db.Date
+  // A short purpose shown to the client, e.g. "For Pretend Community Bank".
+  purpose      String?
+  releasedById String
+  releasedAt   DateTime  @default(now())
+  revokedAt    DateTime?
+  revokedById  String?
+
+  @@index([clientId, releasedAt])
 }

@@ -134,6 +134,10 @@ export default async function BankingPage({ params }: { params: Promise<{ client
                         <div className="min-w-0">
                           <p className="font-semibold text-navy-900">{r.nickname || r.institution}{r.last4 && <span className="ml-1 font-normal text-navy-800">••{r.last4}</span>}</p>
                           <p className="text-xs text-slate-600">{r.institution} · {REGISTRY_TYPES[r.accountType as keyof typeof REGISTRY_TYPES]?.label ?? r.accountType} · GL {r.ledgerAccount ? `${r.ledgerAccount.code} ${r.ledgerAccount.name} (${r.ledgerAccount.type === "LIABILITY" ? "liability" : "asset"})` : "not assigned"}</p>
+                          {(() => {
+                            const l = r.feeds.find((f) => f.liabilitiesAt);
+                            return l ? <p className="text-xs text-navy-800" data-testid="liabilities">Last statement {l.lastStatementBalanceCents != null ? usd(l.lastStatementBalanceCents) : "—"}{l.lastStatementDate ? ` (${l.lastStatementDate.toISOString().slice(0, 10)})` : ""} · APR {l.aprPercent != null ? `${l.aprPercent}%` : "—"} · Minimum {l.minimumPaymentCents != null ? usd(l.minimumPaymentCents) : "—"}{l.nextPaymentDueDate ? ` due ${l.nextPaymentDueDate.toISOString().slice(0, 10)}` : ""}{l.liabilityOverdue ? <strong className="text-red-700"> · overdue</strong> : null}</p> : null;
+                          })()}
                           <p className="text-xs text-slate-600">{r.openingBalanceCents != null ? `Opening ${usd(r.openingBalanceCents)} on ${r.openingBalanceDate?.toISOString().slice(0, 10)}` : "No opening balance"}{r.statementDay ? ` · statement closes day ${r.statementDay}` : ""}</p>
                         </div>
                         <div className="flex flex-col items-end gap-1 text-xs">

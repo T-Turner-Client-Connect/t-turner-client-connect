@@ -1,7 +1,7 @@
 import { getPortalUser } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { prisma } from "@/lib/prisma";
-import { clientBalanceSheet, clientGeneralLedger, clientProfitAndLoss, clientStatementPdf } from "@/lib/services/client-statements";
+import { clientBalanceSheet, clientGeneralLedger, clientProfitAndLoss, clientStatementPdf, interimBalanceSheet, interimProfitAndLoss } from "@/lib/services/client-statements";
 
 /**
  * A client downloads a RELEASED financial statement built from the books (Profit and Loss,
@@ -14,19 +14,25 @@ export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   const portal = await getPortalUser();
   if (!portal) return Response.json({ error: "Sign in required" }, { status: 401 });
-  const period = await prisma.bookkeepingPeriod.findUnique({ where: { id: params.get("period") ?? "" }, select: { id: true, clientId: true } });
-  if (!period) return Response.json({ error: "Not found" }, { status: 404 });
+  // A month's statements (released and closed), or an interim statement Tabitha released.
+  const interimId = params.get("interim");
+  const target = interimId
+    ? await prisma.interimStatement.findUnique({ where: { id: interimId }, select: { id: true, clientId: true } })
+    : await prisma.bookkeepingPeriod.findUnique({ where: { id: params.get("period") ?? "" }, select: { id: true, clientId: true } });
+  if (!target) return Response.json({ error: "Not found" }, { status: 404 });
   try {
-    await requireClientAccess(portal.id, period.clientId, "bookkeeping");
+    await requireClientAccess(portal.id, target.clientId, "bookkeeping");
   } catch {
     return Response.json({ error: "You don't have access to this account's bookkeeping." }, { status: 403 });
   }
   const kind = params.get("kind");
-  const build = kind === "bs" ? clientBalanceSheet : kind === "gl" ? clientGeneralLedger : kind === "pl" ? clientProfitAndLoss : null;
+  const build = interimId
+    ? (kind === "bs" ? interimBalanceSheet : kind === "pl" ? interimProfitAndLoss : null)
+    : (kind === "bs" ? clientBalanceSheet : kind === "gl" ? clientGeneralLedger : kind === "pl" ? clientProfitAndLoss : null);
   if (!build) return Response.json({ error: "Unknown statement" }, { status: 400 });
   let s;
   try {
-    s = await build(period.id);
+    s = await build(target.id);
   } catch {
     return Response.json({ error: "Not available" }, { status: 404 });
   }
