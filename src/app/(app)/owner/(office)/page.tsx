@@ -1,5 +1,9 @@
 import Link from "next/link";
-import { Badge, Card, LinkButton, Notice, PageHeader, Stat } from "@/components/ui";
+import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader, Stat } from "@/components/ui";
+import { ActionForm } from "@/components/action-form";
+import { addNonSquareRecurringAction } from "@/app/actions/manual-billing";
+import { nonSquareRecurring, PAY_METHODS } from "@/lib/services/manual-billing";
+import { prisma } from "@/lib/prisma";
 import { requireOwner } from "@/lib/auth/owner";
 import { monthlySummary, receivables, todayYmd } from "@/lib/services/owner-billing";
 import { AGING_BUCKETS, money } from "@/lib/billing/pricing";
@@ -13,7 +17,7 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
   const { actor } = await requireOwner("full");
   const thisYear = Number(todayYmd().slice(0, 4));
   const year = Number((await searchParams).year) || thisYear;
-  const [{ months, total }, r, sq, health] = await Promise.all([monthlySummary(actor, year), receivables(actor), squareRevenueSummary(), squareHealth()]);
+  const [{ months, total }, r, sq, health, other, clientChoices] = await Promise.all([monthlySummary(actor, year), receivables(actor), squareRevenueSummary(), squareHealth(), nonSquareRecurring(actor), prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, businessName: true }, orderBy: { displayName: "asc" } })]);
   const month = year === thisYear ? months[Number(todayYmd().slice(5, 7)) - 1] : null;
   return (
     <>
@@ -139,6 +143,47 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
             </div>
           )}
         </div>
+      </Card>
+      <Card className="mt-4" title="Recurring billing (not in Square)">
+        <p className="mb-3 text-sm text-slate-600">Clients on monthly billing who pay another way (cash, check, Zelle, Cash App, ACH…). Record each payment on the client&apos;s billing page; it shows here as paid.</p>
+        <div className="mb-4 grid gap-3 sm:grid-cols-3" data-testid="owner-non-square-totals">
+          <Stat label="Monthly recurring (not in Square)" value={money(other.totals.monthlyCents)} />
+          <Stat label="Paid this month" value={money(other.totals.paidThisMonthCents)} />
+          <Stat label="Past due" value={money(other.totals.overdueCents)} />
+        </div>
+        {other.rows.length === 0 ? (
+          <p className="text-sm text-slate-600">No clients billed outside Square yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[40rem] text-sm" data-testid="owner-non-square">
+              <thead><tr className="border-b border-navy-100 text-left"><th className="py-2">Client</th><th>Monthly</th><th>Due day</th><th>Paid this month</th><th>Still owed</th><th>Status</th></tr></thead>
+              <tbody>
+                {other.rows.map((o) => (
+                  <tr key={o.clientId} className="border-b border-navy-50">
+                    <td className="py-2"><Link className="underline" href={`/bookkeeping/${o.clientId}/profile`}>{o.name}</Link></td>
+                    <td>{money(o.feeCents)}</td>
+                    <td>{o.billingDay ?? "—"}</td>
+                    <td>{money(o.paidThisMonthCents)}</td>
+                    <td>{money(o.owedThisMonthCents)}</td>
+                    <td>{o.status ? <Badge tone={o.status.tone}>{o.status.label}</Badge> : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <details className="mt-4 rounded-lg border border-ivory-200 p-3">
+          <summary className="cursor-pointer font-semibold text-navy-900">+ Add a client not in Square</summary>
+          <ActionForm action={addNonSquareRecurringAction} className="mt-3 grid gap-3 sm:grid-cols-2" resetOnSuccess>
+            <Field label="Client"><select className="input" name="clientId" required defaultValue=""><option value="" disabled>Choose a client…</option>{clientChoices.map((c) => <option key={c.id} value={c.id}>{c.businessName || c.displayName}</option>)}</select></Field>
+            <Field label="Monthly amount ($)"><input className="input" name="monthlyFee" inputMode="decimal" required placeholder="595.00" /></Field>
+            <Field label="Due day of the month"><input className="input" name="billingDay" type="number" min={1} max={28} required defaultValue={1} /></Field>
+            <Field label="First month billed"><input className="input" name="startMonth" type="month" required defaultValue={todayYmd().slice(0, 7)} /></Field>
+            <Field label="Usually pays by"><select className="input" name="method" defaultValue="ZELLE">{Object.entries(PAY_METHODS).filter(([k]) => k !== "SQUARE").map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+            <Field label="Note (optional)"><input className="input" name="notes" maxLength={300} /></Field>
+            <div className="sm:col-span-2"><Button type="submit">Add to recurring billing</Button></div>
+          </ActionForm>
+        </details>
       </Card>
     </>
   );

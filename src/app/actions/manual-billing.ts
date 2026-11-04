@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
-import { markMonthsPaid, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
+import { addNonSquareRecurring, markMonthsPaid, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
 
 const refresh = () => revalidatePath("/bookkeeping", "layout");
 
@@ -51,5 +51,15 @@ export async function markMonthsPaidAction(clientId: string, _prev: ActionState,
       r.skipped.length ? `Skipped ${r.skipped.length} already paid.` : "",
       r.partial.length ? `Not changed — partly paid: ${r.partial.map(label).join(", ")}. Record the remaining amount with Record a Payment.` : "",
     ].filter(Boolean).join(" ");
+  });
+}
+
+export async function addNonSquareRecurringAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await addNonSquareRecurring(actor, { clientId: str(fd, "clientId"), monthlyFee: str(fd, "monthlyFee"), billingDay: Number(str(fd, "billingDay")), startMonth: str(fd, "startMonth"), method: str(fd, "method"), notes: str(fd, "notes") });
+    refresh();
+    revalidatePath("/owner");
+    return "Added. Record their payments from the client's billing page each month.";
   });
 }
