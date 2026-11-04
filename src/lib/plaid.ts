@@ -1,39 +1,92 @@
 import "server-only";
+import { createHash, createPublicKey, timingSafeEqual, verify as verifySignature, type JsonWebKey } from "node:crypto";
+import { liveBankingOn } from "@/lib/services/owner-switches";
 
 /**
- * Plaid, read-only (Transactions product). This phase talks ONLY to Plaid's sandbox: a
- * development or production environment is refused in code until Tabitha approves connecting
- * real banks. Credentials come from Netlify environment variables and are never shown.
+ * Plaid, read-only (Transactions product). Credentials come from Netlify environment
+ * variables and are never shown.
+ *
+ * Environments (Plaid offers two today; "development" was retired by Plaid in 2024):
+ * - PLAID_ENV=sandbox    → https://sandbox.plaid.com, test banks and test data only.
+ * - PLAID_ENV=production → https://production.plaid.com, real banks. Used ONLY when Tabitha's
+ *   owner switch "Live bank connections" is also ON. Production keys without the switch, or the
+ *   switch without production keys, connect nothing.
  */
 
-export type PlaidMode = "NOT_CONFIGURED" | "SANDBOX" | "LIVE_BLOCKED";
+export type PlaidEnv = "sandbox" | "production";
+/**
+ * NOT_CONFIGURED: no keys. SANDBOX: test mode. LIVE: production keys + Tabitha's switch on.
+ * LIVE_BLOCKED: production keys present but the switch is off. UNSUPPORTED_ENV: a PLAID_ENV
+ * value Plaid no longer offers (e.g. "development") or a typo.
+ */
+export type PlaidMode = "NOT_CONFIGURED" | "SANDBOX" | "LIVE" | "LIVE_BLOCKED" | "UNSUPPORTED_ENV";
 
-export function plaidMode(env: Record<string, string | undefined> = process.env): PlaidMode {
+const BASES: Record<PlaidEnv, string> = { sandbox: "https://sandbox.plaid.com", production: "https://production.plaid.com" };
+
+/** Pure: what the environment variables plus the owner switch allow. */
+export function plaidMode(env: Record<string, string | undefined> = process.env, liveSwitchOn = false): PlaidMode {
   if (!env.PLAID_CLIENT_ID?.trim() || !env.PLAID_SECRET?.trim()) return "NOT_CONFIGURED";
   const e = (env.PLAID_ENV ?? "sandbox").trim().toLowerCase();
-  return e === "sandbox" ? "SANDBOX" : "LIVE_BLOCKED";
+  if (e === "sandbox") return "SANDBOX";
+  if (e === "production") return liveSwitchOn ? "LIVE" : "LIVE_BLOCKED";
+  return "UNSUPPORTED_ENV";
 }
 
+/** The current mode, reading Tabitha's switch from the database. */
+export async function currentPlaidMode(): Promise<PlaidMode> {
+  const base = plaidMode(process.env, false);
+  if (base !== "LIVE_BLOCKED") return base;
+  return (await liveBankingOn()) ? "LIVE" : "LIVE_BLOCKED";
+}
+
+/** Which Plaid environment a mode talks to (connections are stored with it). */
+export const envOfMode = (m: PlaidMode): "SANDBOX" | "PRODUCTION" | null => (m === "SANDBOX" ? "SANDBOX" : m === "LIVE" ? "PRODUCTION" : null);
+
+export const PLAID_MODE_TEXT: Record<PlaidMode, string> = {
+  NOT_CONFIGURED: "Plaid isn't set up yet (PLAID_CLIENT_ID and PLAID_SECRET in Netlify).",
+  SANDBOX: "Sandbox: Plaid's test banks and test data only.",
+  LIVE: "Live: real bank connections are on (production keys and Tabitha's switch).",
+  LIVE_BLOCKED: "Production keys are set, but real bank connections stay off until Tabitha turns on “Live bank connections” in the Owner's Office.",
+  UNSUPPORTED_ENV: "PLAID_ENV must be “sandbox” or “production” (Plaid no longer offers “development”).",
+};
+
 export class PlaidError extends Error {
-  constructor(message: string, public code: string, public status = 0) {
+  constructor(message: string, public code: string, public status = 0, public type = "") {
     super(message);
     this.name = "PlaidError";
   }
 }
 
-const BASE = () => process.env.PLAID_API_BASE?.trim() || "https://sandbox.plaid.com";
+/**
+ * Item errors that only the client can fix by signing in to their bank again through Link
+ * (update mode). Retrying them daily would just fail again, so they're flagged for staff.
+ */
+export const REAUTH_CODES = new Set([
+  "ITEM_LOGIN_REQUIRED", "PENDING_EXPIRATION", "PENDING_DISCONNECT", "USER_PERMISSION_REVOKED", "ACCESS_NOT_GRANTED",
+  "INVALID_CREDENTIALS", "INSUFFICIENT_CREDENTIALS", "INVALID_MFA", "INVALID_UPDATED_USERNAME", "ITEM_LOCKED",
+  "USER_SETUP_REQUIRED", "MFA_NOT_SUPPORTED", "NO_ACCOUNTS", "ITEM_NOT_SUPPORTED", "ITEM_CONCURRENTLY_DELETED", "OAUTH_INVALID_TOKEN",
+]);
 
-async function call<T>(path: string, body: Record<string, unknown>): Promise<T> {
-  const mode = plaidMode();
-  if (mode === "NOT_CONFIGURED") throw new PlaidError("Plaid isn't set up yet (PLAID_CLIENT_ID and PLAID_SECRET in Netlify).", "NOT_CONFIGURED");
-  if (mode === "LIVE_BLOCKED") throw new PlaidError("Real bank connections are turned off until Tabitha approves them. Use PLAID_ENV=sandbox.", "LIVE_BLOCKED");
+function baseFor(mode: PlaidMode): string {
+  if (mode === "SANDBOX") return process.env.PLAID_API_BASE?.trim() || BASES.sandbox;
+  return BASES.production; // never overridable: production always talks to Plaid itself
+}
+
+async function call<T>(path: string, body: Record<string, unknown>, opts: { allowWhenOff?: "SANDBOX" | "PRODUCTION" } = {}): Promise<T> {
+  let mode = await currentPlaidMode();
+  // Revoking access at the bank (disconnect) is always allowed for the environment the
+  // connection was made in, even after the switch is turned off.
+  if (opts.allowWhenOff === "PRODUCTION" && mode === "LIVE_BLOCKED") mode = "LIVE";
+  if (mode === "NOT_CONFIGURED") throw new PlaidError(PLAID_MODE_TEXT.NOT_CONFIGURED, "NOT_CONFIGURED");
+  if (mode === "UNSUPPORTED_ENV") throw new PlaidError(PLAID_MODE_TEXT.UNSUPPORTED_ENV, "UNSUPPORTED_ENV");
+  if (mode === "LIVE_BLOCKED") throw new PlaidError("Real bank connections are turned off until Tabitha turns on “Live bank connections”.", "LIVE_BLOCKED");
   let res: Response;
   try {
-    res = await fetch(`${BASE()}${path}`, {
+    res = await fetch(`${baseFor(mode)}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Plaid-Version": "2020-09-14" },
       body: JSON.stringify({ client_id: process.env.PLAID_CLIENT_ID, secret: process.env.PLAID_SECRET, ...body }),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(30_000),
       cache: "no-store",
     });
   } catch {
@@ -41,10 +94,10 @@ async function call<T>(path: string, body: Record<string, unknown>): Promise<T> 
   }
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
-    // Plaid's error code and a safe message only — never the request or token.
+    // Plaid's error code and a safe message only, never the request or token.
     const code = typeof json.error_code === "string" ? json.error_code : `HTTP_${res.status}`;
     const msg = typeof json.display_message === "string" && json.display_message ? json.display_message : typeof json.error_message === "string" ? json.error_message : "Plaid returned an error.";
-    throw new PlaidError(msg, code, res.status);
+    throw new PlaidError(msg, code, res.status, typeof json.error_type === "string" ? json.error_type : "");
   }
   return json as T;
 }
@@ -52,14 +105,25 @@ async function call<T>(path: string, body: Record<string, unknown>): Promise<T> 
 export type PlaidAccount = { account_id: string; name: string; official_name?: string | null; mask?: string | null; type: string; subtype?: string | null };
 export type PlaidTxn = { transaction_id: string; account_id: string; amount: number; date: string; authorized_date?: string | null; name: string; merchant_name?: string | null; pending: boolean; pending_transaction_id?: string | null };
 
-export function createLinkToken(clientUserId: string) {
+/** Where Plaid sends webhooks for new transactions and item errors (https sites only). */
+export function plaidWebhookUrl(appBase: string): string | null {
+  return /^https:\/\//.test(appBase) ? `${appBase.replace(/\/$/, "")}/api/webhooks/plaid` : null;
+}
+
+/**
+ * A Link session for one client business. `accessToken` opens Link in update mode: the
+ * client signs in to the bank again to repair an existing connection (no new item).
+ */
+export function createLinkToken(clientUserId: string, opts: { webhook?: string | null; accessToken?: string } = {}) {
+  const redirect = process.env.PLAID_REDIRECT_URI?.trim();
   return call<{ link_token: string; expiration: string }>("/link/token/create", {
     user: { client_user_id: clientUserId },
-    client_name: "TTurner Client Connect",
-    products: ["transactions"],
-    transactions: { days_requested: 730 },
+    client_name: "T. Turner & Associates",
     country_codes: ["US"],
     language: "en",
+    ...(opts.accessToken ? { access_token: opts.accessToken } : { products: ["transactions"], transactions: { days_requested: 730 } }),
+    ...(opts.webhook ? { webhook: opts.webhook } : {}),
+    ...(redirect ? { redirect_uri: redirect } : {}),
   });
 }
 
@@ -79,6 +143,61 @@ export function syncPage(accessToken: string, cursor: string | null) {
   });
 }
 
-export function removeItem(accessToken: string) {
-  return call<{ request_id: string }>("/item/remove", { access_token: accessToken });
+/** Points an existing item's webhooks at this site (after a domain change, or for items made before webhooks). */
+export function updateItemWebhook(accessToken: string, webhook: string) {
+  return call<{ request_id: string }>("/item/webhook/update", { access_token: accessToken, webhook });
+}
+
+export function removeItem(accessToken: string, environment: "SANDBOX" | "PRODUCTION") {
+  return call<{ request_id: string }>("/item/remove", { access_token: accessToken }, { allowWhenOff: environment });
+}
+
+// --- Webhook verification ----------------------------------------------------------------------
+// Plaid signs each webhook with a JWT (ES256) in the Plaid-Verification header. The public key
+// comes from Plaid's /webhook_verification_key/get endpoint (cached by key id). The JWT's
+// request_body_sha256 must match the exact body, and it must be under 5 minutes old.
+
+const keyCache = new Map<string, { jwk: JsonWebKey; expiredAt: number | null }>();
+
+const b64url = (s: string) => Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+
+export async function verifyPlaidWebhook(rawBody: string, jwt: string | null, now = Date.now()): Promise<boolean> {
+  if (!jwt) return false;
+  const parts = jwt.split(".");
+  if (parts.length !== 3) return false;
+  let header: { alg?: string; kid?: string }, claims: { iat?: number; request_body_sha256?: string };
+  try {
+    header = JSON.parse(b64url(parts[0]).toString("utf8"));
+    claims = JSON.parse(b64url(parts[1]).toString("utf8"));
+  } catch {
+    return false;
+  }
+  if (header.alg !== "ES256" || !header.kid) return false;
+  let cached = keyCache.get(header.kid);
+  if (!cached) {
+    try {
+      const r = await call<{ key: JsonWebKey & { expired_at?: number | null } }>("/webhook_verification_key/get", { key_id: header.kid });
+      cached = { jwk: r.key, expiredAt: r.key.expired_at ?? null };
+      keyCache.set(header.kid, cached);
+    } catch {
+      return false;
+    }
+  }
+  if (cached.expiredAt && cached.expiredAt * 1000 < now) return false;
+  try {
+    const key = createPublicKey({ key: { kty: cached.jwk.kty, crv: cached.jwk.crv, x: cached.jwk.x, y: cached.jwk.y }, format: "jwk" });
+    const ok = verifySignature("sha256", Buffer.from(`${parts[0]}.${parts[1]}`), { key, dsaEncoding: "ieee-p1363" }, b64url(parts[2]));
+    if (!ok) return false;
+  } catch {
+    return false;
+  }
+  if (typeof claims.iat !== "number" || now / 1000 - claims.iat > 5 * 60 || claims.iat - now / 1000 > 60) return false;
+  const want = Buffer.from(createHash("sha256").update(rawBody, "utf8").digest("hex"));
+  const got = Buffer.from(String(claims.request_body_sha256 ?? ""));
+  return want.length === got.length && timingSafeEqual(want, got);
+}
+
+/** Tests only. */
+export function _clearWebhookKeyCache() {
+  keyCache.clear();
 }

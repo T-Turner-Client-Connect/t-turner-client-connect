@@ -3728,6 +3728,8 @@ model LedgerBook {
   customers            InvoiceCustomer[]
   invoices             ClientInvoice[]
   recurringInvoices    RecurringInvoice[]
+  coethaRuns           CoethaRun[]
+  coethaProposals      CoethaProposal[]
 }
 
 model LedgerAccount {
@@ -4019,7 +4021,7 @@ model BankConnection {
   id                  String                  @id @default(cuid())
   clientId            String
   provider            String                  @default("PLAID")
-  // SANDBOX only until live banking is approved.
+  // SANDBOX (test data) or PRODUCTION (a real bank; only with Tabitha's switch on).
   environment         String                  @default("SANDBOX")
   itemId              String                  @unique
   accessTokenEnc      String
@@ -4031,6 +4033,12 @@ model BankConnection {
   lastAttemptAt       DateTime?
   lastSuccessAt       DateTime?
   lastError           String?
+  // Plaid's item error code when the connection stopped working (ITEM_LOGIN_REQUIRED, ...).
+  errorCode           String?
+  // When the client first needed to sign in to the bank again (cleared once they do).
+  reauthRequiredAt    DateTime?
+  // Last verified Plaid webhook for this connection.
+  lastWebhookAt       DateTime?
   // Who authorized read-only access, and how (recorded at connection time).
   authorizedByName    String
   authorizationMethod String
@@ -4066,7 +4074,7 @@ model BankSyncRun {
   id           String         @id @default(cuid())
   connectionId String
   connection   BankConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  // DAILY | MANUAL
+  // DAILY | MANUAL | WEBHOOK
   trigger      String
   startedAt    DateTime       @default(now())
   finishedAt   DateTime?
@@ -4145,12 +4153,22 @@ model JotformInbox {
 
 // Owner switches for integrations (one row, id "default").
 model IntegrationSettings {
-  id                     String   @id @default("default")
+  id                     String    @id @default("default")
   // Off until Tabitha approves: questionnaire webhooks go to the staff inbox
   // instead of being filed to client records automatically.
-  jotformAutoFileEnabled Boolean  @default(false)
+  jotformAutoFileEnabled Boolean   @default(false)
+  // Owner-only switch (primary owner): real bank connections through Plaid production.
+  // Real connections need BOTH this switch and the production keys in Netlify.
+  liveBankingEnabled     Boolean   @default(false)
+  liveBankingChangedById String?
+  liveBankingChangedAt   DateTime?
+  // Owner-only switch (primary owner): Coetha AI drafts bookkeeping work through the
+  // Anthropic API. Drafts only: Tabitha approves everything before it is posted.
+  coethaEnabled          Boolean   @default(false)
+  coethaChangedById      String?
+  coethaChangedAt        DateTime?
   updatedById            String?
-  updatedAt              DateTime @updatedAt
+  updatedAt              DateTime  @updatedAt
 }
 
 // ===========================================================================
@@ -4442,6 +4460,73 @@ model YearEndFiling {
   updatedAt   DateTime @updatedAt
 
   @@unique([clientId, taxYear])
+}
+
+// ===========================================================================
+// COETHA (the firm's AI Senior Accountant): drafts only.
+// A run reads ONE client's books and asks Claude (Anthropic API) for proposals.
+// Proposals never change the books. Only the primary owner (Tabitha) approves
+// one, and approving is the only path that posts (through the ledger's own
+// posting rules). Every approval and rejection is audited.
+// ===========================================================================
+
+model CoethaRun {
+  id           String           @id @default(cuid())
+  clientId     String
+  book         LedgerBook       @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  // MANUAL | DAILY
+  trigger      String
+  // Staff member who pressed "Run Coetha" (null for the daily run).
+  startedById  String?
+  model        String
+  // RUNNING | OK | FAILED
+  status       String           @default("RUNNING")
+  // SHA-256 of exactly what was sent to the model (no secrets, no client contact details).
+  inputHash    String?
+  transactions Int              @default(0)
+  proposals    Int              @default(0)
+  inputTokens  Int              @default(0)
+  outputTokens Int              @default(0)
+  // Anthropic's request id, for support questions.
+  requestId    String?
+  error        String?
+  startedAt    DateTime         @default(now())
+  finishedAt   DateTime?
+  items        CoethaProposal[]
+
+  @@index([clientId, startedAt])
+}
+
+model CoethaProposal {
+  id                String     @id @default(cuid())
+  clientId          String
+  book              LedgerBook @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  runId             String
+  run               CoethaRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  // CATEGORY | DISCREPANCY | ADJUSTING_ENTRY | MONTH_SUMMARY
+  kind              String
+  // PROPOSED | APPROVED | REJECTED | SUPERSEDED
+  status            String     @default("PROPOSED")
+  // The proposal itself (validated: this client's own account and transaction ids only).
+  payload           Json
+  // CATEGORY: the bank transaction it is for.
+  bankTransactionId String?
+  // 0 to 1, as Coetha reported it.
+  confidence        Float?
+  reason            String
+  model             String
+  inputHash         String
+  createdAt         DateTime   @default(now())
+  decidedById       String?
+  decidedAt         DateTime?
+  decisionNote      String?
+  // CATEGORY: the account Tabitha approved (may differ from Coetha's recommendation).
+  approvedAccountId String?
+  // The journal entry posted when Tabitha approved it.
+  journalEntryId    String?    @unique
+
+  @@index([clientId, status, kind])
+  @@index([bankTransactionId])
 }
 
 // Square webhook deliveries, one row per Square event_id, so a replayed event is never applied twice.

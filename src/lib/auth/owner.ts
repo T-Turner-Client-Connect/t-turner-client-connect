@@ -74,6 +74,8 @@ export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: str
     { href: "/owner/refund-payments", label: "Pay by Refund", show: c("billing", "view") },
     { href: "/owner/expenses", label: "Expenses", show: c("revenue", "view") },
     { href: "/owner/business-access", label: "Business access", show: c("business_access", "view") },
+    // Coetha & bank feeds: Tabitha's own on/off switches (owner only, not grantable).
+    { href: "/owner/automation", label: "Coetha & bank feeds", show: access.isOwner },
     { href: billingSettingsVisible(access) ? "/owner/settings" : "/owner/settings/staff-access", label: "Settings", show: settingsVisible(access) },
   ];
   return tabs.filter((t) => t.show).map(({ href, label }) => ({ href, label }));
