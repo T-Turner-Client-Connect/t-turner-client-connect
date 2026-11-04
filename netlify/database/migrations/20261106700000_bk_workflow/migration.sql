@@ -1,4 +1,4 @@
--- Monthly bookkeeping workflow and Banking & Credit Card Connections.
+-- Monthly bookkeeping workflow, Banking & Credit Card Connections, and Coetha as senior accountant.
 -- Additive only: new columns are nullable or defaulted; no data is changed or removed.
 -- (The one index change lets several employee cards on ONE shared credit account feed the same
 -- liability account; one-to-one mapping for everything else is still enforced in code.)
@@ -30,12 +30,18 @@ ADD COLUMN     "parentAccountId" TEXT,
 ADD COLUMN     "statementDay" INTEGER;
 
 -- AlterTable
+ALTER TABLE "BookkeepingProfile" ADD COLUMN     "taxClassification" TEXT,
+ADD COLUMN     "taxClassificationAt" TIMESTAMP(3),
+ADD COLUMN     "taxClassificationById" TEXT;
+
+-- AlterTable
 ALTER TABLE "DocumentRequest" ADD COLUMN     "bookkeepingAccountId" TEXT,
 ADD COLUMN     "docType" TEXT,
 ADD COLUMN     "draftKey" TEXT,
 ADD COLUMN     "kind" TEXT NOT NULL DEFAULT 'GENERAL',
 ADD COLUMN     "periodEnd" DATE,
 ADD COLUMN     "periodStart" DATE,
+ADD COLUMN     "reason" TEXT,
 ADD COLUMN     "sentAt" TIMESTAMP(3),
 ADD COLUMN     "sentById" TEXT,
 ADD COLUMN     "source" TEXT NOT NULL DEFAULT 'STAFF',
@@ -107,3 +113,10 @@ ALTER TABLE "AccountReconciliation" ADD CONSTRAINT "AccountReconciliation_client
 -- AddForeignKey
 ALTER TABLE "AccountReconciliation" ADD CONSTRAINT "AccountReconciliation_bookkeepingAccountId_fkey" FOREIGN KEY ("bookkeepingAccountId") REFERENCES "BookkeepingAccount"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
+
+-- Coetha as senior accountant: findings/recommendations and tax-classification recommendations.
+ALTER TABLE "CoethaProposal" DROP CONSTRAINT IF EXISTS "CoethaProposal_kind_check";
+ALTER TABLE "CoethaProposal" ADD CONSTRAINT "CoethaProposal_kind_check" CHECK ("kind" IN ('CATEGORY', 'DISCREPANCY', 'ADJUSTING_ENTRY', 'MONTH_SUMMARY', 'RECOMMENDATION', 'CLASSIFICATION'));
+ALTER TABLE "AccountReconciliation" ADD CONSTRAINT "AccountReconciliation_status_check" CHECK ("status" IN ('NOT_DUE', 'AWAITING_DATA', 'IN_PROGRESS', 'EXCEPTION', 'READY', 'APPROVED'));
+ALTER TABLE "AccountReconciliation" ADD CONSTRAINT "AccountReconciliation_approved_check" CHECK ("status" <> 'APPROVED' OR ("approvedById" IS NOT NULL AND "approvedAt" IS NOT NULL));
+ALTER TABLE "BookkeepingProfile" ADD CONSTRAINT "BookkeepingProfile_taxClassification_check" CHECK ("taxClassification" IS NULL OR "taxClassification" IN ('FORM_1065', 'FORM_1120S', 'SCHEDULE_C', 'OTHER_REVIEW'));

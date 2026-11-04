@@ -102,7 +102,8 @@ async function call<T>(path: string, body: Record<string, unknown>, opts: { allo
   return json as T;
 }
 
-export type PlaidAccount = { account_id: string; name: string; official_name?: string | null; mask?: string | null; type: string; subtype?: string | null };
+/** Plaid's account object (balances are Plaid's cached values; for credit accounts `current` is the amount owed). */
+export type PlaidAccount = { account_id: string; name: string; official_name?: string | null; mask?: string | null; type: string; subtype?: string | null; balances?: { current?: number | null; available?: number | null; limit?: number | null; iso_currency_code?: string | null } | null };
 export type PlaidTxn = { transaction_id: string; account_id: string; amount: number; date: string; authorized_date?: string | null; name: string; merchant_name?: string | null; pending: boolean; pending_transaction_id?: string | null };
 
 /** Where Plaid sends webhooks for new transactions and item errors (https sites only). */
@@ -136,7 +137,7 @@ export function getAccounts(accessToken: string) {
 }
 
 export function syncPage(accessToken: string, cursor: string | null) {
-  return call<{ added: PlaidTxn[]; modified: PlaidTxn[]; removed: { transaction_id: string; account_id?: string }[]; next_cursor: string; has_more: boolean }>("/transactions/sync", {
+  return call<{ added: PlaidTxn[]; modified: PlaidTxn[]; removed: { transaction_id: string; account_id?: string }[]; next_cursor: string; has_more: boolean; accounts?: PlaidAccount[] }>("/transactions/sync", {
     access_token: accessToken,
     ...(cursor ? { cursor } : {}),
     count: 500,

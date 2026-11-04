@@ -9,7 +9,7 @@ import { REPORT_LABELS } from "@/lib/services/documents";
 import { fmtDate } from "@/lib/format";
 
 const PERIOD_TONE = { AWAITING_DOCUMENTS: "amber", IN_PROGRESS: "navy", READY_FOR_REVIEW: "gold", COMPLETE: "green" } as const;
-const REQ_TONE = { OPEN: "amber", SUBMITTED: "gold", ACCEPTED: "green", CANCELLED: "gray" } as const;
+const REQ_TONE = { DRAFT: "gray", OPEN: "amber", SUBMITTED: "gold", ACCEPTED: "green", CANCELLED: "gray" } as const;
 
 export async function BookkeepingTab({ clientId }: { clientId: string }) {
   const periods = await prisma.bookkeepingPeriod.findMany({

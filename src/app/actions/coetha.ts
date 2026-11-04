@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { approveCoethaProposal, decideCoethaProposals, rejectCoethaProposal, runCoetha } from "@/lib/services/coetha";
-import { setOwnerSwitch, type OwnerSwitch } from "@/lib/services/owner-switches";
+import { setOwnerSwitch, SWITCH_LABEL, type OwnerSwitch } from "@/lib/services/owner-switches";
 
 const refresh = (clientId: string) => {
   revalidatePath(`/bookkeeping/${clientId}/coetha`);
@@ -59,7 +59,7 @@ export async function ownerSwitchAction(which: OwnerSwitch, on: boolean, _prev: 
   return run(async () => {
     await setOwnerSwitch(actor, which, on);
     revalidatePath("/owner/automation");
-    const label = which === "liveBanking" ? "Live bank connections" : "Coetha AI";
+    const label = SWITCH_LABEL[which];
     return `${label} turned ${on ? "on" : "off"}.`;
   });
 }

@@ -3,7 +3,8 @@ import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
 import { audit } from "@/lib/audit";
 import { ValidationError } from "./clients";
-import { bookkeepingWorkspace, PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
+import { PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
+import { coethaCurrentWork, monthlyChecklist } from "./monthly-workflow";
 import { canUseLedger, profitAndLoss } from "./ledger";
 import { canManageBilling } from "./bookkeeping-profile";
 import { squareBillingFor, todayCentral } from "./square-billing";
@@ -59,7 +60,7 @@ export function nextPayDate(known: string | null, frequency: string | null, toda
   return null;
 }
 
-export type CloseStep = { label: string; done: boolean };
+export type CloseStep = { label: string; done: boolean; state?: string; detail?: string };
 
 export type Deadline = { date: string; title: string; status: "ON_TRACK" | "DUE_SOON" | "UPCOMING" | "PAST_DUE" };
 
@@ -87,28 +88,16 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
   const period = periods.find((p) => p.year === sy && p.month === sm) ?? null;
   const monthChoices = Array.from(new Set([selected, ...periods.slice(0, 18).map((p) => monthStr(p.year, p.month))])).sort().reverse();
 
-  // --- Monthly close: the month's checklist and report approval ---------------------------------
-  let close: { steps: CloseStep[]; percent: number } | null = null;
-  if (period) {
-    const ws = await bookkeepingWorkspace(clientId, period.id);
-    const items = ws.summary?.items ?? [];
-    const item = (key: string) => items.find((i) => i.key === key);
-    const ok = (key: string) => {
-      const i = item(key);
-      return !!i && (i.state === "DONE" || i.state === "NOT_NEEDED" || i.state === "RECEIVED");
-    };
-    const reports = ws.summary?.reports ?? [];
-    const steps: CloseStep[] = [
-      { label: "Bank statements received", done: ok("BANK_STATEMENTS") },
-      { label: "Transactions categorized", done: ok("CATEGORIZE") },
-      { label: "Accounts reconciled", done: ok("RECONCILE") },
-      ...(profile?.payroll ? [{ label: `Payroll recorded${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`, done: ok("PAYROLL_ENTRIES") }] : []),
-      { label: "Financial statements prepared", done: ok("PREPARE_REPORTS") || reports.length > 0 },
-      { label: "Owner review & approval", done: reports.some((r) => r.reviewStatus === "APPROVED") },
-      { label: "Released to client", done: ws.summary?.stage === "DELIVERED" },
-    ];
-    close = { steps, percent: Math.round((steps.filter((s) => s.done).length / steps.length) * 100) };
-  }
+  // --- Monthly close: derived automatically from the books, feeds and report review -----------
+  // (services/monthly-workflow.ts). Annual tax documents are never part of it.
+  const wf = await monthlyChecklist(clientId, sy, sm);
+  const close: { steps: CloseStep[]; percent: number; reconciled: number; accounts: number } = {
+    steps: wf.items.map((i) => ({ label: i.label, done: i.state === "DONE", state: i.state, detail: i.detail })),
+    percent: wf.percent,
+    reconciled: wf.recon.reconciled,
+    accounts: wf.recon.total,
+  };
+  const coetha = await coethaCurrentWork(clientId);
 
   // --- Ledger figures: the month and the five before it -----------------------------------------
   type Perf = { month: string; income: number; expenses: number };
@@ -205,7 +194,9 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
   const services = ["Bookkeeping", ...(profile?.payroll ? ["Payroll"] : []), "Taxes", ...(licenseRows.length ? ["Compliance"] : [])];
 
   return {
-    client: { id: client.id, name: client.businessName || client.displayName, managed: client.businessAccess === "ACTIVE", active: client.status === "ACTIVE" },
+    // `managed` is CLIENT-FACING portal access (Managed Business). The office manages the books either way.
+    client: { id: client.id, name: client.businessName || client.displayName, managed: client.businessAccess === "ACTIVE", portalAccess: client.businessAccess, active: client.status === "ACTIVE" },
+    coetha,
     services,
     profile: { einLast4: profile?.einLast4 ?? null, basis: profile?.accountingBasis ?? book?.basis ?? null, coethaUrl: profile?.coethaUrl ?? null },
     selected,

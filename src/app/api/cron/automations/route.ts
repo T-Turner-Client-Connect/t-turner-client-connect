@@ -5,6 +5,7 @@ import { syncStaleSquareBilling } from "@/lib/services/square-billing";
 import { reconcileSquareInvoices } from "@/lib/services/square-invoicing";
 import { runDailyBankRetrieval } from "@/lib/services/banking";
 import { runDailyCoetha } from "@/lib/services/coetha";
+import { runDailyWorkflowMonitor } from "@/lib/services/monthly-workflow";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {

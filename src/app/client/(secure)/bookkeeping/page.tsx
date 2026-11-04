@@ -8,15 +8,17 @@ import { scanConfigured } from "@/lib/scan";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { prisma } from "@/lib/prisma";
-import { MONTHS, PERIOD_LABELS } from "@/lib/services/bookkeeping";
+import { MONTHS } from "@/lib/services/bookkeeping";
 import { downloadToken, REPORT_LABELS } from "@/lib/services/documents";
 import { fmtDate } from "@/lib/format";
 import { PERIOD_TYPES, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
 import { reportCaption } from "@/lib/services/bookkeeping-clients";
+import { CLIENT_STATUS_LABEL, clientStatementStatus, ledgerStatementsReleased } from "@/lib/services/client-statements";
+import { rangeText } from "@/lib/services/client-requests";
+import { registryLabel } from "@/lib/services/bank-accounts";
 
 export const metadata = { title: "Bookkeeping & requests" };
 
-const TONE = { AWAITING_DOCUMENTS: "amber", IN_PROGRESS: "navy", READY_FOR_REVIEW: "gold", COMPLETE: "green" } as const;
 
 export default async function PortalBookkeeping({ searchParams }: { searchParams: Promise<{ account?: string }> }) {
   const user = await requirePortalUser();
@@ -30,15 +32,18 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
           include: {
             // Published, scanned-clean files — plus the client's own uploads at any scan stage (listed, not opened, until clean).
             documents: { where: { deletedAt: null, OR: [{ visibility: "PUBLISHED", scanStatus: "CLEAN" }, { uploadedByPortalId: { not: null } }] }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, file: { select: { originalName: true } } } },
-            requests: { where: { status: { not: "CANCELLED" } }, orderBy: { createdAt: "asc" } },
+            // Drafts were never sent, and year-end requests have their own place: neither shows in a month.
+            requests: { where: { status: { notIn: ["CANCELLED", "DRAFT"] }, kind: { not: "YEAR_END" } }, orderBy: { createdAt: "asc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } },
             // Questions our office asked about this month (answered in Messages).
             conversations: { where: { questionStatus: { not: null } }, orderBy: { createdAt: "asc" }, select: { id: true, subject: true, questionStatus: true, responseDueAt: true } },
           },
           orderBy: [{ year: "desc" }, { month: "desc" }],
         })
       : [],
-    prisma.documentRequest.findMany({ where: { clientId: current.clientId, periodId: null, status: { in: ["OPEN", "SUBMITTED"] } }, orderBy: { createdAt: "desc" } }),
+    prisma.documentRequest.findMany({ where: { clientId: current.clientId, periodId: null, status: { in: ["OPEN", "SUBMITTED"] } }, orderBy: { createdAt: "desc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } }),
   ]);
+  // Only operational status reaches the client: "in preparation" or "available for download".
+  const statuses = new Map(await Promise.all(periods.map(async (p) => [p.id, { status: await clientStatementStatus(p.id), ledger: !!(await ledgerStatementsReleased(p.id)) }] as const)));
   const link = (id: string) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`;
   const fye = (await prisma.client.findUnique({ where: { id: current.clientId }, select: { fiscalYearEnd: true } }))?.fiscalYearEnd ?? null;
   const ORDER = ["FINANCIAL_PACKET", "PROFIT_AND_LOSS", "GROSS_RECEIPTS", "BALANCE_SHEET", "BANK_RECONCILIATION", "SUPPORTING_SCHEDULE", "OTHER_REPORT"];
@@ -57,14 +62,26 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       </ActionForm>
     ) : null;
 
-  const requestItem = (r: { id: string; title: string; instructions: string | null; dueAt: Date | null; status: string }, periodId: string | null, period?: { year: number; month: number }) => (
-    <li key={r.id} className="py-2 text-sm">
+  // A targeted request already names the document, account and period: the client just attaches the file.
+  const linkedUpload = (requestId: string, label: string) =>
+    current.canUpload ? (
+      <ActionForm action={portalUploadAction.bind(null, current.clientId)} className="mt-1 flex flex-wrap items-center gap-2" resetOnSuccess>
+        <input type="hidden" name="requestId" value={requestId} />
+        <input className="input max-w-xs" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label={label} />
+        <Button type="submit" variant="secondary">Upload</Button>
+      </ActionForm>
+    ) : null;
+  type Req = { id: string; title: string; instructions: string | null; reason: string | null; dueAt: Date | null; status: string; docType: string | null; periodStart: Date | null; periodEnd: Date | null; bookkeepingAccount: { institution: string; nickname: string | null; last4: string | null; accountType: string } | null };
+  const requestItem = (r: Req, periodId: string | null, period?: { year: number; month: number }) => (
+    <li key={r.id} className="py-2 text-sm" data-testid="client-request">
       <p className="flex flex-wrap items-center gap-2">
         <strong>{r.title}</strong>
-        {r.status === "OPEN" ? <Badge tone="amber">Needed{r.dueAt ? ` by ${fmtDate(r.dueAt)}` : ""}</Badge> : r.status === "SUBMITTED" ? <Badge tone="gold">Received — under review</Badge> : <Badge tone="green">Accepted</Badge>}
+        {r.status === "OPEN" ? <Badge tone="amber">Needed{r.dueAt ? ` by ${fmtDate(r.dueAt)}` : ""}</Badge> : r.status === "SUBMITTED" ? <Badge tone="gold">Received — thank you</Badge> : <Badge tone="green">Accepted</Badge>}
       </p>
+      {(r.bookkeepingAccount || r.periodStart) && <p className="text-xs text-slate-600">{r.bookkeepingAccount ? `Account: ${registryLabel(r.bookkeepingAccount)}` : ""}{r.bookkeepingAccount && r.periodStart ? " · " : ""}{r.periodStart ? `Period: ${rangeText(r)}` : ""}</p>}
+      {r.reason && <p className="text-slate-600">{r.reason}</p>}
       {r.instructions && <p className="text-slate-600">{r.instructions}</p>}
-      {r.status === "OPEN" && upload(r.id, periodId, `Upload for ${r.title}`, period?.year, period?.month)}
+      {r.status === "OPEN" && (r.docType ? linkedUpload(r.id, `Upload for ${r.title}`) : upload(r.id, periodId, `Upload for ${r.title}`, period?.year, period?.month))}
     </li>
   );
 
@@ -81,8 +98,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       ) : (
         <div className="space-y-4">
           {periods.map((p) => (
-            <Card key={p.id} title={`${MONTHS[p.month - 1]} ${p.year}`} actions={<Badge tone={TONE[p.status]}>{PERIOD_LABELS[p.status]}</Badge>}>
-              {p.staffNote && <p className="mb-2 text-sm text-slate-700">Note from us: {p.staffNote}</p>}
+            <Card key={p.id} title={`${MONTHS[p.month - 1]} ${p.year}`} actions={<span data-testid="client-statement-status"><Badge tone={statuses.get(p.id)?.status === "AVAILABLE" ? "green" : "navy"}>{CLIENT_STATUS_LABEL[statuses.get(p.id)?.status ?? "IN_PREPARATION"]}</Badge></span>}>
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
                   <h3 className="mb-1 text-sm font-semibold">Financial statements</h3>
@@ -90,7 +106,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
                     // Delivered reports only (the query above returns published, scanned-clean files). A revised report replaces
                     // the delivered one only once the revision itself is delivered, so exactly one version of each is published.
                     const reports = p.documents.filter((d) => d.category === "BOOKKEEPING" && d.reportType && d.reviewStatus === "APPROVED" && d.scanStatus === "CLEAN" && d.visibility === "PUBLISHED");
-                    if (!reports.length) return <p className="text-sm text-slate-600">Your statements will be posted here once they&apos;re reviewed and ready.</p>;
+                    if (!reports.length) return <p className="text-sm text-slate-600">{CLIENT_STATUS_LABEL.IN_PREPARATION}.</p>;
                     const types = [...new Set(reports.map((d) => (d.reportPeriodType ?? "MONTH") as PeriodType))];
                     return types.map((t) => {
                       const r = reportPeriod(p.year, p.month, t, fye);
@@ -104,6 +120,13 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
                             <a className="rounded-full bg-navy-900 px-3 py-1.5 text-xs font-semibold text-white" href={href} target="_blank" rel="noopener">View &amp; print</a>
                             <a className="rounded-full border border-navy-900 px-3 py-1.5 text-xs font-semibold text-navy-900" href={`${href}&download=1`}>Download PDF</a>
                           </div>
+                          {t === "MONTH" && statuses.get(p.id)?.ledger && (
+                            <p className="mb-2 flex flex-wrap gap-2 text-xs" data-testid="ledger-statements">
+                              {([["pl", "Profit and Loss"], ["bs", "Balance Sheet"], ["gl", "General Ledger"]] as const).map(([k, l]) => (
+                                <a key={k} className="rounded-full border border-navy-900 px-3 py-1 font-semibold text-navy-900" href={`/api/client/statements?period=${p.id}&kind=${k}&download=1`}>{l} (PDF)</a>
+                              ))}
+                            </p>
+                          )}
                           <ul className="space-y-1 text-sm">
                             {inPacket.map((d) => (
                               <li key={d.id}>

@@ -6,10 +6,11 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { callCoethaModel, CoethaModelError, coethaKeyPresent, coethaModel, DISCREPANCY_TYPES, type CoethaOutputT } from "@/lib/coetha-model";
 import { ValidationError } from "./clients";
-import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, categorizeBankTransactionTx, isYmd, ledgerFlags, normDesc, postJournalEntryTx, todayCentral, usd, ymdOf } from "./ledger";
+import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, categorizeBankTransactionTx, isFeedSubtype, isYmd, ledgerFlags, normDesc, officeBookClientIds, postJournalEntryTx, todayCentral, usd, ymdOf } from "./ledger";
 import { closeChecklist } from "./ledger-review";
 import { isReportApprover } from "./bookkeeping-clients";
 import { coethaOn } from "./owner-switches";
+import { CLASSIFICATION_RULES, setTaxClassification, taxProfile } from "./tax-classification";
 
 /**
  * Coetha, the firm's AI Senior Accountant, working inside Client Connect.
@@ -30,7 +31,7 @@ export const COETHA_NO_KEY = "Coetha needs an Anthropic API key — add ANTHROPI
 export const COETHA_PRIVACY =
   "When Coetha runs, this business's bank transaction dates, amounts and descriptions and its account names are sent to Anthropic's API (Claude) under the firm's own API key. Long numbers in descriptions are shortened to the last 4 digits, and no SSNs, EINs, names, addresses or contact details are sent.";
 
-export const KIND_LABEL = { CATEGORY: "Category recommendations", DISCREPANCY: "Discrepancies", ADJUSTING_ENTRY: "Draft adjusting entries", MONTH_SUMMARY: "Draft month summary" } as const;
+export const KIND_LABEL = { RECOMMENDATION: "Findings & recommendations", CLASSIFICATION: "Tax classification recommendations", CATEGORY: "Category recommendations", DISCREPANCY: "Discrepancies", ADJUSTING_ENTRY: "Draft adjusting entries", MONTH_SUMMARY: "Draft month summary" } as const;
 export type ProposalKind = keyof typeof KIND_LABEL;
 
 const MAX_TO_CATEGORIZE = 80;
@@ -113,11 +114,12 @@ export async function buildCoethaInput(reader: Actor, clientId: string, opts: { 
     e.times++;
     past.set(key, e);
   }
-  const banks = accounts.filter((a) => a.subtype === "BANK" || a.subtype === "CREDIT_CARD");
-  const [checklist, flags] = await Promise.all([closeChecklist(reader, clientId, month, today), ledgerFlags(reader, clientId, today)]);
+  const banks = accounts.filter((a) => isFeedSubtype(a.subtype));
+  const [checklist, flags, tp] = await Promise.all([closeChecklist(reader, clientId, month, today), ledgerFlags(reader, clientId, today), taxProfile(clientId)]);
   const input = {
     today,
     monthToClose: month,
+    taxProfile: { classification: tp.classification ?? "NOT_SET", accountingMethod: tp.basis, fiscalYearEndMonth: tp.fiscalYearEnd, taxYear: tp.taxYear, rules: tp.classification ? CLASSIFICATION_RULES[tp.classification] : CLASSIFICATION_RULES.OTHER_REVIEW },
     books: { basis: book.basis, openingBalancesDate: book.openingDate ? ymdOf(book.openingDate) : null, closedThrough: book.lockedThrough ? ymdOf(book.lockedThrough) : null },
     chartOfAccounts: accounts.map((a) => ({ code: a.code, name: scrub(a.name), type: a.type, ...(a.subtype ? { subtype: a.subtype } : {}) })),
     bankAccounts: banks.map((b) => {
@@ -177,6 +179,17 @@ export function toProposals(out: CoethaOutputT, b: Built): { proposals: NewPropo
       payload: { date: e.date, memo: clip(e.memo, 250) || "Adjusting entry", totalCents: dr, lines: lines.map((l) => ({ accountId: l.a!.id, accountCode: l.a!.code, accountName: l.a!.name, debitCents: l.debitCents, creditCents: l.creditCents, description: l.description })) },
     });
   }
+  for (const r of (out.recommendations ?? []).slice(0, 30)) {
+    const accts = r.accountCodes.map((c) => acct.get(c)).filter((a): a is NonNullable<typeof a> => !!a);
+    const ids = refIds(r.refs);
+    const rows = b.toCat.filter((t) => ids.includes(t.id));
+    proposals.push({
+      kind: "RECOMMENDATION", reason: clip(r.why, 600) || clip(r.title, 200),
+      payload: { key: `ai:${createHash("sha256").update(`${r.category}|${r.title}|${ids.join(",")}`).digest("hex").slice(0, 16)}`, category: r.category, title: clip(r.title, 200), found: clip(r.found, 1000), why: clip(r.why, 1000), correction: clip(r.correction, 1000), impact: clip(r.impact, 600), accounts: accts.map((a) => ({ id: a.id, code: a.code, name: a.name })), transactions: ids.map((id) => { const t = rows.find((x) => x.id === id); return t ? { id, date: ymdOf(t.date), amountCents: t.amountCents, description: t.description } : { id, date: "", amountCents: 0, description: "" }; }), documents: [], entry: null },
+    });
+  }
+  const cr = (out.classificationRecommendation ?? [])[0];
+  if (cr) proposals.push({ kind: "CLASSIFICATION", reason: clip(cr.why, 600) || "Classification review", payload: { key: `ai-classification:${cr.recommended}`, recommended: cr.recommended, current: null, found: clip(cr.why, 1000), why: clip(cr.why, 1000), correction: `Change the tax classification to ${cr.recommended} if that is how the business files.`, impact: "No change to the numbers; equity and compensation are reviewed under the right rules." } });
   const s = out.monthSummary;
   if (s && clip(s.summary, 10)) {
     proposals.push({ kind: "MONTH_SUMMARY", reason: "Draft summary for Tabitha's review", payload: { month: /^\d{4}-\d{2}$/.test(s.month) ? s.month : b.input.monthToClose, summary: clip(s.summary, 4000), highlights: s.highlights.slice(0, 12).map((h) => clip(h, 300)) } });
@@ -228,7 +241,7 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
     const covered = built.toCat.map((t) => t.id);
     await prisma.$transaction(async (tx) => {
       // Earlier open drafts this run replaces: categories for the same transactions, and every other kind.
-      await tx.coethaProposal.updateMany({ where: { clientId, status: "PROPOSED", OR: [{ kind: { not: "CATEGORY" } }, { bankTransactionId: { in: covered } }] }, data: { status: "SUPERSEDED" } });
+      await tx.coethaProposal.updateMany({ where: { clientId, status: "PROPOSED", model: { not: "rules" }, OR: [{ kind: { not: "CATEGORY" } }, { bankTransactionId: { in: covered } }] }, data: { status: "SUPERSEDED" } });
       if (proposals.length) {
         await tx.coethaProposal.createMany({ data: proposals.map((p) => ({ clientId, runId: run.id, kind: p.kind, payload: p.payload, bankTransactionId: p.bankTransactionId ?? null, confidence: p.confidence ?? null, reason: p.reason, model: res.model, inputHash: built.inputHash })) });
       }
@@ -254,7 +267,7 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
 export async function runDailyCoetha(now = new Date()) {
   const s = await coethaStatus();
   if (!s.ready) return { ran: 0, failed: 0, skipped: s.enabled ? "no API key" : "switched off" };
-  const books = await prisma.ledgerBook.findMany({ where: { client: { businessAccess: "ACTIVE" } }, select: { clientId: true, coethaRuns: { orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } } });
+  const books = await prisma.ledgerBook.findMany({ where: { clientId: { in: await officeBookClientIds() } }, select: { clientId: true, coethaRuns: { orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } } });
   const due: string[] = [];
   for (const b of books) {
     const last = b.coethaRuns[0]?.startedAt ?? null;
@@ -298,6 +311,20 @@ export async function approveCoethaProposal(actor: Actor, clientId: string, prop
     }
   }
   const note = opts.note?.trim().slice(0, 300) || null;
+  // A classification recommendation changes the business profile only through Tabitha's own
+  // classification rule (validated, kept consistent with the books, audited).
+  if (p.kind === "CLASSIFICATION") {
+    const claimed = await prisma.coethaProposal.updateMany({ where: { id: p.id, clientId, status: "PROPOSED" }, data: { status: "APPROVED", decidedById: actor.id, decidedAt: new Date(), decisionNote: note } });
+    if (!claimed.count) return { id: p.id, result: "ALREADY_APPROVED", journalEntryId: null };
+    try {
+      await setTaxClassification(actor, clientId, { classification: String(pl(p).recommended) }, { via: "COETHA_PROPOSAL", proposalId: p.id });
+    } catch (err) {
+      await prisma.coethaProposal.update({ where: { id: p.id }, data: { status: "PROPOSED", decidedById: null, decidedAt: null, decisionNote: null } });
+      throw err;
+    }
+    await audit(prisma, { actorId: actor.id, action: "coetha.proposal_approved", entityType: "CoethaProposal", entityId: p.id, clientId, details: { kind: p.kind, runId: p.runId, model: p.model, recommended: String(pl(p).recommended), note } });
+    return { id: p.id, result: "APPROVED", journalEntryId: null };
+  }
   const recommended = p.kind === "CATEGORY" ? String(pl(p).accountId) : null;
   const chosen = p.kind === "CATEGORY" ? opts.accountId || recommended : null;
   const out = await prisma.$transaction(async (tx) => {
@@ -312,11 +339,11 @@ export async function approveCoethaProposal(actor: Actor, clientId: string, prop
     if (p.kind === "CATEGORY") {
       const r = await categorizeBankTransactionTx(tx, actor, clientId, p.bankTransactionId!, { accountId: chosen! });
       entryId = r.entry.id;
-    } else if (p.kind === "ADJUSTING_ENTRY") {
-      const d = pl(p) as { date: string; memo: string; lines: { accountId: string; debitCents: number; creditCents: number; description: string }[] };
+    } else if (p.kind === "ADJUSTING_ENTRY" || (p.kind === "RECOMMENDATION" && pl(p).entry)) {
+      const d = (p.kind === "RECOMMENDATION" ? pl(p).entry : pl(p)) as { date: string; memo: string; lines: { accountId: string; debitCents: number; creditCents: number; description: string }[] };
       const e = await postJournalEntryTx(tx, actor, clientId, {
         date: d.date,
-        memo: `${d.memo} (Coetha draft, approved by Tabitha)`,
+        memo: d.memo,
         adjusting: true,
         sourceKey: `coetha:${p.id}`,
         reason: p.reason.slice(0, 300),
