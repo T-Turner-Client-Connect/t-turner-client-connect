@@ -8,7 +8,7 @@ import { MONTH_NAMES } from "@/lib/bk-uploads";
 import { statementSource } from "@/lib/statement-retrieval";
 import { assertLedger, normDesc, officeBookClientIds, todayCentral, toDate, usd, ymdOf } from "./ledger";
 import { cardPaymentTarget, cardRefs, monthlyAccountProgress, prepareReconciliation, registryLabel, statementWindow, type Light } from "./bank-accounts";
-import { createClientRequest, sendClientRequest, YEAR_END_FORMS, yearEndWindow } from "./client-requests";
+import { createClientRequest, rangeText, sendClientRequest, YEAR_END_FORMS, yearEndWindow } from "./client-requests";
 import { coethaAutoSendOn } from "./owner-switches";
 import { reportsDue, workMonth } from "./bookkeeping-clients";
 import { CLASSIFICATION_RULES, classificationForEntity, TAX_CLASSIFICATIONS, taxProfile, type TaxClassification } from "./tax-classification";
@@ -322,11 +322,14 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
       for (const a of accounts.filter((x) => x.ledgerAccountId)) {
         const first = await prisma.bankTransaction.findFirst({ where: { accountId: a.ledgerAccountId! }, orderBy: { date: "asc" }, select: { date: true } });
         if (!first) continue;
-        const firstMonth = ymdOf(first.date).slice(0, 7), openMonth = ymdOf(book.openingDate).slice(0, 7);
-        if (firstMonth <= openMonth) continue;
+        // Books open with balances AS OF the opening date: activity starts the next day.
+        const start = ymdOf(new Date(book.openingDate.getTime() + 86_400_000));
+        const firstMonth = ymdOf(first.date).slice(0, 7);
+        if (firstMonth <= start.slice(0, 7)) continue;
         const endPrev = ymdOf(new Date(toDate(`${firstMonth}-01`).getTime() - 86_400_000));
         const isCard = a.accountType !== "CHECKING" && a.accountType !== "SAVINGS";
-        await draft({ kind: "HISTORICAL", docType: isCard ? "CARD_STATEMENT" : "BANK_STATEMENT", bookkeepingAccountId: a.id, start: `${openMonth}-01`, end: endPrev, draftKey: `hist:${a.id}:${openMonth}`, title: `Prior statements — ${registryLabel(a)} — ${openMonth} to ${endPrev.slice(0, 7)}`, reason: `The bank feed starts in ${firstMonth}, but the books open in ${openMonth}. These statements fill the gap.` });
+        const range = rangeText({ periodStart: toDate(start), periodEnd: toDate(endPrev) });
+        await draft({ kind: "HISTORICAL", docType: isCard ? "CARD_STATEMENT" : "BANK_STATEMENT", bookkeepingAccountId: a.id, start, end: endPrev, draftKey: `hist:${a.id}:${start}`, title: `Prior statements — ${registryLabel(a)} — ${range}`, reason: `The bank feed starts in ${MONTH_NAMES[Number(firstMonth.slice(5)) - 1]} ${firstMonth.slice(0, 4)}, but the books open on ${start}. These statements fill the gap.` });
       }
     }
     // Year-end tax documents: drafted in January only, in their own section.

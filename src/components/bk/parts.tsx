@@ -60,6 +60,8 @@ type RecPayload = {
   recommended?: string; current?: string | null;
 };
 
+const CLASS_LABEL: Record<string, string> = { FORM_1065: "Form 1065 — Partnership / Multi-Member LLC", FORM_1120S: "Form 1120-S — S Corporation", SCHEDULE_C: "Schedule C — Sole Proprietor / Disregarded SMLLC", OTHER_REVIEW: "Other / Requires Review" };
+
 export const CATEGORY_LABEL: Record<string, string> = {
   CARD_PAYMENT_DOUBLE_COUNTED: "Card payment double-counted", LOAN_PAYMENT_AS_EXPENSE: "Loan payment as expense", OWNER_DRAW: "Owner draw", SHAREHOLDER_DISTRIBUTION: "Shareholder distribution", PARTNER_DRAW: "Partner draw",
   GUARANTEED_PAYMENT: "Guaranteed payment", PAYROLL: "Payroll", SCORP_REASONABLE_COMP: "S corp reasonable compensation", PARTNER_CAPITAL: "Partner capital", CLASSIFICATION_INCONSISTENCY: "Classification inconsistency",
@@ -74,7 +76,7 @@ export function RecommendationCard({ p, clientId, canApprove, booksHref }: { p: 
     <li className="rounded-xl border border-ivory-200 bg-white p-3 sm:p-4" data-testid="recommendation" data-kind={p.kind}>
       <p className="flex flex-wrap items-center gap-2">
         <span className="rounded-full bg-gold-100 px-2.5 py-0.5 text-xs font-semibold text-gold-800">{isClass ? "Tax classification" : CATEGORY_LABEL[d.category ?? "OTHER"] ?? d.category}</span>
-        <span className="font-semibold text-navy-900">{isClass ? `Recommend: ${d.recommended}` : d.title}</span>
+        <span className="font-semibold text-navy-900">{isClass ? `Recommend: ${CLASS_LABEL[d.recommended ?? ""] ?? d.recommended}` : d.title}</span>
         <span className="text-xs text-slate-500">{p.model === "rules" ? "Coetha (rules)" : "Coetha (AI)"}</span>
       </p>
       <dl className="mt-2 grid gap-x-4 gap-y-1.5 text-sm sm:grid-cols-[9rem_1fr]">

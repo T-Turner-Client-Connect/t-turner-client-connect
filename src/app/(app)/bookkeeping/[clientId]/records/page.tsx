@@ -56,6 +56,11 @@ export default async function RecordsPage({ params }: { params: Promise<{ client
         <h2 className={h2}><Archive className="size-5 text-gold-600" aria-hidden /> Historical requests <span className="rounded-full bg-navy-900 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-300">{reqs.historical.length}</span></h2>
         <RequestList items={reqs.historical} clientId={clientId} canSend={send} empty="No historical records requested yet." />
       </section>
+
+      <section className={clsx(card, "p-4 sm:p-5")} data-testid="all-requests">
+        <h2 className={h2}><FileClock className="size-5 text-gold-600" aria-hidden /> Monthly and supporting requests</h2>
+        <RequestList items={reqs.all.filter((r) => r.kind !== "HISTORICAL" && r.kind !== "YEAR_END")} clientId={clientId} canSend={send} empty="None." />
+      </section>
     </div>
   );
 }

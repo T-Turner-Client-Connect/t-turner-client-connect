@@ -150,6 +150,22 @@ describe("historical records", () => {
   });
 });
 
+describe("onboarding gaps", () => {
+  it("Coetha drafts a historical request for the months between the books' opening date and the start of the bank feed", async () => {
+    const w = await world();
+    const chk = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", nickname: "Operating", last4: "0042", gl: "NEW" });
+    await postOpeningBalances(w.daria, w.biz.id, { date: "2026-06-30", balances: [{ accountId: chk.ledgerAccountId!, amount: "100.00" }] });
+    const conn = await connect(w, w.biz.id);
+    await monitorConnectionAccount(w.daria, w.biz.id, conn.accounts[0].id, chk.id);
+    pages = [{ added: [t("g1", "p-chk", 10, "2026-10-02", "PRETEND FEE")] }];
+    await syncConnection(conn.id, "MANUAL", w.daria);
+    await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
+    const h = await prisma.documentRequest.findFirstOrThrow({ where: { clientId: w.biz.id, kind: "HISTORICAL" } });
+    expect(h).toMatchObject({ status: "DRAFT", bookkeepingAccountId: chk.id, docType: "BANK_STATEMENT" });
+    expect([h.periodStart!.toISOString().slice(0, 10), h.periodEnd!.toISOString().slice(0, 10)]).toEqual(["2026-07-01", "2026-09-30"]);
+  });
+});
+
 describe("Coetha drafts requests; they go out only when Tabitha allows it", () => {
   it("a missing statement becomes a draft for that exact account and month; nothing is sent until the setting is on", async () => {
     const w = await world();

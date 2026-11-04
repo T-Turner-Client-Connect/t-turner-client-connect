@@ -111,7 +111,7 @@ export default async function BookkeepingManagement({ params, searchParams }: { 
         )}
       </section>
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <section className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         {/* Completion with green checks and red marks */}
         <div className={clsx(card, "p-4 sm:p-5")} data-testid="monthly-completion">
           <h2 className={h2}><ListChecks className="size-5 text-gold-600" aria-hidden /> Monthly completion</h2>
@@ -154,11 +154,12 @@ export default async function BookkeepingManagement({ params, searchParams }: { 
         </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <section className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         {/* Outstanding requests */}
         <div className={clsx(card, "p-4 sm:p-5")} data-testid="outstanding-requests">
           <h2 className={h2}><Inbox className="size-5 text-gold-600" aria-hidden /> Outstanding document requests <span className="rounded-full bg-navy-900 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-300">{outstanding.length}</span></h2>
-          <RequestList items={outstanding.slice(0, 12)} clientId={clientId} canSend={canSend} empty="Nothing outstanding." />
+          <RequestList items={outstanding.slice(0, 5)} clientId={clientId} canSend={canSend} empty="Nothing outstanding." />
+          {outstanding.length > 5 && <p className="text-xs text-slate-600">+ {outstanding.length - 5} more · <Link className="underline" href={`${base}/records`}>see all requests</Link></p>}
           {period && (
             <details className="mt-2 text-sm">
               <summary className="cursor-pointer font-semibold text-navy-900 underline decoration-gold-500">Ask the client a question about {label}</summary>
@@ -269,7 +270,7 @@ export default async function BookkeepingManagement({ params, searchParams }: { 
         )}
       </section>
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <section className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         <div className={clsx(card, "p-4 sm:p-5")} data-testid="historical-summary">
           <h2 className={h2}><Archive className="size-5 text-gold-600" aria-hidden /> Historical statement requests</h2>
           <RequestList items={reqs.historical.slice(0, 5)} clientId={clientId} canSend={canSend} empty="None yet." />
