@@ -10,6 +10,7 @@ export default async function OwnerLayout({ children }: { children: React.ReactN
   const tabs = [
     ...(access.scope === "FULL" ? [{ href: "/owner", label: "Overview" }, { href: "/owner/appointments", label: "Appointments" }] : []),
     { href: "/owner/invoices", label: "Quotes & invoices" },
+    { href: "/owner/reconcile", label: "Reconcile Square" },
     { href: "/owner/plans", label: "Payment plans" },
     { href: "/owner/refund-payments", label: "Pay by Refund" },
     ...(access.scope === "FULL" ? [{ href: "/owner/expenses", label: "Expenses" }, { href: "/owner/business-access", label: "Business access" }, { href: "/owner/settings", label: "Billing settings & access" }] : []),

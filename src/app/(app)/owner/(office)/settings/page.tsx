@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { grantOwnerAction, revokeOwnerAction, saveBillingSettingsAction } from "@/app/actions/owner";
@@ -9,6 +10,10 @@ import { FeeSettingsCard } from "@/components/owner/fee-settings";
 import { PlanSettingsCards } from "@/components/owner/plan-settings";
 import { refundFeeNoteAction, squareLinksAction } from "@/app/actions/firm-invoices";
 import { squareSettings } from "@/lib/square";
+import { squareDeliveryAction, squareSendingAction } from "@/app/actions/square-invoicing";
+import { canChangeBillingSettings } from "@/lib/auth/billing-permissions";
+import { squareSendingState } from "@/lib/services/square-invoicing";
+import { squareHealth } from "@/lib/services/square-health";
 
 const plain = (type: string, v: number) => (type === "FLAT" || type === "PERCENT" ? (v / 100).toString() : "");
 
@@ -25,12 +30,16 @@ function AmountPicker({ name, type, value, label, hint }: { name: string; type: 
 
 export default async function OwnerSettingsPage() {
   const { actor, access } = await requireOwner("full");
-  const [s, staff, grants, log] = await Promise.all([
+  const [s, staff, grants, log, sending, health, mayChange] = await Promise.all([
     billingSettings(),
     prisma.user.findMany({ where: { active: true, id: { not: actor.id } }, orderBy: { name: "asc" } }),
     prisma.ownerAccess.findMany({ where: { isPrimary: false }, include: { user: { select: { name: true, email: true } } }, orderBy: { grantedAt: "desc" } }),
     prisma.ownerAuditLog.findMany({ orderBy: { createdAt: "desc" }, take: 40 }),
+    squareSendingState(),
+    squareHealth(),
+    canChangeBillingSettings(actor),
   ]);
+  const enabledBy = sending.enabledById ? await prisma.user.findUnique({ where: { id: sending.enabledById }, select: { name: true } }) : null;
   return (
     <>
       <PageHeader title="Billing settings & access" />
@@ -55,11 +64,11 @@ export default async function OwnerSettingsPage() {
           <Card title="Invoice payment options">
             <div className="space-y-4 text-sm" data-testid="invoice-payment-settings">
               <div>
-                <p className="font-semibold text-navy-900">Square payment links on invoices{" "}
+                <p className="font-semibold text-navy-900">Manual Square links (fallback){" "}
                   {s.squareLinksEnabledAt ? <Badge tone="green">On</Badge> : <Badge tone="gray">Not enabled</Badge>}
                 </p>
                 <p className="mt-1 text-slate-700">
-                  When on, a client sees a &ldquo;Pay securely with Square&rdquo; button on an invoice that offers Square and has a link from the firm&apos;s own Square account attached. Client Connect never creates or sends Square invoices, never charges a card and never stores card details.
+                  Only for an invoice that is <em>not</em> sent through Square: when on, a link pasted by hand from the firm&apos;s Square account shows as &ldquo;Pay securely with Square&rdquo;. Invoices sent through Square get their own link automatically. Client Connect never charges a card and never stores card details.
                   {!squareSettings().configured && " Square isn't configured on this site, so no link is shown even when this is on."}
                 </p>
                 <ActionForm action={squareLinksAction.bind(null, !s.squareLinksEnabledAt)} className="mt-2" confirm={s.squareLinksEnabledAt ? undefined : "Turn on Square payment links? Clients will see the Square link on invoices that offer Square."}>
@@ -77,12 +86,42 @@ export default async function OwnerSettingsPage() {
               <p className="text-xs text-slate-600">Which methods can be offered on invoices is set under &ldquo;Payment instructions clients see&rdquo; below: only methods turned on there can be chosen.</p>
             </div>
           </Card>
-          <Card title="Payment provider">
-            <p className="text-sm"><Badge tone="gray">Not connected</Badge></p>
-            <p className="mt-2 text-sm text-slate-700">
-              No payment provider is connected. Clients see their invoices and schedules, and you record payments by hand. Online payments, automatic receipts and
-              provider-confirmed failures/refunds need a provider account (for example Stripe or Square) — see docs/BILLING.md.
-            </p>
+          <Card title="Send invoices through Square">
+            <div className="space-y-3 text-sm" data-testid="square-sending-settings">
+              <p className="flex flex-wrap items-center gap-2">
+                {sending.enabled ? <Badge tone="green">On</Badge> : <Badge tone="gray">Off</Badge>}
+                <span className="text-slate-700">Uses the firm&apos;s existing Square connection (the same one that imports recurring billing) — Square {sending.env === "production" ? "production" : "SANDBOX (test)"}.</span>
+              </p>
+              {sending.enabled && sending.enabledAt && <p className="text-xs text-slate-600">Turned on {fmtDateTime(sending.enabledAt)}{enabledBy ? ` by ${enabledBy.name}` : ""}.</p>}
+              <p className="text-slate-700">
+                When on, an approved invoice that offers Square is created in Square and published with a secure payment link (card{sending.acceptBank ? " or bank transfer" : ""}). Square&apos;s payments are recorded on the invoice automatically. When off, everything else works and nothing is sent to Square.
+              </p>
+              <ul className="space-y-1 text-xs text-slate-700">
+                <li>Square connection: {!sending.configured ? <Badge tone="red">Not configured</Badge> : health.state === "WORKING" ? <Badge tone="green">Working</Badge> : health.state === "FAILING" ? <Badge tone="red">Failing</Badge> : <Badge tone="amber">Not checked yet</Badge>} <Link className="underline" href="/bookkeeping/square-billing">Check Square connection</Link></li>
+                <li>Payment notifications (webhook): {sending.webhookKeySet ? <Badge tone="green">Signature key set</Badge> : <Badge tone="amber">SQUARE_WEBHOOK_SIGNATURE_KEY not set</Badge>} — notification URL <code className="break-all">{sending.webhookUrl}</code></li>
+                {sending.env !== "production" && <li><Badge tone="amber">SQUARE_ENVIRONMENT isn&apos;t &ldquo;production&rdquo;</Badge> — invoices would go to Square&apos;s test system, not real clients.</li>}
+              </ul>
+              {mayChange ? (
+                <>
+                  <ActionForm action={squareSendingAction.bind(null, !sending.enabled)} confirm={sending.enabled ? "Turn off sending invoices through Square? Invoices already in Square stay there and payments still record." : `Turn on sending invoices through Square (${sending.env})? Approved invoices that offer Square will be created and published in your Square account, and clients can pay them.`}>
+                    <Button type="submit" variant={sending.enabled ? "secondary" : "gold"} data-testid="square-sending-toggle">{sending.enabled ? "Turn off Square sending" : "Turn on Square sending"}</Button>
+                  </ActionForm>
+                  <ActionForm action={squareDeliveryAction} className="space-y-2 border-t border-ivory-200 pt-3">
+                    <Field label="How the client gets the Square invoice">
+                      <select className="input" name="delivery" defaultValue={sending.delivery}>
+                        <option value="SHARE_MANUALLY">Our branded email with the Square link (recommended)</option>
+                        <option value="EMAIL">Square emails the client directly</option>
+                      </select>
+                    </Field>
+                    <label className="flex items-center gap-2"><input type="checkbox" name="acceptBank" defaultChecked={sending.acceptBank} className="size-4 accent-navy-900" /> Also accept bank transfer (ACH) on Square invoices</label>
+                    <Button type="submit" variant="secondary">Save delivery</Button>
+                  </ActionForm>
+                </>
+              ) : (
+                <p className="text-xs text-slate-600">Only Tabitha can change this.</p>
+              )}
+              <p className="text-xs text-slate-600">No surcharge or card fee is added. Steps to go live: docs/square-invoicing.md.</p>
+            </div>
           </Card>
           {access.isPrimary && (
             <Card title="Who can open the Owner's Office">

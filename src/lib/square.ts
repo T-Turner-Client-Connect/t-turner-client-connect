@@ -1,4 +1,5 @@
 import "server-only";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 /**
  * Square (payments). Card numbers and CVVs are typed only into Square's own
@@ -107,7 +108,7 @@ export async function squareProbe(method: "GET" | "POST", path: string, body?: u
 const SQUARE_VERSION = "2025-01-23";
 
 /** Calls the Square API. Errors carry Square's own message (never card data, which this app never has). */
-export async function squareRequest<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+export async function squareRequest<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
   const s = squareSettings();
   if (!s.configured) throw new SquareError("Square isn't connected.");
   let res: Response;
@@ -129,4 +130,22 @@ export async function squareRequest<T>(method: "GET" | "POST", path: string, bod
   return json;
 }
 
-export type SquareCard = { id: string; card_brand?: string; last_4?: string; exp_month?: number; exp_year?: number; enabled?: boolean };
+/**
+ * Square webhooks. Square signs each notification with the subscription's signature key:
+ * base64(HMAC-SHA256(key, notificationUrl + rawBody)) in x-square-hmacsha256-signature.
+ * SQUARE_WEBHOOK_SIGNATURE_KEY is that key (Square Developer Dashboard → Webhooks). The
+ * notification URL must be exactly the one saved there; SQUARE_WEBHOOK_URL overrides the
+ * default <site>/api/webhooks/square.
+ */
+export function squareWebhookUrl(appUrl: string) {
+  return (process.env.SQUARE_WEBHOOK_URL ?? "").trim() || `${appUrl.replace(/\/$/, "")}/api/webhooks/square`;
+}
+
+export function verifySquareSignature(signatureKey: string, notificationUrl: string, rawBody: string, signature: string | null) {
+  if (!signatureKey || !signature) return false;
+  const expected = Buffer.from(createHmac("sha256", signatureKey).update(notificationUrl + rawBody).digest("base64"));
+  const given = Buffer.from(signature.trim());
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
+
+export type SquareCard ={ id: string; card_brand?: string; last_4?: string; exp_month?: number; exp_year?: number; enabled?: boolean };

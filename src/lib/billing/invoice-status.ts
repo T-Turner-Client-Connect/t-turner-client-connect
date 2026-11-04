@@ -106,12 +106,26 @@ export function isSquarePaymentUrl(raw: string): boolean {
   }
 }
 
+/** Square invoice statuses a client can still pay. */
+export const SQUARE_PAYABLE = ["UNPAID", "SCHEDULED", "PARTIALLY_PAID"];
+
+/**
+ * The Square page the client pays on. An invoice sent through Square uses the page Square created
+ * for it (public_url) while it's payable there; once paid or canceled in Square there's no button.
+ * Otherwise a link pasted by hand (the fallback) shows only after the owner turns manual Square
+ * links on and Square is configured.
+ */
+export function squarePayUrl(inv: { squarePublicUrl?: string | null; squareStatus?: string | null; squarePaymentUrl?: string | null }, manualLinksLive: boolean): string | null {
+  if (inv.squarePublicUrl) return SQUARE_PAYABLE.includes(inv.squareStatus ?? "") && isSquarePaymentUrl(inv.squarePublicUrl) ? inv.squarePublicUrl : null;
+  return manualLinksLive && inv.squarePaymentUrl && isSquarePaymentUrl(inv.squarePaymentUrl) ? inv.squarePaymentUrl : null;
+}
+
 export type ClientPaymentOption = {
   method: FirmMethod;
   label: string;
   sub: string;
   details: string | null;
-  // A Square link — only when Square links are enabled and one is attached.
+  // The Square payment page (see squarePayUrl) — null when there's nothing payable in Square.
   url: string | null;
   // Shown instead of a link while Square payments aren't enabled.
   notEnabled: boolean;
@@ -127,13 +141,13 @@ export type ClientPaymentOption = {
 export function clientPaymentOptions(
   offered: string[],
   approved: { method: string; details: string }[],
-  ctx: { squareLive: boolean; squareUrl: string | null; refundFeeNote: string | null },
+  ctx: { squareUrl: string | null; refundFeeNote: string | null },
 ): ClientPaymentOption[] {
   return FIRM_METHODS.filter((m) => offered.includes(m) && approved.some((a) => a.method === m)).map((m) => {
     const info = FIRM_METHOD_INFO[m];
     const details = approved.find((a) => a.method === m)?.details || FIRM_METHOD_DEFAULTS[m] || null;
     if (m === "SQUARE_INVOICE") {
-      const url = ctx.squareLive && ctx.squareUrl && isSquarePaymentUrl(ctx.squareUrl) ? ctx.squareUrl : null;
+      const url = ctx.squareUrl && isSquarePaymentUrl(ctx.squareUrl) ? ctx.squareUrl : null;
       return { method: m, label: info.label, sub: url ? info.sub : "Card payment through Square isn't turned on for this invoice yet. Please use another option below or contact our office.", details: null, url, notEnabled: !url, terms: null, feeNote: null };
     }
     if (m === "REFUND_TRANSFER") return { method: m, label: info.label, sub: info.sub, details: null, url: null, notEnabled: false, terms: REFUND_TRANSFER_TERMS, feeNote: ctx.refundFeeNote?.trim() || null };
