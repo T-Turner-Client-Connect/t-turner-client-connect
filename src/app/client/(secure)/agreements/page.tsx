@@ -57,7 +57,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
 
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_1.2fr]">
         <section className={`${luxPanel} overflow-hidden`} data-testid="tax-pricing-card">
-          <h2 className="flex items-center gap-3 rounded-2xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-4 font-serif text-xl sm:text-[1.375rem] font-bold text-white">
+          <h2 className="flex items-center gap-3 rounded-2xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-4 font-serif text-xl sm:text-xl font-bold text-white">
             <Coins className="size-9 shrink-0 text-gold-400" aria-hidden /> Tax Preparation Pricing
           </h2>
           <ul className="divide-y divide-gold-200/70 px-5 pb-3" data-testid="tax-pricing">

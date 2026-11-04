@@ -19,7 +19,7 @@ export function PanelTitle({ icon: Icon, title, sub, action }: { icon: IconT; ti
       <div className="flex min-w-0 items-start gap-3">
         <Icon className="mt-0.5 size-9 shrink-0 text-gold-600" aria-hidden />
         <div className="min-w-0">
-          <h2 className="font-serif text-xl sm:text-[1.375rem] font-bold leading-tight text-navy-900">{title}</h2>
+          <h2 className="font-serif text-xl sm:text-xl font-bold leading-tight text-navy-900">{title}</h2>
           {sub && <p className="mt-0.5 text-sm text-navy-800">{sub}</p>}
         </div>
       </div>

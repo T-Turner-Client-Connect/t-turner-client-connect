@@ -43,7 +43,7 @@ export function MonthlyBillingCard({ b, testId, showHeading = true }: { b: Month
       <div className={`flex items-center gap-3 ${showHeading ? "" : "[&>span]:hidden [&_h2]:sr-only"}`}>
         <span aria-hidden className="grid size-12 place-items-center rounded-2xl border-2 border-gold-500 bg-gold-100/40 text-gold-600"><CreditCard className="size-6" /></span>
         <div>
-          <h2 className="font-serif text-xl sm:text-[1.375rem] font-bold leading-tight text-navy-900">Your Monthly Billing</h2>
+          <h2 className="font-serif text-xl sm:text-xl font-bold leading-tight text-navy-900">Your Monthly Billing</h2>
           <p className="text-sm font-semibold text-gold-700">{b.title}</p>
         </div>
       </div>
