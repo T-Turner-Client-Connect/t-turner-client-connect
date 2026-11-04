@@ -7,6 +7,7 @@ import { detectKeyword, recordStop } from "./sms-consent";
 import { queueStaffAlert } from "./staff-alerts";
 import { assertAdmin, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
+import { payrollTextReply } from "./payroll-approval";
 
 /**
  * Handles one incoming text from Twilio (signature already verified).
@@ -49,6 +50,11 @@ export async function handleInboundSms(params: Record<string, string>): Promise<
   }
   if (keyword === "STOP") return { reply: appReplies ? SMS_STOP_REPLY : null };
   if (keyword === "HELP") return { reply: appReplies ? SMS_HELP_REPLY : null };
+  // "APPROVE"/"DENY" replies never approve payroll: an approver gets a fresh secure link instead.
+  if (!keyword) {
+    const payroll = await payrollTextReply(from, body);
+    if (payroll) return { reply: payroll };
+  }
   return { reply: null };
 }
 

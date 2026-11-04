@@ -141,12 +141,18 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
   }
 
   // --- Payroll ------------------------------------------------------------------------------
-  const knownPay = profile?.payrollPayDate ? ymd(profile.payrollPayDate) : null;
+  // Imported / received pay runs come first; the known pay date on the profile is the fallback.
+  const lastRun = profile?.payroll ? await prisma.payrollRun.findFirst({ where: { clientId, status: { not: "DISCARDED" } }, orderBy: { checkDate: "desc" } }) : null;
+  const lastVersion = lastRun?.currentVersionId ? await prisma.payrollRunVersion.findUnique({ where: { id: lastRun.currentVersionId } }) : null;
+  const knownPay = lastRun ? ymd(lastRun.checkDate) : profile?.payrollPayDate ? ymd(profile.payrollPayDate) : null;
   const payroll = profile?.payroll
     ? {
         provider: profile.payrollProvider,
         frequency: profile.payrollFrequency ? PAYROLL_FREQUENCIES[profile.payrollFrequency as keyof typeof PAYROLL_FREQUENCIES] : null,
         next: nextPayDate(knownPay, profile.payrollFrequency, today),
+        last: lastRun && lastVersion ? { date: ymd(lastRun.checkDate), grossCents: lastVersion.grossCents, costCents: lastVersion.grossCents + lastVersion.employerTaxCents, status: lastRun.status } : null,
+        awaitingApproval: await prisma.payrollRun.count({ where: { clientId, status: "AWAITING_APPROVAL" } }),
+        denied: await prisma.payrollRun.count({ where: { clientId, status: "DENIED" } }),
       }
     : null;
 

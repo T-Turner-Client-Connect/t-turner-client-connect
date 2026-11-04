@@ -213,14 +213,15 @@ export default async function ClientOverview({ params, searchParams }: { params:
         <div className={clsx(card, "flex flex-col p-4")} data-testid="payroll-card">
           <h3 className="flex flex-wrap items-center gap-2 font-serif text-lg font-bold text-navy-900">
             <UsersRound className="size-6 text-gold-600" aria-hidden /> Payroll{o.payroll?.provider ? ` (${o.payroll.provider})` : ""}
-            {o.payroll && <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-sans text-xs font-semibold text-emerald-700">On Schedule</span>}
+            {o.payroll && (o.payroll.denied ? <span className="rounded-full bg-red-600 px-2 py-0.5 font-sans text-xs font-semibold text-white">Denied — Needs Review</span> : o.payroll.awaitingApproval ? <span className="rounded-full bg-gold-100 px-2 py-0.5 font-sans text-xs font-semibold text-navy-900">Awaiting Approval</span> : <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-sans text-xs font-semibold text-emerald-700">On Schedule</span>)}
           </h3>
           <p className="mt-3 flex-1 text-sm text-navy-900">
-            {!o.payroll ? "This client doesn't run payroll." : o.payroll.next ? <>Next Pay Date: {dayLabel(o.payroll.next)}</> : "Next pay date: add a known pay date on the Payroll page."}
+            {!o.payroll ? "This client doesn't run payroll." : o.payroll.next ? <>Next Pay Date: {dayLabel(o.payroll.next)}</> : "Next pay date: import a payroll register or add a known pay date on the Payroll page."}
+            {o.payroll?.last && <span className="mt-1 block text-xs text-slate-600" data-testid="last-pay">Last pay date {dayLabel(o.payroll.last.date)} · {usd(o.payroll.last.grossCents)} gross · {usd(o.payroll.last.costCents)} total cost</span>}
           </p>
           <div className="mt-3 flex gap-2">
             <Link href={`${base}/payroll`} className={clsx(navyBtn, "flex-1")}>View Payroll</Link>
-            <Link href={`${base}/close#upload-financials`} className={clsx(outlineBtn, "flex-1")}>New Payroll</Link>
+            <Link href={`${base}/payroll#import`} className={clsx(outlineBtn, "flex-1")}>Import Payroll</Link>
           </div>
         </div>
 

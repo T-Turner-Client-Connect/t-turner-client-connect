@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
-import { Bell, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, Settings, ShieldCheck, Upload, Users, X } from "lucide-react";
+import { BadgeCheck, Bell, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, Settings, ShieldCheck, Upload, Users, X } from "lucide-react";
 
 const MAIN = [
   ["/client", "Home", Home],
@@ -27,10 +27,11 @@ const MORE = [
   ["/client/referrals", "Referrals", Users],
   ["/client/contracts", "Contracts & Signatures", PenLine],
   ["/client/bookkeeping", "Bookkeeping", Landmark],
+  ["/client/payroll-approval", "Payroll Approval", BadgeCheck],
   ["/client/account", "Account Settings", Settings],
 ] as const;
 
-function NavLinks({ q, pathname, unread, onNavigate, business }: { q: string; pathname: string; unread: number; onNavigate?: () => void; business: boolean }) {
+function NavLinks({ q, pathname, unread, onNavigate, business, payroll }: { q: string; pathname: string; unread: number; onNavigate?: () => void; business: boolean; payroll: boolean }) {
   const isActive = (href: string) =>
     href === "/client" || href === "/client/tax-center" ? pathname === href : pathname === href || (pathname.startsWith(`${href}/`) && href !== "/client/taxes");
   return (
@@ -52,7 +53,7 @@ function NavLinks({ q, pathname, unread, onNavigate, business }: { q: string; pa
         </Link>
       ))}
       <div className="mx-3 my-4 h-px bg-white/15" aria-hidden />
-      {MORE.filter(([href]) => business || href !== "/client/bookkeeping").map(([href, label, Icon]) => (
+      {MORE.filter(([href]) => (business || href !== "/client/bookkeeping") && (payroll || href !== "/client/payroll-approval")).map(([href, label, Icon]) => (
         <Link
           key={href}
           href={`${href}${q}`}
@@ -69,7 +70,7 @@ function NavLinks({ q, pathname, unread, onNavigate, business }: { q: string; pa
 }
 
 /** Client portal frame: navy sidebar on large screens, top bar with a menu drawer on phones. */
-type Account = { id: string; name: string; personal?: boolean; owner?: string | null; business?: boolean };
+type Account = { id: string; name: string; personal?: boolean; owner?: string | null; business?: boolean; payrollApprover?: boolean };
 
 /** Business tabs: Personal first, then each business this login may open. The selected one is always named. */
 function AccountTabs({ accounts, current, pathname }: { accounts: Account[]; current: string; pathname: string }) {
@@ -103,6 +104,8 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
   const q = account ? `?account=${account}` : "";
   // Bookkeeping link only for a Managed Business this login may see (the page and data are gated on the server too).
   const business = !!accounts.find((a) => a.id === account)?.business;
+  // Payroll Approval only for owners designated as this business's payroll approvers (re-checked on the server).
+  const payroll = accounts.some((a) => a.payrollApprover);
   const [open, setOpen] = useState(false);
     // Close the drawer and menu after navigating.
   const [seenPath, setSeenPath] = useState(pathname);
@@ -138,7 +141,7 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
           </select>
         </label>
       )}
-      <NavLinks q={q} pathname={pathname} unread={unread} onNavigate={onNavigate} business={business} />
+      <NavLinks q={q} pathname={pathname} unread={unread} onNavigate={onNavigate} business={business} payroll={payroll} />
       <form action={signOut} className="px-3 pt-4">
         <button className="flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left text-[13px] text-navy-100/80 hover:bg-white/10 hover:text-white"><LogOut className="size-4" aria-hidden />Sign out</button>
       </form>

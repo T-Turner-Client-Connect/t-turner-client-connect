@@ -35,7 +35,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ token: string }
   }
   const bytes = await readDocumentBytes(doc.file);
   if (!bytes) return Response.json({ error: "File unavailable" }, { status: 404 });
-  const download = params.get("download") === "1";
+  // Spreadsheets (payroll registers) always download; they are never rendered in the browser.
+  const download = params.get("download") === "1" || /csv|spreadsheet/.test(doc.file.mimeType);
   await prisma.documentAccessLog.create({
     data: { documentId: doc.id, action: download ? "DOWNLOAD" : "VIEW", staffUserId: staff?.id ?? null, portalUserId: staff ? null : portal?.id ?? null, ip: await clientIp() },
   });
