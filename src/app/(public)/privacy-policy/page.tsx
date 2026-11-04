@@ -135,7 +135,7 @@ export default function PrivacyPolicy() {
         <h2>Security</h2>
         <p>
           Staff and client portal sign-ins require a password and a verification code. Information is encrypted in transit, and our hosting provider encrypts stored data. When bank connections become
-          available, their access credentials will also be encrypted by {BUSINESS.platformName}. Uploaded client documents are virus-scanned before anyone can open them. Access to client records is limited to authorized
+          available, their access credentials will also be encrypted by {BUSINESS.platformName}. Client document uploads are subject to malware scanning and access controls designed to prevent staff and clients from opening files until scanning succeeds. Access to client records is limited to authorized
           personnel and is logged. No electronic system can guarantee absolute security. Please use the secure client portal for sensitive documents rather than sending them by text.
         </p>
       </section>
