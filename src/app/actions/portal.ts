@@ -17,7 +17,8 @@ import { confirmEnrollment } from "@/lib/services/mfa";
 import { clientEmailCodesActive, emailCodesFor, revokeTrustedDevice, trustedDeviceFor } from "@/lib/auth/client-auth";
 import { portalUploadDocument } from "@/lib/services/documents";
 import { markClientRead, portalSendMessage } from "@/lib/services/messaging";
-import { ValidationError } from "@/lib/services/clients";
+import { portalSetJointFiling, ValidationError } from "@/lib/services/clients";
+
 import { setPortalSmsConsent } from "@/lib/services/sms-consent";
 import { sendTransactionalEmail } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
@@ -145,7 +146,14 @@ export async function portalUploadAction(clientId: string, _prev: ActionState, f
       return "Uploaded securely. It's being checked for viruses, then our team will review it. Thank you!";
     }
     const y = str(fd, "year");
+    // Payroll files (business owners with payroll upload permission).
+    if (str(fd, "payroll") === "1") {
+      await portalUploadDocument(user, { clientId, title: str(fd, "title"), year: y && y !== "unsure" ? Number(y) : null, payroll: true, ...file });
+      revalidatePath("/client", "layout");
+      return "Payroll file uploaded securely. Our team will review it.";
+    }
     const contextual = str(fd, "periodId") || str(fd, "requestId");
+
     if (!y && !contextual) throw new ValidationError("Choose the tax year this document is for, or “Not sure”.");
     const docType = str(fd, "docType");
     if (!contextual && !isClientDocType(docType)) throw new ValidationError("Choose what kind of document this is.");
@@ -153,6 +161,17 @@ export async function portalUploadAction(clientId: string, _prev: ActionState, f
     await portalUploadDocument(user, { clientId, requestId: str(fd, "requestId") || null, periodId: str(fd, "periodId") || null, title: str(fd, "title"), year: y === "unsure" ? "unsure" : y ? Number(y) : null, docType: known ? docType : null, ...file });
     revalidatePath("/client", "layout");
     return "Uploaded securely. It's being checked for viruses, then our team will review it. Thank you!";
+  });
+}
+
+/** My Tax Center: "Filing jointly / spouse needed for {year}" (the client's own answer). */
+export async function portalJointFilingAction(clientId: string, taxYear: number, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requirePortalUser();
+  return run(async () => {
+    const needed = str(fd, "needed") === "yes";
+    await portalSetJointFiling(user, clientId, taxYear, needed);
+    revalidatePath("/client/tax-center");
+    return needed ? `Thanks. We'll include your spouse for ${taxYear}.` : `Thanks. No spouse for ${taxYear}.`;
   });
 }
 

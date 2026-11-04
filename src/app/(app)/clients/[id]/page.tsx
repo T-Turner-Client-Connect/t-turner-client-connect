@@ -26,6 +26,7 @@ import { ServicesTab } from "@/components/client-tabs/services";
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
 import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { ownerAccessFor } from "@/lib/auth/owner";
+import { OwnersCard } from "@/components/client-tabs/owners-card";
 
 export const metadata = { title: "Client" };
 
@@ -59,7 +60,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
     where: { id },
     include: {
       assignedTo: { select: { name: true } },
-      contacts: { orderBy: { name: "asc" } },
+      contacts: { orderBy: { name: "asc" }, include: { businessOwner: { select: { id: true } } } },
       groups: { include: { group: true } },
       taxPrepCases: { orderBy: { taxYear: "desc" }, take: 1 },
       consentRecords: { include: { recordedBy: { select: { name: true } }, evidenceFile: { select: { id: true, originalName: true } }, contact: { select: { name: true } } }, orderBy: { createdAt: "desc" } },
@@ -179,10 +180,13 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
 
           <NonprofitCard clientId={id} isAdmin={user.role === "ADMIN"} />
 
-          <Card title="Contacts" actions={<span className="text-sm text-slate-600">People at this business or household</span>}>
-            {client.contacts.length > 0 && (
+          {client.clientType === "BUSINESS" && <OwnersCard clientId={id} actor={user} managedBusiness={client.businessAccess === "ACTIVE"} />}
+
+          <Card title="Contacts" actions={<span className="text-sm text-slate-600">{client.clientType === "BUSINESS" ? "Other people at this business (owners are listed above)" : "People at this business or household"}</span>}>
+            {client.contacts.some((c) => !c.businessOwner) && (
               <ul className="mb-4 divide-y divide-navy-100">
-                {client.contacts.map((c) => (
+                {client.contacts.filter((c) => !c.businessOwner).map((c) => (
+
                   <li key={c.id} className="py-3">
                     <details>
                       <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2">

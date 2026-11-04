@@ -43,7 +43,11 @@ async function event(tx: Tx, e: { paymentId: string; action: string; fromStatus?
 /** Client: ask to pay the preparation fee from the refund. Stays Pending review until the office approves. */
 export async function requestRefundTransfer(user: PortalActor, clientId: string, input: { taxYear: number; debtCheck: string; offsetRisk: string; acknowledged: boolean }) {
   await requireClientAccess(user.id, clientId, "billing");
-  if (!(input.debtCheck in DEBT_CHECK)) throw new ValidationError("Tell us whether you checked for outstanding debts.");
+  // Refund options belong to personal tax preparation only.
+  const { assertPersonalTaxAccount } = await import("@/lib/portal/account");
+  await assertPersonalTaxAccount(clientId);
+  if (!(input.debtCheck in DEBT_CHECK))
+ throw new ValidationError("Tell us whether you checked for outstanding debts.");
   if (!(input.offsetRisk in OFFSET_RISK)) throw new ValidationError("Tell us whether you or your spouse may owe debts that could reduce your refund.");
   if (!input.acknowledged) throw new ValidationError("Please check the acknowledgment box to continue.");
   const thisYear = new Date().getFullYear();

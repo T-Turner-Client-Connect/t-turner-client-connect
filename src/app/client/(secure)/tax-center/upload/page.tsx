@@ -4,7 +4,7 @@ import { Notice } from "@/components/ui";
 import { PageBanner } from "@/components/portal/luxury";
 import { TaxUploadForm } from "@/components/portal/tax-upload-form";
 import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
+import { requirePersonalTaxAccount, resolveAccount } from "@/lib/portal/account";
 import { questionnaireYears } from "@/lib/services/tax-center";
 
 export const metadata = { title: "Upload Documents" };
@@ -14,6 +14,7 @@ export default async function TaxUpload({ searchParams }: { searchParams: Promis
   const sp = await searchParams;
   const { current } = await resolveAccount(user.id, sp.account);
   if (!current) return null;
+  await requirePersonalTaxAccount(current.clientId);
   const q = `?account=${current.clientId}`;
   const years = questionnaireYears();
   const thisYear = years[0];

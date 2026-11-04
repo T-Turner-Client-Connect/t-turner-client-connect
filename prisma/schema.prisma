@@ -63,6 +63,10 @@ model User {
   businessConversionAccess    Boolean                 @default(false)
   businessConversionGrantedBy String?
   businessConversionGrantedAt DateTime?
+  // Owner-granted: may set business owners' portal permissions (and K-1 sharing).
+  ownerPermissionsAccess      Boolean                 @default(false)
+  ownerPermissionsGrantedBy   String?
+  ownerPermissionsGrantedAt   DateTime?
   businessAccessRequests      BusinessAccessRequest[] @relation("BusinessAccessRequester")
   businessAccessDecisions     BusinessAccessRequest[] @relation("BusinessAccessDecider")
   businessAccessEvents        BusinessAccessEvent[]
@@ -327,6 +331,10 @@ model Client {
   manualBillingPayments ManualBillingPayment[]
   businessLicenses      BusinessLicense[]
   yearEndFilings        YearEndFiling[]
+  businessOwners        BusinessOwner[]
+  ownerK1Grants         OwnerK1Grant[]
+  jointFilingYears      JointFilingYear[]
+  personalTaxRequests   PersonalTaxRequest[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -352,6 +360,7 @@ model Contact {
 
   consentRecords ConsentRecord[]
   portalUser     PortalUser?
+  businessOwner  BusinessOwner?
 
   @@index([clientId])
   @@index([emailNormalized])
@@ -781,17 +790,19 @@ model PortalUser {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  access         PortalAccess[]
-  sessions       PortalSession[]
-  resetTokens    PortalResetToken[]
-  recoveryCodes  MfaRecoveryCode[]
-  messages       Message[]              @relation("PortalMessages")
-  trustedDevices TrustedDevice[]
-  onboarding     OnboardingApplication?
-  files          StoredFile[]
-  documents      Document[]             @relation("PortalDocuments")
-  notifications  Notification[]
-  accessLogs     DocumentAccessLog[]
+  access              PortalAccess[]
+  sessions            PortalSession[]
+  resetTokens         PortalResetToken[]
+  recoveryCodes       MfaRecoveryCode[]
+  messages            Message[]              @relation("PortalMessages")
+  trustedDevices      TrustedDevice[]
+  onboarding          OnboardingApplication?
+  files               StoredFile[]
+  documents           Document[]             @relation("PortalDocuments")
+  notifications       Notification[]
+  accessLogs          DocumentAccessLog[]
+  businessOwners      BusinessOwner[]
+  personalTaxRequests PersonalTaxRequest[]
 }
 
 enum PortalRole {
@@ -820,6 +831,15 @@ model PortalAccess {
   // Identity documents (license, birth certificate, Social Security card).
   // On for owners, off for other authorized contacts unless granted.
   canViewIdentity    Boolean    @default(false)
+  // Business documents (the vault's Other files and other logins' uploads). On for
+  // ordinary client logins; off for a business owner's login until granted.
+  canViewDocuments   Boolean    @default(true)
+  // Payroll documents (category PAYROLL): view, and upload payroll files.
+  canViewPayroll     Boolean    @default(true)
+  canUploadPayroll   Boolean    @default(true)
+  // Business owners designated Payroll Approvers: approve/deny payroll runs only
+  // (never edit payroll). Off unless Tabitha or authorized staff grant it.
+  canApprovePayroll  Boolean    @default(false)
   grantedById        String?
   createdAt          DateTime   @default(now())
   revokedAt          DateTime?
@@ -844,6 +864,10 @@ model PortalInvite {
   invitedById      String?
   // True only when the link went out by email (activation); accepting it proves the address.
   sentByEmail      Boolean    @default(false)
+  // A business owner's invitation: the permissions their login starts with
+  // (applied on acceptance) and the owner it belongs to.
+  permissions      Json?
+  businessOwnerId  String?
   invitedBy        User?      @relation(fields: [invitedById], references: [id])
   // Activation email tracking: exact recipient, Resend's id, and what happened
   // (SENT = accepted by Resend; DELIVERED / FAILED only from signed Resend events).
@@ -912,29 +936,32 @@ enum MessageStatus {
 }
 
 model Conversation {
-  id             String             @id @default(cuid())
-  clientId       String
-  client         Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  subject        String
-  assignedToId   String?
-  assignedTo     User?              @relation("ConversationAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  id                    String             @id @default(cuid())
+  clientId              String
+  client                Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  subject               String
+  assignedToId          String?
+  assignedTo            User?              @relation("ConversationAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   // Questions about a bookkeeping month attach to that period.
-  periodId       String?
-  period         BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  periodId              String?
+  period                BookkeepingPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
   // True when the newest message is from the client and nobody has replied.
-  awaitingStaff  Boolean            @default(false)
+  awaitingStaff         Boolean            @default(false)
   // Shared inbox: cleared when any staff member opens it.
-  unreadByStaff  Boolean            @default(false)
-  closedAt       DateTime?
-  lastMessageAt  DateTime           @default(now())
-  createdAt      DateTime           @default(now())
+  unreadByStaff         Boolean            @default(false)
+  closedAt              DateTime?
+  lastMessageAt         DateTime           @default(now())
+  createdAt             DateTime           @default(now())
   // A question staff asked about a bookkeeping month: OPEN (unanswered) →
   // ANSWERED (client replied; staff to review) → RESOLVED. Null for ordinary threads.
-  questionStatus String?
-  responseDueAt  DateTime?
-  askedById      String?
-  resolvedAt     DateTime?
-  resolvedById   String?
+  // A business owner's own thread: only that login (and staff) see it.
+  // Null = shared with every login on the account that may message.
+  privateToPortalUserId String?
+  questionStatus        String?
+  responseDueAt         DateTime?
+  askedById             String?
+  resolvedAt            DateTime?
+  resolvedById          String?
 
   messages Message[]
 
@@ -1009,6 +1036,11 @@ enum DocumentCategory {
   // Never listed with yearly folders; opened only through the Identity
   // Documents section by authorized staff and account holders.
   IDENTITY
+  // One business owner's Schedule K-1 (Document.businessOwnerId). Opens only
+  // for that owner's login (and owners Tabitha shared it with), plus staff.
+  OWNER_K1
+  // Payroll reports and filings (941, W-2/W-3, payroll registers).
+  PAYROLL
 }
 
 enum DocumentVisibility {
@@ -1124,6 +1156,9 @@ model Document {
   lastScanAt             DateTime?
   lastScanError          String?
   bookkeepingAccount     BookkeepingAccount?  @relation(fields: [bookkeepingAccountId], references: [id], onDelete: SetNull)
+  // The owner a K-1 (category OWNER_K1) belongs to.
+  businessOwnerId        String?
+  businessOwner          BusinessOwner?       @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
 
   @@index([clientId, category, year, month])
   @@index([visibility])
@@ -3165,6 +3200,8 @@ model NonprofitProfile {
 enum ServiceType {
   TAX_INDIVIDUAL
   TAX_BUSINESS
+  // Schedule K-1s prepared for each owner of a partnership or S corporation.
+  K1_PREPARATION
   TAX_AMENDED
   TAX_NONPROFIT
   BOOKKEEPING
@@ -4382,4 +4419,105 @@ model YearEndFiling {
   updatedAt   DateTime @updatedAt
 
   @@unique([clientId, taxYear])
+}
+
+// ===========================================================================
+// BUSINESS OWNERS (several owners of one business, each with their own login)
+// ===========================================================================
+
+/// One owner of a business client (e.g. four members of an LLC). Name, email and
+/// phone live on the linked Contact (so consent, invitations and the login's
+/// contact link work as for any contact); ownership details live here.
+/// Ownership never grants portal access: each owner's login has its own
+/// permissions, set by Tabitha or staff she authorized.
+model BusinessOwner {
+  id           String      @id @default(cuid())
+  clientId     String
+  client       Client      @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  contactId    String      @unique
+  contact      Contact     @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  // Basis points: 2500 = 25%, 3333 = 33.33%. Null = not recorded yet.
+  ownershipBps Int?
+  // MEMBER | PARTNER | SHAREHOLDER | OFFICER | OTHER
+  title        String?
+  receivesK1   Boolean     @default(true)
+  notes        String?
+  // The owner's own portal login, once they accepted an invitation (or already had one).
+  portalUserId String?
+  portalUser   PortalUser? @relation(fields: [portalUserId], references: [id], onDelete: SetNull)
+  // Removed owners are archived, never deleted (their K-1s and history stay).
+  archivedAt   DateTime?
+  archivedById String?
+  createdById  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  k1Documents  Document[]
+  // Other owners' K-1s Tabitha shared with this owner, and who may see this owner's.
+  k1Viewing    OwnerK1Grant[] @relation("K1Viewer")
+  k1SharedWith OwnerK1Grant[] @relation("K1Holder")
+
+  @@index([clientId])
+  @@index([portalUserId])
+}
+
+/// An explicit, per-pair exception: `viewer` may open `holder`'s K-1s.
+/// Owners never see another owner's K-1 without one of these.
+model OwnerK1Grant {
+  id            String        @id @default(cuid())
+  clientId      String
+  client        Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  viewerOwnerId String
+  viewer        BusinessOwner @relation("K1Viewer", fields: [viewerOwnerId], references: [id], onDelete: Restrict)
+  holderOwnerId String
+  holder        BusinessOwner @relation("K1Holder", fields: [holderOwnerId], references: [id], onDelete: Restrict)
+  grantedById   String?
+  createdAt     DateTime      @default(now())
+  revokedAt     DateTime?
+  revokedById   String?
+
+  @@unique([viewerOwnerId, holderOwnerId])
+  @@index([clientId])
+}
+
+/// "Filing jointly / spouse needed for {year}": one answer per client and tax
+/// year. A spouse saved in an earlier year never implies a joint return now.
+model JointFilingYear {
+  id            String   @id @default(cuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  taxYear       Int
+  needed        Boolean
+  // STAFF | CLIENT
+  source        String
+  setById       String?
+  setByPortalId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([clientId, taxYear])
+}
+
+/// A business-only client's login asking for personal tax preparation.
+/// Staff accept it (which sets up the person's own Personal record and gives
+/// their login access to it, turning the personal tax features on there) or decline it.
+model PersonalTaxRequest {
+  id               String     @id @default(cuid())
+  // The business account the request was made from.
+  clientId         String
+  client           Client     @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  portalUserId     String
+  portalUser       PortalUser @relation(fields: [portalUserId], references: [id], onDelete: Cascade)
+  businessOwnerId  String?
+  note             String?
+  // PENDING | ACCEPTED | DECLINED
+  status           String     @default("PENDING")
+  // The Personal record set up (or linked) when accepted.
+  personalClientId String?
+  decidedById      String?
+  decidedAt        DateTime?
+  createdAt        DateTime   @default(now())
+
+  @@index([status])
+  @@index([clientId])
 }

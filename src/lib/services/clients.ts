@@ -1,7 +1,8 @@
 import "server-only";
 import { isFutureDay } from "@/lib/dates";
 import { z } from "zod";
-import type { Channel, ClientStatus, ClientType, ConsentKind, ConsentStatus, Prisma, SuppressionReason } from "@prisma/client";
+import type { Channel, Client, ClientStatus, ClientType, ConsentKind, ConsentStatus, Prisma, SuppressionReason } from "@prisma/client";
+
 import { prisma } from "@/lib/prisma";
 import { audit, changedFields } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
@@ -43,6 +44,10 @@ export const clientSchema = z.object({
   notes: z.string().max(10000).optional(),
   assignedToId: opt,
   groupIds: z.array(z.string()).optional(),
+  // The client form's "Filing jointly / spouse needed for {year}" box. Undefined
+  // (imports, other callers) keeps the old behavior: spouse fields saved as given.
+  spouseNeeded: z.boolean().optional(),
+  spouseYear: z.number().int().min(2000).max(2100).optional(),
 });
 
 export type ClientInput = z.input<typeof clientSchema>;
@@ -59,10 +64,22 @@ export function clientDisplayName(v: { firstName?: string | null; middleName?: s
   return buildDisplayName({ firstName: first, lastName: v.lastName ?? null, businessName: v.businessName ?? null });
 }
 
-function toClientData(input: ClientInput) {
+type SpouseFields = Pick<Client, "spouseFirstName" | "spouseMiddleName" | "spouseLastName" | "spouseEmail" | "spousePhone">;
+
+function toClientData(input: ClientInput, before?: SpouseFields | null) {
   const parsed = clientSchema.safeParse(input);
   if (!parsed.success) throw new ValidationError(parsed.error.issues[0]?.message ?? "Check the form.");
-  const v = parsed.data;
+  const raw = parsed.data;
+  // Spouse details are saved only for an individual whose spouse box is ticked.
+  // A business is never asked for (and never saves) personal spouse information.
+  // With the box unticked, a spouse already on file is kept as it was (it may be a
+  // past year's), and nothing new is saved.
+  const individual = raw.clientType === "INDIVIDUAL";
+  const saveSpouse = individual && raw.spouseNeeded !== false;
+  const kept = individual && raw.spouseNeeded === false && before ? before : null;
+  const v = saveSpouse
+    ? raw
+    : { ...raw, spouseFirstName: kept?.spouseFirstName ?? null, spouseMiddleName: kept?.spouseMiddleName ?? null, spouseLastName: kept?.spouseLastName ?? null, spouseEmail: kept?.spouseEmail ?? null, spousePhone: kept?.spousePhone ?? null };
   if (!v.firstName && !v.lastName && !v.businessName) throw new ValidationError("Enter a name or a business name.");
   const emailNormalized = normalizeEmail(v.email);
   if (v.email && !emailNormalized) throw new ValidationError("That email address doesn't look right.");
@@ -71,18 +88,26 @@ function toClientData(input: ClientInput) {
   const spousePhoneNormalized = normalizePhone(v.spousePhone);
   if (v.spousePhone && !spousePhoneNormalized) throw new ValidationError("The spouse's phone number doesn't look right.");
   if (v.spouseEmail && !normalizeEmail(v.spouseEmail)) throw new ValidationError("The spouse's email address doesn't look right.");
+  const spouseData = saveSpouse
+    ? {
+        spouseFirstName: v.spouseFirstName ?? null,
+        spouseMiddleName: v.spouseMiddleName ?? null,
+        spouseLastName: v.spouseLastName ?? null,
+        spouseEmail: v.spouseEmail ?? null,
+        // Stored formatted, e.g. "(205) 555-0123"; typed markers like a trailing "M" are dropped.
+        spousePhone: spousePhoneNormalized ? formatPhone(spousePhoneNormalized) : null,
+        spousePhoneNormalized,
+      }
+    : kept
+      ? {}
+      : { spouseFirstName: null, spouseMiddleName: null, spouseLastName: null, spouseEmail: null, spousePhone: null, spousePhoneNormalized: null };
   return {
+    joint: individual && raw.spouseNeeded !== undefined ? { needed: raw.spouseNeeded, year: raw.spouseYear ?? currentTaxYear() } : null,
     data: {
       firstName: v.firstName ?? null,
       middleName: v.middleName ?? null,
       lastName: v.lastName ?? null,
-      spouseFirstName: v.spouseFirstName ?? null,
-      spouseMiddleName: v.spouseMiddleName ?? null,
-      spouseLastName: v.spouseLastName ?? null,
-      spouseEmail: v.spouseEmail ?? null,
-      // Stored formatted, e.g. "(205) 555-0123"; typed markers like a trailing "M" are dropped.
-      spousePhone: spousePhoneNormalized ? formatPhone(spousePhoneNormalized) : null,
-      spousePhoneNormalized,
+      ...spouseData,
       preferredName: v.preferredName ?? null,
       businessName: v.businessName ?? null,
       displayName: clientDisplayName(v),
@@ -113,23 +138,24 @@ async function assertAssignable(userId: string | null) {
 }
 
 export async function createClient(actor: Actor, input: ClientInput) {
-  const { data, groupIds } = toClientData(input);
+  const { data, groupIds, joint } = toClientData(input);
   await assertAssignable(data.assignedToId);
   return prisma.$transaction(async (tx) => {
     const client = await tx.client.create({ data: { ...data, source: "Added by staff" } });
     if (groupIds?.length) {
       await tx.clientGroup.createMany({ data: groupIds.map((groupId) => ({ clientId: client.id, groupId })), skipDuplicates: true });
     }
+    if (joint?.needed) await setJointFiling(tx, client.id, joint.year, true, { staffId: actor.id });
     await audit(tx, { actorId: actor.id, action: "client.created", entityType: "Client", entityId: client.id, clientId: client.id });
     return client;
   });
 }
 
 export async function updateClient(actor: Actor, clientId: string, input: ClientInput) {
-  const { data, groupIds } = toClientData(input);
-  await assertAssignable(data.assignedToId);
   const before = await prisma.client.findUnique({ where: { id: clientId }, include: { groups: true } });
   if (!before) throw new ValidationError("Client not found.");
+  const { data, groupIds, joint } = toClientData(input, before);
+  await assertAssignable(data.assignedToId);
   const fields = changedFields(before as unknown as Record<string, unknown>, data);
   return prisma.$transaction(async (tx) => {
     let client = await tx.client.update({ where: { id: clientId }, data });
@@ -146,8 +172,60 @@ export async function updateClient(actor: Actor, clientId: string, input: Client
     if (fields.length) {
       await audit(tx, { actorId: actor.id, action: "client.updated", entityType: "Client", entityId: clientId, clientId, details: { fields } });
     }
+    if (joint) await setJointFiling(tx, clientId, joint.year, joint.needed, { staffId: actor.id });
     return client;
   });
+}
+
+// --- Joint filing, per tax year ------------------------------------------------
+
+/** The tax year being prepared now: last calendar year (Central time). */
+export function currentTaxYear(now = new Date()) {
+  return Number(now.toLocaleString("en-US", { timeZone: "America/Chicago", year: "numeric" })) - 1;
+}
+
+/**
+ * "Filing jointly / spouse needed for {year}": the answer recorded for that year,
+ * or a joint return type on that year's tax-prep case. A spouse saved for an
+ * earlier year never makes this true by itself.
+ */
+export async function jointFilingNeeded(clientId: string, year = currentTaxYear()) {
+  const [flag, kase] = await Promise.all([
+    prisma.jointFilingYear.findUnique({ where: { clientId_taxYear: { clientId, taxYear: year } } }),
+    prisma.taxPrepCase.findUnique({ where: { clientId_taxYear: { clientId, taxYear: year } }, select: { returnType: true } }),
+  ]);
+  if (flag) return flag.needed;
+  return kase?.returnType === "1040_MFJ" || kase?.returnType === "1040_MFS";
+}
+
+/**
+ * The client's own answer from My Tax Center ("I'm filing jointly for {year}").
+ * Only the account owner of a Personal (individual) account; never for a business.
+ */
+export async function portalSetJointFiling(user: { id: string }, clientId: string, taxYear: number, needed: boolean) {
+  const { requireClientAccess } = await import("@/lib/portal/access");
+  const access = await requireClientAccess(user.id, clientId, "tax");
+  if (access.role !== "OWNER") throw new ForbiddenError("Only the account owner can answer this.");
+  const c = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { clientType: true } });
+  if (c.clientType !== "INDIVIDUAL") throw new ValidationError("Business accounts aren't asked for spouse information.");
+  const y = currentTaxYear();
+  if (taxYear < y - 3 || taxYear > y + 1) throw new ValidationError("Choose a tax year from the list.");
+  await prisma.$transaction((tx) => setJointFiling(tx, clientId, taxYear, needed, { portalUserId: user.id }));
+}
+
+/** Records the year's answer (staff or the client). Audited only when it changes. */
+
+export async function setJointFiling(db: Prisma.TransactionClient, clientId: string, taxYear: number, needed: boolean, by: { staffId?: string; portalUserId?: string }) {
+  const prev = await db.jointFilingYear.findUnique({ where: { clientId_taxYear: { clientId, taxYear } } });
+  if (prev?.needed === needed) return;
+  if (!prev && !needed) return;
+  const source = by.portalUserId ? "CLIENT" : "STAFF";
+  await db.jointFilingYear.upsert({
+    where: { clientId_taxYear: { clientId, taxYear } },
+    update: { needed, source, setById: by.staffId ?? null, setByPortalId: by.portalUserId ?? null },
+    create: { clientId, taxYear, needed, source, setById: by.staffId ?? null, setByPortalId: by.portalUserId ?? null },
+  });
+  await audit(db, { actorId: by.staffId ?? null, action: "client.joint_filing_set", entityType: "Client", entityId: clientId, clientId, details: { taxYear, needed, source, ...(by.portalUserId ? { portalUserId: by.portalUserId } : {}) } });
 }
 
 export async function setArchived(actor: Actor, clientId: string, archived: boolean) {
@@ -225,6 +303,8 @@ export async function saveContact(actor: Actor, clientId: string, contactId: str
 }
 
 export async function removeContact(actor: Actor, clientId: string, contactId: string) {
+  // Owners are removed (archived) from the Owners card, which keeps their K-1s and history.
+  if (await prisma.businessOwner.count({ where: { contactId } })) throw new ValidationError("This person is a business owner. Remove them from the Owners card instead.");
   await prisma.$transaction(async (tx) => {
     const contact = await tx.contact.delete({ where: { id: contactId, clientId } });
     await audit(tx, { actorId: actor.id, action: "contact.removed", entityType: "Contact", entityId: contactId, clientId, details: { name: contact.name } });
@@ -395,6 +475,17 @@ const AUDIT_TEXT: Record<string, string> = {
   "contact.added": "Contact added",
   "contact.updated": "Contact updated",
   "contact.removed": "Contact removed",
+  "business_owner.added": "Owner added",
+  "business_owner.updated": "Owner updated",
+  "business_owner.archived": "Owner removed (archived)",
+  "business_owner.invited": "Owner invited to the portal",
+  "business_owner.permissions_changed": "Owner portal permissions changed",
+  "business_owner.k1_shared": "K-1 shared with another owner",
+  "business_owner.k1_unshared": "K-1 sharing removed",
+  "client.joint_filing_set": "Joint filing (spouse) answer recorded",
+  "personal_tax.requested": "Personal tax preparation requested",
+  "personal_tax.accepted": "Personal tax request accepted",
+  "personal_tax.declined": "Personal tax request declined",
   "consent.recorded": "Permission recorded",
   "campaign.excluded": "Removed from a campaign",
   "campaign.included": "Added to a campaign",

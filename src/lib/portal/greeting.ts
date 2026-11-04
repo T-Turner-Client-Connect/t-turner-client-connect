@@ -23,6 +23,13 @@ export async function loadGreetingName(clientId: string, portalUserId: string | 
   const client = await prisma.client.findUnique({ where: { id: clientId }, select: { clientType: true, preferredName: true, firstName: true, businessName: true, displayName: true } });
   if (!client) return null;
   if (client.clientType === "INDIVIDUAL") return greetingName(client);
+  // One of several business owners: greet them by their own name, never the business's.
+  if (portalUserId) {
+    const bo = await prisma.businessOwner.findFirst({ where: { clientId, portalUserId, archivedAt: null }, select: { contact: { select: { name: true, preferredName: true } } } });
+    const name = bo?.contact.preferredName?.trim() || bo?.contact.name.trim().split(/\s+/)[0];
+    if (name) return name;
+  }
+
   const own = portalUserId ? await prisma.portalUser.findUnique({ where: { id: portalUserId }, select: { contact: { select: { clientId: true, preferredName: true } } } }) : null;
   let contact = own?.contact?.clientId === clientId ? own.contact : null;
   if (!contact && !portalUserId) {

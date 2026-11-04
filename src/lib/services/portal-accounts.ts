@@ -8,11 +8,25 @@ import { hashPassword, passwordProblem } from "@/lib/auth/password";
 import { hashToken, newToken } from "@/lib/auth/tokens";
 import { normalizeEmail, normalizePhone } from "@/lib/normalize";
 import { ValidationError } from "./clients";
+import { normalizePermissions, OWNER_FLAGS } from "@/lib/portal/owner-areas";
+import type { Prisma } from "@prisma/client";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TTL_MS = 60 * 60 * 1000;
 
-export type PortalPermissions = { canMessage: boolean; canUpload: boolean; canViewBookkeeping: boolean; canViewTax: boolean; canViewContracts: boolean; canViewIdentity: boolean };
+export type PortalPermissions = {
+  canMessage: boolean;
+  canUpload: boolean;
+  canViewBookkeeping: boolean;
+  canViewTax: boolean;
+  canViewContracts: boolean;
+  canViewIdentity: boolean;
+  canViewBilling?: boolean;
+  canViewDocuments?: boolean;
+  canViewPayroll?: boolean;
+  canUploadPayroll?: boolean;
+  canApprovePayroll?: boolean;
+};
 
 /**
  * Invites someone to a client's portal. If they already have a portal login
@@ -22,8 +36,8 @@ export type PortalPermissions = { canMessage: boolean; canUpload: boolean; canVi
 export async function invitePortalUser(
   actor: Actor,
   clientId: string,
-  input: { email: string; name: string; role: PortalRole; contactId?: string | null; permissions?: Partial<PortalPermissions> },
-): Promise<{ token?: string; grantedExisting?: boolean }> {
+  input: { email: string; name: string; role: PortalRole; contactId?: string | null; permissions?: Partial<PortalPermissions>; businessOwnerId?: string | null },
+): Promise<{ token?: string; grantedExisting?: boolean; portalUserId?: string }> {
   const email = normalizeEmail(input.email);
   if (!email) throw new ValidationError("Enter a valid email address.");
   if (!input.name.trim()) throw new ValidationError("Enter their name.");
@@ -43,18 +57,30 @@ export async function invitePortalUser(
         update: { revokedAt: null, role: input.role, ...perms, grantedById: actor.id },
         create: { portalUserId: existing.id, clientId, role: input.role, ...perms, grantedById: actor.id },
       });
-      await audit(tx, { actorId: actor.id, action: "portal.access_granted", entityType: "PortalUser", entityId: existing.id, clientId, details: { role: input.role, ...perms } });
+      if (input.businessOwnerId) await tx.businessOwner.update({ where: { id: input.businessOwnerId }, data: { portalUserId: existing.id } });
+      await audit(tx, { actorId: actor.id, action: "portal.access_granted", entityType: "PortalUser", entityId: existing.id, clientId, details: { role: input.role, ...perms, businessOwnerId: input.businessOwnerId ?? null } });
     });
-    return { grantedExisting: true };
+    return { grantedExisting: true, portalUserId: existing.id };
   }
 
   const token = newToken();
   await prisma.$transaction(async (tx) => {
     await tx.portalInvite.updateMany({ where: { email, clientId, acceptedAt: null, revokedAt: null }, data: { revokedAt: new Date() } });
     const invite = await tx.portalInvite.create({
-      data: { email, name: input.name.trim(), clientId, role: input.role, contactId: input.contactId ?? null, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + INVITE_TTL_MS), invitedById: actor.id },
+      data: {
+        email,
+        name: input.name.trim(),
+        clientId,
+        role: input.role,
+        contactId: input.contactId ?? null,
+        tokenHash: hashToken(token),
+        expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+        invitedById: actor.id,
+        // A business owner's login starts with exactly the permissions chosen for them.
+        ...(input.businessOwnerId ? { businessOwnerId: input.businessOwnerId, permissions: perms as Prisma.InputJsonValue } : {}),
+      },
     });
-    await audit(tx, { actorId: actor.id, action: "portal.invited", entityType: "PortalInvite", entityId: invite.id, clientId, details: { role: input.role, ...perms } });
+    await audit(tx, { actorId: actor.id, action: "portal.invited", entityType: "PortalInvite", entityId: invite.id, clientId, details: { role: input.role, ...perms, businessOwnerId: input.businessOwnerId ?? null } });
   });
   // New logins start with the default permissions (tax documents visible to
   // owners only); staff can adjust them on the client page after acceptance.
@@ -92,9 +118,13 @@ export async function acceptPortalInvite(token: string, password: string) {
       // Only an emailed link proves the address; a link staff copied off the screen doesn't.
       data: { email: invite.email, name: invite.name, passwordHash, contactId: contactTaken ? null : invite.contactId, emailVerifiedAt: invite.sentByEmail ? new Date() : null, origin: "INVITED" },
     });
+    // A business owner's invitation carries its own permissions (their own K-1s always open);
+    // anything else starts from the usual defaults.
+    const ownerPerms = invite.businessOwnerId ? { ...normalizePermissions(invite.permissions), canViewBookkeeping: false, canViewIdentity: false } : null;
     await tx.portalAccess.create({
-      data: { portalUserId: user.id, clientId: invite.clientId, role: invite.role, canViewTax: invite.role === "OWNER", canViewIdentity: invite.role === "OWNER", grantedById: invite.invitedById },
+      data: { portalUserId: user.id, clientId: invite.clientId, role: invite.role, canViewTax: invite.role === "OWNER", canViewIdentity: invite.role === "OWNER", ...(ownerPerms ?? {}), grantedById: invite.invitedById },
     });
+    if (invite.businessOwnerId) await tx.businessOwner.updateMany({ where: { id: invite.businessOwnerId, clientId: invite.clientId, archivedAt: null }, data: { portalUserId: user.id } });
     await audit(tx, { actorId: null, action: "portal.invite_accepted", entityType: "PortalUser", entityId: user.id, clientId: invite.clientId });
     return user;
   });
@@ -107,8 +137,17 @@ export async function updatePortalAccess(actor: Actor, accessId: string, input: 
     const current = await prisma.portalAccess.findUniqueOrThrow({ where: { id: accessId }, select: { canViewIdentity: true } });
     if (current.canViewIdentity !== perms.canViewIdentity) assertAdmin(actor);
   }
+  // A business owner's login: its permissions are set only by Tabitha or staff she authorized
+  // (Owners card). Revoking stays open to anyone who manages portal access.
+  const current = await prisma.portalAccess.findUniqueOrThrow({ where: { id: accessId } });
+  const isOwnerLogin = (await prisma.businessOwner.count({ where: { clientId: current.clientId, portalUserId: current.portalUserId, archivedAt: null } })) > 0;
+  if (isOwnerLogin && OWNER_FLAGS.some((f) => f in perms && (perms as Record<string, boolean | undefined>)[f] !== current[f])) {
+    const { assertOwnerPermissionManager } = await import("./business-owners");
+    await assertOwnerPermissionManager(actor);
+  }
   await prisma.$transaction(async (tx) => {
     if (perms.canViewBookkeeping !== undefined) await assertLoginBusinessViewChange(tx, actor, accessId, perms.canViewBookkeeping);
+
     const access = await tx.portalAccess.update({ where: { id: accessId }, data: { ...perms, revokedAt: revoke ? new Date() : revoke === false ? null : undefined } });
     await audit(tx, { actorId: actor.id, action: revoke ? "portal.access_revoked" : "portal.access_updated", entityType: "PortalAccess", entityId: accessId, clientId: access.clientId, details: input });
   });

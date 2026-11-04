@@ -8,6 +8,7 @@ import { TaxYearSelect } from "./home-widgets";
 import { TaxDocsOnline } from "./tax-docs-online";
 import { ActionTiles, CountdownCards, ImportantToKnow, luxCard, NewsList, PanelHead, type Tile } from "./luxury";
 import { Mountains } from "./mountains";
+import { BusinessHomeView } from "./business-home-view";
 
 type Home = Awaited<ReturnType<typeof loadPortalHome>>;
 
@@ -38,9 +39,12 @@ function CardHead({ icon: Icon, title, sub, badge }: { icon: React.ComponentType
   );
 }
 
-export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: { data: Home; q: string; readOnly?: boolean; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; year?: number; previewHref?: (path: string, extra: string) => string }) {
+export function PortalHomeView({ data, q, readOnly, name, year, previewHref, accountName, clientId, linkFor }: { data: Home; q: string; readOnly?: boolean; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; year?: number; previewHref?: (path: string, extra: string) => string }) {
   // In the owner's View as Client, links open the matching read-only preview page.
   const href = (path: string, extra = "") => (previewHref ? previewHref(path, extra) : readOnly ? "#" : `${path}${q}${extra ? `${q ? "&" : "?"}${extra}` : ""}`);
+  // Business-only account (no personal tax preparation): business items only.
+  if (data.businessOnly) return <BusinessHomeView data={data} href={href} name={name} accountName={accountName} clientId={clientId} linkFor={linkFor} readOnly={readOnly} />;
+
   const browsable = !!previewHref;
   const years = data.questionnaires.map((x) => x.year).sort((a, b) => a - b);
   const thisYear = new Date().getFullYear();

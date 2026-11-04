@@ -43,13 +43,17 @@ function clientInput(fd: FormData): ClientInput {
     postalCode: str(fd, "postalCode"),
     clientType: str(fd, "clientType") as ClientInput["clientType"],
     status: str(fd, "status") as ClientInput["status"],
-    services: str(fd, "services"),
+    // Ticked service options plus anything typed under "Other services".
+    services: [...fd.getAll("serviceOption").map(String), str(fd, "services")].filter((s) => s.trim()).join(", "),
     tags: str(fd, "tags"),
     notes: str(fd, "notes"),
     assignedToId: str(fd, "assignedToId"),
     groupIds: fd.getAll("groupIds").map(String),
+    // Only the client form has the spouse box; other forms leave it undefined.
+    ...(fd.get("spouseSection") ? { spouseNeeded: fd.get("spouseNeeded") === "on", spouseYear: Number(str(fd, "spouseYear")) || undefined } : {}),
   };
 }
+
 
 export async function createClientAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();

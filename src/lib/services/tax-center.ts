@@ -1,6 +1,7 @@
 import "server-only";
 import { timingSafeEqual } from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { decryptSecret, encryptSecret, sign } from "@/lib/crypto";
@@ -115,6 +116,10 @@ export function parseQuestionnaireRef(ref: string) {
  */
 export async function questionnaireLink(user: PortalActor, clientId: string, taxYear: number) {
   await requireClientAccess(user.id, clientId, "tax");
+  // No personal (1040) questionnaire for a business-only client.
+  const { assertPersonalTaxAccount } = await import("@/lib/portal/account");
+  await assertPersonalTaxAccount(clientId);
+
   const client = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { clientType: true } });
   return questionnaireUrl(clientId, client.clientType, taxYear);
 }
@@ -438,10 +443,10 @@ export async function requestFilingCopy(user: PortalActor, clientId: string, yea
 }
 
 /** Year folders for the client's Document Vault (published, clean records only). */
-export async function vaultYears(clientId: string, categories: string[]) {
+export async function vaultYears(clientId: string, scope: Prisma.DocumentWhereInput) {
   const rows = await prisma.document.groupBy({
     by: ["year"],
-    where: { clientId, deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN", category: { in: categories as never } },
+    where: { clientId, deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN", AND: [scope] },
     _count: true,
   });
   return rows.map((r) => ({ year: r.year, count: r._count })).sort((a, b) => (b.year ?? 0) - (a.year ?? 0));

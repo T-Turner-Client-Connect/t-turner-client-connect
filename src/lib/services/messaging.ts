@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
-import { requireClientAccess } from "@/lib/portal/access";
+import { conversationScope, requireClientAccess } from "@/lib/portal/access";
 import { ineligibilityReason } from "@/lib/consent";
 import { sendTransactionalEmail } from "@/lib/email";
 import { clientTextingOn, queueStaffAlert } from "./staff-alerts";
@@ -47,8 +47,9 @@ async function existingByKey(key?: string | null) {
   return key ? prisma.message.findUnique({ where: { idempotencyKey: key } }) : null;
 }
 
-async function notifyMessage(clientId: string, messageId: string) {
-  const grants = await prisma.portalAccess.findMany({ where: { clientId, revokedAt: null, canMessage: true } });
+async function notifyMessage(clientId: string, messageId: string, privateTo: string | null = null) {
+  // A reply in a business owner's private thread notifies that owner only.
+  const grants = await prisma.portalAccess.findMany({ where: { clientId, revokedAt: null, canMessage: true, ...(privateTo ? { portalUserId: privateTo } : {}) } });
   // A portal message is never sent as a text: the client gets an email notice (no contents) only.
   for (const g of grants) await queuePortalNotification(g.portalUserId, "NEW_MESSAGE", `NEW_MESSAGE:${messageId}`, ["EMAIL"]);
 }
@@ -88,6 +89,8 @@ export async function staffSendMessage(
   if (attachmentIds.length) {
     const docs = await prisma.document.findMany({ where: { id: { in: attachmentIds }, clientId: input.clientId, deletedAt: null } });
     if (docs.length !== attachmentIds.length) throw new ValidationError("Attachments must be documents belonging to this client.");
+    // An owner's K-1 opens only from their own K-1 section, never from a (possibly shared) message thread.
+    if (docs.some((d) => d.category === "OWNER_K1")) throw new ValidationError("K-1s reach owners through their own K-1 section (Owners card → Upload K-1), not as message attachments.");
     // A message can't carry a financial statement Tabitha hasn't approved (or an unscanned file) to the client.
     if (docs.some((d) => !clientMayReceive(d))) throw new ValidationError("Financial statements are sent only through Upload Monthly Financials → Tabitha's approval → Deliver, not as message attachments.");
     // Identity documents never go out in messages; financial reports only after Tabitha approves them.
@@ -161,7 +164,8 @@ export async function staffSendMessage(
   if (isNote) {
     // Staff-only: no notification, no provider.
   } else if (input.channel === "PORTAL") {
-    await notifyMessage(input.clientId, message.id);
+    const convo = await prisma.conversation.findUnique({ where: { id: message.conversationId }, select: { privateToPortalUserId: true } });
+    await notifyMessage(input.clientId, message.id, convo?.privateToPortalUserId ?? null);
   } else if (input.channel === "EMAIL") {
     const ok = await sendTransactionalEmail(client.emailNormalized!, input.subject?.trim() || "A message from T. Turner & Associates", body);
     await prisma.message.update({ where: { id: message.id }, data: ok ? { status: "PROVIDER_ACCEPTED" } : { status: "FAILED", errorDetail: "Email provider rejected the message" } });
@@ -189,9 +193,11 @@ export async function portalSendMessage(
   if (body.length > MAX_BODY) throw new ValidationError("That message is too long.");
   const dup = await existingByKey(input.idempotencyKey);
   if (dup) return dup;
-  if (input.conversationId && !(await prisma.conversation.count({ where: { id: input.conversationId, clientId: input.clientId } }))) {
+  if (input.conversationId && !(await prisma.conversation.count({ where: { id: input.conversationId, clientId: input.clientId, ...conversationScope(user.id) } }))) {
     throw new ValidationError("Conversation not found.");
   }
+  // A business owner's new threads are private to them: other owners on the business don't see them.
+  const isBusinessOwner = (await prisma.businessOwner.count({ where: { clientId: input.clientId, portalUserId: user.id, archivedAt: null } })) > 0;
   const attachmentIds = input.attachmentIds ?? [];
   if (attachmentIds.length) {
     // Only the client's own uploads for this account can be attached.
@@ -200,7 +206,8 @@ export async function portalSendMessage(
   }
   const message = await prisma.$transaction(async (tx) => {
     const conversationId =
-      input.conversationId ?? (await tx.conversation.create({ data: { clientId: input.clientId, subject: input.subject?.trim().slice(0, 200) || "Question from client" } })).id;
+      input.conversationId ??
+      (await tx.conversation.create({ data: { clientId: input.clientId, subject: input.subject?.trim().slice(0, 200) || "Question from client", privateToPortalUserId: isBusinessOwner ? user.id : null } })).id;
     const m = await tx.message.create({
       data: {
         conversationId,
@@ -234,6 +241,7 @@ export async function markClientRead(user: PortalActor, conversationId: string) 
   const convo = await prisma.conversation.findUnique({ where: { id: conversationId } });
   if (!convo) return;
   await requireClientAccess(user.id, convo.clientId, "message");
+  if (convo.privateToPortalUserId && convo.privateToPortalUserId !== user.id) return;
   await prisma.message.updateMany({ where: { conversationId, direction: "OUTBOUND", channel: "PORTAL", readByClientAt: null }, data: { readByClientAt: new Date() } });
 }
 
@@ -250,8 +258,9 @@ export async function portalConversations(user: PortalActor, clientId: string) {
   await requireClientAccess(user.id, clientId, "message");
   return prisma.conversation.findMany({
     // Only portal messages are shown in the portal; email/text threads stay staff-side.
-    where: { clientId, messages: { some: { channel: "PORTAL" } } },
-    include: { messages: { where: { channel: "PORTAL" }, orderBy: { createdAt: "desc" }, take: 1 }, _count: { select: { messages: { where: { channel: "PORTAL", direction: "OUTBOUND", readByClientAt: null } } } } },
+    where: { clientId, messages: { some: { channel: "PORTAL" } }, ...conversationScope(user.id) },
+    include: { messages: { where: { channel: "PORTAL" }, orderBy: { createdAt: "desc" }, take: 1 }, _count
+: { select: { messages: { where: { channel: "PORTAL", direction: "OUTBOUND", readByClientAt: null } } } } },
     orderBy: { lastMessageAt: "desc" },
   });
 }
