@@ -132,7 +132,7 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
         </section>
         <section className={luxCard} data-testid="countdowns-panel">
           <PanelHead icon={Clock} title="Tax Countdowns" action={<span className="rounded-full border border-gold-500 px-3 py-1 text-sm font-semibold text-navy-900">Next filing season</span>} />
-          <div className="pt-3"><CountdownCards lines={countdownLines} max={3} /></div>
+          <div className="pt-3"><CountdownCards lines={countdownLines} max={7} /></div>
         </section>
       </div>
 

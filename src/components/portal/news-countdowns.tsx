@@ -92,7 +92,7 @@ export function NewsAndCountdowns({ cards, news, showAll, allHref }: { cards: Co
         </section>
         <section className={luxCard} data-testid="countdowns-panel">
           <PanelHead icon={CalendarClock} title="Tax Countdowns" action={taxYear ? <span className="rounded-full border-2 border-gold-500 px-4 py-1.5 text-sm font-semibold text-navy-900">Tax Year {taxYear}</span> : undefined} />
-          <div className="pt-3"><CountdownCards lines={lines} max={4} /></div>
+          <div className="pt-3"><CountdownCards lines={lines} max={7} /></div>
           <ImportantToKnow>An extension gives you more time to file, not more time to pay.</ImportantToKnow>
         </section>
       </div>

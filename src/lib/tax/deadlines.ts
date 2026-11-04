@@ -17,7 +17,12 @@ export const RETURN_KINDS = {
   PARTNERSHIP: { label: "Partnerships", form: "Form 1065", months: 3, extForm: "Form 7004" },
   S_CORP: { label: "S corporations", form: "Form 1120-S", months: 3, extForm: "Form 7004" },
   C_CORP: { label: "C corporations", form: "Form 1120", months: 4, extForm: "Form 7004" },
+  TRUST_ESTATE: { label: "Estates and trusts", form: "Form 1041", months: 4, extForm: "Form 7004" },
+  NONPROFIT_990: { label: "Nonprofits", form: "Form 990 / 990-EZ", months: 5, extForm: "Form 8868" },
+  NONPROFIT_990N: { label: "Small nonprofits (e-Postcard)", form: "Form 990-N", months: 5, extForm: null },
 } as const;
+/** Return kinds that have an extension (Form 990-N has none). */
+export const hasExtension = (k: ReturnKind) => RETURN_KINDS[k].extForm !== null;
 export type ReturnKind = keyof typeof RETURN_KINDS;
 export const RETURN_KIND_KEYS = Object.keys(RETURN_KINDS) as ReturnKind[];
 
@@ -25,7 +30,7 @@ export const DEADLINE_KIND_LABELS: Record<string, string> = {
   TAX_SEASON_OPENS: "Tax season opens (IRS starts accepting returns)",
   ...Object.fromEntries(RETURN_KIND_KEYS.flatMap((k) => [
     [k, `${RETURN_KINDS[k].label} — ${RETURN_KINDS[k].form} due`],
-    [`${k}_EXTENDED`, `${RETURN_KINDS[k].label} — ${RETURN_KINDS[k].form} due with a valid extension`],
+    ...(RETURN_KINDS[k].extForm ? [[`${k}_EXTENDED`, `${RETURN_KINDS[k].label} — ${RETURN_KINDS[k].form} due with a valid extension`]] : []),
   ])),
 };
 export const isDeadlineKind = (k: string) => k in DEADLINE_KIND_LABELS;
@@ -100,6 +105,11 @@ export function fifteenthAfter(endYear: number, endMonth: number, n: number) {
 export function ruleDueDate(kind: ReturnKind, endYear: number, endMonth = 12, extended = false) {
   let months: number = RETURN_KINDS[kind].months;
   let ext = 6;
+  if (kind === "TRUST_ESTATE" && extended) {
+    // Form 7004 gives estates and trusts 5½ months: the last day of the 9th month after year end.
+    const m = endMonth + 9, y = endYear + Math.floor((m - 1) / 12), mm = ((m - 1) % 12) + 1;
+    return nextBusinessDay(iso(y, mm, new Date(Date.UTC(y, mm, 0)).getUTCDate()));
+  }
   if (kind === "C_CORP" && endMonth === 6 && endYear <= 2026) {
     months = 3;
     ext = 7;
@@ -208,6 +218,7 @@ export function kindsFor(p: ClientProfile | null): Set<ReturnKind> {
     case "PARTNERSHIP": return new Set(["PARTNERSHIP"]);
     case "S_CORP": return new Set(["S_CORP"]);
     case "C_CORP": return new Set(["C_CORP"]);
+    case "TRUST_ESTATE": return new Set(["TRUST_ESTATE"]);
     default: return new Set();
   }
 }
@@ -263,18 +274,22 @@ export function buildCountdowns(input: { rows: DeadlineRow[]; today: string; pro
     }
   }
   cards.push({ key: "business", title: "Business Tax Deadlines", intro: "General dates for calendar-year businesses. Fiscal-year businesses have different dates.", lines: business });
+  cards.push({ key: "trust-estate", title: "Estate & Trust Deadlines", intro: "General date for calendar-year estates and trusts.", lines: [lineFromRow("TRUST_ESTATE", `${RETURN_KINDS.TRUST_ESTATE.label} — ${RETURN_KINDS.TRUST_ESTATE.form}`, nextRow(rows, "TRUST_ESTATE", "US", today, state), today, { form: RETURN_KINDS.TRUST_ESTATE.form, appliesToYou: mine.has("TRUST_ESTATE") })] });
+  cards.push({ key: "nonprofit", title: "Nonprofit Deadlines", intro: "General dates for calendar-year organizations: the 15th day of the 5th month after the year ends. Form 990-N can't be extended.", lines: (["NONPROFIT_990", "NONPROFIT_990N"] as const).map((k) => lineFromRow(k, `${RETURN_KINDS[k].label} — ${RETURN_KINDS[k].form}`, nextRow(rows, k, "US", today, state), today, { form: RETURN_KINDS[k].form, appliesToYou: false })) });
 
   // 4. Extension filing deadlines (the request is due by the original due date)
   const extReq: CountdownLine[] = [
     lineFromRow("ext-individual", "Individuals — Form 4868", individualNext, today, { form: "Form 4868", appliesToYou: mine.has("INDIVIDUAL"), notes: "Or make an IRS payment and mark it as an extension payment." }),
     lineFromRow("ext-passthrough", "Partnerships & S corporations — Form 7004", nextRow(rows, "PARTNERSHIP", "US", today, state), today, { form: "Form 7004", appliesToYou: (mine.has("PARTNERSHIP") || mine.has("S_CORP")) && !fiscal, notes: null }),
     lineFromRow("ext-ccorp", "C corporations — Form 7004", nextRow(rows, "C_CORP", "US", today, state), today, { form: "Form 7004", appliesToYou: mine.has("C_CORP") && !fiscal, notes: null }),
+    lineFromRow("ext-trust", "Estates and trusts — Form 7004", nextRow(rows, "TRUST_ESTATE", "US", today, state), today, { form: "Form 7004", appliesToYou: mine.has("TRUST_ESTATE"), notes: null }),
+    lineFromRow("ext-nonprofit", "Nonprofits (Form 990 / 990-EZ) — Form 8868", nextRow(rows, "NONPROFIT_990", "US", today, state), today, { form: "Form 8868", appliesToYou: false, notes: "Form 990-N has no extension." }),
   ];
   cards.push({ key: "extension-request", title: "Extension Filing Deadlines", intro: "An extension must be requested by the return's original due date.", lines: extReq, footnote: PAY_NOTE });
 
   // 5. Extended return deadlines
   const extended: CountdownLine[] = [];
-  for (const k of RETURN_KIND_KEYS) {
+  for (const k of RETURN_KIND_KEYS.filter(hasExtension)) {
     const r = nextRow(rows, `${k}_EXTENDED`, "US", today, state);
     const applies = mine.has(k);
     const confirmed = r && input.extensions.some((e) => e.taxYear === r.taxYear && e.jurisdiction === "FEDERAL");
@@ -305,6 +320,6 @@ export function buildCountdowns(input: { rows: DeadlineRow[]; today: string; pro
 export function suggestedDates(taxYear: number) {
   return RETURN_KIND_KEYS.flatMap((k) => [
     { kind: k, taxYear, dueDate: ruleDueDate(k, taxYear, 12, false) },
-    { kind: `${k}_EXTENDED`, taxYear, dueDate: ruleDueDate(k, taxYear, 12, true) },
+    ...(hasExtension(k) ? [{ kind: `${k}_EXTENDED`, taxYear, dueDate: ruleDueDate(k, taxYear, 12, true) }] : []),
   ]);
 }
