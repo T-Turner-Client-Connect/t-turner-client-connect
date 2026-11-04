@@ -8,9 +8,8 @@ import { callCoethaModel, CoethaModelError, coethaKeyPresent, coethaModel, DISCR
 import { ValidationError } from "./clients";
 import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, categorizeBankTransactionTx, isYmd, ledgerFlags, normDesc, postJournalEntryTx, todayCentral, usd, ymdOf } from "./ledger";
 import { closeChecklist } from "./ledger-review";
-import { isReportApprover } from "./bookkeeping-clients";
 import { coethaOn } from "./owner-switches";
-import { assertCanApproveCoethaWork } from "@/lib/auth/permissions";
+import { assertCanApproveCoethaWork, canApproveCoethaWork } from "@/lib/auth/permissions";
 
 /**
  * Coetha, the firm's AI Senior Accountant, working inside Client Connect.
@@ -369,7 +368,7 @@ export async function decideCoethaProposals(actor: Actor, clientId: string, deci
 
 export async function coethaView(actor: Actor, clientId: string) {
   await assertLedger(actor, clientId);
-  const [status, canApprove, book] = await Promise.all([coethaStatus(), isReportApprover(actor), prisma.ledgerBook.findUnique({ where: { clientId } })]);
+  const [status, canApprove, book] = await Promise.all([coethaStatus(), canApproveCoethaWork(actor), prisma.ledgerBook.findUnique({ where: { clientId } })]);
   if (!book) return { status, canApprove, book: null as null, open: [], decided: [], runs: [], accounts: [], unreviewed: 0 };
   const [open, decided, runs, accounts, unreviewed] = await Promise.all([
     prisma.coethaProposal.findMany({ where: { clientId, status: "PROPOSED" }, orderBy: [{ kind: "asc" }, { confidence: "desc" }, { createdAt: "asc" }] }),

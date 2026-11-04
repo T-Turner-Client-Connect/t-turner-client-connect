@@ -4,6 +4,8 @@ import path from "node:path";
 import { makeUser, managed, prisma, resetDb } from "./db";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { setStaffPermissions } from "@/lib/auth/permissions";
+import { setOwnerPermissions } from "@/lib/services/business-owners";
+import { recordEmailBlock } from "@/lib/services/comm-prefs";
 import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { setupLedger } from "@/lib/services/ledger";
@@ -13,7 +15,7 @@ import { setClientTexting } from "@/lib/services/staff-alerts";
 import { handleInboundSms } from "@/lib/services/inbound-sms";
 import { discardPayrollRun, editPayrollRun, importPayrollRegister, loadRun, postPayrollRun, savePayrollSetup } from "@/lib/services/payroll";
 import {
-  approverDashboard, approverRunView, decideByLink, decidePayroll, isPayrollApprover, LINK_TTL_MS, linkView, notifyApprovers, requestPayrollApproval,
+  approverDashboard, approverRunView, canManagePayrollApprovers, decideByLink, decidePayroll, isPayrollApprover, LINK_TTL_MS, linkView, notifyApprovers, requestPayrollApproval,
   resolveLink, runTimeline, sendLinkCode, setNotifyChannel, setPayrollApprover, submitPayrollRun, verifyLink,
 } from "@/lib/services/payroll-approval";
 
@@ -62,6 +64,9 @@ async function setup(opts: { texting?: boolean } = {}) {
     const phone = `555010${i}130`;
     const u = await prisma.portalUser.create({ data: { email: `${name.split(" ")[0].toLowerCase()}@example.com`, name, phone, phoneNormalized: normalizePhone(phone), passwordHash: "x", emailVerifiedAt: new Date() } });
     await prisma.portalAccess.create({ data: { portalUserId: u.id, clientId: biz.id } });
+    // Each is a business owner (Owners card) with their own login: only owners approve payroll.
+    const contact = await prisma.contact.create({ data: { clientId: biz.id, name, email: u.email, emailNormalized: u.email } });
+    await prisma.businessOwner.create({ data: { clientId: biz.id, contactId: contact.id, portalUserId: u.id, ownershipBps: 2500 } });
     await submitSmsConsent({ name, phone, service: true, marketing: false, sourcePage: "/sms-consent", ip: null, userAgent: "test" });
     owners.push(u);
   }
@@ -371,5 +376,82 @@ describe("secure single-use links", () => {
     await dispatchHeldPayrollTexts(NOON);
     expect(sms).toHaveLength(0);
     expect(await notifyApprovers(s.runId, NOON)).toBeTruthy();
+  });
+});
+
+// --- Integration with Business Owners (#81), Communication Preferences (#79) and Staff Access (#77) ---
+describe("payroll approval with owner permissions, communication preferences and staff permissions", () => {
+  const ownerOf = (clientId: string, portalUserId: string) => prisma.businessOwner.findFirstOrThrow({ where: { clientId, portalUserId } });
+  const emailToken = (email: string) => tokenFrom(mail.filter((m) => m.to === email && /approval needed/.test(m.subject)).at(-1)!.text);
+
+  it("the owner's portal permission is the one switch: granting it on the Owners card makes an approver who can approve by link; removing it ends that at once", async () => {
+    const s = await setup();
+    // Devon is an owner but not an approver yet.
+    expect(await isPayrollApprover(s.d.id, s.biz.id)).toBe(false);
+    const devon = await ownerOf(s.biz.id, s.d.id);
+    await setOwnerPermissions(s.tabitha, s.biz.id, devon.id, { canApprovePayroll: true });
+    expect(await isPayrollApprover(s.d.id, s.biz.id)).toBe(true);
+    // ...and is now on the approver list (optional: Avery and Blake stay the required ones).
+    const row = await prisma.payrollApprover.findUniqueOrThrow({ where: { clientId_portalUserId: { clientId: s.biz.id, portalUserId: s.d.id } } });
+    expect(row).toMatchObject({ active: true, required: false });
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    // Devon approves through the emailed link, verified by the code sent to the same address.
+    const token = emailToken(s.d.email);
+    await sendLinkCode(token);
+    const code = mail.filter((m) => m.to === s.d.email).at(-1)!.subject.match(/^(\d{6})/)![1];
+    const { nonce } = await verifyLink(token, { code });
+    await decideByLink(token, { decision: "APPROVED", nonce });
+    expect(await prisma.payrollApproval.count({ where: { portalUserId: s.d.id, decision: "APPROVED", channel: "EMAIL_LINK" } })).toBe(1);
+
+    // Removing the permission (Owners card) removes the approver role and every way to decide.
+    await setOwnerPermissions(s.tabitha, s.biz.id, (await ownerOf(s.biz.id, s.c.id)).id, { canApprovePayroll: false });
+    expect(await isPayrollApprover(s.c.id, s.biz.id)).toBe(false);
+    expect((await prisma.payrollApprover.findUniqueOrThrow({ where: { clientId_portalUserId: { clientId: s.biz.id, portalUserId: s.c.id } } })).active).toBe(false);
+    await expect(decide(s, s.c, "APPROVED")).rejects.toBeInstanceOf(ForbiddenError);
+
+    // And the reverse: Payroll approvers (Owner's Office) flips the same permission on the owner's login.
+    await setPayrollApprover(s.tabitha, s.biz.id, s.a.id, { approver: false, required: false });
+    expect((await prisma.portalAccess.findFirstOrThrow({ where: { clientId: s.biz.id, portalUserId: s.a.id } })).canApprovePayroll).toBe(false);
+    expect(await isPayrollApprover(s.a.id, s.biz.id)).toBe(false);
+  });
+
+  it("an archived owner, or a login that isn't an owner, never approves even with the flag set", async () => {
+    const s = await setup();
+    await prisma.businessOwner.updateMany({ where: { clientId: s.biz.id, portalUserId: s.a.id }, data: { archivedAt: new Date() } });
+    expect(await isPayrollApprover(s.a.id, s.biz.id)).toBe(false);
+    // A bookkeeper's login on the business with the flag forced on: not an owner, so no.
+    const helper = await prisma.portalUser.create({ data: { email: "helper@example.com", name: "Helper Pretend", passwordHash: "x" } });
+    await prisma.portalAccess.create({ data: { portalUserId: helper.id, clientId: s.biz.id, canApprovePayroll: true } });
+    expect(await isPayrollApprover(helper.id, s.biz.id)).toBe(false);
+    await expect(setPayrollApprover(s.tabitha, s.biz.id, helper.id, { approver: true, required: false })).rejects.toThrow(/Only a business owner/);
+  });
+
+  it("requests go through Communication Preferences: STOP keeps texts off (email still goes) and a bounced address gets no email", async () => {
+    const s = await setup();
+    await handleInboundSms({ MessageSid: "SMstop1", From: s.a.phone!, Body: "STOP" });
+    await recordEmailBlock(s.b.email, "BOUNCE", "Fictional hard bounce");
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    // Avery: STOP-blocked, so email only.
+    expect(sms.filter((m) => m.to === s.a.phoneNormalized)).toHaveLength(0);
+    expect(mail.filter((m) => m.to === s.a.email)).toHaveLength(1);
+    // Blake: email bounced, so text only, and the reason is recorded.
+    expect(mail.filter((m) => m.to === s.b.email)).toHaveLength(0);
+    expect(sms.filter((m) => m.to === s.b.phoneNormalized)).toHaveLength(1);
+    expect(await prisma.payrollNotice.findFirstOrThrow({ where: { portalUserId: s.b.id, channel: "EMAIL" } })).toMatchObject({ status: "SKIPPED", detail: expect.stringMatching(/bounce/i) });
+    // A marketing opt-out never stops this essential notice.
+    await prisma.suppression.create({ data: { channel: "EMAIL", addressNormalized: s.c.email, reason: "UNSUBSCRIBE", note: "promo opt-out" } });
+    mail.length = 0;
+    await notifyApprovers(s.runId, NOON);
+    expect(mail.filter((m) => m.to === s.c.email)).toHaveLength(1);
+  });
+
+  it("choosing approvers is Staff Access & Permissions -> Payroll -> Edit, re-read on every call", async () => {
+    const s = await setup();
+    expect(await canManagePayrollApprovers(s.daria)).toBe(false);
+    await setStaffPermissions(s.tabitha, s.daria.id, ["payroll.edit"]);
+    expect(await canManagePayrollApprovers(s.daria)).toBe(true);
+    await setStaffPermissions(s.tabitha, s.daria.id, []);
+    expect(await canManagePayrollApprovers(s.daria)).toBe(false);
+    await expect(setPayrollApprover(s.daria, s.biz.id, s.d.id, { approver: true, required: false })).rejects.toBeInstanceOf(ForbiddenError);
   });
 });

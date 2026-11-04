@@ -11,7 +11,7 @@ import { PAYROLL_FREQUENCIES } from "@/lib/services/bookkeeping-clients";
 import { PAYROLL_ACCESS } from "@/lib/services/bookkeeping-profile";
 import { canUseLedger } from "@/lib/services/ledger";
 import { payHistory, payrollSchedule } from "@/lib/services/payroll";
-import { canManagePayrollApprovers, channelsFor } from "@/lib/services/payroll-approval";
+import { approverWhere, canManagePayrollApprovers, channelsFor } from "@/lib/services/payroll-approval";
 import { connectionStatus } from "@/lib/payroll/providers";
 import { NOTIFY_CHANNELS, PAYROLL_CONNECTIONS, PAYROLL_SYSTEMS } from "@/lib/payroll/fields";
 import { PayrollImport } from "@/components/payroll/payroll-import";
@@ -42,7 +42,7 @@ export default async function PayrollPage({ params }: { params: Promise<{ client
     payHistory(clientId, 26),
     canUseLedger(actor, clientId),
     canManagePayrollApprovers(actor),
-    prisma.payrollApprover.findMany({ where: { clientId, active: true }, include: { portalUser: { select: { id: true, name: true, email: true, phoneNormalized: true } } }, orderBy: [{ required: "desc" }, { createdAt: "asc" }] }),
+    prisma.payrollApprover.findMany({ where: approverWhere(clientId), include: { portalUser: { select: { id: true, name: true, email: true, phoneNormalized: true } } }, orderBy: [{ required: "desc" }, { createdAt: "asc" }] }),
     p.payrollSystem ? prisma.payrollConnection.findFirst({ where: { clientId, provider: p.payrollSystem } }) : null,
     prisma.ledgerAccount.findMany({ where: { clientId, subtype: "BANK", active: true }, orderBy: { code: "asc" } }),
   ]);

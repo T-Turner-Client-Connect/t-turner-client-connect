@@ -8,6 +8,7 @@ import { TaxYearSelect } from "./home-widgets";
 import { TaxDocsOnline } from "./tax-docs-online";
 import { ActionTiles, CountdownCards, ImportantToKnow, luxCard, NewsList, PanelHead, type Tile } from "./luxury";
 import { Mountains } from "./mountains";
+import { BusinessHomeView } from "./business-home-view";
 
 type Home = Awaited<ReturnType<typeof loadPortalHome>>;
 
@@ -73,9 +74,12 @@ export function homeTiles({ data, q, readOnly, year, previewHref }: TileOpts) {
   return { tiles, selected, years };
 }
 
-export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: { data: Home; q: string; readOnly?: boolean; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; year?: number; previewHref?: (path: string, extra: string) => string }) {
+export function PortalHomeView({ data, q, readOnly, name, year, previewHref, accountName, clientId, linkFor }: { data: Home; q: string; readOnly?: boolean; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; year?: number; previewHref?: (path: string, extra: string) => string }) {
   // In the owner's View as Client, links open the matching read-only preview page.
   const href = (path: string, extra = "") => (previewHref ? previewHref(path, extra) : readOnly ? "#" : `${path}${q}${extra ? `${q ? "&" : "?"}${extra}` : ""}`);
+  // Business-only account (no personal tax preparation): business items only. A login given the
+  // Managed Business view (banking & financial access) gets the business dashboard instead (see app/client/(secure)/page.tsx).
+  if (data.businessOnly) return <BusinessHomeView data={data} href={href} name={name} accountName={accountName} clientId={clientId} linkFor={linkFor} readOnly={readOnly} />;
   const browsable = !!previewHref;
   const { tiles, selected, years } = homeTiles({ data, q, readOnly, year, previewHref });
   const status = data.statuses.find((s) => s.year === selected);

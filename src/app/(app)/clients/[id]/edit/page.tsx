@@ -8,6 +8,7 @@ import { ClientForm } from "@/components/client-form";
 import { updateClientAction } from "@/app/actions/clients";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
+import { currentTaxYear, jointFilingNeeded } from "@/lib/services/clients";
 
 export const metadata = { title: "Edit client" };
 
@@ -20,6 +21,8 @@ export default async function EditClientPage({ params }: { params: Promise<{ id:
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
   ]);
   if (!client) notFound();
+  const spouseYear = currentTaxYear();
+  const spouseNeeded = client.clientType === "INDIVIDUAL" && (await jointFilingNeeded(id, spouseYear));
   return (
     <>
       <PageHeader title={`Edit ${client.displayName}`} />
@@ -44,6 +47,9 @@ export default async function EditClientPage({ params }: { params: Promise<{ id:
         <ClientForm
           action={updateClientAction.bind(null, id)}
           client={client}
+          spouseYear={spouseYear}
+          spouseNeeded={spouseNeeded}
+
           groups={groups}
           staff={staff}
           selectedGroupIds={client.groups.map((g) => g.groupId)}

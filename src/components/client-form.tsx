@@ -2,6 +2,9 @@ import type { Client, Group, User } from "@prisma/client";
 import { ActionForm } from "@/components/action-form";
 import { Button, Field, LinkButton } from "@/components/ui";
 import type { ActionState } from "@/lib/action";
+import { SpouseSection } from "@/components/spouse-section";
+import { CLIENT_SERVICE_OPTIONS } from "@/lib/service-options";
+import { currentTaxYear } from "@/lib/services/clients";
 
 export function ClientForm({
   action,
@@ -10,6 +13,8 @@ export function ClientForm({
   staff,
   selectedGroupIds = [],
   cancelHref,
+  spouseYear = currentTaxYear(),
+  spouseNeeded = false,
 }: {
   action: (prev: ActionState, fd: FormData) => Promise<ActionState>;
   client?: Client;
@@ -17,8 +22,13 @@ export function ClientForm({
   staff: Pick<User, "id" | "name">[];
   selectedGroupIds?: string[];
   cancelHref: string;
+  // The current tax year and whether a spouse is needed for it (never inferred from a spouse saved earlier).
+  spouseYear?: number;
+  spouseNeeded?: boolean;
 }) {
   const v = (k: keyof Client) => (client?.[k] as string | null | undefined) ?? "";
+  const known = new Set<string>(CLIENT_SERVICE_OPTIONS);
+  const otherServices = (client?.services ?? []).filter((s) => !known.has(s));
   return (
     <ActionForm action={action} className="space-y-6" showSuccess={false}>
       <section className="grid gap-4 sm:grid-cols-2">
@@ -26,21 +36,19 @@ export function ClientForm({
         <Field label="Middle name / initial"><input className="input" name="middleName" defaultValue={v("middleName")} autoComplete="off" /></Field>
         <Field label="Preferred first name" hint="Used to greet them in the portal"><input className="input" name="preferredName" defaultValue={v("preferredName")} autoComplete="off" /></Field>
         <Field label="Last name"><input className="input" name="lastName" defaultValue={v("lastName")} autoComplete="off" /></Field>
-        <Field label="Business name" className="sm:col-span-2" hint="For a business, add the people you work with as contacts after saving.">
+        <Field label="Business name" className="sm:col-span-2" hint="For a business, set Client type to Business below; list its owners on the client page after saving.">
           <input className="input" name="businessName" defaultValue={v("businessName")} autoComplete="off" />
         </Field>
         <Field label="Email"><input className="input" type="email" name="email" defaultValue={v("email")} autoComplete="off" /></Field>
         <Field label="Mobile phone" hint="10-digit US number, or international starting with +"><input className="input" type="tel" name="phone" defaultValue={v("phone")} autoComplete="off" /></Field>
       </section>
-      <fieldset className="grid gap-4 rounded-xl border border-gold-300 bg-gold-100/30 p-4 sm:grid-cols-3" data-testid="spouse-section">
-        <legend className="px-1 text-sm font-semibold text-navy-900">Spouse (joint return)</legend>
-        <p className="text-xs text-slate-600 sm:col-span-3">For a married couple filing jointly: one client record for both of you. Leave blank for single filers. The spouse&apos;s contact details are kept separate from the client&apos;s.</p>
-        <Field label="Spouse first name"><input className="input" name="spouseFirstName" defaultValue={v("spouseFirstName")} autoComplete="off" /></Field>
-        <Field label="Spouse middle name / initial"><input className="input" name="spouseMiddleName" defaultValue={v("spouseMiddleName")} autoComplete="off" /></Field>
-        <Field label="Spouse last name"><input className="input" name="spouseLastName" defaultValue={v("spouseLastName")} autoComplete="off" /></Field>
-        <Field label="Spouse email" className="sm:col-span-2"><input className="input" type="email" name="spouseEmail" defaultValue={v("spouseEmail")} autoComplete="off" /></Field>
-        <Field label="Spouse mobile phone"><input className="input" type="tel" name="spousePhone" defaultValue={v("spousePhone")} autoComplete="off" /></Field>
-      </fieldset>
+      <SpouseSection
+        year={spouseYear}
+        initialOpen={spouseNeeded}
+        initialType={client?.clientType ?? "INDIVIDUAL"}
+        savedEarlier={!!(client?.spouseFirstName || client?.spouseLastName)}
+        values={{ spouseFirstName: v("spouseFirstName"), spouseMiddleName: v("spouseMiddleName"), spouseLastName: v("spouseLastName"), spouseEmail: v("spouseEmail"), spousePhone: v("spousePhone") }}
+      />
       <section className="grid gap-4 sm:grid-cols-6">
         <Field label="Mailing address" className="sm:col-span-6"><input className="input" name="addressLine1" defaultValue={v("addressLine1")} autoComplete="off" /></Field>
         <Field label="Address line 2" className="sm:col-span-6"><input className="input" name="addressLine2" defaultValue={v("addressLine2")} autoComplete="off" /></Field>
@@ -69,9 +77,22 @@ export function ClientForm({
             {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </Field>
-        <Field label="Services" className="sm:col-span-3" hint="Separate with commas, e.g. Tax preparation, Bookkeeping">
-          <input className="input" name="services" defaultValue={client?.services.join(", ") ?? ""} />
+        <fieldset className="sm:col-span-3" data-testid="service-options">
+          <legend className="mb-1 text-sm font-semibold text-navy-900">Services</legend>
+          <p className="mb-2 text-xs text-slate-600">A business without Individual tax preparation gets a business-only portal: no personal tax questionnaire, spouse, dependents or refund options.</p>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {CLIENT_SERVICE_OPTIONS.map((s) => (
+              <label key={s} className="flex items-center gap-2 rounded-lg border border-navy-100 bg-white px-3 py-2 text-sm">
+                <input type="checkbox" name="serviceOption" value={s} defaultChecked={client?.services.includes(s)} className="size-4 accent-navy-900" />
+                {s}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <Field label="Other services" className="sm:col-span-3" hint="Anything else, separated with commas">
+          <input className="input" name="services" defaultValue={otherServices.join(", ")} />
         </Field>
+
         <Field label="Tags" className="sm:col-span-3" hint="Separate with commas">
           <input className="input" name="tags" defaultValue={client?.tags.join(", ") ?? ""} />
         </Field>

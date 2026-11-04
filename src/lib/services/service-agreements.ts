@@ -27,7 +27,8 @@ export const BUSINESS_NAME = "T. Turner & Associates, LLC";
 
 export const SERVICE_TYPES: Record<ServiceType, { label: string; tax: boolean }> = {
   TAX_INDIVIDUAL: { label: "Individual tax return", tax: true },
-  TAX_BUSINESS: { label: "Business tax return", tax: true },
+  TAX_BUSINESS: { label: "Business tax return (1065/1120-S/1120)", tax: true },
+  K1_PREPARATION: { label: "K-1 preparation for owners", tax: true },
   TAX_AMENDED: { label: "Amended tax return", tax: true },
   TAX_NONPROFIT: { label: "Nonprofit tax return", tax: true },
   BOOKKEEPING: { label: "Bookkeeping", tax: false },

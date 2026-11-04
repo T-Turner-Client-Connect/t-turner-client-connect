@@ -1,3 +1,4 @@
+import { serviceProfile } from "@/lib/services/service-profile";
 import Link from "next/link";
 import { Apple, ArrowLeft, ChevronRight, CircleCheck, ClipboardList, Clock, CreditCard, Download, Eye, FileText, Info } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
@@ -76,6 +77,8 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
       </>
     );
   }
+  // Refund options are personal tax preparation; a business-only account never sees them.
+  const { businessOnly } = await serviceProfile(current.clientId);
   const [items, sq, manual, instructions, refundPays] = await Promise.all([
     portalBilling(user, current.clientId),
     portalSquareBilling(user, current.clientId),
@@ -110,7 +113,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
         {banner}
         <Link href={`/client/billing?${q}`} className="inline-flex items-center gap-2 font-semibold text-navy-900 underline decoration-gold-500 underline-offset-4"><ArrowLeft className="size-4" aria-hidden /> Back to Billing &amp; Payments</Link>
         <FirmInvoiceDocument doc={doc} />
-        {doc.options.some((o) => o.method === "REFUND_TRANSFER") && doc.balanceCents > 0 && (
+        {!businessOnly && doc.options.some((o) => o.method === "REFUND_TRANSFER") && doc.balanceCents > 0 && (
           <section className={`${luxPanel} p-4 sm:p-5`} data-testid="refund-transfer-request">
             <PanelTitle icon={Info} title="Paying from your refund?" sub="Tell us here first — our office reviews every request before your return is filed." />
             <div className="mt-3"><PayFromRefund clientId={current.clientId} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} /></div>
@@ -253,7 +256,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
             <ul className="list-disc space-y-0.5 pl-5">
               <li>Invoices must be paid before we file your tax return.</li>
               <li>You may use Zelle, Cash App, Apple Cash, Venmo, or pay by card through your Square invoice.</li>
-              <li>You may also choose to have your tax preparation fee paid from your federal refund through Republic Bank&apos;s optional Refund Transfer. Republic Bank charges its own fees for this service — ask our office for details. Paying directly avoids those fees.</li>
+              {!businessOnly && <li>You may also choose to have your tax preparation fee paid from your federal refund through Republic Bank&apos;s optional Refund Transfer. Republic Bank charges its own fees for this service — ask our office for details. Paying directly avoids those fees.</li>}
               <li>Select the payment method on the right to submit your payment.</li>
               <li>A receipt will be available after your payment is processed.</li>
               <li>Cash payments are accepted in our office only.</li>
@@ -285,8 +288,9 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
                 <Button type="submit" data-testid="request-invoice">Request an Invoice</Button>
               </ActionForm>
             )}
-            <PayFromRefund clientId={current.clientId} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} />
+            {!businessOnly && <PayFromRefund clientId={current.clientId} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} />}
             {WAYS.map((w) => {
+
               const d = instructions.find((i) => i.method === w.method)?.details;
               return (
                 <details key={w.method} className="group rounded-xl border border-gold-300 bg-gold-50/60 open:bg-white" data-testid={`pay-${w.method}`}>

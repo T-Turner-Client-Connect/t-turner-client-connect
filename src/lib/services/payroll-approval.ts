@@ -4,7 +4,8 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
-import { can } from "@/lib/auth/permissions";
+import { can, canApproveCoethaWork } from "@/lib/auth/permissions";
+import { ownerHasPermission } from "@/lib/portal/owner-permissions";
 import { verifyPassword } from "@/lib/auth/password";
 import { sendEmail, brandedEmailHtml } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
@@ -12,8 +13,7 @@ import { sendSms } from "@/lib/twilio";
 import { chicagoParts } from "@/lib/tz";
 import { ValidationError } from "./clients";
 import { assertLedger, usd, ymdOf } from "./ledger";
-import { isReportApprover } from "./bookkeeping-clients";
-import { smsSendAllowed } from "./sms-consent";
+import { canSend } from "./comm-prefs";
 import { clientTextingOn } from "./staff-alerts";
 import { CLIENT_SMS_QUIET } from "./notifications";
 import { sendEmailCode, verifyEmailCode, verifySecondFactor } from "./mfa";
@@ -54,15 +54,28 @@ async function assertApproverManager(actor: Actor) {
 }
 
 /**
- * The one check for "may this portal login approve this business's payroll?". Kept as a single
- * helper so the business-owners work (per-owner portal permissions) can be wired in here.
+ * The one check for "may this portal login approve this business's payroll?".
+ *
+ * Source of truth: the business owner's own portal permission "Payroll approval → Approve/Deny"
+ * (PortalAccess.canApprovePayroll, read by ownerHasPermission): an active business owner of this
+ * client, with live access, who was granted it. The PayrollApprover row only says HOW they take
+ * part (required or optional, per-employee detail, how they're notified); setPayrollApprover and
+ * the owner permission matrix keep the two in step, and a row without the permission never counts.
  */
 export async function isPayrollApprover(portalUserId: string, clientId: string) {
-  const a = await prisma.payrollApprover.findUnique({ where: { clientId_portalUserId: { clientId, portalUserId } } });
-  if (!a?.active) return false;
-  const access = await prisma.portalAccess.count({ where: { portalUserId, clientId, revokedAt: null, portalUser: { active: true }, client: { archivedAt: null } } });
-  return access > 0;
+  return ownerHasPermission(portalUserId, clientId, "payrollApproval", "approve");
 }
+
+/** The PayrollApprover filter that matches isPayrollApprover (for lists of approvers). */
+export const approverWhere = (clientId: string) => ({
+  clientId,
+  active: true,
+  portalUser: {
+    active: true,
+    access: { some: { clientId, revokedAt: null, canApprovePayroll: true, client: { archivedAt: null } } },
+    businessOwners: { some: { clientId, archivedAt: null } },
+  },
+});
 
 /** Portal logins with access to the business (who could be designated), and current designations. */
 export async function approverCandidates(actor: Actor, clientId: string) {
@@ -76,19 +89,32 @@ export async function approverCandidates(actor: Actor, clientId: string) {
 
 export async function setPayrollApprover(actor: Actor, clientId: string, portalUserId: string, input: { approver: boolean; required: boolean; showEmployeeDetail?: boolean }) {
   await assertApproverManager(actor);
-  if (!(await prisma.portalAccess.count({ where: { portalUserId, clientId, revokedAt: null } }))) throw new ValidationError("That login doesn't have access to this business. Give them portal access first.");
+  const access = await prisma.portalAccess.findFirst({ where: { portalUserId, clientId, revokedAt: null } });
+  if (!access) throw new ValidationError("That login doesn't have access to this business. Give them portal access first.");
+  if (input.approver && !(await prisma.businessOwner.count({ where: { clientId, portalUserId, archivedAt: null } }))) {
+    throw new ValidationError("Only a business owner approves payroll. Add them on the client's Owners card (with this login) first.");
+  }
   const before = await prisma.payrollApprover.findUnique({ where: { clientId_portalUserId: { clientId, portalUserId } } });
   const data = input.approver
     ? { active: true, required: input.required, showEmployeeDetail: input.showEmployeeDetail ?? before?.showEmployeeDetail ?? true, removedAt: null, removedById: null }
     : { active: false, required: false, removedAt: new Date(), removedById: actor.id };
-  const after = await prisma.payrollApprover.upsert({ where: { clientId_portalUserId: { clientId, portalUserId } }, create: { clientId, portalUserId, designatedById: actor.id, ...data }, update: data });
-  await audit(prisma, { actorId: actor.id, action: "payroll.approver_set", entityType: "PayrollApprover", entityId: after.id, clientId, details: { portalUserId, before: before ? { active: before.active, required: before.required, showEmployeeDetail: before.showEmployeeDetail } : null, after: { active: after.active, required: after.required, showEmployeeDetail: after.showEmployeeDetail } } });
+  const after = await prisma.$transaction(async (tx) => {
+    const row = await tx.payrollApprover.upsert({ where: { clientId_portalUserId: { clientId, portalUserId } }, create: { clientId, portalUserId, designatedById: actor.id, ...data }, update: data });
+    // Same switch as the owner permission matrix's "Payroll approval", so the two never disagree.
+    if (access.canApprovePayroll !== input.approver) {
+      await tx.portalAccess.update({ where: { id: access.id }, data: { canApprovePayroll: input.approver } });
+      await audit(tx, { actorId: actor.id, action: "business_owner.permissions_changed", entityType: "PortalAccess", entityId: access.id, clientId, details: { changes: { canApprovePayroll: { from: access.canApprovePayroll, to: input.approver } }, via: "payroll_approvers" } });
+    }
+    return row;
+  });
+  await audit(prisma, { actorId: actor.id, action: "payroll.approver_set", entityType: "PayrollApprover", entityId: after.id, clientId, details: { portalUserId, before: before ? { active: before.active, required: before.required, showEmployeeDetail: before.showEmployeeDetail } : null, after: { active: after.active, required: after.required, showEmployeeDetail: after.showEmployeeDetail }, ownerPermission: { from: access.canApprovePayroll, to: input.approver } } });
   return after;
 }
 
+
 /** Who must approve: the required approvers, or every approver when none is marked required. */
 export async function requiredApprovers(clientId: string, db: Tx | typeof prisma = prisma) {
-  const all = await db.payrollApprover.findMany({ where: { clientId, active: true, portalUser: { active: true, access: { some: { clientId, revokedAt: null } } } }, include: { portalUser: { select: { id: true, name: true, email: true } } } });
+  const all = await db.payrollApprover.findMany({ where: approverWhere(clientId), include: { portalUser: { select: { id: true, name: true, email: true } } } });
   const req = all.filter((a) => a.required);
   return { all, required: req.length ? req : all };
 }
@@ -116,6 +142,10 @@ const smsWindowOpen = (now: Date) => {
  * Which channels an approval request goes to. Default: email, plus text when allowed. A text that
  * isn't allowed (texting switched off, no service-text consent, STOP) falls back to email, with the
  * reason shown to the approver.
+ *
+ * Both channels go through Communication Preferences' canSend() as ESSENTIAL account notices: never
+ * stopped by marketing choices, only by a STOP block or missing service-text consent (texts) or a
+ * bounce, complaint or do-not-contact entry (email). It's checked again right before each send.
  */
 export async function channelsFor(approver: { notifyChannel: string | null }, user: { email: string; phoneNormalized: string | null }) {
   const choice = (approver.notifyChannel as NotifyChannel | null) ?? null;
@@ -125,13 +155,15 @@ export async function channelsFor(approver: { notifyChannel: string | null }, us
     if (!(await clientTextingOn())) smsBlocked = "Text messages from the office are switched off right now.";
     else if (!user.phoneNormalized) smsBlocked = "There's no mobile number on your login.";
     else {
-      const ok = await smsSendAllowed(user.phoneNormalized, "SERVICE");
-      if (!ok.ok) smsBlocked = /STOP/.test(ok.reason ?? "") ? "Your number has opted out of texts (STOP)." : "We don't have your permission to text this number.";
+      const ok = await canSend({ channel: "SMS", address: user.phoneNormalized, category: "ESSENTIAL" });
+      if (!ok.ok) smsBlocked = /STOP/.test(ok.reason) ? "Your number has opted out of texts (STOP)." : /do-not-contact/i.test(ok.reason) ? "Your number is on our do-not-contact list." : "We don't have your permission to text this number.";
     }
   }
   const sms = wantSms && !smsBlocked;
+  const mail = await canSend({ channel: "EMAIL", address: user.email, category: "ESSENTIAL" });
+  const emailBlocked = mail.ok ? null : mail.reason;
   const email = choice === null || choice === "EMAIL" || choice === "BOTH" || (choice === "SMS" && !sms);
-  return { email, sms, choice, fallback: choice === "SMS" && !sms ? smsBlocked : null, smsBlocked };
+  return { email, sms, choice, fallback: choice === "SMS" && !sms ? smsBlocked : null, smsBlocked, emailBlocked };
 }
 
 // --- Links --------------------------------------------------------------------------------
@@ -168,6 +200,10 @@ export async function notifyApprovers(runId: string, now = new Date()) {
     for (const channel of [...(ch.sms ? (["SMS"] as const) : []), ...(ch.email ? (["EMAIL"] as const) : [])]) {
       if (!enabled) {
         await record(channel, "SKIPPED", "Notifications are turned off (NOTIFICATIONS_ENABLED is not true)", null);
+        continue;
+      }
+      if (channel === "EMAIL" && ch.emailBlocked) {
+        await record("EMAIL", "SKIPPED", ch.emailBlocked, null);
         continue;
       }
       const { url, link } = await prisma.$transaction((tx) => createLink(tx, run, a.portalUserId, channel));
@@ -311,7 +347,7 @@ export async function submitPayrollRun(actor: Actor, clientId: string, runId: st
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"payroll-run:" + runId}))`;
     const { run, version } = await loadRun(clientId, runId, tx);
-    if (run.origin === "COETHA" && !(await isReportApprover(actor))) throw new ForbiddenError("This pay run was prepared by Coetha. Only Tabitha can approve Coetha's work.");
+    if (run.origin === "COETHA" && !(await canApproveCoethaWork(actor))) throw new ForbiddenError("This pay run was prepared by Coetha. Only Tabitha can approve Coetha's work.");
     if (LOCKED.has(run.status)) throw new ValidationError("This pay run was already submitted or processed.");
     const { all, required } = await requiredApprovers(clientId, tx);
     if (all.length) {

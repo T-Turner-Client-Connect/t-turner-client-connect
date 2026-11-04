@@ -1,9 +1,9 @@
 import "server-only";
-import type { BusinessAccess, PortalAccess, Prisma } from "@prisma/client";
+import type { BusinessAccess, DocumentCategory, PortalAccess, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ForbiddenError } from "@/lib/auth/actor";
 
-export type Permission = "message" | "upload" | "bookkeeping" | "tax" | "contracts" | "billing";
+export type Permission = "message" | "upload" | "bookkeeping" | "tax" | "contracts" | "billing" | "documents" | "payroll" | "payrollUpload" | "payrollApprove";
 
 const FLAG: Record<Permission, keyof PortalAccess> = {
   message: "canMessage",
@@ -12,6 +12,10 @@ const FLAG: Record<Permission, keyof PortalAccess> = {
   tax: "canViewTax",
   contracts: "canViewContracts",
   billing: "canViewBilling",
+  documents: "canViewDocuments",
+  payroll: "canViewPayroll",
+  payrollUpload: "canUploadPayroll",
+  payrollApprove: "canApprovePayroll",
 };
 
 /**
@@ -44,6 +48,7 @@ export async function effectiveGrantsFor(clientId: string, where: Prisma.PortalA
 /**
  * The single gate for every portal read and write. Throws unless this portal
  * user has an active grant for the client (and the permission, if given).
+ * Read fresh from the database on every call, so a change takes effect at once.
  */
 export async function requireClientAccess(portalUserId: string, clientId: string, permission?: Permission) {
   const row = await prisma.portalAccess.findFirst({
@@ -57,12 +62,54 @@ export async function requireClientAccess(portalUserId: string, clientId: string
   return access;
 }
 
-export function allowedCategories(access: PortalAccess) {
+type CategoryFlags = Pick<PortalAccess, "canViewBookkeeping" | "canViewTax" | "canViewContracts"> & Partial<Pick<PortalAccess, "canViewDocuments" | "canViewPayroll">>;
+
+/**
+ * Document categories a login may list. OWNER_K1 is never here: a K-1 opens only
+ * through `portalDocumentScope` for its owner (or an owner Tabitha shared it with).
+ * Business documents and payroll default to on (ordinary client logins); a
+ * business owner's login has them off until granted.
+ */
+export function allowedCategories(access: CategoryFlags): DocumentCategory[] {
+  const docs = access.canViewDocuments !== false;
   return [
     ...(access.canViewBookkeeping ? (["BOOKKEEPING"] as const) : []),
     ...(access.canViewTax ? (["TAXES"] as const) : []),
     ...(access.canViewContracts ? (["CONTRACTS"] as const) : []),
-    "CLIENT_UPLOADS" as const,
-    "OTHER" as const,
+    ...(access.canViewPayroll !== false ? (["PAYROLL"] as const) : []),
+    ...(docs ? (["CLIENT_UPLOADS", "OTHER"] as const) : []),
   ];
+}
+
+/** Where a K-1 is visible to this login: it's their own, or Tabitha shared that owner's K-1s with them. */
+export function k1VisibleWhere(portalUserId: string): Prisma.DocumentWhereInput {
+  return {
+    category: "OWNER_K1",
+    businessOwner: {
+      archivedAt: null,
+      OR: [{ portalUserId }, { k1SharedWith: { some: { revokedAt: null, viewer: { portalUserId, archivedAt: null } } } }],
+    },
+  };
+}
+
+/**
+ * Every document this login may see for one account, as one filter: the allowed
+ * categories, plus their own uploads (always), plus K-1s they may open. With no
+ * viewer (staff preview) it is just the categories.
+ */
+export function portalDocumentScope(access: CategoryFlags, portalUserId: string | null): Prisma.DocumentWhereInput {
+  const categories = allowedCategories(access);
+  if (!portalUserId) return { category: { in: categories } };
+  return {
+    OR: [
+      { category: { in: categories } },
+      { category: "CLIENT_UPLOADS", uploadedByPortalId: portalUserId },
+      k1VisibleWhere(portalUserId),
+    ],
+  };
+}
+
+/** Message threads a login may see: shared threads, and private threads that are theirs. */
+export function conversationScope(portalUserId: string | null): Prisma.ConversationWhereInput {
+  return portalUserId ? { OR: [{ privateToPortalUserId: null }, { privateToPortalUserId: portalUserId }] } : { privateToPortalUserId: null };
 }
