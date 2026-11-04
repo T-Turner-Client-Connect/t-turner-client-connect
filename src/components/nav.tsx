@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
 import {
@@ -27,6 +27,21 @@ import {
   MailWarning,
   FileCheck2,
   HeartHandshake,
+  ArrowLeft,
+  LayoutGrid,
+  Sparkles,
+  Building2,
+  BookOpen,
+  UsersRound,
+  ClipboardList,
+  FileBadge,
+  FileSpreadsheet,
+  ReceiptText,
+  FileBarChart,
+  FolderOpen,
+  MessageSquareText,
+  History,
+  ChevronRight,
 } from "lucide-react";
 
 const LINKS = [
@@ -74,8 +89,71 @@ function OwnerLink({ owner, onNavigate }: { owner: OwnerNav; onNavigate?: () => 
   );
 }
 
+/** The bookkeeping client's own menu, shown in place of the main menu inside /bookkeeping/<client>. */
+export function workspaceClientId(pathname: string) {
+  const m = /^\/bookkeeping\/([^/]+)/.exec(pathname);
+  return m && !["new", "square-billing"].includes(m[1]) ? m[1] : null;
+}
+
+function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => void }) {
+  const pathname = usePathname();
+  const tab = useSearchParams().get("tab");
+  const base = `/bookkeeping/${id}`;
+  const items: { href: string; label: string; icon: typeof Users; active: boolean }[] = [
+    { href: base, label: "Client Overview", icon: LayoutGrid, active: pathname === base },
+    { href: `${base}/close#coetha`, label: "Coetha AI", icon: Sparkles, active: false },
+    { href: `${base}/books?tab=bank`, label: "Banking & Reconciliation", icon: Building2, active: pathname === `${base}/books` && tab === "bank" },
+    { href: `${base}/books?tab=journal`, label: "General Ledger", icon: BookOpen, active: pathname === `${base}/books` && (tab === "journal" || tab === "accounts" || !tab || tab === "overview") },
+    { href: `${base}/payroll`, label: "Payroll & ADP", icon: UsersRound, active: pathname === `${base}/payroll` },
+    { href: `/clients/${id}?tab=taxes`, label: "Taxes & Compliance", icon: ClipboardList, active: false },
+    { href: `${base}/licenses`, label: "Business Licenses", icon: FileBadge, active: pathname === `${base}/licenses` },
+    { href: `${base}/year-end`, label: "W-2 / 1099 Center", icon: FileSpreadsheet, active: pathname === `${base}/year-end` },
+    { href: `${base}/books?tab=invoicing`, label: "Invoicing & Payments", icon: ReceiptText, active: pathname === `${base}/books` && tab === "invoicing" },
+    { href: `${base}/books?tab=reports`, label: "Financial Statements", icon: FileBarChart, active: pathname === `${base}/books` && tab === "reports" },
+    { href: `/clients/${id}?tab=documents`, label: "Documents", icon: FolderOpen, active: false },
+    { href: `/clients/${id}?tab=messages`, label: "Communication", icon: MessageSquareText, active: false },
+    { href: `${base}/close`, label: "History & Reports", icon: History, active: pathname === `${base}/close` || pathname === `${base}/profile` },
+  ];
+  return (
+    <div className="space-y-4" data-testid="workspace-nav">
+      <Link href="/bookkeeping" onClick={onNavigate} className="flex items-center gap-3 rounded-lg px-3 py-2 text-[15px] font-medium text-navy-100 hover:bg-white/5 hover:text-white">
+        <ArrowLeft aria-hidden className="size-[18px]" /> Back to Clients
+      </Link>
+      <ul className="space-y-0.5">
+        {items.map(({ href, label, icon: Icon, active }) => (
+          <li key={label}>
+            <Link
+              href={href}
+              onClick={onNavigate}
+              aria-current={active ? "page" : undefined}
+              className={clsx(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-[15px] font-medium",
+                active ? "bg-gradient-to-b from-gold-300 to-gold-500 font-semibold text-navy-950 shadow" : "border-b border-white/5 text-navy-100 hover:bg-white/5 hover:text-white",
+              )}
+            >
+              <Icon aria-hidden className={clsx("size-[18px]", active ? "text-navy-950" : "text-navy-100/80")} />
+              <span className="flex-1">{label}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      <Link href={`${base}/close#coetha`} onClick={onNavigate} className="flex items-center gap-3 rounded-xl border border-gold-500 bg-navy-950/60 px-3 py-3 text-white shadow-[0_0_18px_-6px_var(--color-gold-500)] hover:bg-navy-900" data-testid="coetha-nav-card">
+        <Sparkles aria-hidden className="size-8 shrink-0 text-gold-400" />
+        <span className="min-w-0 flex-1 leading-tight">
+          <span className="block font-serif text-lg font-bold">Coetha</span>
+          <span className="block text-xs text-navy-100">Senior Accountant</span>
+          <span className="mt-1 block text-[11px] text-navy-100/80">Ask Coetha anything about this client</span>
+        </span>
+        <ChevronRight aria-hidden className="size-4 text-gold-400" />
+      </Link>
+    </div>
+  );
+}
+
 function NavLinks({ onNavigate, unread, owner }: { onNavigate?: () => void; unread: number; owner: OwnerNav }) {
   const pathname = usePathname();
+  const ws = workspaceClientId(pathname);
+  if (ws) return <WorkspaceLinks id={ws} onNavigate={onNavigate} />;
   return (
     <>
     <ul className="space-y-0.5">
