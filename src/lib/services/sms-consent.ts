@@ -87,6 +87,8 @@ export async function applySmsConsent(tx: Tx, phone: string, category: SmsConsen
         contactId: p.contactId,
         kind: KIND[category],
         status,
+        // The app clock, which currentConsent() compares against (not the database default).
+        effectiveAt: new Date(),
         scope: meta.consentText ?? null,
         source: meta.label ?? SOURCE_LABEL[meta.source] ?? "Staff",
         evidenceNote: [meta.submissionId && `Submission ${meta.submissionId}`, status === "GRANTED" && `Wording ${SMS_CONSENT_VERSION}`, meta.note].filter(Boolean).join(" · ") || null,
