@@ -71,13 +71,13 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
             <tbody className="divide-y divide-ivory-200">
               {rows.map((r) => (
                 <tr key={r.c.id} className={clsx(focus === r.c.id && "bg-gold-50")}>
-                  <td className="py-2 pr-2 font-semibold text-navy-900"><Link className="underline decoration-gold-500" href={`/owner/coetha-review?client=${r.c.id}`}>{r.name}</Link></td>
-                  <td className="pr-2 text-xs text-navy-800">{isTaxClassification(r.c.bookkeepingProfile?.taxClassification) ? TAX_CLASSIFICATIONS[r.c.bookkeepingProfile!.taxClassification as keyof typeof TAX_CLASSIFICATIONS].label.split(" — ")[0] : <span className="text-red-700">Not set</span>}{r.classification ? " · change suggested" : ""}</td>
+                  <td className="py-2 pr-2 font-semibold text-navy-900"><Link className="underline decoration-gold-500" href={`/bookkeeping/${r.c.id}`} data-testid="review-client-link">{r.name}</Link></td>
+                  <td className="pr-2 text-xs text-navy-800">{isTaxClassification(r.c.bookkeepingProfile?.taxClassification) ? TAX_CLASSIFICATIONS[r.c.bookkeepingProfile!.taxClassification as keyof typeof TAX_CLASSIFICATIONS].label.split(" — ")[0] : <Link className="text-red-700 underline" href={`/bookkeeping/${r.c.id}/profile`}>Not set</Link>}{r.classification ? " · change suggested" : ""}</td>
                   <td className="pr-2 text-center">{r.findings || "—"}</td>
                   <td className="pr-2 text-center">{r.drafts || "—"}</td>
                   <td className="pr-2 text-center">{r.requestDrafts ? `${r.requestDrafts} draft` : ""}{r.requestDrafts && r.requestsOpen ? " · " : ""}{r.requestsOpen ? `${r.requestsOpen} sent` : !r.requestDrafts ? "—" : ""}</td>
                   <td className="pr-2 text-center">{r.reconReady ? `${r.reconReady} ready` : ""}{r.reconReady && r.reconIssues ? " · " : ""}{r.reconIssues ? <span className="text-red-700">{r.reconIssues} issue{r.reconIssues === 1 ? "" : "s"}</span> : !r.reconReady ? "—" : ""}</td>
-                  <td className="whitespace-nowrap text-right text-xs"><Link className="font-semibold underline" href={`/bookkeeping/${r.c.id}/coetha`}>Open</Link> · <Link className="underline" href={`/bookkeeping/${r.c.id}`}>Month</Link></td>
+                  <td className="whitespace-nowrap text-right text-xs"><Link className="font-semibold underline" href={`/bookkeeping/${r.c.id}/coetha`}>Coetha</Link> · <Link className="underline" href={`/owner/coetha-review?client=${r.c.id}#review-findings`}>Findings</Link></td>
                 </tr>
               ))}
               {!rows.length && <tr><td colSpan={7} className="py-3 text-slate-600">No bookkeeping clients yet.</td></tr>}
@@ -101,7 +101,7 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
         )}
       </section>
 
-      <section className={clsx(card, "p-4 sm:p-5")} data-testid="review-findings">
+      <section id="review-findings" className={clsx(card, "scroll-mt-4 p-4 sm:p-5")} data-testid="review-findings">
         <h2 className={h2}><Scale className="size-5 text-gold-600" aria-hidden /> Findings awaiting you {focus && <span className="font-sans text-sm font-normal text-navy-800">— {nameOf.get(focus)} · <Link className="underline" href="/owner/coetha-review">all clients</Link></span>}</h2>
         {!shown.length ? <p className="mt-2 text-sm text-slate-600">Nothing waiting.</p> : (
           <ul className="mt-3 space-y-3">
