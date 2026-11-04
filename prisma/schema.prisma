@@ -282,6 +282,8 @@ model Client {
   clientNotes           ClientNote[]
   tasks                 Task[]
   consentRecords        ConsentRecord[]
+  commPrefs             CommunicationPreference[]
+  commPrefChanges       CommunicationPreferenceChange[]
   auditLogs             AuditLog[]
   campaignInclusions    CampaignInclusion[]
   campaignExclusions    CampaignExclusion[]
@@ -319,8 +321,8 @@ model Client {
   taxPrepCases          TaxPrepCase[]
   questionnaireRequests QuestionnaireRequest[]
   // A person (Personal record) linked to the businesses they own, and back.
-  ownsBusinesses        ClientRelationship[]           @relation("RelPerson")
-  ownedBy               ClientRelationship[]           @relation("RelBusiness")
+  ownsBusinesses        ClientRelationship[]            @relation("RelPerson")
+  ownedBy               ClientRelationship[]            @relation("RelBusiness")
   noticeCases           NoticeCase[]
   businessInfoChanges   BusinessInfoChange[]
   taxYearProgress       TaxYearProgress[]
@@ -352,6 +354,7 @@ model Contact {
 
   consentRecords ConsentRecord[]
   portalUser     PortalUser?
+  commPrefs      CommunicationPreference[]
 
   @@index([clientId])
   @@index([emailNormalized])
@@ -557,6 +560,9 @@ enum CampaignPurpose {
   TAX_PREP_PROMO
   // Promotion of other services (bookkeeping, payroll, nonprofit, ...).
   OTHER_SERVICES_PROMO
+  // Nonessential news: office hours, holiday closures, general announcements.
+  // Not promotional, but honors the client's "General business updates" choice.
+  GENERAL_UPDATE
 }
 
 enum CampaignChannel {
@@ -592,9 +598,12 @@ model Campaign {
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
+  sentAt DateTime?
+
   groups     CampaignGroup[]
   inclusions CampaignInclusion[]
   exclusions CampaignExclusion[]
+  messages   CampaignMessage[]
 }
 
 model CampaignGroup {
@@ -4382,4 +4391,90 @@ model YearEndFiling {
   updatedAt   DateTime @updatedAt
 
   @@unique([clientId, taxYear])
+}
+
+// ===========================================================================
+// CAMPAIGN DELIVERY
+// ===========================================================================
+//
+// One row per address per channel per campaign, created at send time after
+// permissions are re-checked. The unique key means a retry or an overlapping
+// run can never send the same campaign to the same address twice.
+
+enum CampaignMessageStatus {
+  SKIPPED
+  SENDING
+  PROVIDER_ACCEPTED
+  FAILED
+}
+
+model CampaignMessage {
+  id          String                @id @default(cuid())
+  campaignId  String
+  campaign    Campaign              @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  channel     Channel
+  address     String
+  clientId    String
+  contactId   String?
+  status      CampaignMessageStatus
+  skipReason  String?
+  providerId  String?
+  errorDetail String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@unique([campaignId, channel, address])
+  @@index([campaignId, status])
+}
+
+// ===========================================================================
+// COMMUNICATION PREFERENCES
+// ===========================================================================
+//
+// The client's master communication choices. Whether a channel may be used is
+// still decided by the consent ledger (ConsentRecord / SmsConsentEvent) and
+// the Suppression table, which every change writes through to; this row
+// holds the one choice that has no ledger of its own (general business
+// updates). One row per person: the client's primary details (personKey
+// "primary") or one additional contact (personKey = contact id).
+
+model CommunicationPreference {
+  id             String   @id @default(cuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contactId      String?
+  contact        Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  personKey      String
+  generalUpdates Boolean  @default(true)
+  updatedSource  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([clientId, personKey])
+}
+
+enum CommPrefCategory {
+  PROMO_EMAIL
+  PROMO_SMS
+  GENERAL_UPDATES
+}
+
+// History: who changed what, when, and how (portal, email link, one-click
+// unsubscribe, STOP/START reply, staff on the client's request).
+model CommunicationPreferenceChange {
+  id           String           @id @default(cuid())
+  clientId     String
+  client       Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contactId    String?
+  category     CommPrefCategory
+  subscribed   Boolean
+  // PORTAL | EMAIL_LINK | ONE_CLICK | STOP_REPLY | START_REPLY | STAFF
+  source       String
+  address      String?
+  portalUserId String?
+  actorId      String?
+  note         String?
+  createdAt    DateTime         @default(now())
+
+  @@index([clientId, createdAt])
 }

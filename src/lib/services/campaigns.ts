@@ -7,7 +7,7 @@ import type { Actor } from "@/lib/auth/actor";
 import { channelsFor, resolveRecipients, type AudienceClient } from "@/lib/campaigns/recipients";
 import { activeSuppressionsFor, ValidationError } from "./clients";
 
-const PURPOSES = ["SERVICE", "TAX_PREP_PROMO", "OTHER_SERVICES_PROMO"] as const;
+const PURPOSES = ["SERVICE", "TAX_PREP_PROMO", "OTHER_SERVICES_PROMO", "GENERAL_UPDATE"] as const;
 const CHANNELS = ["EMAIL", "SMS", "BOTH"] as const;
 
 const draftSchema = z.object({
@@ -157,8 +157,9 @@ export async function campaignRecipients(campaignId: string, now = new Date()) {
         select: { contactId: true, kind: true, status: true, effectiveAt: true, createdAt: true, expiresAt: true, reviewedAt: true, evidenceFileId: true },
       },
       contacts: { select: { id: true, name: true, email: true, emailNormalized: true, phoneNormalized: true } },
+      commPrefs: { where: { generalUpdates: false }, select: { contactId: true } },
     },
-  });
+  }).then((rows) => rows.map(({ commPrefs, ...c }) => ({ ...c, generalUpdatesOff: commPrefs.map((p) => p.contactId) })));
   const pairs = clients.flatMap((c) =>
     channelsFor(campaign.channel).flatMap((channel) =>
       [c.emailNormalized, c.phoneNormalized, ...c.contacts.flatMap((x) => [x.emailNormalized, x.phoneNormalized])]
@@ -217,11 +218,23 @@ export async function liveSendBlockers(actor: Actor, campaignId: string): Promis
   if (!c.body.trim() && !c.smsBody?.trim()) blockers.push("Write the message.");
   if (c.purpose !== "SERVICE" && !process.env.BUSINESS_MAILING_ADDRESS) blockers.push("Promotional email needs BUSINESS_MAILING_ADDRESS for the footer.");
   if (actor.role !== "ADMIN") blockers.push("An Admin must give the final send.");
-  blockers.push("Campaign delivery (queue, delivery webhooks, unsubscribe handling) is enabled in the messaging stage.");
+  if (c.flyerId) blockers.push("Flyers can't be delivered yet (there is no public flyer link). Remove the flyer, or put its details in the message.");
+  if (process.env.CAMPAIGN_SENDING_ENABLED !== "true") blockers.push("Campaign delivery is built (unsubscribe links, STOP handling, preference checks) but stays off until the owner turns it on (CAMPAIGN_SENDING_ENABLED).");
+  if (c.status !== "DRAFT") blockers.push("This campaign has already been scheduled or sent.");
   return blockers;
 }
 
-export async function sendOrSchedule(actor: Actor, campaignId: string): Promise<never> {
-  const blockers = await liveSendBlockers(actor, campaignId);
-  throw new ValidationError(`Not sent. ${blockers[0]}`);
+/**
+ * News & Updates → "Send as an email/text update": starts a General business
+ * update campaign draft from an announcement. Staff choose the audience and
+ * send it like any campaign; it skips everyone who turned off general updates.
+ */
+export async function campaignFromAnnouncement(actor: Actor, announcementId: string) {
+  const a = await prisma.announcement.findUnique({ where: { id: announcementId } });
+  if (!a || a.clientId) throw new ValidationError("Announcement not found.");
+  return prisma.$transaction(async (tx) => {
+    const c = await tx.campaign.create({ data: { title: a.title.slice(0, 150), purpose: "GENERAL_UPDATE", channel: "EMAIL", emailSubject: a.title.slice(0, 200), body: a.body, createdById: actor.id } });
+    await audit(tx, { actorId: actor.id, action: "campaign.created_from_announcement", entityType: "Campaign", entityId: c.id, details: { announcementId } });
+    return c;
+  });
 }

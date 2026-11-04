@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
-import { Bell, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, Settings, ShieldCheck, Upload, Users, X } from "lucide-react";
+import { Bell, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, Settings, ShieldCheck, SlidersHorizontal, Upload, Users, X } from "lucide-react";
 
 const MAIN = [
   ["/client", "Home", Home],
@@ -27,8 +27,12 @@ const MORE = [
   ["/client/referrals", "Referrals", Users],
   ["/client/contracts", "Contracts & Signatures", PenLine],
   ["/client/bookkeeping", "Bookkeeping", Landmark],
+  ["/client/account#communication-preferences", "Communication Preferences", SlidersHorizontal],
   ["/client/account", "Account Settings", Settings],
 ] as const;
+
+// Keeps ?account= ahead of a #section anchor.
+const withQuery = (href: string, q: string) => (href.includes("#") ? href.replace("#", `${q}#`) : `${href}${q}`);
 
 function NavLinks({ q, pathname, unread, onNavigate, business }: { q: string; pathname: string; unread: number; onNavigate?: () => void; business: boolean }) {
   const isActive = (href: string) =>
@@ -55,7 +59,7 @@ function NavLinks({ q, pathname, unread, onNavigate, business }: { q: string; pa
       {MORE.filter(([href]) => business || href !== "/client/bookkeeping").map(([href, label, Icon]) => (
         <Link
           key={href}
-          href={`${href}${q}`}
+          href={withQuery(href, q)}
           onClick={onNavigate}
           aria-current={isActive(href) ? "page" : undefined}
           className={clsx("flex items-center gap-3 rounded-lg px-3 py-1.5 text-[13px]", isActive(href) ? "bg-white/15 font-semibold text-white" : "text-navy-100/80 hover:bg-white/10 hover:text-white")}

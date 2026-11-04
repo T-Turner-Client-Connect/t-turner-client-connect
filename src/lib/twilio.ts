@@ -1,6 +1,8 @@
 import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { appUrl } from "@/lib/integrations";
+import { prisma } from "@/lib/prisma";
+import { blockNumber, smsBlock, SMS_BLOCKED_TEXT, TWILIO_UNSUBSCRIBED } from "@/lib/sms-block";
 
 /**
  * Twilio request validation: HMAC-SHA1 (auth token) over the full public URL
@@ -76,8 +78,12 @@ export async function fetchTwilioMessage(messageSid: string): Promise<{ ok: true
   }
 }
 
-/** Sends one text. Returns the Twilio Message SID when Twilio accepts it. */
-export async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; detail: string }> {
+/**
+ * Sends one text. Returns the Twilio Message SID when Twilio accepts it.
+ * Never sends to a number that replied STOP (blocked: true), and a Twilio
+ * 21610 "unsubscribed recipient" error blocks the number for every sender.
+ */
+export async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; detail: string; blocked?: boolean }> {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   const from: Record<string, string> | null = process.env.TWILIO_MESSAGING_SERVICE_SID
@@ -85,6 +91,7 @@ export async function sendSms(to: string, body: string): Promise<{ ok: boolean; 
     : process.env.TWILIO_FROM_NUMBER
       ? { From: process.env.TWILIO_FROM_NUMBER }
       : null;
+  if (await smsBlock(prisma, to)) return { ok: false, blocked: true, detail: SMS_BLOCKED_TEXT };
   if (!sid || !token || !from) return { ok: false, detail: "Text provider (Twilio) not set up" };
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
@@ -93,6 +100,10 @@ export async function sendSms(to: string, body: string): Promise<{ ok: boolean; 
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { code?: number };
+    if (Number(err.code) === TWILIO_UNSUBSCRIBED) {
+      await blockNumber(prisma, to, "Twilio error 21610 (recipient replied STOP)");
+      return { ok: false, blocked: true, detail: `${SMS_BLOCKED_TEXT} (Twilio error 21610)` };
+    }
     return { ok: false, detail: `Twilio rejected the message (HTTP ${res.status}${err.code ? `, code ${err.code}` : ""})` };
   }
   const json = (await res.json()) as { sid?: string };

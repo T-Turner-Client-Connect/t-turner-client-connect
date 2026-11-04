@@ -373,7 +373,7 @@ export default async function SettingsPage() {
               <div className="mb-4 space-y-3 rounded-lg bg-ivory-50 p-3 text-sm" data-testid="twilio-card">
                 <p className="font-semibold">
                   Text messages (Twilio): {configured ? <Badge tone="green">Connected</Badge> : <Badge tone="gray">Not set up</Badge>}{" "}
-                  <span className="font-normal text-slate-600">Bulk campaign texting stays off (LIVE_SENDING_ENABLED).</span>
+                  <span className="font-normal text-slate-600">Bulk campaigns stay off until CAMPAIGN_SENDING_ENABLED and LIVE_SENDING_ENABLED are on. A STOP reply blocks every text to that number until START.</span>
                 </p>
                 <div>
                   <p className="font-semibold">Webhook addresses — Twilio Console → Messaging → Services → your service → Integration</p>

@@ -19,6 +19,7 @@ import { portalUploadDocument } from "@/lib/services/documents";
 import { markClientRead, portalSendMessage } from "@/lib/services/messaging";
 import { ValidationError } from "@/lib/services/clients";
 import { setPortalSmsConsent } from "@/lib/services/sms-consent";
+import { portalPeople, setCommunicationPreferences } from "@/lib/services/comm-prefs";
 import { sendTransactionalEmail } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
 
@@ -169,6 +170,28 @@ export async function portalPrefsAction(_prev: ActionState, fd: FormData): Promi
     const updated = await prisma.portalUser.findUniqueOrThrow({ where: { id: user.id } });
     await setPortalSmsConsent(user.id, updated.phoneNormalized, notifyBySms);
     return "Preferences saved.";
+  });
+}
+
+/**
+ * Communication Preferences (portal Account page). Saved to the client's
+ * master profile and written through to the consent ledger and suppression
+ * list, so the email and text senders honor it on their very next send.
+ */
+export async function portalCommPrefsAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requirePortalUser();
+  return run(async () => {
+    const { targets, emails, phones } = await portalPeople(user.id);
+    await setCommunicationPreferences({
+      targets,
+      emails,
+      phones,
+      changes: { promoSms: fd.get("promoSms") === "on", promoEmail: fd.get("promoEmail") === "on", generalUpdates: fd.get("generalUpdates") === "on" },
+      source: "PORTAL",
+      portalUserId: user.id,
+    });
+    revalidatePath("/client/account");
+    return "Your communication preferences have been saved. Changes take effect right away.";
   });
 }
 

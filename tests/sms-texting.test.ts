@@ -27,7 +27,7 @@ beforeEach(async () => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
     if (!String(url).startsWith("https://api.twilio.com/")) throw new Error(`Unexpected network call: ${url}`);
     const p = new URLSearchParams(String(init.body));
-    if (!twilioUp) return new Response(JSON.stringify({ code: 21610 }), { status: 400 });
+    if (!twilioUp) return new Response(JSON.stringify({ code: 21211 }), { status: 400 });
     sent.push({ to: p.get("To")!, body: p.get("Body")! });
     return new Response(JSON.stringify({ sid: `SMsim${++sidN}` }), { status: 201 });
   }));
@@ -79,7 +79,7 @@ describe("client texting switch", () => {
 });
 
 describe("staff → client texts", () => {
-  it("refuses numbers without service-text consent, and after STOP", async () => {
+  it("refuses numbers without service-text consent, and after STOP until the client replies START", async () => {
     const { tabitha, daria, theo } = await setup();
     await setClientTexting(tabitha, true);
     await expect(text(daria, theo.id, "Hi")).rejects.toThrow(/consent|permission/i);
@@ -88,10 +88,11 @@ describe("staff → client texts", () => {
     expect(sent).toHaveLength(1);
     await handleInboundSms({ MessageSid: "SMin-stop", From: "+15550100121", Body: "STOP" });
     await expect(text(daria, theo.id, "Another one")).rejects.toThrow(/Can't/);
-    // START alone doesn't re-grant consent.
-    await handleInboundSms({ MessageSid: "SMin-start", From: "+15550100121", Body: "START" });
-    await expect(text(daria, theo.id, "Another one")).rejects.toThrow(/Can't/);
     expect(sent).toHaveLength(1);
+    // START lifts the block and restores the service consent they had before STOP.
+    await handleInboundSms({ MessageSid: "SMin-start", From: "+15550100121", Body: "START" });
+    await text(daria, theo.id, "Another one");
+    expect(sent).toHaveLength(2);
   });
 
   it("sends, records Twilio's ID, then the delivery receipt sets Delivered or Not delivered", async () => {
@@ -159,7 +160,7 @@ describe("client → staff texts", () => {
     expect(after.at(-2)).toMatchObject({ channel: "SMS", direction: "INBOUND", body: "STOP" });
     expect(after.at(-1)).toMatchObject({ channel: "INTERNAL_NOTE", body: expect.stringMatching(/blocked/) });
     await handleInboundSms({ MessageSid: "SMin3", From: "+15550100121", Body: "START" });
-    expect((await prisma.message.findFirstOrThrow({ where: { conversationId: out.conversationId, channel: "INTERNAL_NOTE" }, orderBy: { createdAt: "desc" } })).body).toMatch(/new opt-in/);
+    expect((await prisma.message.findFirstOrThrow({ where: { conversationId: out.conversationId, channel: "INTERNAL_NOTE" }, orderBy: { createdAt: "desc" } })).body).toMatch(/block is lifted/);
   });
 
   it("never auto-attaches texts from unknown or shared numbers; an admin attaches them once, audited", async () => {

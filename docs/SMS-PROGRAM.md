@@ -28,10 +28,22 @@ TTurner & Associates Group, LLC". Business details live in `src/lib/business.ts`
 - **Every text is checked on the server right before sending**: the category must be GRANTED and the
   number must not be opted out. Portal notifications need service consent; campaigns check service vs.
   marketing according to the campaign's purpose.
-- **STOP** (STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT, REVOKE, OPTOUT): the number is opted out of
-  all categories and added to the do-not-contact list. Staff can't override it. **START** is logged but
-  does not restart texts. As the Terms say, people opt in again through the consent form, which then
-  lifts the block. **HELP** returns the help message.
+- **STOP** (STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT, REVOKE, OPTOUT): the number is blocked for
+  **every** sender — service, appointment, billing, security and promotional texts — its text consent
+  is withdrawn, and promotional texts show as off in Communication Preferences. This matches Twilio
+  Advanced Opt-Out and the carriers, which refuse every message to the number from our sender after
+  STOP (Twilio error 21610). `sendSms` itself refuses blocked numbers, and a 21610 from Twilio (on send
+  or in a status callback) blocks the number too. Staff can't override it; email and the portal remain
+  the fallback for essential notices.
+- **START / UNSTOP** lifts the STOP block and restores exactly the text categories that were agreed to
+  immediately before that STOP (Twilio lifts its own block at the same time). A staff do-not-contact
+  entry is not lifted by a text. **HELP** returns the help message.
+- Email: promotional and general-update emails carry a signed unsubscribe link (`/unsubscribe/<token>`,
+  confirmation page, no sign-in) and RFC 8058 one-click headers (`List-Unsubscribe` +
+  `List-Unsubscribe-Post`, POST `/api/unsubscribe/<token>`). Essential emails are never stopped by a
+  marketing unsubscribe — only by a hard bounce, spam complaint or do-not-contact entry.
+- Every sender asks `canSend(channel, address, category)` (src/lib/services/comm-prefs.ts) right before
+  sending; categories are ESSENTIAL, PROMOTIONAL and GENERAL_UPDATE.
 - Incoming texts from a number belonging to exactly one client go into that client's Conversations;
   others are listed under Settings → SMS consent & incoming texts.
 - Webhooks only accept requests carrying a valid Twilio signature. Delivery receipts update each
@@ -46,7 +58,8 @@ TTurner & Associates Group, LLC". Business details live in `src/lib/business.ts`
    attached to each message automatically.
 2. **Messaging Service** → Opt-Out Management (**Advanced Opt-Out**). Keep it on and set:
    - HELP reply: `TTurner & Associates Group (TTurner Client Connect): for help call 205-659-5448. Msg frequency varies. Msg & data rates may apply. Reply STOP to unsubscribe.`
-   - STOP reply: `TTurner & Associates Group: You are unsubscribed and will receive no further messages. To resume, opt in again at our SMS consent page.`
+   - STOP reply: `TTurner & Associates Group: You are unsubscribed and will receive no further text messages. Reply START to resume. Essential account notices will still come by email and in your portal.`
+   - START reply: `TTurner & Associates Group: You are resubscribed to the text messages you had agreed to. Msg frequency varies. Msg & data rates may apply. Reply STOP to unsubscribe, HELP for help.`
    Leave `SMS_KEYWORD_REPLIES=twilio` so the app doesn't send a second reply.
 3. Netlify variables: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID`, `APP_URL`
    (must be the exact public address Twilio calls; the webhook signature depends on it).

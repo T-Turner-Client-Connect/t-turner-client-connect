@@ -92,13 +92,16 @@ describe("STOP / HELP / START and Twilio webhooks", () => {
     await setAudience(staff, campaign.id, { groupIds: [], clientIds: [avery.id] });
     expect((await campaignRecipients(campaign.id)).excluded[0].reason).toMatch(/STOP/);
 
-    // START alone does not re-subscribe (Terms: opt in again on the form).
-    await handleInboundSms({ MessageSid: "SM101", From: "+15550100101", Body: "START" });
-    expect((await smsSendAllowed(PHONE, "SERVICE")).ok).toBe(false);
     // Staff can't override a STOP.
     await expect(recordConsent(staff, avery.id, { kind: "SMS_SERVICE", status: "GRANTED", source: "Phone call" })).rejects.toThrow(/STOP/);
     // A new form opt-in does.
     await form({ service: true });
+    expect((await smsSendAllowed(PHONE, "SERVICE")).ok).toBe(true);
+    expect((await smsSendAllowed(PHONE, "MARKETING")).ok).toBe(false);
+    // So does START, restoring exactly what was agreed right before that STOP.
+    await handleInboundSms({ MessageSid: "SM102", From: "+15550100101", Body: "STOP" });
+    expect((await smsSendAllowed(PHONE, "SERVICE")).ok).toBe(false);
+    await handleInboundSms({ MessageSid: "SM101", From: "+15550100101", Body: "START" });
     expect((await smsSendAllowed(PHONE, "SERVICE")).ok).toBe(true);
     expect((await smsSendAllowed(PHONE, "MARKETING")).ok).toBe(false);
   });

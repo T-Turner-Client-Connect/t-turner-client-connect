@@ -5,6 +5,7 @@ import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { sendEmail } from "@/lib/email";
+import { canSend } from "./comm-prefs";
 import { appUrl } from "@/lib/integrations";
 import { STATES } from "@/lib/resources/catalog";
 import { officeToday, daysBetween } from "@/lib/tax/deadlines";
@@ -354,7 +355,7 @@ async function notifyRelease(fileId: string, resend: boolean): Promise<ReleaseRe
   const r: ReleaseResult = { sent: 0, failed: 0, skipped: 0 };
   for (const a of access) {
     const u = a.portalUser;
-    if (!u.active || !u.passwordHash || !u.notifyByEmail) {
+    if (!u.active || !u.passwordHash || !u.notifyByEmail || !(await canSend({ channel: "EMAIL", address: u.email, category: "ESSENTIAL" })).ok) {
       r.skipped++;
       continue;
     }
