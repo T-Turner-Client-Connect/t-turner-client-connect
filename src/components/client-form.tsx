@@ -15,6 +15,7 @@ export function ClientForm({
   cancelHref,
   spouseYear = currentTaxYear(),
   spouseNeeded = false,
+  businessReturn = false,
 }: {
   action: (prev: ActionState, fd: FormData) => Promise<ActionState>;
   client?: Client;
@@ -25,6 +26,8 @@ export function ClientForm({
   // The current tax year and whether a spouse is needed for it (never inferred from a spouse saved earlier).
   spouseYear?: number;
   spouseNeeded?: boolean;
+  // A business return (1065, 1120-S, ...) for that year: no spouse box at all.
+  businessReturn?: boolean;
 }) {
   const v = (k: keyof Client) => (client?.[k] as string | null | undefined) ?? "";
   const known = new Set<string>(CLIENT_SERVICE_OPTIONS);
@@ -42,13 +45,6 @@ export function ClientForm({
         <Field label="Email"><input className="input" type="email" name="email" defaultValue={v("email")} autoComplete="off" /></Field>
         <Field label="Mobile phone" hint="10-digit US number, or international starting with +"><input className="input" type="tel" name="phone" defaultValue={v("phone")} autoComplete="off" /></Field>
       </section>
-      <SpouseSection
-        year={spouseYear}
-        initialOpen={spouseNeeded}
-        initialType={client?.clientType ?? "INDIVIDUAL"}
-        savedEarlier={!!(client?.spouseFirstName || client?.spouseLastName)}
-        values={{ spouseFirstName: v("spouseFirstName"), spouseMiddleName: v("spouseMiddleName"), spouseLastName: v("spouseLastName"), spouseEmail: v("spouseEmail"), spousePhone: v("spousePhone") }}
-      />
       <section className="grid gap-4 sm:grid-cols-6">
         <Field label="Mailing address" className="sm:col-span-6"><input className="input" name="addressLine1" defaultValue={v("addressLine1")} autoComplete="off" /></Field>
         <Field label="Address line 2" className="sm:col-span-6"><input className="input" name="addressLine2" defaultValue={v("addressLine2")} autoComplete="off" /></Field>
@@ -56,6 +52,15 @@ export function ClientForm({
         <Field label="State" className="sm:col-span-1"><input className="input" name="state" maxLength={2} defaultValue={v("state")} autoComplete="off" /></Field>
         <Field label="ZIP" className="sm:col-span-2"><input className="input" name="postalCode" defaultValue={v("postalCode")} autoComplete="off" /></Field>
       </section>
+      {/* Collapsed by default, so the mailing address follows the primary contact info directly. */}
+      <SpouseSection
+        year={spouseYear}
+        businessReturn={businessReturn}
+        initialOpen={spouseNeeded}
+        initialType={client?.clientType ?? "INDIVIDUAL"}
+        savedEarlier={!!(client?.spouseFirstName || client?.spouseLastName)}
+        values={{ spouseFirstName: v("spouseFirstName"), spouseMiddleName: v("spouseMiddleName"), spouseLastName: v("spouseLastName"), spouseEmail: v("spouseEmail"), spousePhone: v("spousePhone") }}
+      />
       <section className="grid gap-4 sm:grid-cols-3">
         <Field label="Client type">
           <select className="input" name="clientType" defaultValue={client?.clientType ?? "INDIVIDUAL"}>
