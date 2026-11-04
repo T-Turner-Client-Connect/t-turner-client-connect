@@ -7,7 +7,7 @@ import { accessibleClients, allowedCategories, requireClientAccess } from "@/lib
 import { resolveAccount } from "@/lib/portal/account";
 import { portalUploadDocument, portalDocuments } from "@/lib/services/documents";
 import { openPeriod } from "@/lib/services/bookkeeping";
-import { postJournalEntry, setupLedger } from "@/lib/services/ledger";
+import { ledgerFlags, ledgerOverview, postJournalEntry, setupLedger } from "@/lib/services/ledger";
 import { addCustomer } from "@/lib/services/client-invoicing";
 import { startBankLink } from "@/lib/services/banking";
 import { completeSignup, saveOnboardingDetails, startSignup, submitOnboarding } from "@/lib/services/client-signup";
@@ -137,6 +137,8 @@ describe("the server blocks the Business side for Regular Tax Clients", () => {
     await expect(setupLedger(tabitha, llc.id, { basis: "CASH" })).rejects.toThrow(/Regular Tax Client/);
     await expect(startBankLink(tabitha, llc.id)).rejects.toThrow(/Regular Tax Client/);
     await expect(addCustomer(tabitha, llc.id, { name: "Fictional Customer" })).rejects.toThrow(/Regular Tax Client/);
+    // Opening the Books page for a Regular Tax Client must not fail (it shows a notice instead).
+    expect((await ledgerOverview(tabitha, llc.id)).book).toBeNull();
   });
 });
 
@@ -234,6 +236,9 @@ describe("removal blocks at once and deletes nothing", () => {
     expect(await prisma.ledgerAccount.count({ where: { clientId: llc.id } })).toBe(ledgerRows);
     expect(await prisma.ledgerBook.count({ where: { clientId: llc.id } })).toBe(1);
     await expect(addCustomer(tabitha, llc.id, { name: "After removal" })).rejects.toThrow(/Regular Tax Client/);
+    // Staff can still OPEN the books and review flags — history stays readable after removal.
+    expect((await ledgerOverview(tabitha, llc.id)).book).not.toBeNull();
+    await expect(ledgerFlags(tabitha, llc.id)).resolves.toBeDefined();
 
     const actions = (await prisma.businessAccessEvent.findMany({ where: { clientId: llc.id }, orderBy: { createdAt: "asc" } })).map((e) => e.action);
     expect(actions).toEqual(["REQUESTED", "APPROVED", "LOGIN_VIEW_ON", "REMOVED"]);

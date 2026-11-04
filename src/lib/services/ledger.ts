@@ -691,7 +691,7 @@ const DRAW_WORDS = /\b(OWNER DRAW|DRAW|TRANSFER TO .*(SAVINGS|PERSONAL)|ZELLE TO
 export type Flag = { kind: "UNREVIEWED" | "CLOSED_PERIOD" | "MISSING_STATEMENT" | "UNRECONCILED" | "SUSPENSE" | "POSSIBLE_DRAW" | "NO_OPENING" | "POSSIBLE_DUPLICATE_INCOME" | "UNDEPOSITED" | "BANK_ROW_FLAGGED" | "BANK_CONNECTION"; severity: "HIGH" | "MEDIUM"; message: string };
 
 export async function ledgerFlags(actor: Actor, clientId: string, today = todayCentral()) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedger(actor, clientId);
   const book = await bookOf(clientId);
   const flags: Flag[] = [];
   if (!book.openingDate) flags.push({ kind: "NO_OPENING", severity: "HIGH", message: "Opening balances haven't been entered, so the Balance Sheet can't tie to the bank yet." });
@@ -751,7 +751,7 @@ export async function ledgerFlags(actor: Actor, clientId: string, today = todayC
 
 /** Everything the ledger page shows for one client. */
 export async function ledgerOverview(actor: Actor, clientId: string) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedger(actor, clientId);
   const book = await prisma.ledgerBook.findUnique({ where: { clientId } });
   if (!book) return { book: null as null };
   const [accounts, entries, bank, imports, recons] = await Promise.all([
