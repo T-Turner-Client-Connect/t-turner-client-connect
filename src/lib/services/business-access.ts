@@ -2,7 +2,8 @@ import "server-only";
 import type { BusinessAccess, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
-import { assertOwner, ownerAccessFor } from "@/lib/auth/owner";
+import { assertOffice } from "@/lib/auth/owner";
+import { can } from "@/lib/auth/permissions";
 import { ValidationError } from "./clients";
 
 /**
@@ -31,10 +32,8 @@ async function log(tx: Tx, e: { clientId?: string | null; actorId: string; actio
   });
 }
 
-const isOwner = async (actor: Actor) => {
-  const a = await ownerAccessFor(actor.id);
-  return !!a && a.scope === "FULL";
-};
+// Anyone who can approve conversions may also request one (the owner always can).
+const isOwner = (actor: Actor) => can(actor, "business_access", "approve");
 
 /** The owner, or a staff member the owner authorized to request conversions. */
 export async function canRequestConversion(actor: Actor) {
@@ -62,7 +61,7 @@ export async function requestBusinessAccess(actor: Actor, clientId: string, inpu
 
 /** Owner only. Turns this one business ACTIVE; the person's other accounts are untouched. */
 export async function approveBusinessAccess(actor: Actor, requestId: string, note?: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "business_access", "approve");
   return prisma.$transaction(async (tx) => {
     const req = await tx.businessAccessRequest.findUnique({ where: { id: requestId }, include: { client: { select: { businessAccess: true, archivedAt: true } } } });
     if (!req) throw new ValidationError("Request not found.");
@@ -76,7 +75,7 @@ export async function approveBusinessAccess(actor: Actor, requestId: string, not
 }
 
 export async function declineBusinessAccess(actor: Actor, requestId: string, note: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "business_access", "approve");
   const why = note.trim().slice(0, 1000);
   if (!why) throw new ValidationError("Add a short reason.");
   return prisma.$transaction(async (tx) => {
@@ -104,7 +103,7 @@ export async function cancelBusinessAccessRequest(actor: Actor, requestId: strin
  * records, invoices, statements, tax history, documents, messages and logins all stay.
  */
 export async function removeBusinessAccess(actor: Actor, clientId: string, reason: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "business_access", "manage");
   const why = reason.trim().slice(0, 1000);
   if (!why) throw new ValidationError("Add a short reason.");
   return prisma.$transaction(async (tx) => {
@@ -118,7 +117,7 @@ export async function removeBusinessAccess(actor: Actor, clientId: string, reaso
 
 /** Owner only: lets a staff member REQUEST conversions (never approve). */
 export async function setConversionRequester(actor: Actor, userId: string, on: boolean) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "business_access", "manage");
   return prisma.$transaction(async (tx) => {
     const u = await tx.user.findUnique({ where: { id: userId }, select: { businessConversionAccess: true } });
     if (!u) throw new ValidationError("Staff member not found.");
@@ -136,7 +135,7 @@ export async function assertLoginBusinessViewChange(tx: Tx, actor: Actor, access
   const a = await tx.portalAccess.findUniqueOrThrow({ where: { id: accessId }, include: { client: { select: { businessAccess: true } } } });
   if (a.canViewBookkeeping === next) return;
   if (next) {
-    if (!(await isOwner(actor))) throw new ForbiddenError("Only Tabitha can give a login access to a Managed Business.");
+    if (!(await can(actor, "business_access", "manage"))) throw new ForbiddenError("Only Tabitha (or staff she allows to manage business access) can give a login access to a Managed Business.");
     if (a.client.businessAccess !== "ACTIVE") throw new ValidationError("This client is a Regular Tax Client. Approve Managed Business access first.");
   }
   await log(tx, { clientId: a.clientId, actorId: actor.id, action: next ? "LOGIN_VIEW_ON" : "LOGIN_VIEW_OFF", targetUserId: a.portalUserId });
@@ -189,7 +188,7 @@ export async function conversionCandidates(actor: Actor) {
 
 /** Owner queue: pending requests, oldest first. */
 export async function pendingBusinessRequests(actor: Actor) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "business_access", "view");
   return prisma.businessAccessRequest.findMany({
     where: { status: "PENDING" },
     orderBy: { createdAt: "asc" },

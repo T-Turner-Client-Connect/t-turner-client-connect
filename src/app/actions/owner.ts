@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { AmountType, PaymentMethod } from "@prisma/client";
 import { requireUser } from "@/lib/auth/session";
-import { claimOwnerOffice, grantOwnerAccess, revokeOwnerAccess } from "@/lib/auth/owner";
+import { claimOwnerOffice } from "@/lib/auth/owner";
+import { applyPermissionPreset, setStaffPermissions } from "@/lib/auth/permissions";
 import { run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
 import {
@@ -169,21 +170,23 @@ export async function saveBillingSettingsAction(_prev: ActionState, fd: FormData
   });
 }
 
-export async function grantOwnerAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+/** Staff Access & Permissions: save the whole matrix for one staff member. */
+export async function saveStaffPermissionsAction(userId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    await grantOwnerAccess(actor, { userId: str(fd, "userId"), scope: str(fd, "scope") === "FULL" ? "FULL" : "BILLING", password: str(fd, "password") });
-    revalidatePath("/owner/settings");
-    return "Access granted.";
+    const r = await setStaffPermissions(actor, userId, fd.getAll("perm").map(String));
+    revalidatePath("/owner", "layout");
+    return r.added.length || r.removed.length ? `Saved: ${r.added.length} granted, ${r.removed.length} removed. It applies on their next click.` : "No changes.";
   });
 }
 
-export async function revokeOwnerAction(userId: string, _prev: ActionState): Promise<ActionState> {
+/** One click: apply a preset (replaces this staff member's permissions with the preset's). */
+export async function applyPermissionPresetAction(userId: string, presetKey: string, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    await revokeOwnerAccess(actor, userId);
-    revalidatePath("/owner/settings");
-    return "Access removed.";
+    const r = await applyPermissionPreset(actor, userId, presetKey);
+    revalidatePath("/owner", "layout");
+    return `Preset applied: ${r.added.length} granted, ${r.removed.length} removed.`;
   });
 }
 

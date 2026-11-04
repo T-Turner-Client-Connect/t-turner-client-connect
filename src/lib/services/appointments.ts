@@ -3,7 +3,7 @@ import { Prisma, type Appointment, type AppointmentSettings, type AppointmentSta
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
-import { assertOwner } from "@/lib/auth/owner";
+import { assertOffice } from "@/lib/auth/owner";
 import { requireClientAccess } from "@/lib/portal/access";
 import type { PortalActor } from "@/lib/portal/session";
 import { formatPhone, isValidEmail, looksLikeTaxId, normalizeEmail, normalizePhone } from "@/lib/normalize";
@@ -491,7 +491,7 @@ export async function clientAnswerProposal(user: PortalActor, appointmentId: str
 const staffActor = (a: Actor) => ({ type: "STAFF" as const, id: a.id });
 
 async function loadForOwner(actor: Actor, appointmentId: string) {
-  await assertOwner(actor);
+  await assertOffice(actor, "appointments", "approve");
   const a = await prisma.appointment.findUnique({ where: { id: appointmentId } });
   if (!a) throw new ValidationError("Appointment not found.");
   return a;
@@ -616,7 +616,7 @@ export async function updateAppointmentSettings(
   actor: Actor,
   input: { weekdays: number[]; openTime: string; closeTime: string; slotStepMin: number; maxPerDay: number; minNoticeHours: number; cancelCutoffHours: number; rescheduleNeedsApproval: boolean; requireApproval: boolean; meetingTypes: string[]; alertEmail: string; alertPhone: string; remind24h: boolean; remind2h: boolean },
 ) {
-  await assertOwner(actor);
+  await assertOffice(actor, "appointments", "manage");
   checkHours(input.openTime, input.closeTime);
   const weekdays = checkWeekdays(input.weekdays);
   if (![15, 30, 60].includes(input.slotStepMin)) throw new ValidationError("Start times can be every 15, 30 or 60 minutes.");
@@ -636,7 +636,7 @@ export async function updateAppointmentSettings(
 
 /** Opens a month for editing (copying the office defaults). Opening never publishes it. */
 export async function openMonth(actor: Actor, year: number, month: number) {
-  await assertOwner(actor);
+  await assertOffice(actor, "appointments", "manage");
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) throw new ValidationError("Choose a valid month.");
   const s = await appointmentSettings();
   return prisma.appointmentMonth.upsert({
@@ -667,7 +667,7 @@ export async function addDateRule(
   actor: Actor,
   input: { dateFrom: string; dateTo?: string; kind: "BLOCK" | "SPECIAL"; reason?: string; label?: string; startTime?: string; endTime?: string; staffId?: string | null; maxPerDay?: number | null },
 ) {
-  await assertOwner(actor);
+  await assertOffice(actor, "appointments", "manage");
   if (!isDate(input.dateFrom) || (input.dateTo && !isDate(input.dateTo))) throw new ValidationError("Choose the date(s).");
   if (input.kind !== "BLOCK" && input.kind !== "SPECIAL") throw new ValidationError("Choose a block or special availability.");
   const to = input.dateTo || input.dateFrom;
@@ -698,13 +698,13 @@ export async function addDateRule(
 }
 
 export async function removeDateRule(actor: Actor, ruleId: string) {
-  await assertOwner(actor);
+  await assertOffice(actor, "appointments", "manage");
   await prisma.appointmentDateRule.delete({ where: { id: ruleId } });
   await audit(prisma, { actorId: actor.id, action: "appointments.rule_removed", entityType: "AppointmentDateRule", entityId: ruleId });
 }
 
 export async function saveStaffAvailability(actor: Actor, userId: string, input: { active: boolean; weekdays: number[]; startTime?: string; endTime?: string }) {
-  await assertOwner(actor);
+  await assertOffice(actor, "appointments", "manage");
   if (!(await prisma.user.count({ where: { id: userId, active: true } }))) throw new ValidationError("Choose an active staff member.");
   const timed = !!(input.startTime || input.endTime);
   if (timed) checkHours(input.startTime ?? "", input.endTime ?? "");

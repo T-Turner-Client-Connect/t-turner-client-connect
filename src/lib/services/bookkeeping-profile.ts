@@ -8,6 +8,7 @@ import { isValidEmail, normalizeEmail } from "@/lib/normalize";
 import { ENTITY_TYPES } from "@/lib/tax/deadlines";
 import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
+import { can, changePermissions } from "@/lib/auth/permissions";
 import { BASIS } from "@/lib/bookkeeping-periods";
 import { squareSettings } from "@/lib/square";
 import { assertNotBilledInSquare, squareBillingFor } from "./square-billing";
@@ -199,20 +200,30 @@ export const accountLabel = (a: { institution: string; accountType: string; last
 /** Square is "connected" only once the integration is configured; until then card details are never shown. */
 export const squareConnected = () => squareSettings().configured;
 
-export async function canManageBilling(actor: Actor) {
+/**
+ * Bookkeeping billing (card on file from Square, Square billing links, charge authorizations,
+ * recurring billing not in Square) = Staff Access & Permissions → "Square and payment
+ * information": View to see it, Edit to change it. Read from the database on every call.
+ * (Before 20261106205000_staff_permissions this was User.bookkeepingBillingAccess.)
+ */
+export async function canManageBilling(actor: Actor, action: "view" | "edit" = "view") {
   if (await isReportApprover(actor)) return true;
-  const u = await prisma.user.findUnique({ where: { id: actor.id }, select: { bookkeepingBillingAccess: true, active: true } });
-  return !!(u?.active && u.bookkeepingBillingAccess);
+  return can(actor, "square", action);
 }
-async function assertBilling(actor: Actor) {
-  if (!(await canManageBilling(actor))) throw new ForbiddenError("Only Tabitha (or staff she allows) can view or change bookkeeping billing.");
+async function assertBilling(actor: Actor, action: "view" | "edit" = "edit") {
+  if (!(await canManageBilling(actor, action))) throw new ForbiddenError("Only Tabitha (or staff she allows) can view or change bookkeeping billing.");
 }
 
-/** Tabitha alone grants or removes billing access. It doesn't open the Owner's Office. */
+/**
+ * The Settings → Team toggle: turns "Square and payment information → View + Edit" on or off
+ * (the same grants as Owner's Office → Settings → Staff Access & Permissions, recorded in its history).
+ */
 export async function setBillingAccess(actor: Actor, userId: string, allowed: boolean) {
   if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can change who manages bookkeeping billing.");
   const target = await prisma.user.findUnique({ where: { id: userId } });
   if (!target || target.id === actor.id) throw new ValidationError("Choose a staff member.");
+  const keys = ["square.view", "square.edit"] as const;
+  await changePermissions(actor, userId, allowed ? { add: [...keys] } : { remove: [...keys] }, "legacy:bookkeeping_billing");
   await prisma.user.update({ where: { id: userId }, data: { bookkeepingBillingAccess: allowed, bookkeepingBillingGrantedBy: allowed ? actor.id : null, bookkeepingBillingGrantedAt: allowed ? new Date() : null } });
   await audit(prisma, { actorId: actor.id, action: allowed ? "bookkeeping.billing_access_granted" : "bookkeeping.billing_access_removed", entityType: "User", entityId: userId });
 }
@@ -288,7 +299,7 @@ export async function revokeChargeAuthorization(actor: Actor, clientId: string, 
 
 /** What the billing card may show. Card brand/last four/expiration come only from Square — never stored here. */
 export async function billingView(actor: Actor, clientId: string) {
-  if (!(await canManageBilling(actor))) return { allowed: false as const };
+  if (!(await canManageBilling(actor, "view"))) return { allowed: false as const };
   const [billing, authorizations, squareBilling] = await Promise.all([
     prisma.bookkeepingBilling.findUnique({ where: { clientId } }),
     prisma.recurringChargeAuthorization.findMany({ where: { clientId }, orderBy: { createdAt: "desc" } }),
@@ -356,5 +367,7 @@ export async function setCoethaLink(actor: Actor, clientId: string, url: string 
 export async function canOpenCoetha(actor: Actor, clientId: string) {
   if (actor.role === "ADMIN") return true;
   const c = await prisma.client.findUnique({ where: { id: clientId }, select: { assignedToId: true } });
-  return c?.assignedToId === actor.id;
+  if (c?.assignedToId === actor.id) return true;
+  // Staff Access & Permissions → Coetha AI → View (opening Coetha never approves her work).
+  return can(actor, "coetha", "view");
 }

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { prisma, resetDb } from "./db";
+import { OLD_BILLING_ONLY, prisma, resetDb } from "./db";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { hashPassword } from "@/lib/auth/password";
-import { assertOwner, claimOwnerOffice, grantOwnerAccess, ownerNavState, revokeOwnerAccess } from "@/lib/auth/owner";
+import { assertOffice, assertOwner, claimOwnerOffice, ownerNavState } from "@/lib/auth/owner";
+import { setStaffPermissions } from "@/lib/auth/permissions";
 import { addMonths, agingBucket, collectedCents, computeBreakdown, scheduleStatus, validatePricing, type PricingInput } from "@/lib/billing/pricing";
 import {
   billingSettings,
@@ -182,7 +183,7 @@ describe("pricing math", () => {
 describe("Owner's Office access", () => {
   it("is bound to the owner's account ID, not the email or the Admin role", async () => {
     const { tab, daria, otherAdmin } = await office();
-    expect(await ownerNavState(tab)).toBe("full");
+    expect(await ownerNavState(tab)).toBe("/owner");
     expect(await ownerNavState(daria)).toBe("none");
     expect(await ownerNavState(otherAdmin)).toBe("none");
     for (const who of [daria, otherAdmin]) {
@@ -224,25 +225,26 @@ describe("Owner's Office access", () => {
 
   it("only the owner can grant access; billing-only delegates can't see expenses or totals", async () => {
     const { tab, daria, otherAdmin } = await office();
-    await expect(grantOwnerAccess(otherAdmin, { userId: daria.id, scope: "FULL", password: PASSWORD })).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(grantOwnerAccess(tab, { userId: daria.id, scope: "BILLING", password: "nope" })).rejects.toThrow(/password/);
-    await grantOwnerAccess(tab, { userId: daria.id, scope: "BILLING", password: PASSWORD });
-    expect(await ownerNavState(daria)).toBe("billing");
-    await assertOwner(daria, "billing");
+    await expect(setStaffPermissions(otherAdmin, daria.id, OLD_BILLING_ONLY)).rejects.toBeInstanceOf(ForbiddenError);
+    await setStaffPermissions(tab, daria.id, OLD_BILLING_ONLY);
+    expect(await ownerNavState(daria)).toBe("/owner/invoices");
+    await assertOffice(daria, "billing", "create");
+    await expect(assertOwner(daria)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(listExpenses(daria, { year: 2026 })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(monthlySummary(daria, 2026)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(receivables(daria)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(setFee(daria, "FLAT", 100)).rejects.toBeInstanceOf(ForbiddenError);
     // A delegate can't grant onward.
-    await expect(grantOwnerAccess(daria, { userId: otherAdmin.id, scope: "BILLING", password: PASSWORD })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(setStaffPermissions(daria, otherAdmin.id, ["billing.view"])).rejects.toBeInstanceOf(ForbiddenError);
     // Nobody can add a plan fee to a quote any more.
     await setFee(tab);
     const { acme } = await portalClients(tab);
     await expect(createQuote(daria, quote(acme.id, { planFeeOverride: { type: "FLAT", value: 1 } }))).rejects.toThrow(/don't carry a fee/);
     await expect(createQuote(tab, quote(acme.id, { planFeeOverride: { type: "FLAT", value: 1 } }))).rejects.toThrow(/don't carry a fee/);
-    await revokeOwnerAccess(tab, daria.id);
-    await expect(assertOwner(daria, "billing")).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(revokeOwnerAccess(tab, tab.id)).rejects.toThrow(/your own/);
+    await setStaffPermissions(tab, daria.id, []);
+    await expect(assertOffice(daria, "billing", "view")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await ownerNavState(daria)).toBe("none");
+    await expect(setStaffPermissions(tab, tab.id, [])).rejects.toThrow(/permanent/);
   });
 
   it("owner activity never appears in the shared audit log", async () => {

@@ -3,8 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
-import { assertLedger, assertManagedBusiness, normDesc, parseCents, reconcileAccount, todayCentral, toDate, usd, ymdOf } from "./ledger";
-import { assertCanManageBanking, assertTabithaApproves } from "./bk-permissions";
+import { assertManagedBusiness, normDesc, parseCents, reconcileAccount, todayCentral, toDate, usd, ymdOf } from "./ledger";
+import { assertCanManageBanking, assertCanViewBanking, assertTabithaApproves } from "./bk-permissions";
 
 /**
  * Banking & Credit Card Connections: the business's registry of bank, card, line-of-credit and
@@ -258,7 +258,7 @@ export const CONN_LABEL: Record<ConnStatus, string> = { CONNECTED: "Connected", 
 
 /** Everything the Banking & Credit Card Connections screen shows, for ONE business. */
 export async function bankingRegistry(actor: Actor, clientId: string) {
-  await assertLedger(actor, clientId);
+  await assertCanViewBanking(actor, clientId);
   const [accounts, conns, ledger] = await Promise.all([
     prisma.bookkeepingAccount.findMany({ where: { clientId }, orderBy: [{ accountType: "asc" }, { institution: "asc" }, { last4: "asc" }], include: { ledgerAccount: { select: { id: true, code: true, name: true, type: true } } } }),
     prisma.bankConnection.findMany({ where: { clientId }, orderBy: { createdAt: "asc" }, include: { accounts: true } }),
@@ -426,7 +426,7 @@ export const REC_LABEL: Record<string, string> = {
 
 /** Consolidated monthly account progress: every account with its light, plus "X of Y accounts reconciled". */
 export async function monthlyAccountProgress(actor: Actor, clientId: string, year: number, month: number, opts: { today?: string; refresh?: boolean } = {}) {
-  await assertLedger(actor, clientId);
+  await assertCanViewBanking(actor, clientId);
   const accounts = await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null }, orderBy: [{ accountType: "asc" }, { institution: "asc" }, { last4: "asc" }], include: { subCards: { where: { active: true }, select: { id: true, last4: true, nickname: true, cardholderLabel: true } } } });
   const list = accounts.filter((a) => reconciles(a.accountType));
   const rows = [];

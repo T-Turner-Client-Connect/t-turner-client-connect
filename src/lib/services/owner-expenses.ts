@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { PaymentMethod } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
-import { assertOwner, ownerAudit } from "@/lib/auth/owner";
+import { assertOffice, ownerAudit } from "@/lib/auth/owner";
 import { storage } from "@/lib/storage";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import { ValidationError } from "./clients";
@@ -41,7 +41,7 @@ export type ExpenseInput = {
 
 /** Owner's private expenses. Receipts go to the owner-only store, never the client document center. */
 export async function createExpense(actor: Actor, input: ExpenseInput) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "revenue", "create");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.spentOn)) throw new ValidationError("Enter the expense date.");
   if (!input.vendor.trim()) throw new ValidationError("Enter who you paid.");
   if (!(EXPENSE_CATEGORIES as readonly string[]).includes(input.category)) throw new ValidationError("Choose a category.");
@@ -79,14 +79,14 @@ export async function createExpense(actor: Actor, input: ExpenseInput) {
 
 /** Soft delete: the row stays for the audit trail but no longer counts. */
 export async function deleteExpense(actor: Actor, id: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "revenue", "edit");
   const res = await prisma.expense.updateMany({ where: { id, deletedAt: null }, data: { deletedAt: new Date() } });
   if (res.count !== 1) throw new ValidationError("Not found.");
   await ownerAudit(actor.id, "expense.deleted", "Expense", id);
 }
 
 export async function listExpenses(actor: Actor, filter: { year: number; month?: number | null; category?: string | null }) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "revenue", "view");
   const start = new Date(Date.UTC(filter.year, filter.month ? filter.month - 1 : 0, 1));
   const end = filter.month ? new Date(Date.UTC(filter.year, filter.month, 1)) : new Date(Date.UTC(filter.year + 1, 0, 1));
   return prisma.expense.findMany({
@@ -96,7 +96,7 @@ export async function listExpenses(actor: Actor, filter: { year: number; month?:
 }
 
 export async function readReceipt(actor: Actor, expenseId: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "revenue", "view");
   const e = await prisma.expense.findUnique({ where: { id: expenseId } });
   if (!e?.receiptKey) return null;
   const bytes = await storage.get(e.receiptKey);

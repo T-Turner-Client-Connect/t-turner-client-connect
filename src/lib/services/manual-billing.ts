@@ -72,8 +72,8 @@ export function manualLedger(input: { feeCents: number | null; billingDay: numbe
   };
 }
 
-async function assertBilling(actor: Actor) {
-  if (!(await canManageBilling(actor))) throw new ForbiddenError("Only Tabitha (or staff she allows) can record billing payments.");
+async function assertBilling(actor: Actor, action: "view" | "edit" = "edit") {
+  if (!(await canManageBilling(actor, action))) throw new ForbiddenError("Only Tabitha (or staff she allows) can record billing payments.");
 }
 
 async function assertOfficeBilled(clientId: string) {
@@ -204,7 +204,7 @@ async function viewFor(clientId: string) {
 
 /** Staff view of office-managed billing (billing access required). */
 export async function manualBillingView(actor: Actor, clientId: string) {
-  await assertBilling(actor);
+  await assertBilling(actor, "view");
   return viewFor(clientId);
 }
 
@@ -232,7 +232,7 @@ export async function portalManualBilling(user: PortalActor, clientId: string) {
  * standing from the same manual ledger used on the client's billing page.
  */
 export async function nonSquareRecurring(actor: Actor, today = todayCentral()) {
-  await assertBilling(actor);
+  await assertBilling(actor, "view");
   const inSquare = new Set((await prisma.squareBillingMember.findMany({ select: { clientId: true } })).map((m) => m.clientId));
   const billing = await prisma.bookkeepingBilling.findMany({
     where: { monthlyFeeCents: { gt: 0 }, client: { archivedAt: null } },

@@ -25,7 +25,7 @@ const PERMISSION: Record<string, string> = {
 export const INVOICING_SCOPES = ["CUSTOMERS_READ", "CUSTOMERS_WRITE", "ORDERS_READ", "ORDERS_WRITE", "INVOICES_READ", "INVOICES_WRITE", "PAYMENTS_READ"];
 
 export async function runSquareHealthCheck(actor: Actor) {
-  if (!(await canManageBilling(actor))) throw new ForbiddenError("Only Tabitha (or staff she allows) can check the Square connection.");
+  if (!(await canManageBilling(actor, "view"))) throw new ForbiddenError("Only Tabitha (or staff she allows) can check the Square connection.");
   const s = squareSettings();
   const steps: HealthStep[] = [];
   const push = (st: HealthStep) => (steps.push(st), st);
