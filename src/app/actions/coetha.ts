@@ -9,6 +9,8 @@ import { setOwnerSwitch, SWITCH_LABEL, type OwnerSwitch } from "@/lib/services/o
 const refresh = (clientId: string) => {
   revalidatePath(`/bookkeeping/${clientId}/coetha`);
   revalidatePath(`/bookkeeping/${clientId}/books`);
+  revalidatePath(`/bookkeeping/${clientId}/close`);
+  revalidatePath("/owner/coetha-review");
 };
 
 export async function runCoethaAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {

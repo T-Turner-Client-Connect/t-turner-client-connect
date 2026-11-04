@@ -61,9 +61,12 @@ describe("client overview", () => {
     expect(o.ledger).toMatchObject({ income: 100000, expenses: 25000, net: 75000, bank: 155000, bankAccounts: 1 });
     expect(o.ledger!.change.income).toBe(25);
     expect(o.ledger!.perf.map((x) => x.month)).toEqual(["2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]);
-    const steps = Object.fromEntries(o.close!.steps.map((s) => [s.label, s.done]));
-    expect(steps).toMatchObject({ "Bank statements received": false, "Transactions categorized": true, "Accounts reconciled": true, "Payroll recorded (ADP)": false, "Released to client": false });
-    expect(o.close!.percent).toBe(Math.round((2 / 7) * 100));
+    // The close is derived from real data: manual check-offs no longer count, and nothing is
+    // green without the records behind it (no bank accounts registered, no bank rows, no payroll report).
+    const steps = Object.fromEntries(o.close.steps.map((s) => [s.label, s.state]));
+    expect(steps).toMatchObject({ "Bank transactions synchronized": "MISSING", "Missing receipts or supporting documents": "DONE", "Payroll data received (ADP)": "MISSING", "Transactions categorized": "MISSING", "Accounts reconciled": "MISSING", "Financial statements released to client": "NOT_DUE" });
+    expect(o.close.steps.map((s) => s.label).join(" ")).not.toMatch(/1099|W-2/);
+    expect(o.close.percent).toBe(Math.round((1 / 8) * 100));
     expect(o.licenses).toMatchObject({ count: 1, expired: 0 });
     expect(o.yearEnd).toEqual({ taxYear: 2026, stage: "CONTRACTOR_REVIEW" });
     expect(o.filings.next?.title).toBe("Birmingham Liquor Tax");

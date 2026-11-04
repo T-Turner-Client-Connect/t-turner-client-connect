@@ -75,6 +75,8 @@ export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: str
     { href: "/owner/expenses", label: "Expenses", show: c("revenue", "view") },
     { href: "/owner/business-access", label: "Business access", show: c("business_access", "view") },
     // Coetha & bank feeds: Tabitha's own on/off switches (owner only, not grantable).
+    // Coetha Accounting Review: internal findings, requests and approvals across bookkeeping clients.
+    { href: "/owner/coetha-review", label: "Coetha Accounting Review", show: access.isOwner || c("coetha", "view") },
     { href: "/owner/automation", label: "Coetha & bank feeds", show: access.isOwner },
     { href: billingSettingsVisible(access) ? "/owner/settings" : "/owner/settings/staff-access", label: "Settings", show: settingsVisible(access) },
   ];

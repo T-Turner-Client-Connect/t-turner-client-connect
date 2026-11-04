@@ -25,7 +25,7 @@ const form = (o: Record<string, string>) => {
 
 describe("what's uploaded, the period it covers, and its as-of date", () => {
   it("offers the office's full list in order", () => {
-    expect(Object.values(BK_UPLOAD_TYPES)).toEqual(["P&L (profit & loss)", "Balance Sheet", "Full financial packet", "Bank statement", "Credit-card statement", "Payroll report", "Receipts", "Supporting schedule", "Other"]);
+    expect(Object.values(BK_UPLOAD_TYPES)).toEqual(["P&L (profit & loss)", "Balance Sheet", "Full financial packet", "Bank statement", "Credit-card statement", "Payroll report", "Receipts", "Supporting schedule", "Merchant processing statement", "Loan or line-of-credit agreement", "Prior financial statements", "Other"]);
   });
 
   it("requires a category and a month, quarter or date range — nothing is guessed", () => {

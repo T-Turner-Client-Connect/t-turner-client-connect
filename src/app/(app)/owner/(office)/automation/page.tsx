@@ -46,7 +46,7 @@ export default async function OwnerAutomationPage() {
     isReportApprover(actor),
     prisma.bankConnection.groupBy({ by: ["environment", "status"], _count: true, where: { status: { not: "DISCONNECTED" } } }),
   ]);
-  const ids = [sw.liveBanking.changedById, sw.coetha.changedById].filter((x): x is string => !!x);
+  const ids = [sw.liveBanking.changedById, sw.coetha.changedById, sw.coethaAutoSend.changedById].filter((x): x is string => !!x);
   const names = new Map((await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const env = (process.env.PLAID_ENV ?? "sandbox").trim().toLowerCase();
   const keys = !!process.env.PLAID_CLIENT_ID?.trim() && !!process.env.PLAID_SECRET?.trim();
@@ -97,6 +97,20 @@ export default async function OwnerAutomationPage() {
             {primary && (
               <ActionForm action={ownerSwitchAction.bind(null, "coetha", !sw.coetha.on)} confirm={sw.coetha.on ? "Turn off Coetha AI? No new drafts are made; existing drafts stay for your review." : "Turn on Coetha AI? Business transaction details will be sent to Anthropic's API under the firm's key to prepare drafts. Nothing is posted without your approval."}>
                 <button type="submit" className={clsx("inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold shadow", sw.coetha.on ? "border-[1.5px] border-navy-900 bg-white text-navy-900" : "bg-navy-900 text-white hover:bg-navy-800")} data-testid="toggle-coetha">{sw.coetha.on ? "Turn off" : "Turn on"}</button>
+              </ActionForm>
+            )}
+          </div>
+        </section>
+
+        <section className={card} data-testid="switch-coetha-auto-send">
+          <h2 className="flex items-center gap-3 font-serif text-xl font-bold text-navy-900"><Sparkles className="size-7 text-gold-600" aria-hidden /> Coetha&apos;s document requests</h2>
+          <p className="mt-1 text-sm text-navy-800">Each month Coetha drafts targeted requests (a missing statement for one account and month, payroll reports, receipts, explanations of deposits). With this off, every draft waits for staff to press Send. With it on, her drafts go to the client automatically, through the client&apos;s own notification preferences (email and text consent and blocks are respected).</p>
+          <p className="mt-2 text-xs text-slate-600">{changed(sw.coethaAutoSend)} The monthly check runs without the AI switch or an API key (rules only, nothing leaves Client Connect).</p>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-ivory-200 pt-4">
+            <Switch on={sw.coethaAutoSend.on} label="Send automatically" testId="coetha-auto-send-state" />
+            {primary && (
+              <ActionForm action={ownerSwitchAction.bind(null, "coethaAutoSend", !sw.coethaAutoSend.on)} confirm={sw.coethaAutoSend.on ? "Turn off automatic sending? Coetha's drafts will wait for staff to send them." : "Let Coetha send her drafted document requests to clients automatically?"}>
+                <button type="submit" className={clsx("inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold shadow", sw.coethaAutoSend.on ? "border-[1.5px] border-navy-900 bg-white text-navy-900" : "bg-navy-900 text-white hover:bg-navy-800")} data-testid="toggle-coetha-auto-send">{sw.coethaAutoSend.on ? "Turn off" : "Turn on"}</button>
               </ActionForm>
             )}
           </div>

@@ -3,13 +3,14 @@ import { connection } from "next/server";
 import { notFound, redirect } from "next/navigation";
 import clsx from "clsx";
 import {
-  ArrowDown, ArrowRight, ArrowUp, BarChart3, Building2, CalendarPlus, Calculator, CheckCircle2, Circle, Coins, CreditCard, FileBadge, FileSpreadsheet, FileText, IdCard, Landmark, MessageSquareText, ReceiptText, Sparkles, UsersRound,
+  ArrowDown, ArrowRight, ArrowUp, BarChart3, Building2, CalendarPlus, Calculator, CheckCircle2, Coins, CreditCard, FileBadge, FileSpreadsheet, FileText, IdCard, Landmark, MessageSquareText, ReceiptText, Sparkles, UsersRound,
 } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { businessOverview, YEAR_END_STAGES, type Deadline } from "@/lib/services/business-overview";
 import { usd } from "@/lib/services/ledger";
 import { MonthSelect } from "@/components/business-overview/month-select";
+import { StateIcon } from "@/components/bk/parts";
 
 export const metadata = { title: "Client Overview" };
 
@@ -113,12 +114,17 @@ export default async function ClientOverview({ params, searchParams }: { params:
   const mName = monthName(o.selected);
   const short = monthName(o.selected, { month: "long" });
 
-  const nextStep = o.close?.steps.find((s) => !s.done);
-  const coethaSays = !o.close
-    ? `${mName} hasn't been opened yet. Open the month to start its close checklist.`
-    : !nextStep
-      ? `${short}'s close is complete — the financial statements have been approved and released to the client.`
-      : `${short}'s close is ${o.close.percent}% complete. Next step: ${nextStep.label}.${o.close.steps.filter((s) => s.done).length ? ` Done so far: ${o.close.steps.filter((s) => s.done).map((s) => s.label).join(", ")}.` : ""}`;
+  const missingStep = o.close.steps.find((s) => s.state === "MISSING");
+  const nextStep = missingStep ?? o.close.steps.find((s) => !s.done && s.state !== "NOT_DUE");
+  const work = o.coetha;
+  const workBits = [
+    work.proposals.RECOMMENDATION ? `${work.proposals.RECOMMENDATION} finding${work.proposals.RECOMMENDATION === 1 ? "" : "s"} for Tabitha` : null,
+    work.drafts ? `${work.drafts} draft request${work.drafts === 1 ? "" : "s"} ready to send` : null,
+    work.recsWaiting ? `${work.recsWaiting} reconciliation${work.recsWaiting === 1 ? "" : "s"} ready for approval` : null,
+  ].filter(Boolean);
+  const coethaSays = !nextStep
+    ? `${short}'s close is ${o.close.percent === 100 ? "complete — the financial statements were approved and released" : "on track"}.${workBits.length ? ` I'm working on: ${workBits.join(", ")}.` : ""}`
+    : `${short} is ${o.close.percent}% complete · ${o.close.reconciled} of ${o.close.accounts} accounts reconciled. Next: ${nextStep.label}${nextStep.detail ? ` (${nextStep.detail})` : ""}.${workBits.length ? ` I'm working on: ${workBits.join(", ")}.` : ""}`;
 
   return (
     <div className="space-y-5" data-testid="client-overview">
@@ -139,10 +145,11 @@ export default async function ClientOverview({ params, searchParams }: { params:
                 {o.services.map((s, i) => <span key={s}>{i > 0 && <span className="mx-2 text-gold-400">•</span>}{s}</span>)}
               </p>
               <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-navy-100">
+                {o.client.active && <span className="rounded-full bg-emerald-500 px-3 py-0.5 font-semibold text-white">Active Client</span>}
                 {o.client.managed ? (
-                  <span className="rounded-full bg-emerald-500 px-3 py-0.5 font-semibold text-white" data-testid="overview-access">Active Client</span>
+                  <span className="rounded-full bg-white/15 px-3 py-0.5 font-semibold text-white" data-testid="overview-access" title="The client's own portal shows their business books and statements.">Client portal: Managed Business access granted</span>
                 ) : (
-                  <Link href="/owner/business-access" className="rounded-full bg-amber-400 px-3 py-0.5 font-semibold text-navy-950" data-testid="overview-access">Not approved for Managed Business access</Link>
+                  <Link href="/owner/business-access" className="rounded-full bg-amber-400 px-3 py-0.5 font-semibold text-navy-950" data-testid="overview-access" title="This is about the CLIENT's portal only. The office keeps and manages these books either way.">Client portal: Managed Business access not granted</Link>
                 )}
                 {o.profile.einLast4 && <span>EIN: ••••{o.profile.einLast4}</span>}
                 {o.profile.basis && <span>| Accounting Basis: {o.profile.basis === "ACCRUAL" ? "Accrual" : o.profile.basis === "CASH" ? "Cash" : "Modified cash"}</span>}
@@ -174,22 +181,19 @@ export default async function ClientOverview({ params, searchParams }: { params:
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className={clsx(card, "p-5")} data-testid="monthly-close">
           <h2 className="font-serif text-xl font-bold text-navy-900">{mName} – Monthly Close</h2>
-          {o.close ? (
-            <div className="mt-3 flex flex-wrap items-center gap-6">
-              <Donut percent={o.close.percent} />
-              <ul className="min-w-0 flex-1 divide-y divide-ivory-200">
-                {o.close.steps.map((s) => (
-                  <li key={s.label} className="flex items-center gap-2 py-1.5 text-[15px] text-navy-900">
-                    {s.done ? <CheckCircle2 className="size-5 shrink-0 fill-emerald-600 text-white" aria-hidden /> : <Circle className="size-5 shrink-0 text-gold-500" aria-hidden />}
-                    {s.label}<span className="sr-only">{s.done ? " — done" : " — not done"}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : (
-            <p className="mt-3 text-sm text-navy-800">This month hasn&apos;t been opened. <Link className="font-semibold underline" href={`${base}/close?year=${o.selected.slice(0, 4)}&month=${Number(o.selected.slice(5))}`}>Open {mName}</Link></p>
-          )}
-          {o.close && <Link href={o.periodId ? `${base}/close?period=${o.periodId}` : `${base}/close`} className="mt-3 inline-block text-sm font-semibold text-navy-900 underline decoration-gold-500">Open the monthly close</Link>}
+          <div className="mt-3 flex flex-wrap items-center gap-6">
+            <Donut percent={o.close.percent} />
+            <ul className="min-w-0 flex-1 divide-y divide-ivory-200">
+              {o.close.steps.map((s) => (
+                <li key={s.label} className="flex items-center gap-2 py-1.5 text-[15px] text-navy-900" data-state={s.state} title={s.detail}>
+                  <StateIcon state={s.state ?? (s.done ? "DONE" : "NOT_DUE")} />
+                  {s.label}<span className="sr-only">{s.done ? " — done" : s.state === "MISSING" ? " — missing" : " — not done"}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">{o.close.reconciled} of {o.close.accounts} accounts reconciled · updated automatically from the books and bank feeds.</p>
+          <Link href={o.periodId ? `${base}/close?period=${o.periodId}` : `${base}/close?year=${o.selected.slice(0, 4)}&month=${Number(o.selected.slice(5))}`} className="mt-2 inline-block text-sm font-semibold text-navy-900 underline decoration-gold-500">Open bookkeeping management</Link>
         </div>
 
         <div className="rounded-2xl bg-gradient-to-br from-navy-900 to-navy-950 p-5 text-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.6)] ring-1 ring-gold-500/40" data-testid="coetha-card">

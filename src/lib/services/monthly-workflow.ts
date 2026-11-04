@@ -242,8 +242,6 @@ async function classificationRecommendation(clientId: string) {
   };
 }
 
-const DAILY_READER: Actor = { id: "system:coetha-monitor", role: "ADMIN", name: "Coetha (monitor)", email: "" };
-
 /**
  * Coetha's monthly monitor for ONE business. Safe to run repeatedly (everything is keyed):
  * 1. prepares every account's reconciliation;
