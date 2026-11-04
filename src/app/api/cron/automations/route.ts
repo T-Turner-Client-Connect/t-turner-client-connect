@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { runAutomations } from "@/lib/services/automations";
 import { heartbeat } from "@/lib/services/documents";
 import { syncStaleSquareBilling } from "@/lib/services/square-billing";
+import { reconcileSquareInvoices } from "@/lib/services/square-invoicing";
 import { runDailyBankRetrieval } from "@/lib/services/banking";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
@@ -16,7 +17,9 @@ export async function POST(req: Request) {
   const summary = await runAutomations();
   // Read-only Square refresh, so billing figures stay current without anyone pressing Sync.
   const square = await syncStaleSquareBilling().catch((e) => ({ error: e instanceof Error ? e.message : "failed" }));
+  // Backup for a missed Square webhook: re-reads invoices sent through Square and records any payment (reads only).
+  const squareInvoices = await reconcileSquareInvoices().catch(() => ({ error: "failed" }));
   // Daily read-only bank retrieval (each connection about once a day; sandbox only in this phase).
   const bank = await runDailyBankRetrieval().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, bank });
+  return Response.json({ ok: true, summary, square, squareInvoices, bank });
 }

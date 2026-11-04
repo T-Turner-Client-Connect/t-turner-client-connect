@@ -68,7 +68,6 @@ export function NewsAndCountdowns({ cards, news, showAll, allHref }: { cards: Co
         <img src="/brand/news/banner-decor.jpg" alt="" className="absolute inset-y-0 right-0 hidden h-full w-[34%] object-cover [mask-image:linear-gradient(to_right,transparent,black_30%)] md:block" />
         <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden>
           <path d="M0 22 C 160 -6, 380 4, 560 10" fill="none" stroke="#C89D29" strokeWidth="4" />
-          <path d="M240 200 C 520 188, 760 176, 1000 150" fill="none" stroke="#E6C76A" strokeWidth="4" />
         </svg>
         <div className="relative flex items-center gap-5 px-6 py-8 sm:px-10 sm:py-10 md:max-w-[68%]">
           {/* eslint-disable-next-line @next/next/no-img-element */}

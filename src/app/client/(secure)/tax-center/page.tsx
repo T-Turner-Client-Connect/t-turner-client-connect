@@ -22,7 +22,7 @@ function ActionCard({ tone, icon: I, title, sub, children, testId }: { tone: "cr
     <section className={`flex min-w-0 flex-col rounded-2xl p-5 shadow-[0_14px_32px_-22px_rgb(10_26_68/0.55)] ${dark ? navy : cream}`} data-testid={testId}>
       <div className="flex items-center gap-3">
         <I className={`size-12 shrink-0 ${dark ? "text-gold-400" : "text-gold-600"}`} strokeWidth={1.5} aria-hidden />
-        <h2 className={`font-serif text-xl sm:text-[1.375rem] font-bold leading-tight ${dark ? "text-white" : "text-navy-900"}`}>{title}</h2>
+        <h2 className={`font-serif text-xl sm:text-xl font-bold leading-tight ${dark ? "text-white" : "text-navy-900"}`}>{title}</h2>
       </div>
       <p className={`mt-3 text-center text-[15px] ${dark ? "text-navy-100" : "text-navy-800"}`}>{sub}</p>
       <div className="mt-auto pt-4 text-center">{children}</div>
@@ -92,7 +92,7 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
               <div className="flex items-start gap-3">
                 <IdCard className="size-11 shrink-0 text-gold-600" strokeWidth={1.5} aria-hidden />
                 <div>
-                  <h2 className="font-serif text-xl sm:text-[1.375rem] font-bold leading-tight text-navy-900">Identity Documents</h2>
+                  <h2 className="font-serif text-xl sm:text-xl font-bold leading-tight text-navy-900">Identity Documents</h2>
                   <p className="text-sm text-navy-800">Upload once and keep on file. Driver&apos;s licenses are only updated when they expire.</p>
                 </div>
               </div>
@@ -117,7 +117,7 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
           <span className="hidden lg:block" />
         )}
         <section className={`min-w-0 rounded-2xl p-5 shadow-[0_14px_32px_-22px_rgb(10_26_68/0.45)] ${cream}`} data-testid="quick-reminders">
-          <h2 className="mb-3 flex items-center gap-3 font-serif text-xl sm:text-[1.375rem] font-bold text-navy-900"><CalendarDays className="size-7 text-gold-600" strokeWidth={1.5} aria-hidden />Quick Reminders</h2>
+          <h2 className="mb-3 flex items-center gap-3 font-serif text-xl sm:text-xl font-bold text-navy-900"><CalendarDays className="size-7 text-gold-600" strokeWidth={1.5} aria-hidden />Quick Reminders</h2>
           <ul className="space-y-2.5 text-[15px] text-navy-800">
             {[
               "Keep your information up to date.",

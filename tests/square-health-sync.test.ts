@@ -47,7 +47,8 @@ function mockSquare(mode: Mode = {}) {
 const env = (vars: Record<string, string>) => {
   for (const [k, v] of Object.entries({ SQUARE_ACCESS_TOKEN: "fictional-token", SQUARE_LOCATION_ID: "LOC1", SQUARE_APPLICATION_ID: "sq0idp-fictional", ...vars })) vi.stubEnv(k, v);
 };
-const writes = () => calls.filter((c) => c.method === "POST" && !c.path.endsWith("/search") && !c.path.endsWith("/batch-retrieve"));
+// Square's token-status lookup is a POST that only reads the token's own permissions.
+const writes = () => calls.filter((c) => c.method === "POST" && !c.path.endsWith("/search") && !c.path.endsWith("/batch-retrieve") && c.path !== "/oauth2/token/status");
 
 beforeEach(async () => {
   await resetDb();
@@ -119,7 +120,7 @@ describe("connection-health check (read only)", () => {
     await expect(runSquareHealthCheck(daria)).rejects.toThrow(/Only Tabitha/);
     const r = await runSquareHealthCheck(tabitha);
     expect(r.ok).toBe(true);
-    expect((r.steps as { key: string }[]).map((s) => s.key)).toEqual(["settings", "token", "location", "customers", "invoices", "cards", "orders"]);
+    expect((r.steps as { key: string }[]).map((s) => s.key)).toEqual(["settings", "token", "location", "customers", "invoices", "cards", "orders", "payments", "invoicing"]);
     expect((await squareHealth()).state).toBe("WORKING");
     expect(calls.every((c) => c.host === "connect.squareup.com")).toBe(true);
     expect(writes()).toEqual([]);
