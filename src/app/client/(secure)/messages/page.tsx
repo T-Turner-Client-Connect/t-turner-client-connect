@@ -25,8 +25,6 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
   const q = `?account=${current.clientId}`;
   const conversations = await portalConversations(user, current.clientId);
   const selected = sp.c ? conversations.find((c) => c.id === sp.c) : undefined;
-  // "Appointments" opens a prefilled request until online scheduling is available.
-  const appointment = sp.new === "appointment" && !selected;
   const thread = selected
     ? await prisma.message.findMany({
         where: { conversationId: selected.id, channel: "PORTAL" },
@@ -39,9 +37,9 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
   const composer = (
     <ActionForm action={portalMessageAction.bind(null, current.clientId)} className="space-y-3" resetOnSuccess idempotent>
       {selected && <input type="hidden" name="conversationId" value={selected.id} />}
-      {!selected && <Field label="Subject"><input className="input" name="subject" required maxLength={200} defaultValue={appointment ? "Appointment request" : undefined} /></Field>}
-      <Field label="Message" hint={appointment ? "Tell us the reason for the visit, two or three days and times that work for you, and whether you'd like to meet in person, by phone or virtually. Our office will confirm." : undefined}>
-        <textarea className="input" name="body" rows={appointment ? 6 : 4} required autoFocus={appointment} />
+      {!selected && <Field label="Subject"><input className="input" name="subject" required maxLength={200} /></Field>}
+      <Field label="Message">
+        <textarea className="input" name="body" rows={4} required />
       </Field>
       {current.canUpload && <Field label="Attach a file (optional)" hint="PDF, JPG or PNG up to 5 MB."><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" /></Field>}
       <Button type="submit">Send securely</Button>
@@ -109,7 +107,7 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
           <section className="min-w-0 rounded-2xl border border-ivory-200 bg-white p-5 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] sm:p-6">
             <h2 className="mb-4 flex items-center gap-3 font-serif text-2xl font-bold text-navy-900 sm:text-[1.9rem]"><Send className="size-7 text-gold-600" aria-hidden />Send a Message</h2>
             {accounts.length > 1 && <p className="mb-4 text-xs text-slate-600" data-testid="message-target">Sending about: <strong className="text-navy-900">{current.client.businessName || current.client.displayName}</strong></p>}
-            <MessageComposer action={portalMessageAction.bind(null, current.clientId)} canUpload={current.canUpload} textNumber={textNumber} email={office} defaultSubject={appointment ? "Appointment request" : undefined} uploadLabel={MAX_UPLOAD_LABEL} />
+            <MessageComposer action={portalMessageAction.bind(null, current.clientId)} canUpload={current.canUpload} textNumber={textNumber} email={office} uploadLabel={MAX_UPLOAD_LABEL} />
           </section>
         </div>
       </>

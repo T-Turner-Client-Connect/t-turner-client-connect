@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
-import { Bell, BookOpen, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, Settings, ShieldCheck, Upload, Users, X } from "lucide-react";
+import { Bell, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, Settings, ShieldCheck, Upload, Users, X } from "lucide-react";
 
 const MAIN = [
   ["/client", "Home", Home],
@@ -14,6 +14,7 @@ const MAIN = [
   ["/client/documents", "Document Vault", Folder],
   ["/client/identity", "Identity Documents", ShieldCheck],
   ["/client/messages", "Message Center", MessageCircle],
+  ["/client/appointments", "Appointments", CalendarDays],
   ["/client/billing", "Billing & Payments", CreditCard],
   ["/client/agreements", "Pricing & Agreements", FileSignature],
   ["/client/news", "News & Tax Countdowns", Megaphone],
