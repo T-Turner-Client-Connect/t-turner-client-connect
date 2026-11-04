@@ -8,7 +8,9 @@ import {
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { businessOverview, YEAR_END_STAGES, type Deadline } from "@/lib/services/business-overview";
-import { usd } from "@/lib/services/ledger";
+import { canUseLedger, usd } from "@/lib/services/ledger";
+import { bankFeed } from "@/lib/services/bank-feed";
+import { BankTicker } from "@/components/bank/bank-ticker";
 import { MonthSelect } from "@/components/business-overview/month-select";
 
 export const metadata = { title: "Client Overview" };
@@ -109,6 +111,8 @@ export default async function ClientOverview({ params, searchParams }: { params:
   }
   if (!(await prisma.client.count({ where: { id: clientId } }))) notFound();
   const o = await businessOverview(user, clientId, sp.month);
+  // The same daily balance ticker the client sees, for the staff who may work in this client's books.
+  const feed = (await canUseLedger(user, clientId)) ? await bankFeed(clientId) : null;
   const base = `/bookkeeping/${clientId}`;
   const mName = monthName(o.selected);
   const short = monthName(o.selected, { month: "long" });
@@ -153,6 +157,8 @@ export default async function ClientOverview({ params, searchParams }: { params:
           <MonthSelect base={base} value={o.selected} choices={o.monthChoices} />
         </div>
       </section>
+
+      {feed && <BankTicker feed={feed} noneText={null} />}
 
       {/* Figures */}
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="This month's figures">

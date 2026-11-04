@@ -76,12 +76,15 @@ function AccountTabs({ accounts, current, pathname }: { accounts: Account[]; cur
   if (accounts.length < 2) return null;
   const sorted = [...accounts.filter((a) => a.personal), ...accounts.filter((a) => !a.personal)];
   const selected = accounts.find((a) => a.id === current);
+  // With a Managed Business, the tabs read simply "Personal" and the business name.
+  const hasBusiness = accounts.some((a) => a.business);
+  const tabLabel = (a: Account) => (a.personal ? (hasBusiness ? "Personal" : `Personal — ${a.name}`) : a.name);
   return (
     <div className="border-b border-ivory-200 bg-white/90 px-4 py-2 sm:px-8" data-testid="account-tabs">
       <nav aria-label="Your accounts" className="flex gap-2 overflow-x-auto pb-1">
         {sorted.map((a) => (
           <Link key={a.id} href={`${pathname}?account=${a.id}`} aria-current={a.id === current ? "page" : undefined} className={clsx("shrink-0 rounded-full px-3 py-1.5 text-sm font-semibold", a.id === current ? "bg-navy-900 text-gold-300 ring-2 ring-gold-500" : "bg-ivory-50 text-navy-900 ring-1 ring-ivory-200 hover:bg-gold-100")}>
-            {a.personal ? `Personal — ${a.name}` : a.name}
+            {tabLabel(a)}
           </Link>
         ))}
       </nav>

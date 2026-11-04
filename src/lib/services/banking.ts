@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
-import { createLinkToken, exchangePublicToken, getAccounts, PlaidError, plaidMode, removeItem, syncPage, type PlaidTxn } from "@/lib/plaid";
+import { createLinkToken, exchangePublicToken, getAccounts, PlaidError, plaidMode, removeItem, syncPage, type PlaidAccount, type PlaidTxn } from "@/lib/plaid";
 import { ValidationError } from "./clients";
 import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, crossSourceMatch, toDate, ymdOf } from "./ledger";
 import { isReportApprover } from "./bookkeeping-clients";
@@ -95,7 +95,7 @@ export type SyncResult = { added: number; matched: number; modified: number; rem
  * recognizing rows already imported from statements, and saving the cursor only after the
  * whole batch is stored — so a failure never loses or doubles a transaction.
  */
-export async function syncConnection(connectionId: string, trigger: "DAILY" | "MANUAL", actor: Actor | null = null): Promise<SyncResult> {
+export async function syncConnection(connectionId: string, trigger: "DAILY" | "MANUAL" | "CLIENT", actor: Actor | null = null): Promise<SyncResult> {
   const conn = await prisma.bankConnection.findUnique({ where: { id: connectionId }, include: { accounts: true } });
   if (!conn || conn.status === "DISCONNECTED") throw new ValidationError("Connection not found.");
   if (actor) await assertLedger(actor, conn.clientId);
@@ -173,6 +173,8 @@ export async function syncConnection(connectionId: string, trigger: "DAILY" | "M
       await tx.bankConnection.update({ where: { id: connectionId }, data: { cursor, lastSuccessAt: new Date(), lastError: null, status: "ACTIVE" } });
     });
     await prisma.bankSyncRun.update({ where: { id: run.id }, data: { status: "OK", finishedAt: new Date(), ...r } });
+    // Balances ride along with every successful retrieval; a balance problem never fails the sync.
+    await refreshBalances(connectionId, token).catch(() => undefined);
     await audit(prisma, { actorId: actor?.id ?? null, action: "banking.synced", entityType: "BankConnection", entityId: connectionId, clientId: conn.clientId, details: { trigger, ...r } });
     await notifyIfNeeded(conn.clientId);
     return r;
@@ -184,6 +186,50 @@ export async function syncConnection(connectionId: string, trigger: "DAILY" | "M
     await notifyIfNeeded(conn.clientId, status === "NEEDS_REAUTH" ? "The bank connection needs the client to sign in again." : "Daily bank retrieval failed.");
     throw err instanceof PlaidError ? new ValidationError(`Bank retrieval failed: ${err.message}`) : err;
   }
+}
+
+// --- Balances --------------------------------------------------------------------------------
+
+type PlaidBalances = { current?: number | null; available?: number | null; iso_currency_code?: string | null; last_updated_datetime?: string | null };
+
+/** The business's own calendar day (Central), as a DATE. */
+export const balanceDay = (d = new Date()) => new Date(`${d.toLocaleDateString("en-CA", { timeZone: "America/Chicago" })}T00:00:00.000Z`);
+const centsOf = (n: number | null | undefined) => (typeof n === "number" && Number.isFinite(n) ? Math.round(n * 100) : null);
+
+/**
+ * Stores each account's balance as the bank last reported it (Plaid /accounts/get, read-only)
+ * and keeps one snapshot per account per day — the latest of the day wins.
+ */
+export async function refreshBalances(connectionId: string, accessToken?: string) {
+  const conn = await prisma.bankConnection.findUnique({ where: { id: connectionId }, include: { accounts: true } });
+  if (!conn || conn.status === "DISCONNECTED") return 0;
+  const { accounts } = await getAccounts(accessToken ?? decryptSecret(conn.accessTokenEnc));
+  const now = new Date();
+  let n = 0;
+  for (const a of accounts as (PlaidAccount & { balances?: PlaidBalances })[]) {
+    const mine = conn.accounts.find((x) => x.providerAccountId === a.account_id);
+    const current = centsOf(a.balances?.current);
+    if (!mine || current === null) continue;
+    const reported = a.balances?.last_updated_datetime ? new Date(a.balances.last_updated_datetime) : null;
+    const asOf = reported && !Number.isNaN(reported.getTime()) && reported <= now ? reported : now;
+    const available = centsOf(a.balances?.available);
+    await recordBalance(mine.id, conn.clientId, { currentBalanceCents: current, availableBalanceCents: available, isoCurrency: a.balances?.iso_currency_code ?? null, balanceAsOf: asOf });
+    n++;
+  }
+  return n;
+}
+
+/** Saves an account's latest balance and today's snapshot (one row per account per day). */
+export async function recordBalance(accountId: string, clientId: string, b: { currentBalanceCents: number; availableBalanceCents: number | null; isoCurrency?: string | null; balanceAsOf: Date }) {
+  const day = balanceDay(b.balanceAsOf);
+  await prisma.$transaction([
+    prisma.bankConnectionAccount.update({ where: { id: accountId }, data: { currentBalanceCents: b.currentBalanceCents, availableBalanceCents: b.availableBalanceCents, isoCurrency: b.isoCurrency ?? null, balanceAsOf: b.balanceAsOf } }),
+    prisma.bankBalanceDaily.upsert({
+      where: { accountId_day: { accountId, day } },
+      create: { accountId, clientId, day, currentBalanceCents: b.currentBalanceCents, availableBalanceCents: b.availableBalanceCents, recordedAt: b.balanceAsOf },
+      update: { currentBalanceCents: b.currentBalanceCents, availableBalanceCents: b.availableBalanceCents, recordedAt: b.balanceAsOf },
+    }),
+  ]);
 }
 
 /** Manual "Retrieve now" for one client. */

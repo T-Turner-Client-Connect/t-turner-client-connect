@@ -100,6 +100,26 @@
   to { background-position: -200% 0; }
 }
 
+/* Bank balance ticker: scrolls like a stock ticker, pauses on hover/focus, static with reduced motion. */
+@keyframes bank-ticker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bank-ticker-track {
+    animation: bank-ticker var(--ticker-duration, 40s) linear infinite;
+  }
+  .bank-ticker:hover .bank-ticker-track,
+  .bank-ticker:focus-within .bank-ticker-track,
+  .bank-ticker:focus .bank-ticker-track {
+    animation-play-state: paused;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bank-ticker-track, .bank-ticker-track > div { flex-wrap: wrap; width: 100%; }
+  .bank-ticker-copy { display: none; }
+}
+
 /* Client portal: soft ivory-and-gold page background. */
 .lux-page {
   background:
