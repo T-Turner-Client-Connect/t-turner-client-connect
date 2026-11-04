@@ -169,11 +169,24 @@ export function computeBreakdown(i: PricingInput): Breakdown {
   return { lines, subtotalCents: subtotal, serviceDiscountCents: serviceDiscount, servicesAfterDiscountCents: services, taxCents: tax, fullTotalCents: fullTotal, options, explanation };
 }
 
-export type PaymentRow = { kind: "PAYMENT" | "REFUND"; status: "SUCCEEDED" | "FAILED" | "PENDING"; amountCents: number };
+export type PaymentRow = { kind: "PAYMENT" | "REFUND" | "CREDIT"; status: "SUCCEEDED" | "FAILED" | "PENDING"; amountCents: number };
 
-/** Cash actually collected: successful payments minus successful refunds. Pending and failed never count. */
+/**
+ * What has been applied to the balance: successful payments and owner-approved credits, minus
+ * successful refunds. Pending and failed never count. Use cashCollectedCents for money received.
+ */
 export function collectedCents(payments: PaymentRow[]): number {
   return payments.reduce((s, p) => (p.status !== "SUCCEEDED" ? s : p.kind === "REFUND" ? s - p.amountCents : s + p.amountCents), 0);
+}
+
+/** Cash actually collected: successful payments minus successful refunds (credits are not cash). */
+export function cashCollectedCents(payments: PaymentRow[]): number {
+  return collectedCents(payments.filter((p) => p.kind !== "CREDIT"));
+}
+
+/** Owner-approved balance adjustments (credits). */
+export function creditedCents(payments: PaymentRow[]): number {
+  return payments.reduce((s, p) => (p.status === "SUCCEEDED" && p.kind === "CREDIT" ? s + p.amountCents : s), 0);
 }
 
 export type InstallmentStatus = ScheduleItem & { paidCents: number; dueCents: number; state: "PAID" | "PARTIAL" | "DUE" | "OVERDUE"; daysOverdue: number };

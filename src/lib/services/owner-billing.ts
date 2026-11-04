@@ -8,7 +8,9 @@ import { requireClientAccess } from "@/lib/portal/access";
 import {
   AGING_BUCKETS,
   agingBucket,
+  cashCollectedCents,
   collectedCents,
+  creditedCents,
   computeBreakdown,
   PricingError,
   scheduleStatus,
@@ -19,6 +21,7 @@ import {
   type ScheduleItem,
 } from "@/lib/billing/pricing";
 import { termsSnapshot } from "@/lib/billing/terms";
+import { invoiceStatus, type InvoiceStatusKey } from "@/lib/billing/invoice-status";
 import { ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
 
@@ -27,6 +30,10 @@ import { queuePortalNotification } from "./notifications";
  * Every staff-side function checks owner access against the database. Only
  * "Recorded manually" payments exist until a payment provider is connected —
  * nothing here charges a card or bank account.
+ *
+ * Who may do what: staff the owner gave billing access (OwnerAccess scope BILLING) create and
+ * edit drafts and submit them for approval. Sending (offer/issue), withdrawing, voiding,
+ * payments and adjustments need the owner's full access.
  */
 
 export const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -150,10 +157,33 @@ function checkPricing(input: PricingInput, maxInstallments: number) {
   }
 }
 
-async function nextNumber(tx: Prisma.TransactionClient, year: number) {
+/**
+ * Next invoice number for the year. A transaction-scoped lock serializes concurrent creates,
+ * the highest existing number (not a count) is the base, and Invoice.number is unique in the
+ * database, so a number can never be issued twice.
+ */
+export async function nextNumber(tx: Prisma.TransactionClient, year: number) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('invoice-number'))`;
-  const count = await tx.invoice.count({ where: { number: { startsWith: `INV-${year}-` } } });
-  return `INV-${year}-${String(count + 1).padStart(4, "0")}`;
+  const rows = await tx.$queryRaw<{ n: number | null }[]>`
+    SELECT MAX(CAST(SUBSTRING("number" FROM ${`^INV-${year}-([0-9]+)$`}) AS INTEGER)) AS n FROM "Invoice" WHERE "number" LIKE ${`INV-${year}-%`}`;
+  return `INV-${year}-${String(Number(rows[0]?.n ?? 0) + 1).padStart(4, "0")}`;
+}
+
+/** The number the next invoice dated in this year would get (shown on the Create Invoice screen). */
+export async function previewNextNumber(year: number) {
+  return prisma.$transaction((tx) => nextNumber(tx, year));
+}
+
+/** Runs an invoice create, retrying if another create won the same number (unique constraint). */
+export async function withNumberRetry<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code !== "P2002" || attempt >= 4) throw e;
+    }
+  }
 }
 
 function invoiceData(input: QuoteInput, fee: { type: AmountType; value: number }) {
@@ -208,18 +238,22 @@ export async function createQuote(actor: Actor, input: QuoteInput) {
   const fee = await planFeeFor(actor, input.planFeeOverride);
   if (input.allowPlan && fee.type !== "NONE" && !fee.confirmed) throw new ValidationError("Confirm the payment-plan fee rules in Billing settings before offering plans.");
   checkPricing(asPricing(input, fee), fee.maxInstallments);
-  const inv = await prisma.$transaction(async (tx) => {
-    const number = await nextNumber(tx, Number(input.issueDate.slice(0, 4)));
-    return tx.invoice.create({
-      data: {
-        number,
-        clientId: input.clientId,
-        createdById: actor.id,
-        ...invoiceData(input, fee),
-        lines: { create: input.lines.map((l, i) => ({ service: l.service.trim().slice(0, 200), description: l.description?.trim() || null, quantity: l.quantity, unitCents: l.unitCents, sortOrder: i })) },
-      },
-    });
-  });
+  const contact = await billingContactOf(input.clientId);
+  const inv = await withNumberRetry(() =>
+    prisma.$transaction(async (tx) => {
+      const number = await nextNumber(tx, Number(input.issueDate.slice(0, 4)));
+      return tx.invoice.create({
+        data: {
+          number,
+          clientId: input.clientId,
+          createdById: actor.id,
+          ...contact,
+          ...invoiceData(input, fee),
+          lines: { create: input.lines.map((l, i) => ({ service: l.service.trim().slice(0, 200), description: l.description?.trim() || null, quantity: l.quantity, unitCents: l.unitCents, sortOrder: i })) },
+        },
+      });
+    }),
+  );
   await ownerAudit(actor.id, "billing.quote_created", "Invoice", inv.id);
   return inv;
 }
@@ -241,6 +275,25 @@ export async function updateDraft(actor: Actor, invoiceId: string, input: QuoteI
   await ownerAudit(actor.id, "billing.quote_updated", "Invoice", invoiceId);
 }
 
+/**
+ * The client's name and billing contact, copied from the master client record so staff never
+ * re-type them: the business name (or display name), the record's email/phone, or the first
+ * contact's when the record has none, and the mailing address.
+ */
+export async function billingContactOf(clientId: string) {
+  const c = await prisma.client.findUnique({ where: { id: clientId }, include: { contacts: { orderBy: { createdAt: "asc" } } } });
+  if (!c) throw new ValidationError("Choose a client.");
+  const contact = c.contacts.find((x) => x.email || x.phone);
+  const cityLine = [c.city, [c.state, c.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  const address = [c.addressLine1, c.addressLine2, cityLine].filter(Boolean).join("\n");
+  return {
+    billingName: c.businessName || c.displayName,
+    billingEmail: c.email || contact?.email || null,
+    billingPhone: c.phone || contact?.phone || null,
+    billingAddress: address || null,
+  };
+}
+
 async function loadFull(id: string): Promise<FullInvoice & { client: { id: string; displayName: string } }> {
   const inv = await prisma.invoice.findUnique({ where: { id }, include: { lines: true, installments: { orderBy: { seq: "asc" } }, payments: { orderBy: { createdAt: "asc" } }, client: { select: { id: true, displayName: true } } } });
   if (!inv) throw new ValidationError("Not found.");
@@ -254,12 +307,13 @@ async function notifyBilling(clientId: string, kind: "QUOTE_READY" | "NEW_INVOIC
 
 /** Publishes a quote to the client's portal for acceptance. */
 export async function offerQuote(actor: Actor, invoiceId: string) {
-  await assertOwner(actor, "billing");
+  await assertOwner(actor, "full");
   const inv = await loadFull(invoiceId);
-  if (inv.state !== "DRAFT") throw new ValidationError("This quote was already sent.");
+  if (inv.state !== "DRAFT" && inv.state !== "PENDING_APPROVAL") throw new ValidationError("This quote was already sent.");
   const s = await billingSettings();
   checkPricing(pricingInputOf(inv), s.maxInstallments);
-  const res = await prisma.invoice.updateMany({ where: { id: invoiceId, state: "DRAFT" }, data: { state: "OFFERED", publishedAt: new Date() } });
+  const now = new Date();
+  const res = await prisma.invoice.updateMany({ where: { id: invoiceId, state: { in: ["DRAFT", "PENDING_APPROVAL"] } }, data: { state: "OFFERED", publishedAt: now, approvedAt: now, approvedById: actor.id } });
   if (res.count !== 1) throw new ValidationError("This quote was already sent.");
   await ownerAudit(actor.id, "billing.quote_offered", "Invoice", invoiceId);
   await notifyBilling(inv.clientId, "QUOTE_READY", invoiceId);
@@ -267,7 +321,7 @@ export async function offerQuote(actor: Actor, invoiceId: string) {
 
 /** Takes an offered quote back to draft (only before the client accepts). */
 export async function withdrawQuote(actor: Actor, invoiceId: string) {
-  await assertOwner(actor, "billing");
+  await assertOwner(actor, "full");
   const res = await prisma.invoice.updateMany({ where: { id: invoiceId, state: "OFFERED" }, data: { state: "DRAFT", publishedAt: null } });
   if (res.count !== 1) throw new ValidationError("Only an offered quote that hasn't been accepted can be withdrawn.");
   await ownerAudit(actor.id, "billing.quote_withdrawn", "Invoice", invoiceId);
@@ -282,41 +336,52 @@ async function freeze(tx: Prisma.TransactionClient, inv: FullInvoice & { client:
   return { terms, hash };
 }
 
-/** Publishes a plain invoice (full payment, no acceptance step). */
-export async function issueInvoice(actor: Actor, invoiceId: string) {
-  await assertOwner(actor, "billing");
+/**
+ * The owner's approval: publishes a plain invoice (full payment, no acceptance step) to the
+ * client's portal and sends the "new invoice" notice (email through sendEmail, by the client's
+ * notification settings). Drafts and invoices pending approval only; owner (full access) only.
+ */
+export async function issueInvoice(actor: Actor, invoiceId: string, opts: { checkOptions?: (inv: Invoice) => Promise<void> } = {}) {
+  await assertOwner(actor, "full");
   const inv = await loadFull(invoiceId);
-  if (inv.state !== "DRAFT") throw new ValidationError("Only drafts can be issued.");
+  if (inv.state !== "DRAFT" && inv.state !== "PENDING_APPROVAL") throw new ValidationError("Only drafts and invoices waiting for approval can be sent.");
   if (!inv.allowFull) throw new ValidationError("Issuing directly bills the full amount. For a payment plan, send it as a quote so the client can choose and accept.");
   checkPricing(pricingInputOf(inv), (await billingSettings()).maxInstallments);
+  if (opts.checkOptions) await opts.checkOptions(inv);
+  const now = new Date();
   await prisma.$transaction(async (tx) => {
-    const res = await tx.invoice.updateMany({ where: { id: invoiceId, state: "DRAFT" }, data: { state: "ISSUED", publishedAt: new Date() } });
-    if (res.count !== 1) throw new ValidationError("Only drafts can be issued.");
+    const res = await tx.invoice.updateMany({ where: { id: invoiceId, state: { in: ["DRAFT", "PENDING_APPROVAL"] } }, data: { state: "ISSUED", publishedAt: now, approvedAt: now, approvedById: actor.id } });
+    if (res.count !== 1) throw new ValidationError("Only drafts and invoices waiting for approval can be sent.");
     await freeze(tx, inv, "FULL", {});
   });
+  await ownerAudit(actor.id, "billing.invoice_approved", "Invoice", invoiceId, { from: inv.state });
   await ownerAudit(actor.id, "billing.invoice_issued", "Invoice", invoiceId);
   await notifyBilling(inv.clientId, "NEW_INVOICE", invoiceId);
 }
 
 export async function voidInvoice(actor: Actor, invoiceId: string, reason: string) {
-  await assertOwner(actor, "billing");
+  await assertOwner(actor, "full");
   if (!reason.trim()) throw new ValidationError("Give a reason for voiding.");
   const inv = await loadFull(invoiceId);
-  if (collectedCents(inv.payments) !== 0) throw new ValidationError("Refund or reverse the recorded payments before voiding.");
+  if (cashCollectedCents(inv.payments) !== 0) throw new ValidationError("Refund or reverse the recorded payments before voiding.");
   const res = await prisma.invoice.updateMany({ where: { id: invoiceId, state: { notIn: ["VOID"] } }, data: { state: "VOID", voidedAt: new Date(), voidReason: reason.trim().slice(0, 300) } });
   if (res.count !== 1) throw new ValidationError("Already void.");
-  await ownerAudit(actor.id, "billing.invoice_voided", "Invoice", invoiceId);
+  await ownerAudit(actor.id, "billing.invoice_voided", "Invoice", invoiceId, { reason: reason.trim().slice(0, 300), from: inv.state });
 }
 
 // ---------------------------------------------------------------------------
 // Client side (portal)
 // ---------------------------------------------------------------------------
 
-/** Quotes and invoices explicitly published to this account. No private notes. */
+/**
+ * Quotes and invoices explicitly published to this account (a voided invoice that was sent stays
+ * in the history as Voided). Never drafts, invoices waiting for approval, private notes, or who
+ * created or approved them.
+ */
 export async function portalBilling(user: PortalActor, clientId: string) {
   await requireClientAccess(user.id, clientId, "billing");
   const rows = await prisma.invoice.findMany({
-    where: { clientId, publishedAt: { not: null }, state: { in: ["OFFERED", "ACCEPTED", "ISSUED", "DECLINED"] } },
+    where: { clientId, publishedAt: { not: null }, state: { in: ["OFFERED", "ACCEPTED", "ISSUED", "DECLINED", "VOID"] } },
     include: { lines: true, installments: { orderBy: { seq: "asc" } }, payments: { where: { status: "SUCCEEDED" }, orderBy: { receivedOn: "asc" } } },
     orderBy: { issueDate: "desc" },
   });
@@ -326,12 +391,21 @@ export async function portalBilling(user: PortalActor, clientId: string) {
     const terms = inv.acceptedTerms as unknown as { totalCents: number; schedule: ScheduleItem[] } | null;
     const collected = collectedCents(inv.payments);
     const schedule = terms ? scheduleStatus(terms.schedule, collected, today) : [];
+    const voided = inv.state === "VOID";
+    const status: InvoiceStatusKey = invoiceStatus({ state: inv.state, viewedAt: inv.viewedAt, dueDate: ymd(inv.dueDate), totalCents: terms?.totalCents ?? null, appliedCents: collected, overdueInstallment: schedule.some((x) => x.state === "OVERDUE") }, today);
     return {
       id: inv.id,
       number: inv.number,
       title: inv.title,
       state: inv.state,
+      status,
+      formType: inv.formType,
       issueDate: ymd(inv.issueDate),
+      dueDate: ymd(inv.dueDate),
+      billTo: { name: inv.billingName, email: inv.billingEmail, phone: inv.billingPhone, address: inv.billingAddress },
+      offeredMethods: inv.offeredMethods,
+      squarePaymentUrl: inv.squarePaymentUrl,
+      creditedCents: creditedCents(inv.payments),
       memo: inv.memo,
       paymentTerms: inv.paymentTerms,
       breakdown,
@@ -339,8 +413,8 @@ export async function portalBilling(user: PortalActor, clientId: string) {
       acceptedAt: inv.acceptedAt,
       totalCents: terms?.totalCents ?? null,
       collectedCents: collected,
-      balanceCents: terms ? terms.totalCents - collected : null,
-      schedule,
+      balanceCents: voided ? 0 : terms ? terms.totalCents - collected : null,
+      schedule: voided ? [] : schedule,
       payments: inv.payments.map((p) => ({ id: p.id, kind: p.kind, amountCents: p.amountCents, receivedOn: ymd(p.receivedOn), method: p.method })),
     };
   });
@@ -388,19 +462,30 @@ export async function portalDeclineQuote(user: PortalActor, invoiceId: string) {
 
 export type PaymentInput = {
   invoiceId: string;
-  kind: "PAYMENT" | "REFUND";
+  kind: "PAYMENT" | "REFUND" | "CREDIT";
   status: "SUCCEEDED" | "FAILED";
   amountCents: number;
   receivedOn: string;
   method: PaymentMethod;
   reference?: string | null;
   note?: string | null;
+  // The form's one-time key (ActionForm idempotent): the same submission can't be recorded twice.
+  idempotencyKey?: string | null;
 };
 
+/**
+ * Records an offline payment, refund, failed attempt or balance adjustment (owner, full access).
+ * Under a per-invoice lock: payments and credits can never exceed the remaining balance, a refund
+ * can't exceed the cash collected, and a duplicate is refused — the same form submitted twice, a
+ * reference already recorded for this client, or the same amount, date and method on this invoice.
+ */
 export async function recordPayment(actor: Actor, input: PaymentInput) {
-  await assertOwner(actor, "billing");
+  await assertOwner(actor, "full");
   if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) throw new ValidationError("Enter an amount greater than $0.");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.receivedOn) || input.receivedOn > todayYmd()) throw new ValidationError("Enter the date the money moved (not in the future).");
+  if (input.kind === "CREDIT" && !input.note?.trim()) throw new ValidationError("Give a reason for the adjustment.");
+  const key = input.idempotencyKey?.trim().slice(0, 100) || null;
+  if (key && (await prisma.payment.count({ where: { idempotencyKey: key } }))) throw new ValidationError("This payment was already recorded.");
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`invoice-pay:${input.invoiceId}`}))`;
     const inv = await tx.invoice.findUnique({ where: { id: input.invoiceId }, include: { payments: true } });
@@ -409,10 +494,23 @@ export async function recordPayment(actor: Actor, input: PaymentInput) {
     const terms = inv.acceptedTerms as unknown as { totalCents: number };
     const collected = collectedCents(inv.payments);
     if (input.status === "SUCCEEDED") {
-      if (input.kind === "PAYMENT" && collected + input.amountCents > terms.totalCents) {
+      if ((input.kind === "PAYMENT" || input.kind === "CREDIT") && collected + input.amountCents > terms.totalCents) {
         throw new ValidationError(`That's more than the remaining balance of $${((terms.totalCents - collected) / 100).toFixed(2)}.`);
       }
-      if (input.kind === "REFUND" && input.amountCents > collected) throw new ValidationError("A refund can't exceed what was collected.");
+      if (input.kind === "REFUND" && input.amountCents > cashCollectedCents(inv.payments)) throw new ValidationError("A refund can't exceed what was collected.");
+      if (input.kind === "PAYMENT") {
+        const ref = input.reference?.trim();
+        const sameRef = (r: string | null) => (r ?? "").trim().toLowerCase() === (ref ?? "").toLowerCase();
+        const succeeded = inv.payments.filter((p) => p.status === "SUCCEEDED" && p.kind === "PAYMENT");
+        // Same amount and date, and the same reference (or, with no reference, the same method).
+        if (succeeded.some((p) => p.amountCents === input.amountCents && ymd(p.receivedOn) === input.receivedOn && sameRef(p.reference) && (ref || p.method === input.method))) {
+          throw new ValidationError("This payment looks like a duplicate: the same amount, date and reference are already recorded on this invoice.");
+        }
+        if (ref) {
+          const dup = await tx.payment.findFirst({ where: { clientId: inv.clientId, kind: "PAYMENT", status: "SUCCEEDED", reference: { equals: ref, mode: "insensitive" } } });
+          if (dup) throw new ValidationError("A payment with this reference number is already recorded for this client.");
+        }
+      }
     }
     const p = await tx.payment.create({
       data: {
@@ -423,15 +521,21 @@ export async function recordPayment(actor: Actor, input: PaymentInput) {
         amountCents: input.amountCents,
         receivedOn: dateOnly(input.receivedOn),
         method: input.method,
-        source: "manual",
-        reference: input.reference?.trim() || null,
-        note: input.note?.trim() || null,
+        source: input.kind === "CREDIT" ? "adjustment" : "manual",
+        reference: input.reference?.trim().slice(0, 100) || null,
+        note: input.note?.trim().slice(0, 300) || null,
         failureNote: input.status === "FAILED" ? input.note?.trim() || "Payment failed" : null,
+        idempotencyKey: key,
         createdById: actor.id,
       },
     });
-    await tx.ownerAuditLog.create({ data: { actorId: actor.id, action: `billing.${input.kind.toLowerCase()}_${input.status.toLowerCase()}`, entityType: "Payment", entityId: p.id } });
+    const action = input.kind === "CREDIT" ? "billing.adjustment_applied" : `billing.${input.kind.toLowerCase()}_${input.status.toLowerCase()}`;
+    await tx.ownerAuditLog.create({ data: { actorId: actor.id, action, entityType: "Payment", entityId: p.id, details: { invoiceId: inv.id, amountCents: input.amountCents, method: input.method } } });
     return p;
+  }).catch((e: unknown) => {
+    // Two submits with the same key racing past the check: the unique key stops the second.
+    if ((e as { code?: string }).code === "P2002") throw new ValidationError("This payment was already recorded.");
+    throw e;
   });
 }
 
@@ -455,6 +559,9 @@ export type InvoiceRow = {
   nextDue: string | null;
   oldestOverdueDays: number;
   services: string[];
+  status: InvoiceStatusKey;
+  dueDate: string;
+  formType: string;
 };
 
 /** Accepted/issued invoices with balances, using only recorded payments. */
@@ -489,6 +596,9 @@ export async function invoiceRows(actor: Actor, filter: { clientId?: string; sta
       nextDue: next?.dueDate ?? null,
       oldestOverdueDays: overdue.reduce((m, o) => Math.max(m, o.daysOverdue), 0),
       services: inv.lines.map((l) => l.service),
+      status: invoiceStatus({ state: inv.state, viewedAt: inv.viewedAt, dueDate: ymd(inv.dueDate), totalCents: terms?.totalCents ?? null, appliedCents: collected, overdueInstallment: overdue.length > 0 }, today),
+      dueDate: ymd(inv.dueDate),
+      formType: inv.formType,
     };
   });
 }
@@ -543,6 +653,8 @@ export async function monthlySummary(actor: Actor, year: number) {
   }
   for (const p of payments) {
     const m = months[p.receivedOn.getUTCMonth()];
+    // Credits adjust a balance; they are not cash received.
+    if (p.kind === "CREDIT") continue;
     if (p.kind === "REFUND") m.refundedCents += p.amountCents;
     else m.collectedCents += p.amountCents;
   }

@@ -54,7 +54,7 @@ export async function PaymentPanel({ clientId, invoice }: { clientId: string; in
   }
 
   const current = invoice.paymentMethod as PayMethod | null;
-  const shown = instructions.filter((i) => i.method !== "IN_HOUSE_PLAN");
+  const shown = instructions.filter((i) => i.method !== "IN_HOUSE_PLAN" && i.method !== "REFUND_TRANSFER");
   const instr = current ? instructions.find((i) => i.method === current) : null;
   const [credit, debit] = await Promise.all([planOptions(invoice.serviceCents, "CARD_CREDIT"), planOptions(invoice.serviceCents, "CARD_DEBIT")]);
 

@@ -18,6 +18,9 @@ import { fmtDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { NOT_SYNCED, portalSquareBilling, todayCentral } from "@/lib/services/square-billing";
 import { portalManualBilling } from "@/lib/services/manual-billing";
+import { firmInvoiceDoc, markInvoiceViewed } from "@/lib/services/firm-invoices";
+import { FirmInvoiceDocument } from "@/components/billing/firm-invoice-document";
+import { INVOICE_STATUS } from "@/lib/billing/invoice-status";
 
 export const metadata = { title: "Billing & Payments" };
 
@@ -42,14 +45,11 @@ const WAYS = [
   { method: "VENMO", label: "Venmo®", sub: "Pay with Venmo", tile: "bg-[#008CFF]", glyph: "V", details: "Send to: @Tabitha-Thompson-7" },
 ] as const;
 
-function officeStatus(inv: Office, today: string): [string, Tone] {
-  if (inv.state === "OFFERED") return ["Ready for review", "pending"];
-  if (inv.state === "DECLINED") return ["Declined", "muted"];
-  const bal = inv.balanceCents ?? 0;
-  if (inv.totalCents != null && bal <= 0) return ["Paid", "paid"];
-  if (inv.schedule.some((s) => s.state === "OVERDUE") || inv.schedule.some((s) => s.dueCents > 0 && s.dueDate < today)) return ["Overdue", "overdue"];
-  if (inv.collectedCents > 0) return ["Partially Paid", "partial"];
-  return ["Open", "open"];
+/** Draft, Sent, Viewed, Partially Paid, Paid, Overdue or Voided — the same status our office sees. */
+function officeStatus(inv: Office): [string, Tone] {
+  if (inv.status === "QUOTE_OFFERED") return ["Ready for review", "pending"];
+  const s = INVOICE_STATUS[inv.status];
+  return [s.label, s.tone];
 }
 
 function squareStatus(status: string, due: string, today: string): [string, Tone] | null {
@@ -89,6 +89,34 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
 
   // One invoice opened from the table: the existing quote review, schedule and payment method.
   const opened = sp.invoice ? items.find((i) => i.id === sp.invoice) : undefined;
+  if (opened) await markInvoiceViewed(user, opened.id);
+  if (opened && opened.formType === "INVOICE") {
+    const doc = await firmInvoiceDoc({
+      number: opened.number,
+      status: opened.status === "SENT" ? "VIEWED" : opened.status,
+      issueDate: opened.issueDate,
+      dueDate: opened.dueDate,
+      billTo: opened.billTo,
+      lines: opened.breakdown.lines,
+      totalCents: opened.totalCents,
+      payments: opened.payments,
+      offeredMethods: opened.offeredMethods,
+      squarePaymentUrl: opened.squarePaymentUrl,
+    });
+    return (
+      <div className="space-y-6">
+        {banner}
+        <Link href={`/client/billing?${q}`} className="inline-flex items-center gap-2 font-semibold text-navy-900 underline decoration-gold-500 underline-offset-4"><ArrowLeft className="size-4" aria-hidden /> Back to Billing &amp; Payments</Link>
+        <FirmInvoiceDocument doc={doc} />
+        {doc.options.some((o) => o.method === "REFUND_TRANSFER") && doc.balanceCents > 0 && (
+          <section className={`${luxPanel} p-4 sm:p-5`} data-testid="refund-transfer-request">
+            <PanelTitle icon={Info} title="Paying from your refund?" sub="Tell us here first — our office reviews every request before your return is filed." />
+            <div className="mt-3"><PayFromRefund clientId={current.clientId} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} /></div>
+          </section>
+        )}
+      </div>
+    );
+  }
   if (opened) {
     const client = await prisma.client.findUniqueOrThrow({ where: { id: current.clientId }, select: { displayName: true } });
     const method = (await prisma.invoice.findUnique({ where: { id: opened.id }, select: { paymentMethod: true } }))?.paymentMethod ?? null;
@@ -109,18 +137,19 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
   let paidYtd = 0;
 
   for (const inv of items) {
-    const st = officeStatus(inv, today);
+    const st = officeStatus(inv);
     if (inv.state !== "OFFERED" && inv.state !== "DECLINED") {
       const bal = Math.max(0, inv.balanceCents ?? 0);
       balance += bal;
       if (bal > 0) openCount++;
     }
-    for (const p of inv.payments) if (p.receivedOn.startsWith(year)) paidYtd += p.kind === "REFUND" ? -p.amountCents : p.amountCents;
+    // Credits (balance adjustments) aren't money paid.
+    for (const p of inv.payments) if (p.receivedOn.startsWith(year) && p.kind !== "CREDIT") paidYtd += p.kind === "REFUND" ? -p.amountCents : p.amountCents;
     rows.push({
       key: inv.id, sort: inv.issueDate, number: inv.number, description: inv.title,
       amountCents: inv.totalCents ?? inv.breakdown.options.FULL?.totalCents ?? inv.breakdown.subtotalCents,
       status: st, date: inv.issueDate,
-      action: { href: `/client/billing?${q}&invoice=${inv.id}`, label: inv.state === "OFFERED" ? "Review" : "View" },
+      action: inv.state === "DECLINED" ? null : { href: `/client/billing?${q}&invoice=${inv.id}`, label: inv.state === "OFFERED" ? "Review" : "View" },
     });
   }
 
@@ -345,7 +374,7 @@ function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Offi
               </tbody>
             </table>
           </div>
-          {inv.payments.length > 0 && <p className="mt-2 text-xs text-slate-600">Payments received: {inv.payments.map((p) => `${p.kind === "REFUND" ? "refund " : ""}${money(p.amountCents)} on ${p.receivedOn} (${METHOD_LABELS[p.method]})`).join("; ")}</p>}
+          {inv.payments.length > 0 && <p className="mt-2 text-xs text-slate-600">Payments received: {inv.payments.map((p) => `${p.kind === "REFUND" ? "refund " : p.kind === "CREDIT" ? "adjustment " : ""}${money(p.amountCents)} on ${p.receivedOn} (${METHOD_LABELS[p.method]})`).join("; ")}</p>}
         </div>
       ) : null}
       {inv.state === "OFFERED" && (

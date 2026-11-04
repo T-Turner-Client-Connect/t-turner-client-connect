@@ -7,12 +7,13 @@ import { fmtDateTime } from "@/lib/format";
 
 // Suggested instructions from the owner's details; nothing shows to clients until saved here.
 const SUGGESTED: Partial<Record<keyof typeof PAY_METHODS, string>> = {
-  CASH: "Pay in person at our office. No fee.",
+  CASH: "Cash is accepted in our office only. Please do not mail cash.",
   ZELLE: "Send to 205-420-1825 (Tabitha Turner). No fee. Include your name and invoice number in the memo.",
-  CASH_APP: "Send to $TTHOMPSON25 (Tabitha Thompson — the owner of T. Turner & Associates). Include your invoice number.",
+  CASH_APP: "Send to $TThompson25 (Tabitha Thompson — the owner of T. Turner & Associates). Include your invoice number.",
   VENMO: "Send to @Tabitha-Thompson-7 (Tabitha Thompson — the owner of T. Turner & Associates). Include your invoice number.",
   APPLE_PAY: "Pay with Apple Pay through the Square payment link on your invoice.",
   SQUARE_INVOICE: "Pay by card through the secure Square link on your invoice.",
+  REFUND_TRANSFER: "Eligible tax returns only, subject to staff approval and bank-product requirements. Republic Bank's own disclosures and fees apply; choosing it does not guarantee payment.",
   SQUARE_AFTERPAY: "Shown on the Square payment page only when Afterpay is available for your purchase.",
 };
 

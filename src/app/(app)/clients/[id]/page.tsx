@@ -24,6 +24,8 @@ import { TaxesTab } from "@/components/client-tabs/taxes";
 import { returnTypeLabel } from "@/lib/tax/return-types";
 import { ServicesTab } from "@/components/client-tabs/services";
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
+import { InvoicesTab } from "@/components/client-tabs/invoices";
+import { ownerAccessFor } from "@/lib/auth/owner";
 
 export const metadata = { title: "Client" };
 
@@ -39,6 +41,8 @@ const TABS = [
   { key: "taxes", label: "Taxes" },
   { key: "services", label: "Services & Agreements" },
   { key: "appointments", label: "Appointments" },
+  // Owner's Office invoices: only for staff with owner access (full or delegated billing).
+  { key: "invoices", label: "Invoices" },
   { key: "portal", label: "Portal & signatures" },
 ] as const;
 
@@ -46,7 +50,9 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
   const user = await requireUser();
   const { id } = await params;
   const sp = await searchParams;
-  const tab = TABS.find((t) => t.key === sp.tab)?.key ?? "overview";
+  const seesInvoices = !!(await ownerAccessFor(user.id));
+  const tabs = TABS.filter((t) => t.key !== "invoices" || seesInvoices);
+  const tab = tabs.find((t) => t.key === sp.tab)?.key ?? "overview";
   const client = await prisma.client.findUnique({
     where: { id },
     include: {
@@ -122,7 +128,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       )}
 
       <nav aria-label="Client sections" className="mb-5 flex gap-1 overflow-x-auto rounded-xl border border-navy-100 bg-white p-1">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <Link
             key={t.key}
             href={`/clients/${id}${t.key === "overview" ? "" : `?tab=${t.key}`}`}
@@ -146,6 +152,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       {tab === "taxes" && <TaxesTab clientId={id} user={user} />}
       {tab === "services" && <ServicesTab clientId={id} user={user} />}
       {tab === "appointments" && <AppointmentsTab clientId={id} />}
+      {tab === "invoices" && seesInvoices && <InvoicesTab clientId={id} actor={user} />}
       {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} actor={user} />}
 
       {tab === "overview" && (

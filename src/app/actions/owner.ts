@@ -36,7 +36,7 @@ function bps(raw: string, label: string): number {
 
 const amountType = (v: string): AmountType => (v === "FLAT" || v === "PERCENT" ? v : "NONE");
 const amountValue = (type: AmountType, raw: string, label: string) => (type === "FLAT" ? cents(raw || "0", label) : type === "PERCENT" ? bps(raw || "0", label) : 0);
-const METHODS: PaymentMethod[] = ["CASH", "CHECK", "CARD", "ACH", "ZELLE", "CASH_APP", "OTHER"];
+const METHODS: PaymentMethod[] = ["CASH", "CHECK", "CARD", "ACH", "ZELLE", "CASH_APP", "VENMO", "REFUND_TRANSFER", "OTHER"];
 
 function quoteFromForm(fd: FormData): QuoteInput {
   const services = fd.getAll("line_service").map(String);
@@ -139,7 +139,7 @@ export async function recordPaymentAction(invoiceId: string, _prev: ActionState,
     if (!METHODS.includes(method)) throw new ValidationError("Choose how it was paid.");
     const kind = str(fd, "kind") === "REFUND" ? "REFUND" : "PAYMENT";
     const status = str(fd, "status") === "FAILED" ? "FAILED" : "SUCCEEDED";
-    await recordPayment(actor, { invoiceId, kind, status, amountCents: cents(str(fd, "amount"), "the amount"), receivedOn: str(fd, "receivedOn"), method, reference: str(fd, "reference"), note: str(fd, "note") });
+    await recordPayment(actor, { invoiceId, kind, status, amountCents: cents(str(fd, "amount"), "the amount"), receivedOn: str(fd, "receivedOn"), method, reference: str(fd, "reference"), note: str(fd, "note"), idempotencyKey: str(fd, "idempotencyKey") || null });
     revalidatePath(`/owner/invoices/${invoiceId}`);
     return status === "FAILED" ? "Failed payment recorded (it doesn't count toward the balance)." : kind === "REFUND" ? "Refund recorded." : "Payment recorded.";
   });
