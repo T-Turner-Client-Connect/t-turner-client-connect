@@ -10,7 +10,7 @@ import {
 } from "@/lib/services/ledger";
 import { addRule } from "@/lib/services/ledger-review";
 import { clearBankFlag } from "@/lib/services/ledger";
-import { completeBankLink, disconnectBank, mapBankAccount, retrieveNow, startBankLink } from "@/lib/services/banking";
+import { completeBankLink, completeBankReauth, disconnectBank, mapBankAccount, retrieveNow, startBankLink, startBankReauth } from "@/lib/services/banking";
 import { addCustomer, addRecurringInvoice, createInvoice, generateRecurringDrafts, issueInvoice, recordInvoicePayment, voidInvoice } from "@/lib/services/client-invoicing";
 
 const refresh = (clientId: string) => revalidatePath(`/bookkeeping/${clientId}/books`);
@@ -219,15 +219,25 @@ export async function generateDraftsAction(clientId: string, _prev: ActionState)
   });
 }
 
-// --- Daily bank retrieval (sandbox) ---
+// --- Automatic bank retrieval (sandbox, or live with Tabitha's switch) ---
 
-export async function bankLinkTokenAction(clientId: string): Promise<{ token?: string; error?: string }> {
+/** A Link token for a new connection, or (with reauthConnectionId) for the client to sign in again. */
+export async function bankLinkTokenAction(clientId: string, reauthConnectionId?: string): Promise<{ token?: string; error?: string }> {
   const actor = await requireUser();
   try {
-    return { token: (await startBankLink(actor, clientId)).link_token };
+    return { token: (reauthConnectionId ? await startBankReauth(actor, clientId, reauthConnectionId) : await startBankLink(actor, clientId)).link_token };
   } catch (e) {
     return { error: e instanceof Error && (e.name === "PlaidError" || e.name === "ValidationError" || e.name === "ForbiddenError") ? e.message : "Couldn't start the bank connection." };
   }
+}
+
+export async function completeBankReauthAction(clientId: string, connectionId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await completeBankReauth(actor, clientId, connectionId);
+    refresh(clientId);
+    return "Reconnected. Automatic retrieval resumes with the next run (or press Retrieve now).";
+  });
 }
 
 export async function completeBankLinkAction(clientId: string, publicToken: string, institutionName: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
@@ -235,7 +245,7 @@ export async function completeBankLinkAction(clientId: string, publicToken: stri
   return run(async () => {
     const c = await completeBankLink(actor, clientId, { publicToken, institutionName, authorizedByName: str(fd, "authorizedByName"), authorizationMethod: str(fd, "method") as "CLIENT_PRESENT" | "CLIENT_PORTAL" | "WRITTEN_AUTHORIZATION", confirmed: fd.get("confirm") === "on" });
     refresh(clientId);
-    return `Connected (sandbox): ${c.accounts.length} account${c.accounts.length === 1 ? "" : "s"}. Choose which ledger account each one feeds.`;
+    return `Connected (${c.environment === "PRODUCTION" ? "live" : "sandbox"}): ${c.accounts.length} account${c.accounts.length === 1 ? "" : "s"}. Choose which ledger account each one feeds.`;
   });
 }
 

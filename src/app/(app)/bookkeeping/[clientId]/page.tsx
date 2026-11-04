@@ -199,11 +199,7 @@ export default async function ClientOverview({ params, searchParams }: { params:
           <div className="mt-4 flex flex-wrap gap-3">
             <Link href={`${base}/books?tab=reports`} className={goldBtn}><FileText className="size-4" aria-hidden /> Review Financials</Link>
             <Link href={`/clients/${clientId}?tab=taxes`} className={ghostBtn}><Calculator className="size-4" aria-hidden /> Prepare Taxes</Link>
-            {o.profile.coethaUrl ? (
-              <a href={o.profile.coethaUrl} target="_blank" rel="noopener noreferrer" className={ghostBtn}><MessageSquareText className="size-4" aria-hidden /> Open Coetha AI</a>
-            ) : (
-              <Link href={`${base}/close#coetha`} className={ghostBtn}><MessageSquareText className="size-4" aria-hidden /> Open Coetha AI</Link>
-            )}
+            <Link href={`${base}/coetha`} className={ghostBtn} data-testid="coetha-open-page"><MessageSquareText className="size-4" aria-hidden /> Open Coetha AI</Link>
           </div>
         </div>
       </section>

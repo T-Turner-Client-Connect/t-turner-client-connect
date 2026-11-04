@@ -134,6 +134,8 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
         <aside className="space-y-4 lg:col-span-1">
           <div id="coetha" className="scroll-mt-6"><Card title={`Work with Coetha — ${biz}`}>
             <div className="space-y-2 text-sm" data-testid="coetha">
+              <Link href={`/bookkeeping/${clientId}/coetha`} className="inline-flex w-full items-center justify-center rounded-xl bg-gradient-to-b from-gold-300 to-gold-500 px-4 py-2.5 font-semibold text-navy-950 shadow hover:to-gold-600" data-testid="coetha-in-app">Coetha in Client Connect →</Link>
+              <p className="text-xs text-slate-600">Coetha drafts categories, discrepancies, adjusting entries and a month summary from this business&apos;s connected bank data. Only Tabitha approves her work.</p>
               <p className="text-xs text-slate-600" data-testid="coetha-business">For <strong>{biz}</strong> only — this business&apos;s own Claude Project or conversation. Opens Claude in a new tab, using <strong>your own</strong> Claude access. Nothing syncs automatically — documents and answers stay in Claude unless you upload or copy them here.</p>
               {profile?.coethaUrl ? (
                 canCoetha ? (

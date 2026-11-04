@@ -33,6 +33,7 @@ export function ActionForm({
   showSuccess = true,
   confirm,
   idempotent,
+  id,
 }: {
   action: (prev: State, fd: FormData) => Promise<State>;
   children: ReactNode;
@@ -43,6 +44,8 @@ export function ActionForm({
   // Sends an idempotencyKey with the form: the same key on a retry, a new
   // one after each success, so a double-submit can't create a duplicate.
   idempotent?: boolean;
+  // Lets inputs elsewhere on the page join this form with form="…" (e.g. checkboxes in a list).
+  id?: string;
 }) {
   // A request that never gets an answer (connection lost, server down) shows an error instead of failing silently.
   const [state, formAction, pending] = useActionState(async (prev: State, fd: FormData): Promise<State> => {
@@ -63,6 +66,7 @@ export function ActionForm({
   return (
     <form
       ref={ref}
+      id={id}
       className={clsx(className, pending && "opacity-70")}
       aria-busy={pending}
       // Submitting through onSubmit (rather than the action prop) stops React

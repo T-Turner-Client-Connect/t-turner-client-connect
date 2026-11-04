@@ -236,7 +236,17 @@ export async function postJournalEntry(actor: Actor, clientId: string, input: { 
   await assertLedgerWrite(actor, clientId);
   const basis = input.basis ?? "BOTH";
   if (!["BOTH", "CASH_ONLY", "ACCRUAL_ONLY"].includes(basis)) throw new ValidationError("Choose which statements this entry belongs to.");
-  return prisma.$transaction((tx) => post(tx, actor, clientId, { ...input, source: input.adjusting ? "ADJUSTMENT" : "MANUAL", basis }));
+  return prisma.$transaction((tx) => postJournalEntryTx(tx, actor, clientId, input));
+}
+
+/**
+ * postJournalEntry inside the caller's transaction. `sourceKey` makes the posting
+ * once-only (a second post with the same key is refused). The caller checks access.
+ */
+export async function postJournalEntryTx(tx: Tx, actor: Actor, clientId: string, input: { date: string; memo: string; lines: LineInput[]; adjusting?: boolean; basis?: "BOTH" | "CASH_ONLY" | "ACCRUAL_ONLY"; sourceKey?: string; reason?: string }) {
+  const basis = input.basis ?? "BOTH";
+  if (!["BOTH", "CASH_ONLY", "ACCRUAL_ONLY"].includes(basis)) throw new ValidationError("Choose which statements this entry belongs to.");
+  return post(tx, actor, clientId, { date: input.date, memo: input.memo, lines: input.lines, source: input.adjusting ? "ADJUSTMENT" : "MANUAL", basis, sourceKey: input.sourceKey ?? null, reason: input.reason ?? null });
 }
 
 /**
@@ -477,7 +487,16 @@ const TRANSFER_WINDOW_DAYS = 5;
  */
 export async function categorizeBankTransaction(actor: Actor, clientId: string, txnId: string, input: { accountId: string; memo?: string }) {
   await assertLedgerWrite(actor, clientId);
-  return prisma.$transaction(async (tx) => {
+  return prisma.$transaction((tx) => categorizeBankTransactionTx(tx, actor, clientId, txnId, input));
+}
+
+/**
+ * The same posting inside the caller's transaction (used when Tabitha approves a Coetha
+ * proposal, so the approval and the posting succeed or fail together). The caller has
+ * already checked access with assertLedgerWrite.
+ */
+export async function categorizeBankTransactionTx(tx: Tx, actor: Actor, clientId: string, txnId: string, input: { accountId: string; memo?: string }) {
+  {
     const t = await tx.bankTransaction.findFirst({ where: { id: txnId, clientId }, include: { account: true } });
     if (!t) throw new ValidationError("Bank transaction not found.");
     if (t.status !== "UNREVIEWED") throw new ValidationError(t.status === "POSTED" ? "That transaction is already posted." : "That transaction was excluded. Include it again first.");
@@ -506,7 +525,7 @@ export async function categorizeBankTransaction(actor: Actor, clientId: string, 
     }
     await audit(tx, { actorId: actor.id, action: "ledger.bank_posted", entityType: "BankTransaction", entityId: t.id, clientId, details: { entryId: e.id, category: cat.code, matchedTransferRow: matched } });
     return { entry: e, matchedTransferId: matched };
-  });
+  }
 }
 
 /** Excluded rows (a duplicate in the file, a personal item kept off the books) stay visible with the reason. */

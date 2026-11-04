@@ -19,6 +19,7 @@
     "db:migrate:local": "node scripts/migrate-local.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.4.0",
     "@netlify/blobs": "^11.1.7",
     "@netlify/database": "^2.0.1",
     "@prisma/client": "^5.22.0",

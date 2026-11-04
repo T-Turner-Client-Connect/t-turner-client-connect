@@ -71,14 +71,15 @@ async function connect(s: Awaited<ReturnType<typeof setup>>, publicToken = "publ
 }
 const CSV = (rows: string[]) => ["Date,Description,Amount", ...rows].join("\n");
 
-describe("connecting (sandbox only, read-only, authorization recorded)", () => {
-  it("refuses anything but the sandbox, and needs credentials", async () => {
+describe("connecting (read-only, authorization recorded)", () => {
+  it("production stays blocked without Tabitha's switch; needs credentials", async () => {
     const s = await setup();
     expect(plaidMode({ PLAID_CLIENT_ID: "x", PLAID_SECRET: "y", PLAID_ENV: "production" })).toBe("LIVE_BLOCKED");
-    expect(plaidMode({ PLAID_CLIENT_ID: "x", PLAID_SECRET: "y", PLAID_ENV: "development" })).toBe("LIVE_BLOCKED");
-    expect(plaidMode({})).toBe("NOT_CONFIGURED");
+    expect(plaidMode({ PLAID_CLIENT_ID: "x", PLAID_SECRET: "y", PLAID_ENV: "production" }, true)).toBe("LIVE");
+    expect(plaidMode({ PLAID_CLIENT_ID: "x", PLAID_SECRET: "y", PLAID_ENV: "development" }, true)).toBe("UNSUPPORTED_ENV");
+    expect(plaidMode({}, true)).toBe("NOT_CONFIGURED");
     process.env.PLAID_ENV = "production";
-    await expect(startBankLink(s.daria, s.vessel.id)).rejects.toThrow(/turned off until Tabitha approves/);
+    await expect(startBankLink(s.daria, s.vessel.id)).rejects.toThrow(/stay off until Tabitha turns on/);
     expect(calls).toEqual([]);
     process.env.PLAID_ENV = "sandbox";
     expect((await startBankLink(s.daria, s.vessel.id)).link_token).toBe("link-sandbox-fictional");
@@ -94,8 +95,8 @@ describe("connecting (sandbox only, read-only, authorization recorded)", () => {
     expect(decryptSecret(conn.accessTokenEnc)).toBe(ACCESS);
     expect(conn.accounts).toHaveLength(3);
     await expect(completeBankLink(s.daria, s.vessel.id, { publicToken: "public-sandbox-1", authorizedByName: "Mario Example", authorizationMethod: "CLIENT_PRESENT", confirmed: true })).rejects.toThrow(/already connected/);
-    // The database refuses anything but a sandbox connection.
-    await expect(prisma.bankConnection.update({ where: { id: conn.id }, data: { environment: "PRODUCTION" } })).rejects.toThrow();
+    // The database accepts only the two real Plaid environments.
+    await expect(prisma.bankConnection.update({ where: { id: conn.id }, data: { environment: "DEVELOPMENT" } })).rejects.toThrow();
     // One bank account feeds one ledger account; only this client's bank/card accounts.
     const sav = conn.accounts.find((a) => a.providerAccountId === "acc-sav")!.id;
     await expect(mapBankAccount(s.daria, s.vessel.id, sav, s.checking)).rejects.toThrow(/already receives/);

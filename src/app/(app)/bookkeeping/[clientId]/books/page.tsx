@@ -11,6 +11,7 @@ import { ACCOUNT_TYPES, SUBTYPES, balanceSheet, canUseLedger, ledgerFlags, ledge
 import { closeChecklist, suggestCategories } from "@/lib/services/ledger-review";
 import { receivablesAging, stripeMode } from "@/lib/services/client-invoicing";
 import { BANK_CONSENT_TEXT, bankConnectionsView } from "@/lib/services/banking";
+import { PLAID_MODE_TEXT } from "@/lib/plaid";
 import { BankConnect } from "@/components/bank-connect";
 import { fmtDateTime } from "@/lib/format";
 import {
@@ -167,9 +168,10 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
     const name = new Map(accounts.map((a) => [a.id, acctLabel(a)]));
     return (
       <div className="space-y-4">
-        <Card title="Daily bank retrieval (read-only)">
+        <Card title="Automatic bank retrieval (read-only)">
           <div data-testid="bank-connections" className="space-y-3 text-sm">
-            <p className="text-slate-700">Once the client authorizes a read-only connection, new transactions are retrieved every day into the review list below. Coetha recognizes rows already imported, suggests categories and flags anything unclear — she never posts, reconciles or approves. {bv.mode === "SANDBOX" ? <strong>Sandbox (test data) only.</strong> : bv.mode === "LIVE_BLOCKED" ? <strong className="text-red-700">A non-sandbox Plaid setting is present — real bank connections stay off until Tabitha approves them.</strong> : <strong>Plaid isn&apos;t set up yet.</strong>}</p>
+            <p className="text-slate-700">Once the client authorizes a read-only connection for this business, new transactions are retrieved automatically (at least daily, and when the bank reports new ones) into the review list below. Rows already imported from a statement are recognized, not added twice. <Link className="font-semibold underline" href={`/bookkeeping/${clientId}/coetha`}>Coetha</Link> drafts categories for Tabitha to approve; she never posts on her own. CSV import below stays available as a backup.</p>
+            <p data-testid="bank-mode" className={bv.mode === "LIVE" ? "font-semibold text-emerald-800" : bv.mode === "SANDBOX" ? "font-semibold text-navy-900" : "font-semibold text-red-700"}>{PLAID_MODE_TEXT[bv.mode]}</p>
             {bv.connections.length === 0 && <p className="text-slate-600">No bank connected yet.</p>}
             {bv.connections.map((c) => (
               <div key={c.id} className="rounded-lg border border-ivory-200 p-3">
@@ -191,6 +193,12 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
                   ))}
                 </ul>
                 {c.runs.length > 0 && <p className="mt-1 text-xs text-slate-500">Recent: {c.runs.map((r) => `${fmtDateTime(r.startedAt)} ${r.trigger.toLowerCase()} ${r.status === "OK" ? `+${r.added}, ${r.matched} linked` : `failed (${r.errorCode})`}`).join(" · ")}</p>}
+                {c.status === "NEEDS_REAUTH" && (
+                  <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-900" data-testid="bank-reauth">
+                    <p><strong>The client needs to sign in to the bank again</strong>{c.reauthRequiredAt ? ` (since ${fmtDateTime(c.reauthRequiredAt)})` : ""}{c.errorCode ? ` · ${c.errorCode}` : ""}. Retrieval is paused for this connection until they do.</p>
+                    {(bv.mode === "LIVE" ? "PRODUCTION" : bv.mode === "SANDBOX" ? "SANDBOX" : null) === c.environment && <div className="mt-1"><BankConnect clientId={clientId} consentText={BANK_CONSENT_TEXT} reauthConnectionId={c.id} /></div>}
+                  </div>
+                )}
                 {c.status !== "DISCONNECTED" && user.role === "ADMIN" && (
                   <details className="mt-1 text-xs"><summary className="cursor-pointer underline">Disconnect</summary>
                     <ActionForm action={disconnectBankAction.bind(null, clientId, c.id)} className="mt-1 flex gap-1"><input className="input py-1 text-xs" name="reason" placeholder="Why?" required /><Button type="submit" variant="ghost" className="px-2 py-1 text-xs">Disconnect</Button></ActionForm>
@@ -199,7 +207,7 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
               </div>
             ))}
             <div className="flex flex-wrap items-center gap-3">
-              {bv.mode === "SANDBOX" && <BankConnect clientId={clientId} consentText={BANK_CONSENT_TEXT} />}
+              {(bv.mode === "SANDBOX" || bv.mode === "LIVE") && <BankConnect clientId={clientId} consentText={BANK_CONSENT_TEXT} live={bv.mode === "LIVE"} />}
               {bv.connections.some((c) => c.status === "ACTIVE" || c.status === "ERROR") && (
                 <ActionForm action={retrieveNowAction.bind(null, clientId)}><Button type="submit" variant="gold" data-testid="bank-retrieve">Retrieve now</Button></ActionForm>
               )}
