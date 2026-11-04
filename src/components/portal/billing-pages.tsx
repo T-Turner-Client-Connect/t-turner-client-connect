@@ -17,9 +17,9 @@ export function PanelTitle({ icon: Icon, title, sub, action }: { icon: IconT; ti
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="flex min-w-0 items-start gap-3">
-        <Icon className="mt-0.5 size-10 shrink-0 text-gold-600" aria-hidden />
+        <Icon className="mt-0.5 size-9 shrink-0 text-gold-600" aria-hidden />
         <div className="min-w-0">
-          <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900 sm:text-[1.7rem]">{title}</h2>
+          <h2 className="font-serif text-xl sm:text-[1.375rem] font-bold leading-tight text-navy-900">{title}</h2>
           {sub && <p className="mt-0.5 text-sm text-navy-800">{sub}</p>}
         </div>
       </div>
@@ -61,7 +61,7 @@ export function StatCard({ icon: Icon, label, value, sub, navy = false, testId }
       <Icon className={`size-11 shrink-0 ${navy ? "text-gold-400" : "text-gold-600"}`} aria-hidden />
       <span className="min-w-0">
         <span className={`block font-serif text-lg font-bold leading-tight ${navy ? "text-white" : "text-navy-900"}`}>{label}</span>
-        <span className={`block font-serif text-3xl font-bold leading-tight ${navy ? "text-gold-300" : "text-navy-900"}`}>{value}</span>
+        <span className={`block font-serif text-2xl font-bold leading-tight ${navy ? "text-gold-300" : "text-navy-900"}`}>{value}</span>
         {sub && <span className={`block text-xs ${navy ? "text-navy-100" : "text-slate-500"}`}>{sub}</span>}
       </span>
     </div>
@@ -74,7 +74,7 @@ export function GoldNote({ title, children, testId }: { title: string; children:
     <div className="flex items-start gap-4 rounded-2xl border border-gold-300 bg-gradient-to-b from-gold-50/40 to-gold-50 px-5 py-4 shadow-[0_14px_32px_-26px_rgb(200_157_41/0.7)]" data-testid={testId}>
       <Info className="mt-0.5 size-9 shrink-0 text-gold-600" aria-hidden />
       <div className="min-w-0 text-[15px] text-navy-800">
-        <p className="mb-1 font-serif text-2xl font-bold text-navy-900">{title}</p>
+        <p className="mb-1 font-serif text-xl font-bold text-navy-900">{title}</p>
         {children}
       </div>
     </div>
@@ -87,7 +87,7 @@ export function NoteBar({ icon: Icon, title, children, testId }: { icon: IconT; 
     <div className="flex flex-col gap-3 rounded-2xl border border-gold-200/80 bg-gradient-to-b from-white to-ivory-50 px-6 py-5 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] sm:flex-row sm:items-center sm:gap-6" data-testid={testId}>
       <div className="flex shrink-0 items-center gap-3">
         <Icon className="size-10 text-gold-600" aria-hidden />
-        <p className="max-w-[9rem] font-serif text-2xl font-bold leading-tight text-navy-900">{title}</p>
+        <p className="max-w-[9rem] font-serif text-xl font-bold leading-tight text-navy-900">{title}</p>
       </div>
       <span className="hidden h-12 w-px shrink-0 bg-gold-400 sm:block" aria-hidden />
       <div className="min-w-0 flex-1 text-[15px] text-navy-800">{children}</div>

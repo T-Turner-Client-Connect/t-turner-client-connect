@@ -282,9 +282,9 @@ export function AppointmentBooking(props: {
             <CalendarDays className="size-8 text-gold-400 sm:size-9" aria-hidden />
           </span>
           <div className="min-w-0">
-            <h1 className="font-serif text-3xl font-bold leading-tight text-white sm:text-[2.6rem]">
+            <h1 className="font-serif text-2xl font-bold leading-tight text-white sm:text-3xl">
               {reschedule ? "Reschedule an " : "Schedule an "}
-              <em className="font-serif font-normal italic text-gold-400 [font-family:'Brush_Script_MT','Segoe_Script','Snell_Roundhand',cursive] sm:text-[3rem]">Appointment</em>
+              <em className="font-serif font-normal italic text-gold-400 [font-family:'Brush_Script_MT','Segoe_Script','Snell_Roundhand',cursive] sm:text-4xl">Appointment</em>
             </h1>
             <p className="mt-1 text-[15px] text-navy-100 sm:text-lg">
               {reschedule ? `Choose a new date and time for your ${reschedule.current} appointment.` : "Select your service(s), choose a date and time, and book your appointment with our team."}
@@ -307,7 +307,7 @@ export function AppointmentBooking(props: {
           <span className="mx-auto flex size-20 items-center justify-center rounded-full bg-gradient-to-b from-gold-300 to-gold-500 ring-8 ring-gold-100">
             <Check className="size-11 text-navy-950" aria-hidden />
           </span>
-          <h2 className="mt-5 font-serif text-3xl font-bold">
+          <h2 className="mt-5 font-serif text-2xl font-bold">
             {rescheduledNote ? "Reschedule " : confirmed ? "Appointment " : "Request "}
             <em className="font-normal italic text-gold-600">{rescheduledNote ? "Received" : confirmed ? "Confirmed" : "Received"}</em>
           </h2>

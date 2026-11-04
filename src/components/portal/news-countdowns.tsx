@@ -74,7 +74,7 @@ export function NewsAndCountdowns({ cards, news, showAll, allHref }: { cards: Co
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/brand/news/megaphone.png" alt="" width={297} height={289} className="hidden h-24 w-auto shrink-0 drop-shadow-[0_6px_10px_rgb(0_0_0/0.35)] sm:block" />
           <div className="min-w-0">
-            <h1 id="news-heading" className="font-serif text-3xl font-bold leading-tight text-white sm:text-[2.6rem]">News &amp; Tax Countdowns</h1>
+            <h1 id="news-heading" className="font-serif text-2xl font-bold leading-tight text-white sm:text-3xl">News &amp; Tax Countdowns</h1>
             <p className="mt-2 text-[15px] text-navy-100 sm:text-lg">Stay informed with the latest IRS and state updates, filing <strong className="text-white">deadlines</strong>, and important announcements from our office.</p>
           </div>
         </div>

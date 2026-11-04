@@ -73,7 +73,7 @@ function BillingHeader({ health, lastSync, syncAction }: { health?: Health | nul
       <div className="flex items-center gap-3">
         <span aria-hidden className="grid size-14 place-items-center rounded-2xl border-2 border-gold-500 bg-gold-100/40 text-gold-600"><CreditCard className="size-7" /></span>
         <div>
-          <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900">Billing &amp; Payments</h2>
+          <h2 className="font-serif text-xl font-bold leading-tight text-navy-900">Billing &amp; Payments</h2>
           <p className="text-sm font-semibold text-gold-700">Square Integration – {health?.env === "production" ? "Live" : "Sandbox (test)"}</p>
         </div>
       </div>
@@ -209,7 +209,7 @@ function SquareSeriesBlock({ a, clientId, approver, addable, health, notes, note
                 <div data-testid="square-series-value">
                   <p className="text-xl font-bold">Series {a.seriesKey}</p>
                   <p className="text-sm text-slate-200">{a.title || "Recurring invoice"}</p>
-                  <p className="mt-1 font-serif text-4xl font-bold text-gold-300" data-testid="square-amount">{usd(a.amountCents)}</p>
+                  <p className="mt-1 font-serif text-3xl font-bold text-gold-300" data-testid="square-amount">{usd(a.amountCents)}</p>
                   <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-100">
                     <span className="inline-flex items-center gap-1.5"><Repeat aria-hidden className="size-4" />{CADENCE_LABELS[(a.cadence ?? "UNKNOWN") as keyof typeof CADENCE_LABELS] ?? "Recurring"}</span>
                     {a.dueDay && <><span aria-hidden className="text-white/30">|</span><span className="inline-flex items-center gap-1.5"><CalendarDays aria-hidden className="size-4" />Due on the {scheduleText({ cadence: null, dueDay: a.dueDay }).replace(/^.*due on the /, "")}</span></>}

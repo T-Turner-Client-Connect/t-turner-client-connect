@@ -53,7 +53,7 @@ export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { cl
         <div className="flex items-center gap-3">
           <span aria-hidden className="grid size-14 place-items-center rounded-2xl border-2 border-gold-500 bg-gold-100/40 text-gold-600"><CreditCard className="size-7" /></span>
           <div>
-            <h2 className="font-serif text-2xl font-bold leading-tight text-navy-900">Billing &amp; Payments</h2>
+            <h2 className="font-serif text-xl font-bold leading-tight text-navy-900">Billing &amp; Payments</h2>
             <p className="text-sm font-semibold text-gold-700">Office-managed billing – not through Square</p>
           </div>
         </div>
@@ -88,7 +88,7 @@ export function ManualBillingPanel({ clientId, view, owner, officeStatus }: { cl
                       <div>
                         <p className="text-xl font-bold">Monthly Bookkeeping</p>
                         <p className="text-sm text-slate-200">Billed by our office</p>
-                        <p className="mt-1 font-serif text-4xl font-bold text-gold-300" data-testid="manual-fee">{usd(billing?.monthlyFeeCents)}</p>
+                        <p className="mt-1 font-serif text-3xl font-bold text-gold-300" data-testid="manual-fee">{usd(billing?.monthlyFeeCents)}</p>
                         <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-100">
                           <span className="inline-flex items-center gap-1.5"><Repeat aria-hidden className="size-4" />Monthly</span>
                           <span aria-hidden className="text-white/30">|</span>

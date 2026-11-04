@@ -47,7 +47,7 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b border-ivory-200 pb-5">
       <div>
-        <h1 className="text-[1.7rem] font-bold leading-tight tracking-tight sm:text-[2.1rem]">{title}</h1>
+        <h1 className="text-2xl font-bold leading-tight tracking-tight sm:text-3xl">{title}</h1>
         {subtitle && <p className="mt-1 text-slate-600">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
@@ -106,7 +106,7 @@ export function Stat({ label, value, hint, href }: { label: string; value: React
   const body = (
     <>
       <p className="text-sm font-medium text-slate-600">{label}</p>
-      <p className="mt-1 font-serif text-3xl font-bold text-navy-900">{value}</p>
+      <p className="mt-1 font-serif text-2xl font-bold text-navy-900">{value}</p>
       {hint && <p className="mt-1 text-xs text-slate-600">{hint}</p>}
     </>
   );
