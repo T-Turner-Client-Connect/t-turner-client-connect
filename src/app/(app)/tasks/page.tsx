@@ -122,12 +122,12 @@ async function CalendarView({ month }: { month: Date }) {
   const [tasks, deadlines, appts, requests, clients, staff] = await Promise.all([
     prisma.task.findMany({ where: { status: "OPEN", dueAt: range }, select: { id: true, title: true, dueAt: true, clientId: true } }),
     prisma.clientDeadline.findMany({ where: { dueAt: range }, include: { client: { select: { displayName: true } } } }),
-    prisma.appointment.findMany({ where: { startsAt: range, cancelledAt: null }, include: { client: { select: { displayName: true } } } }),
+    prisma.appointment.findMany({ where: { startsAt: range, status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "PROPOSED"] } }, include: { client: { select: { displayName: true } } } }),
     prisma.documentRequest.findMany({ where: { status: "OPEN", dueAt: range }, include: { client: { select: { displayName: true } } } }),
     prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true }, orderBy: { displayName: "asc" }, take: 2000 }),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true } }),
   ]);
-  const upcoming = await prisma.appointment.findMany({ where: { cancelledAt: null, startsAt: { gte: new Date() } }, include: { client: { select: { displayName: true } } }, orderBy: { startsAt: "asc" }, take: 10 });
+  const upcoming = await prisma.appointment.findMany({ where: { status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "PROPOSED"] }, startsAt: { gte: new Date() } }, include: { client: { select: { displayName: true } } }, orderBy: { startsAt: "asc" }, take: 10 });
   const events: CalendarEvent[] = [
     ...appts.map((a) => ({ id: `a${a.id}`, at: a.startsAt, title: `🕑 ${a.client.displayName}: ${a.title}`, href: `/clients/${a.clientId}`, tone: "navy" as const })),
     ...tasks.map((t) => ({ id: `t${t.id}`, at: t.dueAt!, title: `☐ ${t.title}`, href: t.clientId ? `/clients/${t.clientId}` : "/tasks", tone: "gray" as const })),

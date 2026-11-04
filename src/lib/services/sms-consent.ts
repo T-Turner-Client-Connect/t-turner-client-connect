@@ -78,7 +78,7 @@ export async function applySmsConsent(tx: Tx, phone: string, category: SmsConsen
         kind: KIND[category],
         status,
         scope: meta.consentText ?? null,
-        source: meta.source === "WEB_FORM" ? "Website SMS consent form" : meta.source === "STOP_KEYWORD" ? "Replied STOP" : meta.source === "CLIENT_PORTAL" ? "Client portal account settings" : "Staff",
+        source: meta.source === "WEB_FORM" ? "Website SMS consent form" : meta.source === "STOP_KEYWORD" ? "Replied STOP" : meta.source === "CLIENT_PORTAL" ? "Client portal account settings" : meta.source === "APPOINTMENT_BOOKING" ? "Appointment booking (client portal)" : "Staff",
         evidenceNote: [meta.submissionId && `Submission ${meta.submissionId}`, status === "GRANTED" && `Wording ${SMS_CONSENT_VERSION}`, meta.note].filter(Boolean).join(" · ") || null,
         recordedById: meta.actorId ?? null,
       },

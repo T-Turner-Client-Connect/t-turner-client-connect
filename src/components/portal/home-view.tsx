@@ -68,7 +68,7 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
     },
     { title: "Upload Documents", sub: "Send tax documents securely", icon: CloudUpload, href: link(href("/client/tax-center/upload", `year=${selected}`)), testId: "upload-button", disabledNote: disabled },
     { title: "Retrieve Tax Filings", sub: "Access current and prior year returns", icon: FolderOpen, href: link(href("/client/taxes/filings", `year=${selected}`)), testId: "retrieve-button", disabledNote: disabled },
-    { title: "Appointments", sub: "Schedule or manage your appointment", icon: CalendarDays, href: link(href("/client/messages", "new=appointment")), testId: "appointments-button", disabledNote: disabled },
+    { title: "Appointments", sub: "Schedule or manage your appointment", icon: CalendarDays, href: link(href("/client/appointments")), testId: "appointments-button", disabledNote: disabled },
     { title: "News & Updates", sub: "Tax updates & office news", icon: Mail, href: link(href("/client/news")), testId: "news-button", disabledNote: disabled },
   ];
   const countdownLines = data.countdowns.cards.flatMap((c) => c.lines);

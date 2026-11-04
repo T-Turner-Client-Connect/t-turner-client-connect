@@ -15,3 +15,13 @@ export async function makeUser(role: "ADMIN" | "STAFF", name = role === "ADMIN" 
 }
 
 export { prisma };
+
+/**
+ * Test fixture: these fictional businesses are ones the firm manages, as if Tabitha had
+ * approved Managed Business access and turned on the business view for their logins.
+ * Call it after the logins exist. (Real approval is tested in business-access.test.ts.)
+ */
+export async function managed(...clientIds: string[]) {
+  await prisma.client.updateMany({ where: { id: { in: clientIds } }, data: { businessAccess: "ACTIVE" } });
+  await prisma.portalAccess.updateMany({ where: { clientId: { in: clientIds } }, data: { canViewBookkeeping: true } });
+}

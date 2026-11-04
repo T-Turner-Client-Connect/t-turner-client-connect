@@ -47,6 +47,15 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
   }
   const owner = await isReportApprover(user);
   const ov = await ledgerOverview(user, clientId);
+  // Business books are only built for an owner-approved Managed Business; existing history stays readable.
+  const managed = (await prisma.client.findUnique({ where: { id: clientId }, select: { businessAccess: true } }))?.businessAccess === "ACTIVE";
+  const notManaged = (
+    <Notice tone="warn" title="Regular Tax Client — books are read-only">
+      This business isn&apos;t approved as a Managed Business Client yet, so its books can&apos;t be set up or changed. Tabitha can approve it in{" "}
+      <Link className="underline" href="/owner/business-access">Owner&apos;s Office → Business access</Link>, or request it from the client&apos;s{" "}
+      <Link className="underline" href={`/clients/${clientId}?tab=portal`}>Portal tab</Link>.
+    </Notice>
+  );
   const tab: Tab = (TABS.map((t) => t[0]) as string[]).includes(sp.tab ?? "") ? (sp.tab as Tab) : "overview";
   const tabHref = (t: string) => `/bookkeeping/${clientId}/books?tab=${t}`;
 
@@ -55,14 +64,14 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
       <>
         {back}
         <PageHeader title={`${heading} — Books & Ledger`} subtitle="Double-entry books kept for this client only." />
-        <Card title="Set up this client's books">
+        {!managed ? notManaged : <Card title="Set up this client's books">
           <p className="mb-3 text-sm text-slate-700">Creates this client&apos;s own ledger with a standard chart of accounts (owner draws in equity, never in expenses). You can add, rename or deactivate accounts afterwards.</p>
           <ActionForm action={setupLedgerAction.bind(null, clientId)} className="flex flex-wrap items-end gap-3">
             <Field label="Reporting basis"><select className="input" name="basis" defaultValue="CASH"><option value="CASH">Cash basis</option><option value="ACCRUAL">Accrual basis</option></select></Field>
             <Field label="Fiscal year starts"><select className="input" name="fy" defaultValue="1">{MONTH_ABBR.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select></Field>
             <Button type="submit">Set up books</Button>
           </ActionForm>
-        </Card>
+        </Card>}
       </>
     );
   }
@@ -80,6 +89,7 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
         title={`${heading} — Books & Ledger`}
         subtitle={<>{book.basis === "CASH" ? "Cash basis" : "Accrual basis"} · Fiscal year starts {MONTH_ABBR[book.fiscalYearStartMonth - 1]} · {book.openingDate ? `Opening balances ${ymdOf(book.openingDate)}` : "Opening balances not entered"} · {book.lockedThrough ? `Closed through ${ymdOf(book.lockedThrough)}` : "No period closed"}</>}
       />
+      {!managed && <div className="mb-4">{notManaged}</div>}
       <nav className="mb-4 flex flex-wrap gap-2" aria-label="Books sections" data-testid="books-tabs">
         {TABS.map(([k, label]) => (
           <Link key={k} href={tabHref(k)} aria-current={tab === k ? "page" : undefined} className={`rounded-full px-3 py-1.5 text-sm font-semibold ${tab === k ? "bg-navy-900 text-gold-300 ring-2 ring-gold-500" : "bg-ivory-50 text-navy-900 ring-1 ring-ivory-200 hover:bg-gold-100"}`}>{label}</Link>

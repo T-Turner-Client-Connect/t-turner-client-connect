@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { isSensitiveHeader } from "@/lib/import/fields";
-import { allowedCategories } from "@/lib/portal/access";
+import { allowedCategories, effectiveGrantsFor } from "@/lib/portal/access";
 import {
   normalizeFilingType,
   normalizeJurisdiction,
@@ -159,7 +159,7 @@ export async function publishFilingUpdate(actor: Actor, filingId: string, channe
     prisma.auditLog.create({ data: { actorId: actor.id, action: "filing.published", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { documents: docIds.length, notify: channels } } }),
   ]);
   if (channels !== "portal_only") {
-    const grants = await prisma.portalAccess.findMany({ where: { clientId: f.clientId, revokedAt: null } });
+    const grants = await effectiveGrantsFor(f.clientId);
     for (const g of grants) {
       if (!allowedCategories(g).includes("TAXES" as never)) continue;
       await queuePortalNotification(g.portalUserId, "FILING_UPDATE", `filing:${filingId}:${f.filingStatus}:${f.statusAsOf?.getTime() ?? 0}`, channels);

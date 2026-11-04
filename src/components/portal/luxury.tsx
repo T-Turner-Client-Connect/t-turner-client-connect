@@ -28,8 +28,13 @@ export function ActionTiles({ tiles }: { tiles: Tile[] }) {
         const cls = `group flex min-h-[6.5rem] items-center gap-3 rounded-2xl px-4 py-4 shadow-[0_10px_24px_-16px_rgb(10_26_68/0.55)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_30px_-18px_rgb(10_26_68/0.6)] ${
           navy ? "bg-gradient-to-br from-navy-900 to-navy-950 ring-1 ring-gold-500/40" : "border border-gold-200 bg-white"
         }`;
-        return t.href ? (
-          <Link key={t.testId} href={t.href} className={cls} data-testid={t.testId} {...(t.external ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
+        // Outside links (the questionnaire redirect, official sites) are plain links: no in-app prefetch.
+        return t.href && t.external ? (
+          <a key={t.testId} href={t.href} className={cls} data-testid={t.testId} target="_blank" rel="noopener noreferrer">
+            {body}
+          </a>
+        ) : t.href ? (
+          <Link key={t.testId} href={t.href} className={cls} data-testid={t.testId}>
             {body}
           </Link>
         ) : (

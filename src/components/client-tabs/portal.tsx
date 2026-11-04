@@ -20,13 +20,14 @@ import { SIGNATURE_LABELS, signingProviderStatus } from "@/lib/services/signatur
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import type { Actor } from "@/lib/auth/actor";
 import { AccountRecoveryPanel } from "./account-recovery";
+import { BusinessAccessPanel } from "./business-access";
 import { adminActivationAction, privateActivationLinkAction, resetActivationLimitAction } from "@/app/actions/signup";
 import { senderWarning } from "@/lib/services/client-signup";
 
 const PERMS = [
   ["canMessage", "Messages"],
   ["canUpload", "Upload files"],
-  ["canViewBookkeeping", "Bookkeeping"],
+  ["canViewBookkeeping", "Managed Business view (Tabitha only)"],
   ["canViewTax", "Tax documents"],
   ["canViewContracts", "Contracts"],
   ["canViewIdentity", "View own driver's license (Admin)"],
@@ -57,6 +58,7 @@ export async function PortalTab({ clientId, contacts, isAdmin = false, actor }: 
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      {actor && <BusinessAccessPanel clientId={clientId} actor={actor} />}
       <Card title="Portal logins">
         {grants.length === 0 && <p className="mb-3 text-sm text-slate-600">Nobody has portal access to this account yet.</p>}
         <ul className="mb-4 divide-y divide-navy-100">

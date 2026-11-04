@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, prisma, resetDb, managed } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { decryptSecret } from "@/lib/crypto";
@@ -56,6 +56,7 @@ async function setup() {
   const daria = await makeUser("STAFF", "Daria");
   const stranger = await makeUser("STAFF", "Stranger");
   const vessel = await createClient(tabitha, { businessName: "Vessel Example LLC (fictional)", clientType: "BUSINESS", status: "ACTIVE", assignedToId: daria.id });
+  await managed(vessel.id);
   await setupLedger(daria, vessel.id, { basis: "CASH" });
   const acct = async (code: string) => (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: vessel.id, code } })).id;
   const [checking, card] = [await acct("1000"), await acct("2100")];

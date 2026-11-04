@@ -114,6 +114,10 @@ export async function handleStatusCallback(params: Record<string, string>) {
     where: { providerSid: sid, ...(early ? notFinal : {}) },
     data: { deliveryStatus: status, statusDetail: detail, ...(FAILED.has(status) ? { status: "FAILED" } : {}) },
   });
+  await prisma.appointmentNotice.updateMany({
+    where: { providerSid: sid, ...(early ? notFinal : {}) },
+    data: { deliveryStatus: status, statusDetail: detail, ...(FAILED.has(status) ? { status: "FAILED" } : {}) },
+  });
   await prisma.message.updateMany({
     where: { providerId: sid },
     data: status === "delivered" ? { status: "DELIVERED", errorDetail: null } : FAILED.has(status) ? { status: "FAILED", errorDetail: detail } : {},

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, prisma, resetDb, managed } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser, updatePortalAccess } from "@/lib/services/portal-accounts";
 import { authorizeDownload, deleteDocument, downloadToken, portalDocuments, portalUploadDocument, staffUploadDocument } from "@/lib/services/documents";
@@ -37,6 +37,7 @@ async function setup() {
   const second = await invitePortalUser(staff, cafe.id, { email: "priya@example.com", name: "Priya", role: "OWNER" });
   const assistant = await join(bakery.id, "sam@example.com", "AUTHORIZED_CONTACT");
   const stranger = await join(other.id, "other@example.com", "OWNER");
+  await managed(bakery.id, cafe.id);
   return { staff, bakery, cafe, other, owner, assistant, stranger, second };
 }
 

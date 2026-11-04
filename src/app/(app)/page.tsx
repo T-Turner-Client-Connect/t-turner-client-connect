@@ -30,7 +30,7 @@ export default async function Dashboard() {
       orderBy: { dueAt: "asc" },
       take: 12,
     }),
-    prisma.appointment.findMany({ where: { cancelledAt: null, startsAt: { gte: startOfDay(now), lte: endOfDay(now) } }, include: { client: { select: { id: true, displayName: true } } }, orderBy: { startsAt: "asc" } }),
+    prisma.appointment.findMany({ where: { status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "PROPOSED"] }, startsAt: { gte: startOfDay(now), lte: endOfDay(now) } }, include: { client: { select: { id: true, displayName: true } } }, orderBy: { startsAt: "asc" } }),
     prisma.documentRequest.groupBy({ by: ["clientId"], where: { status: "OPEN" }, _count: true, _min: { dueAt: true } }),
     Promise.all([
       prisma.client.count({ where: { archivedAt: null } }),

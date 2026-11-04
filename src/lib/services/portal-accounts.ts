@@ -1,4 +1,5 @@
 import "server-only";
+import { assertLoginBusinessViewChange } from "./business-access";
 import type { PortalRole } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
@@ -29,8 +30,11 @@ export async function invitePortalUser(
   const client = await prisma.client.findUnique({ where: { id: clientId } });
   if (!client || client.archivedAt) throw new ValidationError("This client is archived or missing.");
   if (input.contactId && !(await prisma.contact.count({ where: { id: input.contactId, clientId } }))) throw new ValidationError("Contact not found.");
-  const perms = { canMessage: true, canUpload: true, canViewBookkeeping: true, canViewTax: input.role === "OWNER", canViewContracts: true, canViewIdentity: input.role === "OWNER", ...input.permissions };
+  const perms = { canMessage: true, canUpload: true, canViewBookkeeping: false, canViewTax: input.role === "OWNER", canViewContracts: true, canViewIdentity: input.role === "OWNER", ...input.permissions };
 
+  // The business view is never part of an invitation; the owner turns it on per login
+  // for a Managed Business afterwards (see business-access.ts).
+  if (perms.canViewBookkeeping) throw new ValidationError("Business access is turned on separately by Tabitha after the invitation.");
   const existing = await prisma.portalUser.findUnique({ where: { email } });
   if (existing) {
     await prisma.$transaction(async (tx) => {
@@ -104,6 +108,7 @@ export async function updatePortalAccess(actor: Actor, accessId: string, input: 
     if (current.canViewIdentity !== perms.canViewIdentity) assertAdmin(actor);
   }
   await prisma.$transaction(async (tx) => {
+    if (perms.canViewBookkeeping !== undefined) await assertLoginBusinessViewChange(tx, actor, accessId, perms.canViewBookkeeping);
     const access = await tx.portalAccess.update({ where: { id: accessId }, data: { ...perms, revokedAt: revoke ? new Date() : revoke === false ? null : undefined } });
     await audit(tx, { actorId: actor.id, action: revoke ? "portal.access_revoked" : "portal.access_updated", entityType: "PortalAccess", entityId: accessId, clientId: access.clientId, details: input });
   });
