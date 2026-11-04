@@ -124,9 +124,15 @@ export default async function ClientOverview({ params, searchParams }: { params:
     <div className="space-y-5" data-testid="client-overview">
       {/* Banner */}
       <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-6 py-6 text-white ring-1 ring-gold-500/40 sm:px-8" data-testid="overview-banner">
-        <div className="relative flex flex-wrap items-start justify-between gap-4">
-          <div className="flex min-w-0 items-start gap-4">
-            <Landmark className="mt-1 hidden size-14 shrink-0 text-gold-400 sm:block" aria-hidden />
+        {/* Tabitha's glass-building photo on the right, fading into the navy. */}
+        <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] sm:block">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/glass-buildings.jpg" alt="" className="size-full object-cover object-right" />
+          <span className="absolute inset-0 bg-gradient-to-r from-navy-950 via-navy-950/30 to-transparent" />
+        </div>
+        <div className="relative flex flex-wrap items-center justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-4 sm:max-w-[60%]">
+            <span className="mt-1 hidden size-14 shrink-0 items-center justify-center rounded-lg border-2 border-gold-400 sm:flex"><Building2 className="size-9 text-gold-400" aria-hidden /></span>
             <div className="min-w-0">
               <h1 className="font-serif text-2xl font-bold leading-tight text-white sm:text-3xl" data-testid="overview-name">{o.client.name}</h1>
               <p className="mt-1 flex flex-wrap border-t border-gold-500/40 pt-1 text-base text-navy-100" data-testid="overview-services">
