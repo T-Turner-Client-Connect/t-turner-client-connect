@@ -224,3 +224,57 @@ export async function portalManualBilling(user: PortalActor, clientId: string) {
     payments: v.live.map((p) => ({ id: p.id, paidOn: p.paidOn, amountCents: p.amountCents, method: PAY_METHODS[p.method as PayMethod] ?? p.method, periodMonth: p.periodMonth })),
   };
 }
+
+// --- Recurring billing outside Square (Owner's Office overview) ----------------------------------
+
+/**
+ * Every client on monthly billing that is NOT in a Square recurring series, with this month's
+ * standing from the same manual ledger used on the client's billing page.
+ */
+export async function nonSquareRecurring(actor: Actor, today = todayCentral()) {
+  await assertBilling(actor);
+  const inSquare = new Set((await prisma.squareBillingMember.findMany({ select: { clientId: true } })).map((m) => m.clientId));
+  const billing = await prisma.bookkeepingBilling.findMany({
+    where: { monthlyFeeCents: { gt: 0 }, client: { archivedAt: null } },
+    include: { client: { select: { id: true, displayName: true, businessName: true } } },
+  });
+  const rows = await Promise.all(
+    billing
+      .filter((b) => !inSquare.has(b.clientId))
+      .map(async (b) => {
+        const payments = await prisma.manualBillingPayment.findMany({ where: { clientId: b.clientId, voidedAt: null }, select: { amountCents: true, periodMonth: true } });
+        const ledger = manualLedger({ feeCents: b.monthlyFeeCents, billingDay: b.billingDay, startDate: b.billingStartDate, payments, today });
+        const month = today.slice(0, 7);
+        const thisMonth = ledger?.periods.find((p) => p.month === month) ?? null;
+        return { clientId: b.clientId, name: b.client.businessName || b.client.displayName, feeCents: b.monthlyFeeCents!, billingDay: b.billingDay, paidThisMonthCents: thisMonth?.paidCents ?? 0, owedThisMonthCents: thisMonth?.owedCents ?? 0, overdueCents: ledger?.overdueCents ?? 0, status: ledger?.status ?? null, notes: b.notes };
+      }),
+  );
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    rows,
+    totals: {
+      monthlyCents: rows.reduce((n, r) => n + r.feeCents, 0),
+      paidThisMonthCents: rows.reduce((n, r) => n + r.paidThisMonthCents, 0),
+      overdueCents: rows.reduce((n, r) => n + r.overdueCents, 0),
+    },
+  };
+}
+
+/** Owner (or staff with billing access): put a client on monthly billing that is paid outside Square. */
+export async function addNonSquareRecurring(actor: Actor, input: { clientId: string; monthlyFee: string; billingDay: number; startMonth: string; method: string; notes?: string }) {
+  await assertBilling(actor);
+  const fee = Math.round(Number(String(input.monthlyFee).replace(/[$,\s]/g, "")) * 100);
+  if (!Number.isFinite(fee) || fee <= 0 || fee > 10_000_000) throw new ValidationError("Enter the monthly amount, like 595 or 595.00.");
+  if (!Number.isInteger(input.billingDay) || input.billingDay < 1 || input.billingDay > 28) throw new ValidationError("Choose a due day from 1 to 28.");
+  if (!/^\d{4}-\d{2}$/.test(input.startMonth)) throw new ValidationError("Choose the first month billed.");
+  if (!(input.method in PAY_METHODS)) throw new ValidationError("Choose how they usually pay.");
+  const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { archivedAt: true } });
+  if (!client || client.archivedAt) throw new ValidationError("Choose a client.");
+  if (await prisma.squareBillingMember.count({ where: { clientId: input.clientId } })) throw new ValidationError("This client is billed through Square. Change it on the Square billing page instead.");
+  const notes = [`Billed outside Square — usually ${PAY_METHODS[input.method as PayMethod]}.`, input.notes?.trim().slice(0, 300)].filter(Boolean).join(" ");
+  const data = { monthlyFeeCents: fee, billingDay: input.billingDay, billingStartDate: new Date(`${input.startMonth}-01T00:00:00Z`), notes, updatedById: actor.id };
+  await prisma.$transaction(async (tx) => {
+    await tx.bookkeepingBilling.upsert({ where: { clientId: input.clientId }, create: { clientId: input.clientId, ...data }, update: data });
+    await audit(tx, { actorId: actor.id, action: "billing.non_square_recurring_set", entityType: "BookkeepingBilling", entityId: input.clientId, clientId: input.clientId, details: { monthlyFeeCents: fee, billingDay: input.billingDay, startMonth: input.startMonth, method: input.method } });
+  });
+}
