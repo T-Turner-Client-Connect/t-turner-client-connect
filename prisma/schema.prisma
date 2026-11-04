@@ -326,6 +326,8 @@ model Client {
   businessInfoChanges   BusinessInfoChange[]
   taxYearProgress       TaxYearProgress[]
   manualBillingPayments ManualBillingPayment[]
+  businessLicenses      BusinessLicense[]
+  yearEndFilings        YearEndFiling[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -2807,19 +2809,21 @@ model IdentityDocument {
 
 // A client on the monthly/quarterly bookkeeping service.
 model BookkeepingProfile {
-  clientId              String   @id
-  client                Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  active                Boolean  @default(true)
+  clientId              String    @id
+  client                Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  active                Boolean   @default(true)
   // MONTHLY | QUARTERLY
-  frequency             String   @default("MONTHLY")
-  payroll               Boolean  @default(false)
+  frequency             String    @default("MONTHLY")
+  payroll               Boolean   @default(false)
   // The client already pays through recurring billing set up in Square
   // (true for every client on the list when Square linking arrived). While
   // set, Client Connect never asks them to authorize or save a card again.
-  squareBillingExpected Boolean  @default(false)
+  squareBillingExpected Boolean   @default(false)
   // WEEKLY | BIWEEKLY | SEMIMONTHLY | MONTHLY
   payrollFrequency      String?
   payrollProvider       String?
+  // One known pay date; later pay dates follow payrollFrequency from it.
+  payrollPayDate        DateTime? @db.Date
   // Deadlines, set per client by staff (no default): day of the month after
   // the work month when the client's documents are due / reports are due.
   // 31 means the last day of that month. Null = no deadline, never overdue.
@@ -2831,8 +2835,8 @@ model BookkeepingProfile {
   accounts              String?
   notes                 String?
   updatedById           String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   // Business information. Entity type and fiscal year end live on Client.
   legalName           String?
@@ -4377,4 +4381,38 @@ model BusinessAccessEvent {
 
   @@index([clientId, createdAt])
   @@index([createdAt])
+}
+
+/// A business license or permit the office tracks for a bookkeeping client (renewal reminders on the overview).
+model BusinessLicense {
+  id            String    @id @default(cuid())
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name          String
+  jurisdiction  String?
+  licenseNumber String?
+  renewalDate   DateTime? @db.Date
+  note          String?
+  archivedAt    DateTime?
+  createdById   String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([clientId, renewalDate])
+}
+
+/// Year-end W-2 / 1099 work for one client and tax year.
+model YearEndFiling {
+  id          String   @id @default(cuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  taxYear     Int
+  // NOT_STARTED | CONTRACTOR_REVIEW | FORMS_PREPARED | FILED
+  stage       String   @default("NOT_STARTED")
+  note        String?
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([clientId, taxYear])
 }

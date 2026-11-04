@@ -99,8 +99,8 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
         />
 
         <section id="upcoming" className="rounded-3xl border border-gold-500/40 bg-white p-5 text-navy-900 sm:p-7">
-          <h2 className="flex items-center gap-3 font-serif text-2xl font-bold">
-            <CalendarCheck2 className="size-8 text-gold-600" aria-hidden />
+          <h2 className="flex items-center gap-3 font-serif text-xl sm:text-xl font-bold">
+            <CalendarCheck2 className="size-7 text-gold-600" aria-hidden />
             Your Upcoming Appointments
           </h2>
           <p className="mt-1 text-sm text-slate-600">

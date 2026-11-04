@@ -12,6 +12,8 @@ import { integrationStatus } from "@/lib/integrations";
 import { can } from "@/lib/auth/permissions";
 import { receivables } from "@/lib/services/owner-billing";
 import { money } from "@/lib/billing/pricing";
+import { pendingRequests } from "@/lib/services/appointments";
+import { DashboardAppointmentRequests } from "@/components/appointments/dashboard-requests";
 
 export const metadata = { title: "Dashboard" };
 
@@ -52,6 +54,7 @@ export default async function Dashboard() {
     selfServiceAvailable(),
   ]);
   const owed = (await can(user, "receivables", "view")) ? await receivables(user) : null;
+  const apptRequests = (await can(user, "appointments", "approve")) ? await pendingRequests() : [];
 
   return (
     <>
@@ -74,6 +77,7 @@ export default async function Dashboard() {
           <span className="text-sm underline">Review now →</span>
         </Link>
       )}
+      <DashboardAppointmentRequests requests={apptRequests} />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Active clients" value={active} hint={`${total} total`} href="/clients?status=ACTIVE" />
         <Stat label="Unread conversations" value={unread} href="/conversations?filter=unread" />

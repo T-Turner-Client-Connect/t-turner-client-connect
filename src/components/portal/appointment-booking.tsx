@@ -48,7 +48,7 @@ const ICONS: Record<AppointmentService["icon"], React.ComponentType<{ className?
 
 const STEPS = ["Select Service(s)", "Choose Date", "Choose Time", "Confirm & Book"];
 const card = "min-w-0 rounded-2xl border border-gold-500/40 bg-white p-4 text-navy-900 shadow-[0_24px_48px_-28px_rgb(0_0_0/0.8)] sm:p-5";
-const colTitle = "flex items-center gap-2 font-serif text-xl font-bold text-navy-900 sm:text-[1.35rem]";
+const colTitle = "flex items-center gap-2 font-serif text-xl font-bold text-navy-900 sm:text-xl";
 const goldBtn = "inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-4 text-lg font-bold text-navy-950 shadow-[0_10px_24px_-12px_rgb(200_157_41/0.9)] ring-1 ring-gold-200 transition hover:to-gold-400 disabled:cursor-not-allowed disabled:opacity-50";
 
 function Num({ n }: { n: number }) {
@@ -282,9 +282,9 @@ export function AppointmentBooking(props: {
             <CalendarDays className="size-8 text-gold-400 sm:size-9" aria-hidden />
           </span>
           <div className="min-w-0">
-            <h1 className="font-serif text-3xl font-bold leading-tight text-white sm:text-[2.6rem]">
+            <h1 className="font-serif text-2xl font-bold leading-tight text-white sm:text-3xl">
               {reschedule ? "Reschedule an " : "Schedule an "}
-              <em className="font-serif font-normal italic text-gold-400 [font-family:'Brush_Script_MT','Segoe_Script','Snell_Roundhand',cursive] sm:text-[3rem]">Appointment</em>
+              <em className="font-serif font-normal italic text-gold-400 [font-family:'Brush_Script_MT','Segoe_Script','Snell_Roundhand',cursive] sm:text-4xl">Appointment</em>
             </h1>
             <p className="mt-1 text-[15px] text-navy-100 sm:text-lg">
               {reschedule ? `Choose a new date and time for your ${reschedule.current} appointment.` : "Select your service(s), choose a date and time, and book your appointment with our team."}
@@ -307,7 +307,7 @@ export function AppointmentBooking(props: {
           <span className="mx-auto flex size-20 items-center justify-center rounded-full bg-gradient-to-b from-gold-300 to-gold-500 ring-8 ring-gold-100">
             <Check className="size-11 text-navy-950" aria-hidden />
           </span>
-          <h2 className="mt-5 font-serif text-3xl font-bold">
+          <h2 className="mt-5 font-serif text-2xl font-bold">
             {rescheduledNote ? "Reschedule " : confirmed ? "Appointment " : "Request "}
             <em className="font-normal italic text-gold-600">{rescheduledNote ? "Received" : confirmed ? "Confirmed" : "Received"}</em>
           </h2>

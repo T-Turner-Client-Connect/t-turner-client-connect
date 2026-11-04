@@ -154,7 +154,7 @@ export default async function BusinessProfilePage({ params }: { params: Promise<
             {!billing.allowed ? (
               <p className="text-sm text-slate-600" data-testid="billing-restricted">Billing and payment methods are managed by Tabitha.</p>
             ) : (
-              <div className="space-y-4" data-testid="billing">
+              <div id="billing" className="scroll-mt-6 space-y-4" data-testid="billing">
                 {health && !billing.squareBilling.arrangement && billing.squareBilling.state !== "NONE" && <SquareConnectionStatus health={health} />}
                 {billing.squareBilling.state === "NONE" && manual && <ManualBillingPanel clientId={clientId} view={manual} owner={approver} officeStatus={billing.billing?.paymentStatus ?? "NOT_SET_UP"} />}
                 <SquareBillingPanel

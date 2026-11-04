@@ -71,7 +71,7 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
         ))}
       </nav>
 
-      <h2 className="mb-3 font-serif text-2xl font-bold">{year} tax year</h2>
+      <h2 className="mb-3 font-serif text-xl font-bold">{year} tax year</h2>
       {r.total === 0 ? (
         <Card title={`No ${year} records in your account yet`}>
           <p className="mb-3 text-sm text-slate-700">If we prepared your {year} return, we can add a copy here.</p>

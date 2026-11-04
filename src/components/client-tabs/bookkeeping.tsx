@@ -58,7 +58,7 @@ export async function BookkeepingTab({ clientId }: { clientId: string }) {
           <Button type="submit">Open month</Button>
         </ActionForm>
         <p className="mt-2 text-xs text-slate-600">Reports are uploaded by staff. No accounting software (QuickBooks etc.) is connected.</p>
-        <Link href={`/bookkeeping/${clientId}`} className="mt-2 inline-block text-sm font-semibold underline" data-testid="open-bk-workspace">Open the monthly workspace (checklist, statements, payroll, reports and approvals) →</Link>
+        <Link href={`/bookkeeping/${clientId}/close`} className="mt-2 inline-block text-sm font-semibold underline" data-testid="open-bk-workspace">Open the monthly workspace (checklist, statements, payroll, reports and approvals) →</Link>
       </Card>
 
       {periods.length === 0 && <EmptyState title="No bookkeeping months yet">Open a month to start collecting documents and publishing reports.</EmptyState>}

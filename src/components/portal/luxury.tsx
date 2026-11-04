@@ -119,7 +119,7 @@ export function CountdownCards({ lines, max = 4 }: { lines: CountdownLine[]; max
             <c.icon className="size-7 text-gold-600" aria-hidden />
             <p className="mt-2 font-serif text-sm font-bold leading-tight text-navy-900 sm:text-base">{c.form}</p>
             <p className="text-[11px] text-slate-600 sm:text-xs">({c.who})</p>
-            <p className="mt-2 font-serif text-4xl font-bold leading-none text-gold-600 sm:text-5xl">{c.line!.days}</p>
+            <p className="mt-2 font-serif text-3xl font-bold leading-none text-gold-600 sm:text-4xl">{c.line!.days}</p>
             <p className="text-sm font-semibold text-gold-700">{c.line!.days === 1 ? "Day Left" : "Days Left"}</p>
             {c.line!.appliesToYou && <span className="mt-2 rounded-full bg-gold-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gold-800">Your deadline</span>}
           </div>
@@ -150,7 +150,7 @@ export function ImportantToKnow({ children }: { children: React.ReactNode }) {
 export function PanelHead({ icon: Icon, title, action }: { icon: React.ComponentType<{ className?: string }>; title: string; action?: React.ReactNode }) {
   return (
     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 border-b border-gold-100 pb-4">
-      <h2 className="flex items-center gap-3 font-serif text-2xl font-bold text-navy-900 sm:text-[1.7rem]">
+      <h2 className="flex items-center gap-3 font-serif text-xl sm:text-xl font-bold text-navy-900">
         <span className="flex size-11 items-center justify-center rounded-xl border border-gold-300 bg-gold-50"><Icon className="size-6 text-gold-600" aria-hidden /></span>
         {title}
       </h2>
@@ -174,9 +174,9 @@ export function PageBanner({ icon: Icon, title, subtitle }: { icon: React.Compon
         <path d="M0 126 C 240 116, 400 74, 600 30" fill="none" stroke="#E6C76A" strokeWidth="3" opacity="0.8" />
       </svg>
       <div className="relative flex items-center gap-4 sm:gap-5 md:max-w-[60%]">
-        <Icon className="size-12 shrink-0 text-gold-500 sm:size-16" aria-hidden />
+        <Icon className="size-10 shrink-0 text-gold-500 sm:size-14" aria-hidden />
         <div className="min-w-0">
-          <h1 className="font-serif text-3xl font-bold leading-tight text-navy-900 sm:text-[2.6rem]">{title}</h1>
+          <h1 className="font-serif text-2xl font-bold leading-tight text-navy-900 sm:text-3xl">{title}</h1>
           <p className="mt-1 text-[15px] text-navy-800 sm:text-lg">{subtitle}</p>
         </div>
       </div>
@@ -188,7 +188,7 @@ export function PageBanner({ icon: Icon, title, subtitle }: { icon: React.Compon
 export function NavyCard({ icon: Icon, title, children, className = "" }: { icon: React.ComponentType<{ className?: string }>; title: string; children: React.ReactNode; className?: string }) {
   return (
     <section className={`min-w-0 overflow-hidden rounded-2xl border border-ivory-200 bg-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] ${className}`}>
-      <h2 className="flex items-center gap-3 bg-navy-900 px-5 py-3.5 font-serif text-xl font-bold text-white sm:text-2xl">
+      <h2 className="flex items-center gap-3 bg-navy-900 px-5 py-3.5 font-serif text-lg font-bold text-white sm:text-xl">
         <Icon className="size-6 shrink-0 text-white" aria-hidden />
         {title}
       </h2>

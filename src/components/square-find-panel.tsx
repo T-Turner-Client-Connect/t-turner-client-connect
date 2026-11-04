@@ -209,7 +209,7 @@ export function SquareFindPanel({ client, coverOptions, autoSuggest = false, ini
                               <div>
                                 <p className="text-xl font-bold">Series {s.seriesKey}</p>
                                 <p className="text-sm text-slate-200">{s.title || "Recurring invoice"}</p>
-                                <p className="mt-1 font-serif text-4xl font-bold text-gold-300">{usd(s.amountCents)}</p>
+                                <p className="mt-1 font-serif text-3xl font-bold text-gold-300">{usd(s.amountCents)}</p>
                                 <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-100">
                                   <span className="inline-flex items-center gap-1.5"><Repeat aria-hidden className="size-4" />{CADENCE[s.cadence] ?? "Recurring"}</span>
                                   {s.dueDay && <><span aria-hidden className="text-white/30">|</span><span className="inline-flex items-center gap-1.5"><CalendarDays aria-hidden className="size-4" />Due on the {ordinal(s.dueDay)}</span></>}

@@ -131,7 +131,7 @@ export async function uploadMonthlyFinancialsAction(clientId: string, _prev: Act
       ok: r.replaced
         ? `${REPORT_LABELS[r.document.reportType!]} saved as version ${r.version} for ${where} (staff-only draft). ${scanNote(r.document.scanStatus)} Version ${r.version - 1} is kept in the history${r.replaced.visibility === "PUBLISHED" ? " and stays with the client until this one is approved and delivered" : ""}.`
         : `${REPORT_LABELS[r.document.reportType!]} saved to ${where} as a staff-only draft. ${scanNote(r.document.scanStatus)} Submit it for Tabitha's review when it's ready.`,
-      next: { href: `/bookkeeping/${clientId}?period=${r.period.id}#reports`, label: `Go to ${periodLabel("MONTHLY", r.period.year, r.period.month)} reports` },
+      next: { href: `/bookkeeping/${clientId}/close?period=${r.period.id}#reports`, label: `Go to ${periodLabel("MONTHLY", r.period.year, r.period.month)} reports` },
     };
   });
 }

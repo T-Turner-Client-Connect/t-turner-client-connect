@@ -57,7 +57,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
 
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_1.2fr]">
         <section className={`${luxPanel} overflow-hidden`} data-testid="tax-pricing-card">
-          <h2 className="flex items-center gap-3 rounded-2xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-4 font-serif text-2xl font-bold text-white sm:text-[1.7rem]">
+          <h2 className="flex items-center gap-3 rounded-2xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-4 font-serif text-xl sm:text-xl font-bold text-white">
             <Coins className="size-9 shrink-0 text-gold-400" aria-hidden /> Tax Preparation Pricing
           </h2>
           <ul className="divide-y divide-gold-200/70 px-5 pb-3" data-testid="tax-pricing">
@@ -70,7 +70,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
                 </span>
                 <span className="flex min-w-[6.5rem] shrink-0 flex-col items-center rounded-2xl border border-gold-300 bg-gradient-to-b from-gold-50 to-gold-100 px-4 py-2 text-center shadow-sm">
                   {p.from && <span className="text-xs font-semibold text-navy-900">Starting at</span>}
-                  <span className="font-serif text-3xl font-bold leading-none text-navy-900">{p.price}</span>
+                  <span className="font-serif text-2xl font-bold leading-none text-navy-900">{p.price}</span>
                 </span>
               </li>
             ))}

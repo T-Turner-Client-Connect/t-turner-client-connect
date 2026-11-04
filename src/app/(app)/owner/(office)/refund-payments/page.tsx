@@ -44,10 +44,10 @@ export default async function RefundPaymentsPage({ searchParams }: { searchParam
       </nav>
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4" data-testid="refund-totals">
-        <Card title="Requests to review"><p className="font-serif text-3xl font-bold text-navy-900">{totals.pending}</p></Card>
-        <Card title="Awaiting deposit"><p className="font-serif text-3xl font-bold text-navy-900">{usd(totals.awaitingCents)}</p><p className="text-sm text-slate-600">{totals.awaitingCount} client{totals.awaitingCount === 1 ? "" : "s"}</p></Card>
-        <Card title="Received"><p className="font-serif text-3xl font-bold text-emerald-800">{usd(totals.receivedCents)}</p></Card>
-        <Card title="Follow up (short / not received)"><p className="font-serif text-3xl font-bold text-red-800">{usd(totals.followUpCents)}</p><p className="text-sm text-slate-600">{totals.followUpCount} client{totals.followUpCount === 1 ? "" : "s"}</p></Card>
+        <Card title="Requests to review"><p className="font-serif text-2xl font-bold text-navy-900">{totals.pending}</p></Card>
+        <Card title="Awaiting deposit"><p className="font-serif text-2xl font-bold text-navy-900">{usd(totals.awaitingCents)}</p><p className="text-sm text-slate-600">{totals.awaitingCount} client{totals.awaitingCount === 1 ? "" : "s"}</p></Card>
+        <Card title="Received"><p className="font-serif text-2xl font-bold text-emerald-800">{usd(totals.receivedCents)}</p></Card>
+        <Card title="Follow up (short / not received)"><p className="font-serif text-2xl font-bold text-red-800">{usd(totals.followUpCents)}</p><p className="text-sm text-slate-600">{totals.followUpCount} client{totals.followUpCount === 1 ? "" : "s"}</p></Card>
       </div>
 
       {mayEdit && <Card title="Add a client's fee owed" className="mb-5">

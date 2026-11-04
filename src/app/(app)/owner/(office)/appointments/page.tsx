@@ -132,7 +132,7 @@ async function AvailabilitySection({ month, today, staff }: { month?: string; to
     <div className="space-y-4" data-testid="availability-section">
       <div className="flex flex-wrap items-center gap-3">
         <Link href={`/owner/appointments?section=availability&month=${shift(-1)}`} className="rounded-lg px-3 py-1.5 text-sm font-semibold text-navy-900 ring-1 ring-ivory-200 hover:bg-white">← {shift(-1)}</Link>
-        <h2 className="font-serif text-2xl font-bold text-navy-900">{label}</h2>
+        <h2 className="font-serif text-xl font-bold text-navy-900">{label}</h2>
         <Link href={`/owner/appointments?section=availability&month=${shift(1)}`} className="rounded-lg px-3 py-1.5 text-sm font-semibold text-navy-900 ring-1 ring-ivory-200 hover:bg-white">{shift(1)} →</Link>
         <span className={clsx("rounded-full px-3 py-1 text-xs font-bold", cfg.publishedAt ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-600 ring-1 ring-slate-200")} data-testid="publish-state">
           {cfg.publishedAt ? `Published ${fmtChicago(cfg.publishedAt, { month: "short", day: "numeric" })}` : "Not published — clients can't book this month"}

@@ -6,7 +6,7 @@ export const metadata = { title: "Stay Connected with TTurner" };
 export default function SmsConsentPage() {
   return (
     <div className="rounded-2xl border border-ivory-200 bg-white p-6 shadow-sm sm:p-10">
-      <h1 className="text-3xl font-bold sm:text-4xl">Stay Connected with TTurner</h1>
+      <h1 className="text-2xl font-bold sm:text-3xl">Stay Connected with TTurner</h1>
       <p className="mt-3 text-[17px] text-slate-700">
         Receive updates from {BUSINESS.legalName} through {BUSINESS.platformName}. Choose the messages you would like to receive.
       </p>

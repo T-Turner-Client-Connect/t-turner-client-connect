@@ -68,13 +68,12 @@ export function NewsAndCountdowns({ cards, news, showAll, allHref }: { cards: Co
         <img src="/brand/news/banner-decor.jpg" alt="" className="absolute inset-y-0 right-0 hidden h-full w-[34%] object-cover [mask-image:linear-gradient(to_right,transparent,black_30%)] md:block" />
         <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden>
           <path d="M0 22 C 160 -6, 380 4, 560 10" fill="none" stroke="#C89D29" strokeWidth="4" />
-          <path d="M240 200 C 520 188, 760 176, 1000 150" fill="none" stroke="#E6C76A" strokeWidth="4" />
         </svg>
         <div className="relative flex items-center gap-5 px-6 py-8 sm:px-10 sm:py-10 md:max-w-[68%]">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/brand/news/megaphone.png" alt="" width={297} height={289} className="hidden h-24 w-auto shrink-0 drop-shadow-[0_6px_10px_rgb(0_0_0/0.35)] sm:block" />
           <div className="min-w-0">
-            <h1 id="news-heading" className="font-serif text-3xl font-bold leading-tight text-white sm:text-[2.6rem]">News &amp; Tax Countdowns</h1>
+            <h1 id="news-heading" className="font-serif text-2xl font-bold leading-tight text-white sm:text-3xl">News &amp; Tax Countdowns</h1>
             <p className="mt-2 text-[15px] text-navy-100 sm:text-lg">Stay informed with the latest IRS and state updates, filing <strong className="text-white">deadlines</strong>, and important announcements from our office.</p>
           </div>
         </div>
