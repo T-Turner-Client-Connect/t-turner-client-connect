@@ -29,13 +29,14 @@ type Row = {
   action: { href: string; label: string; external?: boolean } | null;
 };
 
-// The ways a client can pay, in the order of the approved design. Details come only from the
-// payment instructions our office has saved — nothing is made up here.
+// The ways a client can pay, in the order of the approved design. Handles are the firm's own,
+// given by Tabitha; anything the office saves in payment instructions takes their place.
+// No processing fee is shown here until Tabitha confirms which fees are allowed for each method.
 const WAYS = [
-  { method: "ZELLE", label: "Zelle®", sub: "Send a payment with Zelle", tile: "bg-[#6D1ED4]", glyph: "Z" },
-  { method: "CASH_APP", label: "Cash App®", sub: "Pay with Cash App", tile: "bg-[#00C244]", glyph: "$" },
-  { method: "APPLE_PAY", label: "Apple Pay®", sub: "Pay with Apple Pay", tile: "bg-black", glyph: null },
-  { method: "VENMO", label: "Venmo®", sub: "Pay with Venmo", tile: "bg-[#008CFF]", glyph: "V" },
+  { method: "ZELLE", label: "Zelle®", sub: "Send a payment with Zelle", tile: "bg-[#6D1ED4]", glyph: "Z", details: "Send to: Tabitha Turner\nPhone: 205-420-1825" },
+  { method: "CASH_APP", label: "Cash App®", sub: "Pay with Cash App", tile: "bg-[#00C244]", glyph: "$", details: "Send to: $TThompson25" },
+  { method: "APPLE_PAY", label: "Apple Cash", sub: "Send with Apple Cash on iPhone", tile: "bg-black", glyph: null, details: "Send with Apple Cash (in Messages or Wallet on your iPhone) to: 205-420-1825" },
+  { method: "VENMO", label: "Venmo®", sub: "Pay with Venmo", tile: "bg-[#008CFF]", glyph: "V", details: "Send to: @Tabitha-Thompson-7" },
 ] as const;
 
 function officeStatus(inv: Office, today: string): [string, Tone] {
@@ -208,9 +209,10 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
           <NoteBar icon={Info} title="Important Payment Info" testId="payment-info">
             <ul className="list-disc space-y-0.5 pl-5">
               <li>Taxes are not deducted from your refund.</li>
-              <li>You may use Zelle, Cash App, Apple Pay, Venmo, or pay directly through your invoice.</li>
+              <li>You may use Zelle, Cash App, Apple Cash, Venmo, or pay by card through your Square invoice.</li>
               <li>Select the payment method on the right to submit your payment.</li>
               <li>A receipt will be available after your payment is processed.</li>
+              <li>Cash payments are accepted in our office only.</li>
             </ul>
           </NoteBar>
         </div>
@@ -226,7 +228,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
               <CreditCard className="size-9 shrink-0 text-gold-600" aria-hidden />
               <span className="min-w-0">
                 <span className="block font-semibold text-navy-900">Pay Invoice (Credit/Debit Card)</span>
-                <span className="block text-xs text-slate-600">{card?.details || "Online card payments coming soon — contact our office"}</span>
+                <span className="block text-xs text-slate-600">{card?.details || "We send you a secure Square invoice as soon as your return is approved."}</span>
               </span>
             </div>
             {WAYS.map((w) => {
@@ -243,7 +245,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
                     </span>
                     <ChevronRight className="size-5 shrink-0 text-gold-600 transition group-open:rotate-90" aria-hidden />
                   </summary>
-                  <p className="whitespace-pre-line border-t border-gold-200 px-4 py-3 text-sm text-navy-800">{d || "Ask our office for details."}</p>
+                  <p className="whitespace-pre-line border-t border-gold-200 px-4 py-3 text-sm text-navy-800">{d || w.details}<span className="mt-1 block text-xs text-slate-600">Please include your name and invoice number in the note.</span></p>
                 </details>
               );
             })}
