@@ -14,6 +14,12 @@ export const SCALAR_FIELDS = [
   "city",
   "state",
   "postalCode",
+  "mailingSameAsAddress",
+  "mailingAddressLine1",
+  "mailingAddressLine2",
+  "mailingCity",
+  "mailingState",
+  "mailingPostalCode",
   "clientType",
   "spouseFirstName",
   "spouseMiddleName",
@@ -34,11 +40,17 @@ export const FIELD_LABELS: Record<string, string> = {
   businessName: "Business name",
   email: "Email",
   phone: "Phone",
-  addressLine1: "Address",
+  addressLine1: "Street address",
   addressLine2: "Address line 2",
   city: "City",
   state: "State",
   postalCode: "ZIP",
+  mailingSameAsAddress: "Mailing same as street address",
+  mailingAddressLine1: "Mailing street address",
+  mailingAddressLine2: "Mailing address line 2",
+  mailingCity: "Mailing city",
+  mailingState: "Mailing state",
+  mailingPostalCode: "Mailing ZIP",
   clientType: "Client category",
   services: "Services",
   tags: "Tags",
@@ -110,9 +122,11 @@ export type Comparison = { field: string; label: string; taxact: string | null; 
 export function compareFields(current: Current, row: CleanRow, opts: { approved?: string[]; assignedToId?: string | null; labelFor?: (field: string, v: string | null) => string | null } = {}): Comparison[] {
   const approved = new Set(opts.approved ?? []);
   const show = (f: string, v: string | null | undefined) => (v === null || v === undefined || v === "" ? null : opts.labelFor ? opts.labelFor(f, String(v)) : String(v));
+  // Yes/no fields read as words, and compare as text like the rest.
+  const text = (v: unknown): string | null => (v === null || v === undefined || v === "" ? null : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v));
   return REPLACEABLE_FIELDS.map((field) => {
-    const taxact = field === "assignedToId" ? opts.assignedToId ?? null : (row[field] as string | null);
-    const connect = (current[field as keyof Current] as string | null | undefined) ?? null;
+    const taxact = field === "assignedToId" ? opts.assignedToId ?? null : text(row[field]);
+    const connect = text(current[field as keyof Current]);
     const norm = (v: string | null) => v?.trim().toLowerCase() ?? "";
     let outcome: Comparison["outcome"];
     if (!has(taxact)) outcome = "not_in_file";

@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { clientWhere } from "@/lib/services/clients";
 import { formatPhone } from "@/lib/normalize";
 import { CLIENT_STATUS_LABELS, CLIENT_TYPE_LABELS } from "@/lib/format";
+import { ADDRESS_NEEDED_TAG, FILING_STATUS_NEEDED_TAG } from "@/lib/import/edits";
 
 export const metadata = { title: "Clients" };
 
@@ -58,7 +59,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
           </>
         }
       />
-      <form className="mb-4 grid gap-2 rounded-xl border border-navy-100 bg-white p-3 sm:grid-cols-2 lg:grid-cols-6" role="search">
+      <form className="mb-4 grid gap-2 rounded-xl border border-navy-100 bg-white p-3 sm:grid-cols-2 lg:grid-cols-7" role="search">
         {filters.archived && <input type="hidden" name="archived" value="1" />}
         <label className="lg:col-span-2">
           <span className="sr-only">Search</span>
@@ -81,14 +82,20 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
           <option value="none">Unassigned</option>
           {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
-        <div className="flex gap-2 sm:col-span-2 lg:col-span-6">
+        <select className="input" name="tag" defaultValue={sp.tag ?? ""} aria-label="Needs info">
+          <option value="">Any info status</option>
+          <option value={ADDRESS_NEEDED_TAG}>Address Needed</option>
+          <option value={FILING_STATUS_NEEDED_TAG}>Filing Status Needed</option>
+          {sp.tag && sp.tag !== ADDRESS_NEEDED_TAG && sp.tag !== FILING_STATUS_NEEDED_TAG && <option value={sp.tag}>Tag: {sp.tag}</option>}
+        </select>
+        <div className="flex gap-2 sm:col-span-2 lg:col-span-7">
           <button className={buttonClass("primary")}>Apply</button>
           <Link href={filters.archived ? "/clients?archived=1" : "/clients"} className={buttonClass("ghost")}>Clear</Link>
         </div>
       </form>
 
       {clients.length === 0 ? (
-        <EmptyState title={filters.q || sp.status || sp.type || sp.group ? "No clients match those filters" : "No clients yet"}>
+        <EmptyState title={filters.q || sp.status || sp.type || sp.group || sp.tag ? "No clients match those filters" : "No clients yet"}>
           Add a client, or import contacts from a spreadsheet on the <Link className="underline" href="/imports">Imports</Link> page.
         </EmptyState>
       ) : (
@@ -108,6 +115,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
                 <div className="flex flex-wrap gap-1">
                   <Badge tone={c.status === "ACTIVE" ? "green" : c.status === "PROSPECT" ? "gold" : "gray"}>{CLIENT_STATUS_LABELS[c.status]}</Badge>
                   <Badge tone="navy">{CLIENT_TYPE_LABELS[c.clientType]}</Badge>
+                  {c.tags.filter((t) => t === ADDRESS_NEEDED_TAG || t === FILING_STATUS_NEEDED_TAG).map((t) => <Badge key={t} tone="amber">{t}</Badge>)}
                 </div>
                 <p className="text-sm text-slate-600">{c.assignedTo?.name ?? "Unassigned"}</p>
               </Link>

@@ -26,6 +26,7 @@ import { ServicesTab } from "@/components/client-tabs/services";
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
 import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { ownerAccessFor } from "@/lib/auth/owner";
+import { formatAddress, mailingAddressOf, streetAddressOf } from "@/lib/client-address";
 
 export const metadata = { title: "Client" };
 
@@ -165,9 +166,15 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
               <div><dt className="font-semibold text-slate-600">Email</dt><dd>{client.email ?? "—"}</dd></div>
               <div><dt className="font-semibold text-slate-600">Mobile</dt><dd>{client.phoneNormalized ? formatPhone(client.phoneNormalized) : client.phone ?? "—"}</dd></div>
               <div className="sm:col-span-2">
-                <dt className="font-semibold text-slate-600">Mailing address</dt>
-                <dd>{[client.addressLine1, client.addressLine2, [client.city, client.state].filter(Boolean).join(", "), client.postalCode].filter(Boolean).join(" · ") || "—"}</dd>
+                <dt className="font-semibold text-slate-600">{client.mailingSameAsAddress === false ? "Street address" : "Mailing address"}</dt>
+                <dd>{formatAddress(streetAddressOf(client)) || "—"}</dd>
               </div>
+              {client.mailingSameAsAddress === false && (
+                <div className="sm:col-span-2">
+                  <dt className="font-semibold text-slate-600">Mailing address (different)</dt>
+                  <dd>{formatAddress(mailingAddressOf(client)) || "—"}</dd>
+                </div>
+              )}
               <div><dt className="font-semibold text-slate-600">Services</dt><dd>{client.services.join(", ") || "—"}</dd></div>
               <div><dt className="font-semibold text-slate-600">Assigned to</dt><dd>{client.assignedTo?.name ?? "Unassigned"}</dd></div>
               <div><dt className="font-semibold text-slate-600">Groups</dt><dd className="flex flex-wrap gap-1">{client.groups.length ? client.groups.map((g) => <Badge key={g.groupId} tone="gold">{g.group.name}</Badge>) : "—"}</dd></div>
