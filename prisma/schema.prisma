@@ -255,6 +255,7 @@ model Client {
   campaignInclusions    CampaignInclusion[]
   campaignExclusions    CampaignExclusion[]
   portalAccess          PortalAccess[]
+  refundTransfers       RefundTransferPayment[]
   portalInvites         PortalInvite[]
   conversations         Conversation[]
   documents             Document[]
@@ -3994,4 +3995,51 @@ model TaxSummaryCheck {
   createdAt      DateTime         @default(now())
 
   @@unique([summaryId, code])
+}
+
+/// Pay From My Refund (Republic Bank Refund Transfer) for one client and tax year. Client Connect
+/// only tracks it: Republic Bank's own application and agreement are the authorization, and a
+/// fee is never treated as paid until the deposit is actually received and recorded here.
+/// REQUESTED (client asked; office review) → AWAITING_DEPOSIT (office set the fee owed) →
+/// RECEIVED | SHORT (part paid; rest owed another way) | NOT_RECEIVED (pay another way) | CANCELLED.
+model RefundTransferPayment {
+  id             String                @id @default(cuid())
+  clientId       String
+  client         Client                @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  taxYear        Int
+  status         String                @default("REQUESTED")
+  // Preparation fee to be paid from the refund (set by the office once the return is done).
+  amountCents    Int?
+  receivedCents  Int?
+  receivedOn     DateTime?             @db.Date
+  // The client's answer to the Treasury Offset Program check: CHECKED | NOT_CHECKED | NEEDS_HELP.
+  debtCheck      String?
+  // Client said they or their spouse may owe debts that could offset the refund (YES | NOT_SURE | NO).
+  offsetRisk     String?
+  acknowledgedAt DateTime?
+  note           String?
+  createdById    String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  events         RefundTransferEvent[]
+
+  @@unique([clientId, taxYear])
+  @@index([status])
+}
+
+/// Append-only history for a Pay From My Refund record.
+model RefundTransferEvent {
+  id                String                @id @default(cuid())
+  paymentId         String
+  payment           RefundTransferPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  action            String
+  fromStatus        String?
+  toStatus          String?
+  amountCents       Int?
+  actorUserId       String?
+  actorPortalUserId String?
+  note              String?
+  createdAt         DateTime              @default(now())
+
+  @@index([paymentId, createdAt])
 }
