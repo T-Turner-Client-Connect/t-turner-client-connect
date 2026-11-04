@@ -32,9 +32,9 @@ export function MessageComposer({
   const [subject, setSubject] = useState(defaultSubject ?? "");
   const [body, setBody] = useState("");
   const options = [
-    { key: "portal" as const, icon: Laptop, title: "Message in Portal", sub: "(Secure)" },
-    ...(textNumber ? [{ key: "text" as const, icon: Smartphone, title: "Text Message", sub: `(${textNumber.display})` }] : []),
-    { key: "email" as const, icon: Mail, title: "Email", sub: `(${email})` },
+    { key: "portal" as const, icon: Laptop, title: "Message in Portal", sub: "Secure" },
+    ...(textNumber ? [{ key: "text" as const, icon: Smartphone, title: "Text Message", sub: textNumber.display }] : []),
+    { key: "email" as const, icon: Mail, title: "Email", sub: email },
   ];
   const external = mode === "text" ? `sms:${textNumber?.tel}?&body=${encodeURIComponent(`${subject ? `${subject}: ` : ""}${body}`)}` : `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 
@@ -59,13 +59,13 @@ export function MessageComposer({
     <div className="space-y-5">
       <fieldset>
         <legend className="mb-2 font-semibold text-navy-900">How would you like to communicate?</legend>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-[repeat(auto-fit,minmax(17rem,1fr))]">
           {options.map((o) => (
             <label key={o.key} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 ${mode === o.key ? "border-gold-500 bg-gold-50 ring-1 ring-gold-400" : "border-ivory-200 bg-white hover:border-gold-300"}`}>
               <o.icon className="size-7 shrink-0 text-navy-900" aria-hidden />
               <span className="min-w-0 flex-1 leading-tight">
                 <span className="block font-semibold text-navy-900">{o.title}</span>
-                <span className="block break-all text-sm text-slate-600">{o.sub}</span>
+                <span className="block whitespace-nowrap text-sm text-slate-600">{o.sub}</span>
               </span>
               <input type="radio" name="mode" value={o.key} checked={mode === o.key} onChange={() => setMode(o.key)} className="size-5 accent-gold-600" />
             </label>

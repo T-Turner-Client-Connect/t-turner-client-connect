@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth/session";
 import { requirePortalUser } from "@/lib/portal/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
-import { addPerson, confirmIdentityReminderReceived, rejectIdentityDocument, sendIdentityReminderTest, setIdentityAccessAll, uploadIdentityDocument, verifyIdentityDocument } from "@/lib/services/identity";
+import { addPerson, confirmIdentityReminderReceived, removePerson, rejectIdentityDocument, sendIdentityReminderTest, setIdentityAccessAll, uploadIdentityDocument, verifyIdentityDocument } from "@/lib/services/identity";
 
 async function fileFrom(fd: FormData) {
   const f = fd.get("file");
@@ -34,6 +34,24 @@ export async function portalAddPersonAction(clientId: string, _prev: ActionState
     await addPerson({ portal: user }, clientId, { role: str(fd, "role"), name: str(fd, "name") });
     revalidatePath("/client/identity");
     return "Added.";
+  });
+}
+
+export async function portalRemovePersonAction(clientId: string, personId: string, _prev: ActionState): Promise<ActionState> {
+  const user = await requirePortalUser();
+  return run(async () => {
+    await removePerson({ portal: user }, clientId, personId);
+    revalidatePath("/client", "layout");
+    return "Removed.";
+  });
+}
+
+export async function staffRemovePersonAction(clientId: string, personId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await removePerson({ staff: actor }, clientId, personId, str(fd, "reason"));
+    revalidatePath(`/clients/${clientId}`);
+    return "Removed from the list. Their documents and history are kept.";
   });
 }
 

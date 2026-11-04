@@ -6,6 +6,7 @@ import { PageBanner } from "@/components/portal/luxury";
 import { luxPanel, navyTable, NoteBar, PanelTitle, pillButton, StatCard, StatusPill, usdc, ymdLabel, type Tone } from "@/components/portal/billing-pages";
 import { PaymentPanel } from "@/components/portal/payment-panel";
 import { acceptQuoteAction, declineQuoteAction } from "@/app/actions/portal-billing";
+import { portalMessageAction } from "@/app/actions/portal";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { portalBilling, quoteTermsHash } from "@/lib/services/owner-billing";
@@ -208,8 +209,9 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
 
           <NoteBar icon={Info} title="Important Payment Info" testId="payment-info">
             <ul className="list-disc space-y-0.5 pl-5">
-              <li>Taxes are not deducted from your refund.</li>
+              <li>Invoices must be paid before we file your tax return.</li>
               <li>You may use Zelle, Cash App, Apple Cash, Venmo, or pay by card through your Square invoice.</li>
+              <li>You may also choose to have your tax preparation fee paid from your federal refund through Republic Bank&apos;s optional Refund Transfer. Republic Bank charges its own fees for this service — ask our office for details. Paying directly avoids those fees.</li>
               <li>Select the payment method on the right to submit your payment.</li>
               <li>A receipt will be available after your payment is processed.</li>
               <li>Cash payments are accepted in our office only.</li>
@@ -228,9 +230,19 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
               <CreditCard className="size-9 shrink-0 text-gold-600" aria-hidden />
               <span className="min-w-0">
                 <span className="block font-semibold text-navy-900">Pay Invoice (Credit/Debit Card)</span>
-                <span className="block text-xs text-slate-600">{card?.details || "We send you a secure Square invoice as soon as your return is approved."}</span>
+                <span className="block text-xs text-slate-600">{card?.details || "Choose Pay with an Invoice and we'll send a secure Square invoice to your portal. Invoices are paid before we file your return."}</span>
               </span>
             </div>
+            {/* Lets the office know to create an invoice: sends a secure message (our office is alerted by email/text). Not a payment. */}
+            {current.canMessage && (
+              <ActionForm action={portalMessageAction.bind(null, current.clientId)} className="rounded-xl border-2 border-gold-400 bg-white px-4 py-3" idempotent>
+                <input type="hidden" name="subject" value="Please send me an invoice" />
+                <input type="hidden" name="body" value="I'd like to pay with an invoice. Please send my invoice to my portal." />
+                <p className="font-semibold text-navy-900">Pay with an Invoice</p>
+                <p className="mb-2 text-xs text-slate-600">We&apos;ll be notified to create your invoice and send it to your portal for payment.</p>
+                <Button type="submit" data-testid="request-invoice">Request an Invoice</Button>
+              </ActionForm>
+            )}
             {WAYS.map((w) => {
               const d = instructions.find((i) => i.method === w.method)?.details;
               return (
