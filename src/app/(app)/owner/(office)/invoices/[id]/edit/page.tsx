@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
+import { warningsByClient } from "@/lib/services/billing-schedules";
 import { PageHeader } from "@/components/ui";
 import { QuoteForm } from "@/components/owner/quote-form";
 import { saveQuoteAction } from "@/app/actions/owner";
@@ -15,15 +17,21 @@ const plain = (type: string, v: number) => (type === "FLAT" || type === "PERCENT
 export default async function EditQuotePage({ params }: { params: Promise<{ id: string }> }) {
   const { actor, access } = await requireOffice("billing", "edit");
   const { id } = await params;
-  const inv = await prisma.invoice.findUnique({ where: { id }, include: { lines: { orderBy: { sortOrder: "asc" } } } });
+  const inv = await prisma.invoice.findUnique({ where: { id }, include: { lines: { orderBy: { sortOrder: "asc" } }, scheduleItem: { select: { scheduleId: true, label: true } } } });
   if (!inv || inv.state !== "DRAFT") notFound();
   if (inv.formType === "INVOICE") {
-    const [clients, approved, live, settings, sending] = await Promise.all([invoiceClientChoices(actor), approvedFirmMethods(), squareLinksLive(), billingSettings(), squareSendingState()]);
+    const [clients, approved, live, settings, sending, warnings] = await Promise.all([invoiceClientChoices(actor), approvedFirmMethods(), squareLinksLive(), billingSettings(), squareSendingState(), warningsByClient()]);
     const line = inv.lines[0];
     return (
       <>
         <PageHeader title={`Edit ${inv.number}`} subtitle="Drafts only. The client's billing contact refreshes from their master record when you save." />
+        {inv.scheduleItem && (
+          <p className="mb-4 rounded-xl border border-gold-300 bg-gold-50/70 px-4 py-3 text-sm text-navy-900" data-testid="part-of-schedule">
+            Part of a billing schedule ({inv.scheduleItem.label}). <Link className="font-semibold underline" href={`/owner/billing/schedules/${inv.scheduleItem.scheduleId}`}>Open the schedule</Link> to see or change future invoices.
+          </p>
+        )}
         <FirmInvoiceForm
+          schedule={{ allowed: !inv.scheduleItem && access.can("billing", "create"), isOwner: access.isOwner, warnings, creating: false }}
           action={saveFirmInvoiceAction.bind(null, inv.id)}
           clients={clients}
           number={{ value: inv.number, assigned: true }}

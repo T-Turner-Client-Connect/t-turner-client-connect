@@ -366,6 +366,8 @@ export async function issueInvoice(actor: Actor, invoiceId: string, opts: { chec
   await ownerAudit(actor.id, "billing.invoice_approved", "Invoice", invoiceId, { from: inv.state });
   await ownerAudit(actor.id, "billing.invoice_issued", "Invoice", invoiceId);
   if (opts.notify !== false) await notifyBilling(inv.clientId, "NEW_INVOICE", invoiceId);
+  // A "Pay with an Invoice" request answered by this invoice moves to Invoice sent.
+  await (await import("./invoice-requests")).onInvoiceSent(actor.id, invoiceId);
 }
 
 export async function voidInvoice(actor: Actor, invoiceId: string, reason: string) {

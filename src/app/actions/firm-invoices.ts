@@ -16,6 +16,8 @@ import {
   updateFirmInvoice,
   type FirmInvoiceInput,
 } from "@/lib/services/firm-invoices";
+import { checkSchedule, proposeSchedule, type ScheduleInput } from "@/lib/services/billing-schedules";
+import { prisma } from "@/lib/prisma";
 
 /** "1,234.56" or "$80" → cents. */
 function cents(raw: string): number {
@@ -24,11 +26,11 @@ function cents(raw: string): number {
   return Math.round(Number(v) * 100);
 }
 
-function inputFrom(fd: FormData): FirmInvoiceInput {
+function inputFrom(fd: FormData, amountOptional = false): FirmInvoiceInput {
   return {
     clientId: str(fd, "clientId"),
     service: str(fd, "service"),
-    amountCents: cents(str(fd, "amount")),
+    amountCents: amountOptional && !str(fd, "amount").trim() ? 0 : cents(str(fd, "amount")),
     description: str(fd, "description"),
     issueDate: str(fd, "issueDate"),
     dueDate: str(fd, "dueDate"),
@@ -38,17 +40,70 @@ function inputFrom(fd: FormData): FirmInvoiceInput {
   };
 }
 
-/** Create or edit a draft; "submit" also hands it to the owner for approval. */
+const num = (fd: FormData, k: string) => (str(fd, k).trim() ? Number(str(fd, k)) : null);
+
+/** The "Payment type" part of Create Invoice: null for a one-time invoice. */
+function scheduleFrom(fd: FormData, input: FirmInvoiceInput, origin: { requestId: string | null }): ScheduleInput | null {
+  const kind = str(fd, "paymentType") || "ONE_TIME";
+  if (kind === "ONE_TIME") return null;
+  const total = str(fd, "planTotal");
+  return {
+    clientId: input.clientId,
+    kind,
+    service: input.service,
+    description: input.description,
+    amountCents: input.amountCents,
+    totalCents: total ? cents(total) : null,
+    installments: num(fd, "installments"),
+    cadence: str(fd, "cadence") || null,
+    startDate: str(fd, "startDate") || input.issueDate,
+    endDate: str(fd, "endDate") || null,
+    maxInvoices: num(fd, "maxInvoices"),
+    invoiceDay: num(fd, "invoiceDay"),
+    dueInDays: num(fd, "dueInDays"),
+    balanceDate: str(fd, "balanceDate") || null,
+    autoSend: fd.get("autoSend") === "on",
+    offeredMethods: input.offeredMethods,
+    privateNote: input.privateNote,
+    requestId: origin.requestId,
+    confirmDuplicate: fd.get("confirmDuplicate") === "on",
+  };
+}
+
+/**
+ * Create or edit a draft; "submit" also hands it to the owner for approval. With a payment type
+ * other than one-time, a billing schedule is made instead: Tabitha's is active at once (its first
+ * cycle is created as a draft when due); anyone else's waits for her approval and creates nothing.
+ */
 export async function saveFirmInvoiceAction(invoiceId: string | null, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   let id = invoiceId;
+  let to: string | null = null;
+  const origin = { requestId: str(fd, "requestId") || null, conversationId: str(fd, "conversationId") || null };
   const result = await run(async () => {
-    const input = inputFrom(fd);
+    const kind = str(fd, "paymentType") || "ONE_TIME";
+    const input = { ...inputFrom(fd, kind === "INSTALLMENTS"), ...(kind !== "ONE_TIME" && !invoiceId ? { issueDate: str(fd, "startDate"), dueDate: str(fd, "startDate") } : {}) };
+    const schedule = scheduleFrom(fd, input, origin);
+    if (schedule && !invoiceId) {
+      // A schedule from Create Invoice: no separate invoice; its cycles are the invoices.
+      if (origin.conversationId && !origin.requestId) {
+        throw new ValidationError("For an older request without details, create a one-time invoice first, then make it recurring from Edit.");
+      }
+      const s = await proposeSchedule(actor, schedule);
+      const first = await prisma.billingScheduleItem.findFirst({ where: { scheduleId: s.id, invoiceId: { not: null } }, orderBy: { seq: "asc" }, select: { invoiceId: true } });
+      to = first?.invoiceId ? `/owner/invoices/${first.invoiceId}` : `/owner/billing/schedules/${s.id}`;
+      return;
+    }
+    if (schedule) await checkSchedule(actor, { ...schedule, firstInvoiceId: invoiceId });
     if (invoiceId) await updateFirmInvoice(actor, invoiceId, input);
-    else id = (await createFirmInvoice(actor, input)).id;
+    else id = (await createFirmInvoice(actor, input, origin)).id;
+    if (schedule) {
+      const s = await proposeSchedule(actor, { ...schedule, firstInvoiceId: id });
+      to = `/owner/billing/schedules/${s.id}`;
+    }
     if (str(fd, "intent") === "submit") await submitForApproval(actor, id!);
   });
-  if (result?.ok) redirect(`/owner/invoices/${id}`);
+  if (result?.ok) redirect(to ?? `/owner/invoices/${id}`);
   // A draft saved before the submit step failed: open it so the work isn't lost.
   if (!invoiceId && id) redirect(`/owner/invoices/${id}`);
   return result;

@@ -100,7 +100,7 @@ describe("grants take effect immediately", () => {
     await setStaffPermissions(tab, daria.id, ["billing.view", "billing.create"]);
     const inv = await createFirmInvoice(daria, invoice(rosa.id));
     expect(await ownerNavState(daria)).toBe("/owner/invoices");
-    expect(officeTabs(await officeAccessFor(daria.id)).map((t) => t.label)).toEqual(["Quotes & invoices", "Payment plans", "Pay by Refund"]);
+    expect(officeTabs(await officeAccessFor(daria.id)).map((t) => t.label)).toEqual(["Quotes & invoices", "Billing dashboard", "Payment plans", "Pay by Refund"]);
     await setStaffPermissions(tab, daria.id, ["billing.view"]);
     await expect(createFirmInvoice(daria, invoice(rosa.id))).rejects.toBeInstanceOf(ForbiddenError);
     expect((await invoiceRows(daria)).map((r) => r.id)).toContain(inv.id);

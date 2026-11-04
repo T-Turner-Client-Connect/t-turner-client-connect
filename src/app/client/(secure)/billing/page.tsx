@@ -7,7 +7,8 @@ import { PageBanner } from "@/components/portal/luxury";
 import { luxPanel, navyTable, NoteBar, PanelTitle, pillButton, StatCard, StatusPill, usdc, ymdLabel, type Tone } from "@/components/portal/billing-pages";
 import { PaymentPanel } from "@/components/portal/payment-panel";
 import { acceptQuoteAction, declineQuoteAction } from "@/app/actions/portal-billing";
-import { portalMessageAction } from "@/app/actions/portal";
+import { requestInvoiceAction } from "@/app/actions/invoice-requests";
+import { invoiceRequestChoices, portalInvoiceRequests, REQUEST_STATUS, type RequestItem } from "@/lib/services/invoice-requests";
 import { PayFromRefund } from "@/components/portal/pay-from-refund";
 import { portalRefundTransfers, RT_STATUS, type RtStatus } from "@/lib/services/refund-transfers";
 import { requirePortalUser } from "@/lib/portal/session";
@@ -86,6 +87,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
     prisma.paymentInstruction.findMany({ where: { active: true }, select: { method: true, details: true } }),
     portalRefundTransfers(user, current.clientId),
   ]);
+  const [invoiceChoices, recentRequests] = current.canMessage ? await Promise.all([invoiceRequestChoices(user, current.clientId), portalInvoiceRequests(user, current.clientId)]) : [null, []];
   const q = `account=${current.clientId}`;
   const today = todayCentral();
   const year = today.slice(0, 4);
@@ -278,16 +280,8 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
                 <span className="block text-xs text-slate-600">{card?.details || "Choose Pay with an Invoice and we'll send a secure Square invoice to your portal. Invoices are paid before we file your return."}</span>
               </span>
             </div>
-            {/* Lets the office know to create an invoice: sends a secure message (our office is alerted by email/text). Not a payment. */}
-            {current.canMessage && (
-              <ActionForm action={portalMessageAction.bind(null, current.clientId)} className="rounded-xl border-2 border-gold-400 bg-white px-4 py-3" idempotent>
-                <input type="hidden" name="subject" value="Please send me an invoice" />
-                <input type="hidden" name="body" value="I'd like to pay with an invoice. Please send my invoice to my portal." />
-                <p className="font-semibold text-navy-900">Pay with an Invoice</p>
-                <p className="mb-2 text-xs text-slate-600">We&apos;ll be notified to create your invoice and send it to your portal for payment.</p>
-                <Button type="submit" data-testid="request-invoice">Request an Invoice</Button>
-              </ActionForm>
-            )}
+            {/* Lets the office know to create an invoice, and what it's for: a structured request plus a secure message (our office is alerted). Not a payment. */}
+            {current.canMessage && invoiceChoices && <RequestInvoice clientId={current.clientId} choices={invoiceChoices.choices} years={invoiceChoices.years} recent={recentRequests} />}
             {!businessOnly && <PayFromRefund clientId={current.clientId} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} />}
             {WAYS.map((w) => {
 
@@ -393,5 +387,62 @@ function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Offi
       )}
       {inv.memo && <p className="mt-3 text-sm text-slate-700">{inv.memo}</p>}
     </Card>
+  );
+}
+
+/**
+ * "Pay with an Invoice": the client says what the invoice is for — one of their services, the tax
+ * return being prepared, an open invoice, or Other with a short note — and, optionally, the amount.
+ */
+function RequestInvoice({ clientId, choices, years, recent }: { clientId: string; choices: (RequestItem & { taxYear: number | null })[]; years: number[]; recent: { id: string; status: string; createdAt: Date }[] }) {
+  const open = recent.find((r) => r.status === "OPEN" || r.status === "INVOICE_CREATED");
+  return (
+    <details className="group rounded-xl border-2 border-gold-400 bg-white" data-testid="pay-with-invoice">
+      <summary className="cursor-pointer list-none px-4 py-3 [&::-webkit-details-marker]:hidden">
+        <span className="flex items-center justify-between gap-2">
+          <span className="min-w-0">
+            <span className="block font-semibold text-navy-900">Pay with an Invoice</span>
+            <span className="block text-xs text-slate-600">Tell us what it&apos;s for and we&apos;ll create your invoice and send it to your portal.</span>
+          </span>
+          <ChevronRight className="size-5 shrink-0 text-gold-600 transition group-open:rotate-90" aria-hidden />
+        </span>
+        <span className="mt-2 inline-flex rounded-lg bg-navy-900 px-3 py-1.5 text-sm font-semibold text-white group-open:hidden" data-testid="request-invoice">Request an Invoice</span>
+      </summary>
+      <ActionForm action={requestInvoiceAction.bind(null, clientId)} className="space-y-3 border-t border-gold-200 px-4 py-3" idempotent resetOnSuccess>
+        {open && <p className="rounded-lg bg-gold-50 px-3 py-2 text-xs text-navy-900" data-testid="request-pending">Your request from {fmtDate(open.createdAt)} is with our office ({REQUEST_STATUS[open.status].label.toLowerCase()}).</p>}
+        <fieldset>
+          <legend className="mb-1 text-sm font-semibold text-navy-900">What is the invoice for?</legend>
+          <div className="space-y-1.5">
+            {choices.map((c) => (
+              <label key={`${c.kind}|${c.ref}`} className="flex items-start gap-2 rounded-lg border border-ivory-200 px-3 py-2 text-sm text-navy-900 has-[:checked]:border-gold-500 has-[:checked]:bg-gold-50">
+                <input type="checkbox" name="item" value={`${c.kind}|${c.ref ?? ""}`} className="mt-0.5 size-4 accent-navy-900" data-testid="request-choice" /> {c.label}
+              </label>
+            ))}
+            <label className="flex items-start gap-2 rounded-lg border border-ivory-200 px-3 py-2 text-sm text-navy-900 has-[:checked]:border-gold-500 has-[:checked]:bg-gold-50">
+              <input type="checkbox" name="item" value="OTHER|" className="mt-0.5 size-4 accent-navy-900" data-testid="request-other" /> Something else (add a note)
+            </label>
+          </div>
+        </fieldset>
+        <label className="block text-sm">
+          <span className="mb-1 block font-semibold text-navy-900">Your message <span className="font-normal text-slate-600">(required for something else)</span></span>
+          <textarea className="input" name="note" rows={2} maxLength={500} placeholder="e.g. Amended 2024 return" />
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block text-sm">
+            <span className="mb-1 block font-semibold text-navy-900">Tax year</span>
+            <select className="input" name="taxYear" defaultValue="">
+              <option value="">None</option>
+              {years.map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-semibold text-navy-900">Amount, if you know it</span>
+            <input className="input" name="amount" inputMode="decimal" placeholder="0.00" data-testid="request-amount" />
+          </label>
+        </div>
+        <Button type="submit" data-testid="send-invoice-request">Send request</Button>
+        <p className="text-xs text-slate-600">This is not a payment. Nothing is charged.</p>
+      </ActionForm>
+    </details>
   );
 }

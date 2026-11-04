@@ -1,5 +1,5 @@
 import "server-only";
-import type { Invoice } from "@prisma/client";
+import type { Invoice, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
 import { ForbiddenError } from "@/lib/auth/actor";
@@ -61,7 +61,7 @@ export async function squareLinksLive() {
   return !!s.squareLinksEnabledAt && squareSettings().configured;
 }
 
-async function validate(input: FirmInvoiceInput) {
+export async function validateFirmInvoice(input: FirmInvoiceInput) {
   const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { archivedAt: true } });
   if (!client || client.archivedAt) throw new ValidationError("Choose a client from the client list.");
   if (!(FIRM_SERVICES as readonly string[]).includes(input.service)) throw new ValidationError("Choose a service.");
@@ -86,7 +86,7 @@ async function validate(input: FirmInvoiceInput) {
   };
 }
 
-function invoiceFields(input: FirmInvoiceInput, checked: Awaited<ReturnType<typeof validate>>) {
+function invoiceFields(input: FirmInvoiceInput, checked: Awaited<ReturnType<typeof validateFirmInvoice>>) {
   return {
     title: input.service,
     issueDate: dateOnly(input.issueDate),
@@ -109,21 +109,42 @@ function invoiceFields(input: FirmInvoiceInput, checked: Awaited<ReturnType<type
 
 const lineOf = (input: FirmInvoiceInput) => ({ service: input.service, description: input.description.trim().slice(0, 2000), quantity: 1, unitCents: input.amountCents, sortOrder: 0 });
 
+/** Where a new invoice came from: a client's "Pay with an Invoice" request (new or legacy thread). */
+export type InvoiceOrigin = { requestId?: string | null; conversationId?: string | null };
+
 /** Draft from the Create Invoice screen. Owner or staff with billing access. */
-export async function createFirmInvoice(actor: Actor, input: FirmInvoiceInput) {
+export async function createFirmInvoice(actor: Actor, input: FirmInvoiceInput, origin: InvoiceOrigin = {}) {
   await assertOffice(actor, "billing", "create");
-  const checked = await validate(input);
+  if (origin.requestId) {
+    const r = await prisma.invoiceRequest.findUnique({ where: { id: origin.requestId }, select: { clientId: true, invoiceId: true } });
+    if (!r || r.clientId !== input.clientId) throw new ValidationError("That invoice request is for a different client.");
+    if (r.invoiceId) throw new ValidationError("An invoice was already created for this request.");
+  }
+  const { invoice: inv, offeredMethods } = await insertFirmInvoice(actor.id, input);
+  await ownerAudit(actor.id, "billing.invoice_created", "Invoice", inv.id, { number: inv.number, service: input.service, amountCents: input.amountCents, offeredMethods, ...(origin.requestId ? { requestId: origin.requestId } : {}) });
+  if (origin.requestId || origin.conversationId) await (await import("./invoice-requests")).linkInvoiceToRequest(actor.id, inv.id, origin);
+  return inv;
+}
+
+/**
+ * The Create Invoice record itself (a draft), with no permission check: callers check first.
+ * Billing schedules use it for each cycle; `inTx` runs in the same transaction, so a cycle and its
+ * invoice are saved together or not at all.
+ */
+export async function insertFirmInvoice(createdById: string, input: FirmInvoiceInput, inTx?: (tx: Prisma.TransactionClient, inv: Invoice) => Promise<void>) {
+  const checked = await validateFirmInvoice(input);
   const contact = await billingContactOf(input.clientId);
-  const inv = await withNumberRetry(() =>
+  const invoice = await withNumberRetry(() =>
     prisma.$transaction(async (tx) => {
       const number = await nextNumber(tx, Number(input.issueDate.slice(0, 4)));
-      return tx.invoice.create({
-        data: { number, clientId: input.clientId, createdById: actor.id, formType: "INVOICE", ...contact, ...invoiceFields(input, checked), lines: { create: [lineOf(input)] } },
+      const inv = await tx.invoice.create({
+        data: { number, clientId: input.clientId, createdById, formType: "INVOICE", ...contact, ...invoiceFields(input, checked), lines: { create: [lineOf(input)] } },
       });
+      if (inTx) await inTx(tx, inv);
+      return inv;
     }),
   );
-  await ownerAudit(actor.id, "billing.invoice_created", "Invoice", inv.id, { number: inv.number, service: input.service, amountCents: input.amountCents, offeredMethods: checked.offeredMethods });
-  return inv;
+  return { invoice, offeredMethods: checked.offeredMethods };
 }
 
 /** Drafts only; the client's billing contact is refreshed from the master record. */
@@ -132,7 +153,7 @@ export async function updateFirmInvoice(actor: Actor, invoiceId: string, input: 
   const before = await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { lines: true } });
   if (!before || before.formType !== "INVOICE") throw new ValidationError("Not found.");
   if (before.state !== "DRAFT") throw new ValidationError("Only drafts can be edited. Ask the owner to return it to draft first.");
-  const checked = await validate(input);
+  const checked = await validateFirmInvoice(input);
   const contact = await billingContactOf(input.clientId);
   const data = { ...invoiceFields(input, checked), ...contact, clientId: input.clientId };
   await prisma.$transaction(async (tx) => {
@@ -240,6 +261,9 @@ const ACTIONS: Record<string, string> = {
   "billing.square_invoice_emailed": "Square payment link emailed to the client",
   "billing.square_invoice_canceled": "Canceled in Square",
   "billing.square_payment_matched": "Square payment matched by staff",
+  "billing.schedule_cycle_created": "Created as a draft by its billing schedule",
+  "billing.schedule_autosent": "Sent automatically by its billing schedule",
+  "billing.schedule_autosend_held": "Kept as a draft (automatic sending held)",
 };
 
 /** Every change to this invoice and its payments, oldest first (owner audit log). */
@@ -250,13 +274,13 @@ export async function invoiceHistory(actor: Actor, invoiceId: string) {
     where: { OR: [{ entityType: "Invoice", entityId: invoiceId }, { entityType: "Payment", entityId: { in: payments.map((p) => p.id) } }] },
     orderBy: { createdAt: "asc" },
   });
-  const staffIds = rows.map((r) => r.actorId).filter((a) => !a.startsWith("portal:"));
+  const staffIds = rows.map((r) => r.actorId).filter((a) => !a.startsWith("portal:") && !a.startsWith("system:"));
   const users = await prisma.user.findMany({ where: { id: { in: staffIds } }, select: { id: true, name: true } });
   return rows.map((r) => ({
     id: r.id,
     at: r.createdAt,
     action: ACTIONS[r.action] ?? r.action,
-    who: r.actorId.startsWith("portal:") ? "Client (portal)" : r.actorId === SQUARE_ACTOR ? "Square (automatic)" : (users.find((u) => u.id === r.actorId)?.name ?? "Staff"),
+    who: r.actorId.startsWith("portal:") ? "Client (portal)" : r.actorId === SQUARE_ACTOR ? "Square (automatic)" : r.actorId === "system:billing-schedule" ? "Billing schedule (automatic)" : (users.find((u) => u.id === r.actorId)?.name ?? "Staff"),
     details: r.details as Record<string, unknown> | null,
   }));
 }
@@ -288,6 +312,14 @@ export async function invoiceClientChoices(actor: Actor) {
     select: { id: true, displayName: true, businessName: true, email: true, phone: true, addressLine1: true, addressLine2: true, city: true, state: true, postalCode: true, mailingSameAsAddress: true, mailingAddressLine1: true, mailingAddressLine2: true, mailingCity: true, mailingState: true, mailingPostalCode: true, clientType: true, contacts: { select: { email: true, phone: true }, orderBy: { createdAt: "asc" }, take: 3 } },
     orderBy: { displayName: "asc" },
   });
+  // The client's existing Square customer, read from the stored links only (no call to Square):
+  // the same order the send path uses, so a Square invoice reuses it instead of a new customer.
+  const [members, profiles, previous] = await Promise.all([
+    prisma.squareBillingMember.findMany({ select: { clientId: true, arrangement: { select: { squareCustomerId: true } } }, orderBy: { createdAt: "asc" } }),
+    prisma.bookkeepingBilling.findMany({ where: { squareCustomerId: { not: null }, NOT: { squareCustomerIdSource: "MANUAL" } }, select: { clientId: true, squareCustomerId: true } }),
+    prisma.invoice.findMany({ where: { squareCustomerId: { not: null } }, select: { clientId: true, squareCustomerId: true }, orderBy: { squareSentAt: "desc" } }),
+  ]);
+  const squareOf = (id: string) => members.find((m) => m.clientId === id)?.arrangement.squareCustomerId ?? profiles.find((p) => p.clientId === id)?.squareCustomerId ?? previous.find((p) => p.clientId === id)?.squareCustomerId ?? null;
   return rows.map((c) => {
     const contact = c.contacts.find((x) => x.email || x.phone);
     return {
@@ -299,6 +331,7 @@ export async function invoiceClientChoices(actor: Actor) {
       // Bill-to: the separate mailing address when the client has one.
       address: formatAddressBlock(billingAddressOf(c)) || null,
       type: c.clientType,
+      squareCustomerId: squareOf(c.id),
     };
   });
 }

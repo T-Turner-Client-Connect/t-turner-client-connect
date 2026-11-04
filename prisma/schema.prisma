@@ -353,6 +353,8 @@ model Client {
   personalTaxRequests    PersonalTaxRequest[]
   accountReconciliations AccountReconciliation[]
   interimStatements      InterimStatement[]
+  invoiceRequests        InvoiceRequest[]
+  billingSchedules       BillingSchedule[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -999,7 +1001,8 @@ model Conversation {
   resolvedAt            DateTime?
   resolvedById          String?
 
-  messages Message[]
+  messages       Message[]
+  invoiceRequest InvoiceRequest?
 
   @@index([clientId, lastMessageAt])
   @@index([awaitingStaff])
@@ -2438,6 +2441,9 @@ model Invoice {
   lines        InvoiceLine[]
   payments     Payment[]
   installments Installment[]
+  // "Pay with an Invoice" request this invoice answers, and the schedule cycle that made it.
+  invoiceRequest InvoiceRequest?
+  scheduleItem   BillingScheduleItem?
 
   @@index([clientId, state])
   @@index([issueDate])
@@ -5254,4 +5260,107 @@ model InterimStatement {
   revokedById  String?
 
   @@index([clientId, releasedAt])
+}
+
+// "Pay with an Invoice" from the client portal: who asked, for which client/business, and what for.
+// The portal message still lands in Communication History (conversationId); staff see this card.
+// Status: OPEN -> INVOICE_CREATED (Create invoice for this request) -> INVOICE_SENT (sent the
+// normal way) or CLOSED. Older generic "Please send me an invoice" threads have no row.
+model InvoiceRequest {
+  id               String        @id @default(cuid())
+  clientId         String
+  client           Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  portalUserId     String?
+  requesterName    String
+  requesterEmail   String?
+  // The business on the account, when the account is a business.
+  businessName     String?
+  // [{ kind: "SERVICE" | "TAX_YEAR" | "INVOICE" | "OTHER", ref: string | null, label: string }]
+  items            Json
+  taxYear          Int?
+  note             String?
+  // "Amount, if you know it" (optional, from the client).
+  amountCents      Int?
+  status           String        @default("OPEN")
+  conversationId   String?       @unique
+  conversation     Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  invoiceId        String?       @unique
+  invoice          Invoice?      @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceCreatedAt DateTime?
+  invoiceSentAt    DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([clientId, status])
+  @@index([status])
+}
+
+// Firm billing beyond a one-time invoice, for tax-prep and other individually billed clients:
+// RECURRING (monthly/quarterly/yearly invoices), DEPOSIT (a partial invoice against a total, the
+// balance later) or INSTALLMENTS (a total split into N invoices on dates). Each cycle becomes an
+// ordinary Invoice (a draft by default) through the existing Create Invoice / send path. Separate
+// from bookkeeping subscriptions in Square, which are never written to.
+// Status: PROPOSED (awaiting Tabitha's approval; generates nothing) -> ACTIVE -> PAUSED / ENDED,
+// or DECLINED. Only the primary owner approves or changes one.
+model BillingSchedule {
+  id             String                @id @default(cuid())
+  clientId       String
+  client         Client                @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  kind           String
+  status         String                @default("PROPOSED")
+  service        String
+  description    String
+  // RECURRING: the amount of each invoice.
+  amountCents    Int?
+  // DEPOSIT / INSTALLMENTS: the plan total.
+  totalCents     Int?
+  // MONTHLY | QUARTERLY | YEARLY (recurring and installments)
+  cadence        String?
+  startDate      DateTime              @db.Date
+  endDate        DateTime?             @db.Date
+  maxInvoices    Int?
+  invoiceDay     Int                   @default(1)
+  dueInDays      Int                   @default(14)
+  // "Send automatically each cycle": off by default; only Tabitha turns it on.
+  autoSend       Boolean               @default(false)
+  offeredMethods String[]              @default([])
+  privateNote    String?
+  requestId      String?
+  // Periods dated before this are not generated (set when a paused schedule resumes).
+  skipBefore     DateTime?             @db.Date
+  proposedById   String
+  approvedById   String?
+  approvedAt     DateTime?
+  declinedAt     DateTime?
+  pausedAt       DateTime?
+  endedAt        DateTime?
+  lastRunAt      DateTime?
+  lastProblem    String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  items BillingScheduleItem[]
+
+  @@index([clientId, status])
+  @@index([status])
+}
+
+// One cycle of a schedule. (scheduleId, periodKey) is unique, so a period is invoiced once.
+model BillingScheduleItem {
+  id          String          @id @default(cuid())
+  scheduleId  String
+  schedule    BillingSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  seq         Int
+  // "2026-11" for a recurring month; "1", "2"... for plan items.
+  periodKey   String
+  label       String
+  amountCents Int
+  // Planned invoice date; null = a balance invoice staff generate when ready.
+  issueDate   DateTime?       @db.Date
+  invoiceId   String?         @unique
+  invoice     Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  generatedAt DateTime?
+  createdAt   DateTime        @default(now())
+
+  @@unique([scheduleId, periodKey])
 }

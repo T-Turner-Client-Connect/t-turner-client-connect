@@ -130,7 +130,7 @@ export async function queueStaffAlert(ref: { conversationId?: string; documentId
 
 async function openItems(conversationIds: string[], documentIds: string[]) {
   const [convos, docs] = await Promise.all([
-    prisma.conversation.findMany({ where: { id: { in: conversationIds }, unreadByStaff: true, closedAt: null }, include: { client: { select: { id: true, displayName: true } } } }),
+    prisma.conversation.findMany({ where: { id: { in: conversationIds }, unreadByStaff: true, closedAt: null }, include: { client: { select: { id: true, displayName: true } }, invoiceRequest: { select: { requesterName: true } } } }),
     prisma.document.findMany({ where: { id: { in: documentIds }, needsReview: true, deletedAt: null }, include: { client: { select: { id: true, displayName: true } } } }),
   ]);
   return { convos, docs };
@@ -138,7 +138,15 @@ async function openItems(conversationIds: string[], documentIds: string[]) {
 
 function emailSummary(items: Awaited<ReturnType<typeof openItems>>) {
   const lines: string[] = [];
-  for (const c of items.convos) lines.push(`• New message from ${c.client.displayName} (${fmtChicago(c.lastMessageAt)} CT) — ${appUrl()}/clients/${c.client.id}?tab=messages`);
+  for (const c of items.convos) {
+    // An invoice request names the client and who asked; never what it's for or any amount (link only).
+    if (c.invoiceRequest || c.subject === "Please send me an invoice") {
+      const who = c.invoiceRequest && c.invoiceRequest.requesterName !== c.client.displayName ? ` (requested by ${c.invoiceRequest.requesterName})` : "";
+      lines.push(`• Invoice request from ${c.client.displayName}${who}, ${fmtChicago(c.lastMessageAt)} CT — ${appUrl()}/clients/${c.client.id}?tab=messages&c=${c.id}`);
+      continue;
+    }
+    lines.push(`• New message from ${c.client.displayName} (${fmtChicago(c.lastMessageAt)} CT) — ${appUrl()}/clients/${c.client.id}?tab=messages`);
+  }
   for (const d of items.docs) {
     if (d.category === "IDENTITY") {
       lines.push(`• ${d.client.displayName} uploaded an identity document for verification, ${fmtChicago(d.createdAt)} CT — ${appUrl()}/clients/${d.client.id}?tab=documents#identity`);

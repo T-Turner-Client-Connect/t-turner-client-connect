@@ -5,6 +5,7 @@ import type { Actor } from "@/lib/auth/actor";
 import { invoiceRows } from "@/lib/services/owner-billing";
 import { money } from "@/lib/billing/pricing";
 import { INVOICE_STATUS } from "@/lib/billing/invoice-status";
+import { CADENCES, SCHEDULE_KINDS, SCHEDULE_STATUS, scheduleList, type Cadence, type ScheduleKind } from "@/lib/services/billing-schedules";
 
 /**
  * The client's firm invoices on their master profile — the same Invoice records as Admin Billing,
@@ -12,7 +13,7 @@ import { INVOICE_STATUS } from "@/lib/billing/invoice-status";
  * (the page checks before rendering this tab).
  */
 export async function InvoicesTab({ clientId, actor }: { clientId: string; actor: Actor }) {
-  const rows = await invoiceRows(actor, { clientId });
+  const [rows, schedules] = await Promise.all([invoiceRows(actor, { clientId }), scheduleList(actor, { clientId })]);
   const balance = rows.reduce((s, r) => s + Math.max(0, r.balanceCents), 0);
   return (
     <Card
@@ -41,6 +42,24 @@ export async function InvoicesTab({ clientId, actor }: { clientId: string; actor
           </table>
         </div>
       )}
+      <div className="mt-5 border-t border-ivory-200 pt-4" data-testid="profile-recurring">
+        <h3 className="mb-2 font-semibold text-navy-900">Recurring &amp; payment plans</h3>
+        {schedules.length === 0 ? (
+          <p className="text-sm text-slate-600">None. On Create Invoice, choose Make this recurring, Deposit or Installment plan (Tabitha approves).</p>
+        ) : (
+          <ul className="divide-y divide-ivory-200 text-sm">
+            {schedules.map((s) => (
+              <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <Link className="font-semibold underline" href={`/owner/billing/schedules/${s.id}`}>{SCHEDULE_KINDS[s.kind as ScheduleKind]} · {s.service}</Link>
+                <span className="flex items-center gap-2 text-slate-700">
+                  {s.kind === "RECURRING" ? `${money(s.amountCents ?? 0)} ${CADENCES[s.cadence as Cadence]?.label.toLowerCase() ?? ""}` : `${money(s.paidCents)} of ${money(s.totalCents ?? 0)} paid`}
+                  <Badge tone={SCHEDULE_STATUS[s.status].tone}>{SCHEDULE_STATUS[s.status].label}</Badge>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </Card>
   );
 }

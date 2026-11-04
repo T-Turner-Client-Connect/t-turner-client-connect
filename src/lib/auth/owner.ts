@@ -69,6 +69,7 @@ export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: str
     { href: "/owner", label: "Overview", show: c("revenue", "view") },
     { href: "/owner/appointments", label: "Appointments", show: c("appointments", "view") },
     { href: "/owner/invoices", label: "Quotes & invoices", show: c("billing", "view") },
+    { href: "/owner/billing", label: "Billing dashboard", show: c("billing", "view") },
     { href: "/owner/reconcile", label: "Reconcile Square", show: c("receivables", "reconcile") },
     { href: "/owner/plans", label: "Payment plans", show: c("billing", "view") },
     { href: "/owner/refund-payments", label: "Pay by Refund", show: c("billing", "view") },

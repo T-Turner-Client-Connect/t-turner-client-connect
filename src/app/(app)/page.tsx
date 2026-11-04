@@ -5,6 +5,7 @@ import { Badge, Card, LinkButton, Notice, PageHeader, Stat } from "@/components/
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { workQueue } from "@/lib/services/workqueue";
+import { conversationLabels } from "@/lib/services/invoice-requests";
 import { MONTHS, PERIOD_LABELS } from "@/lib/services/bookkeeping";
 import { filingTitle } from "@/lib/tax/normalize";
 import { fmtDate, fmtDateTime, fromNow } from "@/lib/format";
@@ -55,6 +56,8 @@ export default async function Dashboard() {
   ]);
   const owed = (await can(user, "receivables", "view")) ? await receivables(user) : null;
   const apptRequests = (await can(user, "appointments", "approve")) ? await pendingRequests() : [];
+  // Invoice requests show who asked and what for, not a generic subject.
+  const labels = await conversationLabels(q.unanswered.slice(0, 8).map((c) => c.id));
 
   return (
     <>
@@ -113,7 +116,7 @@ export default async function Dashboard() {
                 <li key={c.id} className="flex items-center justify-between gap-2 py-2.5">
                   <Link href={`/clients/${c.client.id}?tab=messages&c=${c.id}`} className="min-w-0">
                     <span className="block truncate font-medium text-navy-900">{c.client.displayName}</span>
-                    <span className="block truncate text-sm text-slate-600">{c.subject}</span>
+                    <span className="block truncate text-sm text-slate-600">{labels.get(c.id)?.title ?? c.subject}</span>
                   </Link>
                   <span className="shrink-0 text-xs text-slate-500">{fromNow(c.lastMessageAt)}</span>
                 </li>

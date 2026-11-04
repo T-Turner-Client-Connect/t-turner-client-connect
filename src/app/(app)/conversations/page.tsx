@@ -4,6 +4,7 @@ import { Badge, buttonClass, EmptyState, LinkButton, PageHeader } from "@/compon
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { fromNow } from "@/lib/format";
+import { conversationLabels } from "@/lib/services/invoice-requests";
 
 export const metadata = { title: "Conversations" };
 
@@ -38,6 +39,7 @@ export default async function Conversations({ searchParams }: { searchParams: Pr
     orderBy: { lastMessageAt: "desc" },
     take: 200,
   });
+  const labels = await conversationLabels(conversations.map((c) => c.id));
   const qs = (patch: Record<string, string | undefined>) => {
     const p = new URLSearchParams(Object.entries({ filter, channel, ...patch }).filter(([, v]) => v && v !== "all") as [string, string][]);
     const s = p.toString();
@@ -67,7 +69,7 @@ export default async function Conversations({ searchParams }: { searchParams: Pr
                     {c.unreadByStaff && <span className="size-2.5 shrink-0 rounded-full bg-gold-500" aria-label="Unread" />}
                     <div className="min-w-0">
                       <p className={`truncate ${c.unreadByStaff ? "font-bold" : "font-semibold"} text-navy-900`}>{c.client.displayName}</p>
-                      <p className="truncate text-sm text-slate-600">{c.subject}</p>
+                      <p className="truncate text-sm text-slate-600" data-testid="conversation-title">{labels.get(c.id)?.title ?? c.subject}</p>
                     </div>
                   </div>
                   <p className="truncate text-sm text-slate-700">
