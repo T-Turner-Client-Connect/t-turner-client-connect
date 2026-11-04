@@ -349,7 +349,7 @@ describe("the data migration preserves today's access", () => {
     await prisma.user.update({ where: { id: bk.id }, data: { bookkeepingBillingAccess: true, bookkeepingBillingGrantedBy: tab.id } });
     await prisma.user.update({ where: { id: billing.id }, data: { bookkeepingBillingAccess: true } });
 
-    const sql = readFileSync(path.resolve(import.meta.dirname, "../netlify/database/migrations/20261106000000_staff_permissions/migration.sql"), "utf8");
+    const sql = readFileSync(path.resolve(import.meta.dirname, "../netlify/database/migrations/20261106205000_staff_permissions/migration.sql"), "utf8");
     await prisma.$executeRawUnsafe(sql.slice(sql.indexOf('WITH "map"')));
 
     expect(await keysOf(billing.id)).toEqual(["billing.create", "billing.edit", "billing.record_payment", "billing.view", "receivables.reconcile", "square.edit", "square.view"]);

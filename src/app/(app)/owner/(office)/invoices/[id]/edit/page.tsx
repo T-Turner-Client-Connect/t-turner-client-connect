@@ -7,6 +7,7 @@ import { billingSettings, ymd } from "@/lib/services/owner-billing";
 import { FirmInvoiceForm } from "@/components/owner/firm-invoice-form";
 import { saveFirmInvoiceAction } from "@/app/actions/firm-invoices";
 import { approvedFirmMethods, invoiceClientChoices, squareLinksLive } from "@/lib/services/firm-invoices";
+import { squareSendingState } from "@/lib/services/square-invoicing";
 import { prisma } from "@/lib/prisma";
 
 const plain = (type: string, v: number) => (type === "FLAT" || type === "PERCENT" ? (v / 100).toString() : "");
@@ -17,7 +18,7 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
   const inv = await prisma.invoice.findUnique({ where: { id }, include: { lines: { orderBy: { sortOrder: "asc" } } } });
   if (!inv || inv.state !== "DRAFT") notFound();
   if (inv.formType === "INVOICE") {
-    const [clients, approved, live, settings] = await Promise.all([invoiceClientChoices(actor), approvedFirmMethods(), squareLinksLive(), billingSettings()]);
+    const [clients, approved, live, settings, sending] = await Promise.all([invoiceClientChoices(actor), approvedFirmMethods(), squareLinksLive(), billingSettings(), squareSendingState()]);
     const line = inv.lines[0];
     return (
       <>
@@ -28,6 +29,7 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
           number={{ value: inv.number, assigned: true }}
           approved={approved}
           squareLive={live}
+          squareSending={sending.live}
           refundFeeNote={settings.refundTransferFeeNote}
           canApprove={access.can("billing", "send")}
           defaults={{

@@ -9,11 +9,12 @@ import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { squareSettings } from "@/lib/square";
 import { changedFields } from "@/lib/audit";
-import { clientPaymentOptions, FIRM_METHOD_DEFAULTS, FIRM_METHODS, FIRM_SERVICES, isSquarePaymentUrl, TAX_RETURN_SERVICES, type FirmMethod, type InvoiceStatusKey } from "@/lib/billing/invoice-status";
+import { clientPaymentOptions, FIRM_METHOD_DEFAULTS, FIRM_METHODS, FIRM_SERVICES, isSquarePaymentUrl, squarePayUrl, TAX_RETURN_SERVICES, type FirmMethod, type InvoiceStatusKey } from "@/lib/billing/invoice-status";
+import { assertCanChangePaymentIntegrations } from "@/lib/auth/billing-permissions";
 import { cashCollectedCents, creditedCents } from "@/lib/billing/pricing";
 import { METHOD_LABELS } from "@/lib/billing/labels";
 import type { FirmInvoiceDoc } from "@/components/billing/firm-invoice-document";
-import { billingContactOf, billingSettings, issueInvoice, nextNumber, withNumberRetry } from "./owner-billing";
+import { billingContactOf, billingSettings, issueInvoice, nextNumber, notifyBilling, withNumberRetry } from "./owner-billing";
 import { ValidationError } from "./clients";
 
 /**
@@ -22,8 +23,10 @@ import { ValidationError } from "./clients";
  * receivables). Managed bookkeeping clients' invoicing of their own customers (ClientInvoice) is
  * separate and untouched.
  *
- * Permissions (Staff Access & Permissions): Billing → Create / Edit for drafts and submitting,
- * Billing → Send to approve and send, Record payments / Refund / Void / Credits for the rest. Nothing here creates a Square invoice, charges a card or stores card data.
+ * Permissions (Staff Access & Permissions, via lib/auth/billing-permissions.ts): Billing → Create /
+ * Edit for drafts and submitting, Billing → Send to approve and send. Sending through Square
+ * (square-invoicing.ts) happens on approval when the "Send invoices through Square" switch is on,
+ * or later from the invoice page. Nothing here charges a card or stores card data.
  */
 
 export type FirmInvoiceInput = {
@@ -167,9 +170,16 @@ export async function returnToDraft(actor: Actor, invoiceId: string, note?: stri
   await ownerAudit(actor.id, "billing.invoice_returned", "Invoice", invoiceId, { note: note?.trim().slice(0, 300) || null });
 }
 
-/** Owner approval: re-checks the payment options are still approved, then sends (see issueInvoice). */
-export async function approveAndSend(actor: Actor, invoiceId: string) {
+/**
+ * Owner approval: re-checks the payment options are still approved, then sends (see issueInvoice).
+ * With `viaSquare` (the invoice offers Square and the owner's Square switch is on), it then goes
+ * through Square too. The client's portal notice is sent either way — except a second email to
+ * the address that just got our Square-link email. If Square fails, the invoice is still sent to
+ * the portal and the Square problem is returned for staff to retry.
+ */
+export async function approveAndSend(actor: Actor, invoiceId: string, opts: { viaSquare?: boolean } = {}): Promise<{ squareUrl: string | null; squareProblem: string | null }> {
   await issueInvoice(actor, invoiceId, {
+    notify: !opts.viaSquare,
     checkOptions: async (inv: Invoice) => {
       if (inv.formType !== "INVOICE") return;
       const approved = new Set((await approvedFirmMethods()).map((m) => m.method as string));
@@ -177,6 +187,18 @@ export async function approveAndSend(actor: Actor, invoiceId: string) {
       if (gone.length) throw new ValidationError("A payment option on this invoice is no longer approved. Edit the draft and choose again.");
     },
   });
+  if (!opts.viaSquare) return { squareUrl: null, squareProblem: null };
+  const inv = await prisma.invoice.findUniqueOrThrow({ where: { id: invoiceId }, select: { clientId: true } });
+  const { sendInvoiceViaSquare } = await import("./square-invoicing");
+  try {
+    const r = await sendInvoiceViaSquare(actor, invoiceId);
+    await notifyBilling(inv.clientId, "NEW_INVOICE", invoiceId, r.emailedTo);
+    return { squareUrl: r.url, squareProblem: r.emailProblem };
+  } catch (e) {
+    await notifyBilling(inv.clientId, "NEW_INVOICE", invoiceId);
+    if (e instanceof ValidationError || e instanceof ForbiddenError) return { squareUrl: null, squareProblem: e.message };
+    throw e;
+  }
 }
 
 /** Marks the invoice Viewed the first time the client opens it in the portal. */
@@ -189,6 +211,8 @@ export async function markInvoiceViewed(user: PortalActor, invoiceId: string) {
   if (res.count === 1) await ownerAudit(`portal:${user.id}`, "billing.invoice_viewed", "Invoice", invoiceId);
 }
 
+// Payments recorded automatically from Square (square-invoicing.ts SQUARE_SYSTEM_ACTOR).
+const SQUARE_ACTOR = "system:square";
 const ACTIONS: Record<string, string> = {
   "billing.invoice_created": "Created as a draft",
   "billing.quote_created": "Created as a draft",
@@ -210,6 +234,11 @@ const ACTIONS: Record<string, string> = {
   "billing.refund_failed": "Failed refund recorded",
   "billing.adjustment_applied": "Adjustment (credit) applied",
   "billing.method_selected": "Payment method selected",
+  "billing.square_invoice_sent": "Sent through Square",
+  "billing.square_send_failed": "Square didn't accept it (nothing charged)",
+  "billing.square_invoice_emailed": "Square payment link emailed to the client",
+  "billing.square_invoice_canceled": "Canceled in Square",
+  "billing.square_payment_matched": "Square payment matched by staff",
 };
 
 /** Every change to this invoice and its payments, oldest first (owner audit log). */
@@ -226,14 +255,17 @@ export async function invoiceHistory(actor: Actor, invoiceId: string) {
     id: r.id,
     at: r.createdAt,
     action: ACTIONS[r.action] ?? r.action,
-    who: r.actorId.startsWith("portal:") ? "Client (portal)" : (users.find((u) => u.id === r.actorId)?.name ?? "Staff"),
+    who: r.actorId.startsWith("portal:") ? "Client (portal)" : r.actorId === SQUARE_ACTOR ? "Square (automatic)" : (users.find((u) => u.id === r.actorId)?.name ?? "Staff"),
     details: r.details as Record<string, unknown> | null,
   }));
 }
 
-/** Owner only: Square payment links on invoices (off until turned on). Never creates a Square invoice. */
+/**
+ * Owner only: manually pasted Square links on invoices (the fallback; off until turned on). Square
+ * invoices sent through the Square connection carry their own link and don't need this.
+ */
 export async function setSquareLinksEnabled(actor: Actor, enabled: boolean) {
-  await assertOffice(actor, "square", "integrations");
+  await assertCanChangePaymentIntegrations(actor);
   await billingSettings();
   await prisma.billingSettings.update({ where: { id: "default" }, data: enabled ? { squareLinksEnabledAt: new Date(), squareLinksEnabledById: actor.id } : { squareLinksEnabledAt: null, squareLinksEnabledById: null } });
   await ownerAudit(actor.id, enabled ? "billing.square_links_enabled" : "billing.square_links_disabled", "BillingSettings", "default");
@@ -287,6 +319,9 @@ export async function firmInvoiceDoc(inv: {
   payments: { id: string; kind: "PAYMENT" | "REFUND" | "CREDIT"; status?: string; amountCents: number; receivedOn: string; method: string }[];
   offeredMethods: string[];
   squarePaymentUrl: string | null;
+  // Set when the invoice was sent through Square: the page Square created, and Square's status.
+  squarePublicUrl?: string | null;
+  squareStatus?: string | null;
 }): Promise<FirmInvoiceDoc> {
   const [approved, live, settings] = await Promise.all([approvedFirmMethods(), squareLinksLive(), billingSettings()]);
   const ok = inv.payments.filter((p) => !p.status || p.status === "SUCCEEDED");
@@ -313,7 +348,7 @@ export async function firmInvoiceDoc(inv: {
       amountCents: p.amountCents,
       negative: p.kind === "REFUND",
     })),
-    options: clientPaymentOptions(inv.offeredMethods, approved, { squareLive: live, squareUrl: inv.squarePaymentUrl, refundFeeNote: settings.refundTransferFeeNote }),
+    options: clientPaymentOptions(inv.offeredMethods, approved, { squareUrl: squarePayUrl(inv, live), refundFeeNote: settings.refundTransferFeeNote }),
   };
 }
 

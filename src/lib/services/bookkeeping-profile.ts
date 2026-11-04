@@ -204,7 +204,7 @@ export const squareConnected = () => squareSettings().configured;
  * Bookkeeping billing (card on file from Square, Square billing links, charge authorizations,
  * recurring billing not in Square) = Staff Access & Permissions → "Square and payment
  * information": View to see it, Edit to change it. Read from the database on every call.
- * (Before 20261106000000_staff_permissions this was User.bookkeepingBillingAccess.)
+ * (Before 20261106205000_staff_permissions this was User.bookkeepingBillingAccess.)
  */
 export async function canManageBilling(actor: Actor, action: "view" | "edit" = "view") {
   if (await isReportApprover(actor)) return true;

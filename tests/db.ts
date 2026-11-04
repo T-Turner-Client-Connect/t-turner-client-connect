@@ -34,5 +34,5 @@ export async function grantPerms(userId: string, keys: string[]) {
   await prisma.staffPermission.createMany({ data: keys.map((k) => ({ userId, area: k.split(".")[0], action: k.split(".")[1] })), skipDuplicates: true });
 }
 
-/** What "Billing only" Owner's Office access became (see the 20261106000000 migration). */
+/** What "Billing only" Owner's Office access became (see the 20261106205000 migration). */
 export const OLD_BILLING_ONLY = ["billing.view", "billing.create", "billing.edit", "billing.record_payment", "receivables.reconcile"];

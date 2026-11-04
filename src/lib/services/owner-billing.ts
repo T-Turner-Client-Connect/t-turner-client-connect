@@ -3,6 +3,7 @@ import type { AmountType, Invoice, InvoiceLine, Installment, Payment, PaymentMet
 import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
 import { assertOffice, ownerAudit } from "@/lib/auth/owner";
+import { assertCanApplyCredits, assertCanRecordPayments, assertCanRefund, assertCanSendInvoices, assertCanVoid } from "@/lib/auth/billing-permissions";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import {
@@ -27,13 +28,13 @@ import { queuePortalNotification } from "./notifications";
 
 /**
  * Owner's Office billing: quotes, invoices, payment plans and payments.
- * Every staff-side function checks owner access against the database. Only
- * "Recorded manually" payments exist until a payment provider is connected —
- * nothing here charges a card or bank account.
+ * Every staff-side function checks owner access against the database. Payments are recorded by
+ * hand here, or automatically from Square for invoices sent through Square
+ * (square-invoicing.ts) — nothing here charges a card or bank account.
  *
- * Who may do what: staff the owner gave billing access (OwnerAccess scope BILLING) create and
- * edit drafts and submit them for approval. Sending (offer/issue), withdrawing, voiding,
- * payments and adjustments need the owner's full access.
+ * Who may do what: Staff Access & Permissions (lib/permissions.ts), through
+ * lib/auth/billing-permissions.ts — Billing → Create/Edit for drafts, Send to approve and send,
+ * Record payments, Refund, Credits & waivers and Void each separately. The owner holds them all.
  */
 
 export const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -300,9 +301,16 @@ async function loadFull(id: string): Promise<FullInvoice & { client: { id: strin
   return inv;
 }
 
-async function notifyBilling(clientId: string, kind: "QUOTE_READY" | "NEW_INVOICE", invoiceId: string) {
-  const grants = await prisma.portalAccess.findMany({ where: { clientId, revokedAt: null, canViewBilling: true } });
-  for (const g of grants) await queuePortalNotification(g.portalUserId, kind, `${kind}:${invoiceId}`);
+/**
+ * Portal notices. `emailedTo`: an address that already got our invoice email with the Square
+ * link — that portal user gets only the text notice (if they take texts), not a second email.
+ */
+export async function notifyBilling(clientId: string, kind: "QUOTE_READY" | "NEW_INVOICE", invoiceId: string, emailedTo?: string | null) {
+  const grants = await prisma.portalAccess.findMany({ where: { clientId, revokedAt: null, canViewBilling: true }, include: { portalUser: { select: { email: true } } } });
+  for (const g of grants) {
+    const already = !!emailedTo && g.portalUser.email.trim().toLowerCase() === emailedTo.trim().toLowerCase();
+    await queuePortalNotification(g.portalUserId, kind, `${kind}:${invoiceId}`, already ? ["SMS"] : undefined);
+  }
 }
 
 /** Publishes a quote to the client's portal for acceptance. */
@@ -341,8 +349,8 @@ async function freeze(tx: Prisma.TransactionClient, inv: FullInvoice & { client:
  * client's portal and sends the "new invoice" notice (email through sendEmail, by the client's
  * notification settings). Drafts and invoices pending approval only; owner (full access) only.
  */
-export async function issueInvoice(actor: Actor, invoiceId: string, opts: { checkOptions?: (inv: Invoice) => Promise<void> } = {}) {
-  await assertOffice(actor, "billing", "send");
+export async function issueInvoice(actor: Actor, invoiceId: string, opts: { checkOptions?: (inv: Invoice) => Promise<void>; notify?: boolean } = {}) {
+  await assertCanSendInvoices(actor);
   const inv = await loadFull(invoiceId);
   if (inv.state !== "DRAFT" && inv.state !== "PENDING_APPROVAL") throw new ValidationError("Only drafts and invoices waiting for approval can be sent.");
   if (!inv.allowFull) throw new ValidationError("Issuing directly bills the full amount. For a payment plan, send it as a quote so the client can choose and accept.");
@@ -356,14 +364,17 @@ export async function issueInvoice(actor: Actor, invoiceId: string, opts: { chec
   });
   await ownerAudit(actor.id, "billing.invoice_approved", "Invoice", invoiceId, { from: inv.state });
   await ownerAudit(actor.id, "billing.invoice_issued", "Invoice", invoiceId);
-  await notifyBilling(inv.clientId, "NEW_INVOICE", invoiceId);
+  if (opts.notify !== false) await notifyBilling(inv.clientId, "NEW_INVOICE", invoiceId);
 }
 
 export async function voidInvoice(actor: Actor, invoiceId: string, reason: string) {
-  await assertOffice(actor, "billing", "void");
+  await assertCanVoid(actor);
   if (!reason.trim()) throw new ValidationError("Give a reason for voiding.");
   const inv = await loadFull(invoiceId);
+  if (inv.state === "VOID") throw new ValidationError("Already void.");
   if (cashCollectedCents(inv.payments) !== 0) throw new ValidationError("Refund or reverse the recorded payments before voiding.");
+  // Sent through Square: cancel it there first (refused if the client has paid in Square).
+  if (inv.squareInvoiceId) await (await import("./square-invoicing")).cancelSquareInvoiceForVoid(actor.id, invoiceId);
   const res = await prisma.invoice.updateMany({ where: { id: invoiceId, state: { notIn: ["VOID"] } }, data: { state: "VOID", voidedAt: new Date(), voidReason: reason.trim().slice(0, 300) } });
   if (res.count !== 1) throw new ValidationError("Already void.");
   await ownerAudit(actor.id, "billing.invoice_voided", "Invoice", invoiceId, { reason: reason.trim().slice(0, 300), from: inv.state });
@@ -405,6 +416,8 @@ export async function portalBilling(user: PortalActor, clientId: string) {
       billTo: { name: inv.billingName, email: inv.billingEmail, phone: inv.billingPhone, address: inv.billingAddress },
       offeredMethods: inv.offeredMethods,
       squarePaymentUrl: inv.squarePaymentUrl,
+      squarePublicUrl: inv.squarePublicUrl,
+      squareStatus: inv.squareStatus,
       creditedCents: creditedCents(inv.payments),
       memo: inv.memo,
       paymentTerms: inv.paymentTerms,
@@ -474,13 +487,16 @@ export type PaymentInput = {
 };
 
 /**
- * Records an offline payment, refund, failed attempt or balance adjustment (owner, full access).
+ * Records an offline payment, refund, failed attempt or balance adjustment.
  * Under a per-invoice lock: payments and credits can never exceed the remaining balance, a refund
  * can't exceed the cash collected, and a duplicate is refused — the same form submitted twice, a
  * reference already recorded for this client, or the same amount, date and method on this invoice.
  */
 export async function recordPayment(actor: Actor, input: PaymentInput) {
-  await assertOffice(actor, "billing", input.kind === "REFUND" ? "refund" : input.kind === "CREDIT" ? "adjust" : "record_payment");
+  // Payments received → Record payments; refunds → Refund; credits → Credits & waivers.
+  if (input.kind === "REFUND") await assertCanRefund(actor);
+  else if (input.kind === "CREDIT") await assertCanApplyCredits(actor);
+  else await assertCanRecordPayments(actor);
   if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) throw new ValidationError("Enter an amount greater than $0.");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.receivedOn) || input.receivedOn > todayYmd()) throw new ValidationError("Enter the date the money moved (not in the future).");
   if (input.kind === "CREDIT" && !input.note?.trim()) throw new ValidationError("Give a reason for the adjustment.");

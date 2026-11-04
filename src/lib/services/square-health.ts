@@ -21,6 +21,9 @@ const PERMISSION: Record<string, string> = {
   orders: "ORDERS_READ",
 };
 
+/** What sending invoices through Square uses: customers, orders, invoices and reading payments. */
+export const INVOICING_SCOPES = ["CUSTOMERS_READ", "CUSTOMERS_WRITE", "ORDERS_READ", "ORDERS_WRITE", "INVOICES_READ", "INVOICES_WRITE", "PAYMENTS_READ"];
+
 export async function runSquareHealthCheck(actor: Actor) {
   if (!(await canManageBilling(actor, "view"))) throw new ForbiddenError("Only Tabitha (or staff she allows) can check the Square connection.");
   const s = squareSettings();
@@ -82,6 +85,28 @@ export async function runSquareHealthCheck(actor: Actor) {
     const r = await run();
     push({ key, label: `${label} (${PERMISSION[key]})`, ok: r.ok || !required, warn: !r.ok && !required, status: r.status, code: r.code, detail: r.ok ? "Allowed." : explainSquareError(r.status, r.code, r.detail) });
   }
+  // 6. Invoicing readiness — still reads only. Sending invoices also needs write permissions that
+  // can't be tested without writing, so Square's own list of the token's permissions is read instead.
+  const pays = await squareProbe("GET", `/v2/payments?limit=1&location_id=${encodeURIComponent(s.locationId)}`);
+  push({ key: "payments", label: "Read payments (PAYMENTS_READ)", ok: true, warn: !pays.ok, status: pays.status, code: pays.code, detail: pays.ok ? "Allowed." : explainSquareError(pays.status, pays.code, pays.detail) });
+  const scopes = await squareProbe("POST", "/oauth2/token/status", {});
+  const granted = (scopes.json as { scopes?: string[] }).scopes;
+  const missingScopes = granted ? INVOICING_SCOPES.filter((x) => !granted.includes(x)) : [];
+  push({
+    key: "invoicing",
+    label: "Permissions for sending invoices",
+    ok: true,
+    warn: !scopes.ok || missingScopes.length > 0,
+    status: scopes.status,
+    code: scopes.code,
+    detail: !scopes.ok
+      ? `Square didn't list the token's permissions (${explainSquareError(scopes.status, scopes.code, scopes.detail)}). A personal access token from the Square Developer Dashboard has every permission for your own Square account.`
+      : !granted
+        ? "Square accepted the token without listing scopes — a personal access token, which has every permission for your own Square account (including creating orders and invoices)."
+        : missingScopes.length
+          ? `The token is missing ${missingScopes.join(", ")}, needed to send invoices through Square.`
+          : `Includes ${INVOICING_SCOPES.join(", ")}.`,
+  });
   const failed = steps.filter((x) => !x.ok);
   return save(actor, s.env, steps, failed.length ? `Not working: ${failed.map((f) => f.label).join(", ")}.` : `Working: Square ${s.env} accepted the token and every read Client Connect needs.`);
 }

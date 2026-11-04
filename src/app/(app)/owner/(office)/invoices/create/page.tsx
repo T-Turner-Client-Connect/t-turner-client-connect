@@ -6,6 +6,7 @@ import { saveFirmInvoiceAction } from "@/app/actions/firm-invoices";
 import { requireOffice } from "@/lib/auth/owner";
 import { billingSettings, previewNextNumber, todayYmd } from "@/lib/services/owner-billing";
 import { approvedFirmMethods, invoiceClientChoices, squareLinksLive } from "@/lib/services/firm-invoices";
+import { squareSendingState } from "@/lib/services/square-invoicing";
 import { DEFAULT_SERVICE } from "@/lib/billing/invoice-status";
 
 export const metadata = { title: "Create Invoice" };
@@ -14,7 +15,7 @@ export default async function CreateInvoicePage({ searchParams }: { searchParams
   const { actor, access } = await requireOffice("billing", "create");
   const sp = await searchParams;
   const today = todayYmd(); // Central time
-  const [clients, approved, live, settings, next] = await Promise.all([invoiceClientChoices(actor), approvedFirmMethods(), squareLinksLive(), billingSettings(), previewNextNumber(Number(today.slice(0, 4)))]);
+  const [clients, approved, live, settings, next, sending] = await Promise.all([invoiceClientChoices(actor), approvedFirmMethods(), squareLinksLive(), billingSettings(), previewNextNumber(Number(today.slice(0, 4))), squareSendingState()]);
   return (
     <>
       <Link href="/owner/invoices" className="mb-3 inline-flex items-center gap-2 text-sm font-semibold text-navy-900 underline decoration-gold-500 underline-offset-4"><ArrowLeft className="size-4" aria-hidden /> Quotes &amp; invoices</Link>
@@ -25,6 +26,7 @@ export default async function CreateInvoicePage({ searchParams }: { searchParams
         number={{ value: next, assigned: false }}
         approved={approved}
         squareLive={live}
+        squareSending={sending.live}
         refundFeeNote={settings.refundTransferFeeNote}
         canApprove={access.can("billing", "send")}
         defaults={{
