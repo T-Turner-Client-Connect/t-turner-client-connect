@@ -75,7 +75,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
         <Card title="Documents we need" className="mb-4"><ul className="divide-y divide-navy-100">{looseRequests.map((r) => requestItem(r, null))}</ul></Card>
       )}
       {!current.canViewBookkeeping ? (
-        <Notice>Bookkeeping isn&apos;t included in your access to this account.</Notice>
+        <Notice>Business bookkeeping isn&apos;t part of the services on this account. If you&apos;d like our firm to manage your business books, send us a message.</Notice>
       ) : periods.length === 0 ? (
         <EmptyState title="No bookkeeping months yet">When we start your monthly bookkeeping, each month will appear here with its reports and checklist.</EmptyState>
       ) : (

@@ -110,6 +110,19 @@ export async function canUseLedger(actor: Actor, clientId: string) {
 export async function assertLedger(actor: Actor, clientId: string) {
   if (!(await canUseLedger(actor, clientId))) throw new ForbiddenError("Only Admins and the staff member assigned to this client can work in its books.");
 }
+/**
+ * Creating or changing business books, bank feeds or business invoices requires an
+ * owner-approved Managed Business. Reading existing history does not, so removing
+ * access never hides past records from the office.
+ */
+export async function assertManagedBusiness(clientId: string, db: Tx | typeof prisma = prisma) {
+  const c = await db.client.findUnique({ where: { id: clientId }, select: { businessAccess: true } });
+  if (c?.businessAccess !== "ACTIVE") throw new ForbiddenError("This client is a Regular Tax Client. Business books, bank feeds and business invoicing need owner-approved Managed Business access.");
+}
+export async function assertLedgerWrite(actor: Actor, clientId: string) {
+  await assertLedger(actor, clientId);
+  await assertManagedBusiness(clientId);
+}
 async function assertOwner(actor: Actor, what: string) {
   if (!(await isReportApprover(actor))) throw new ForbiddenError(`Only Tabitha can ${what}.`);
 }
@@ -122,7 +135,7 @@ export async function bookOf(clientId: string, db: Tx | typeof prisma = prisma) 
 // --- Setup and accounts ----------------------------------------------------------------------
 
 export async function setupLedger(actor: Actor, clientId: string, input: { basis: Basis; fiscalYearStartMonth?: number }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   if (input.basis !== "CASH" && input.basis !== "ACCRUAL") throw new ValidationError("Choose cash or accrual basis.");
   const fy = input.fiscalYearStartMonth ?? 1;
   if (!Number.isInteger(fy) || fy < 1 || fy > 12) throw new ValidationError("Choose the month the fiscal year starts.");
@@ -153,7 +166,7 @@ function cleanAccount(input: AccountInput) {
 }
 
 export async function addAccount(actor: Actor, clientId: string, input: AccountInput) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   await bookOf(clientId);
   const data = cleanAccount(input);
   if (await prisma.ledgerAccount.count({ where: { clientId, code: data.code } })) throw new ValidationError(`Account ${data.code} already exists.`);
@@ -164,7 +177,7 @@ export async function addAccount(actor: Actor, clientId: string, input: AccountI
 
 /** Rename, re-describe or (de)activate. The type can change only while the account has no entries. */
 export async function updateAccount(actor: Actor, clientId: string, accountId: string, input: Partial<AccountInput> & { active?: boolean }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const a = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!a) throw new ValidationError("Account not found.");
   const next = cleanAccount({ code: input.code ?? a.code, name: input.name ?? a.name, type: input.type ?? a.type, subtype: input.subtype !== undefined ? input.subtype : a.subtype, description: input.description ?? a.description ?? "", institution: input.institution ?? a.institution ?? "", last4: input.last4 ?? a.last4 ?? "" });
@@ -220,7 +233,7 @@ async function post(tx: Tx, actor: Actor, clientId: string, input: PostInput) {
 }
 
 export async function postJournalEntry(actor: Actor, clientId: string, input: { date: string; memo: string; lines: LineInput[]; adjusting?: boolean; basis?: "BOTH" | "CASH_ONLY" | "ACCRUAL_ONLY" }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const basis = input.basis ?? "BOTH";
   if (!["BOTH", "CASH_ONLY", "ACCRUAL_ONLY"].includes(basis)) throw new ValidationError("Choose which statements this entry belongs to.");
   return prisma.$transaction((tx) => post(tx, actor, clientId, { ...input, source: input.adjusting ? "ADJUSTMENT" : "MANUAL", basis }));
@@ -231,7 +244,7 @@ export async function postJournalEntry(actor: Actor, clientId: string, input: { 
  * period) and both stay. A bank transaction whose entry is reversed goes back to review.
  */
 export async function reverseEntry(actor: Actor, clientId: string, entryId: string, input: { date: string; reason: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const reason = input.reason.trim();
   if (reason.length < 5) throw new ValidationError("Record why this entry is being reversed.");
   return prisma.$transaction(async (tx) => {
@@ -257,7 +270,7 @@ export async function reverseEntry(actor: Actor, clientId: string, entryId: stri
  * (as the client's statements show it). The difference goes to Opening Balance Equity.
  */
 export async function postOpeningBalances(actor: Actor, clientId: string, input: { date: string; balances: { accountId: string; amount: string }[] }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   return prisma.$transaction(async (tx) => {
     const book = await bookOf(clientId, tx);
     if (book.openingDate || (await tx.journalEntry.count({ where: { clientId, sourceKey: "opening" } }))) throw new ValidationError("Opening balances were already posted. Correct them with an adjusting entry.");
@@ -384,7 +397,7 @@ export function fingerprints(rows: ParsedRow[]) {
  * Imported rows are not posted until staff review them.
  */
 export async function importBankCsv(actor: Actor, clientId: string, accountId: string, input: { fileName: string; text: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!account || (account.subtype !== "BANK" && account.subtype !== "CREDIT_CARD")) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
   if (input.text.length > 5_000_000) throw new ValidationError("That file is too large. Import one statement at a time.");
@@ -463,7 +476,7 @@ const TRANSFER_WINDOW_DAYS = 5;
  * the same entry, so the movement is recorded once, not twice.
  */
 export async function categorizeBankTransaction(actor: Actor, clientId: string, txnId: string, input: { accountId: string; memo?: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   return prisma.$transaction(async (tx) => {
     const t = await tx.bankTransaction.findFirst({ where: { id: txnId, clientId }, include: { account: true } });
     if (!t) throw new ValidationError("Bank transaction not found.");
@@ -498,7 +511,7 @@ export async function categorizeBankTransaction(actor: Actor, clientId: string, 
 
 /** Excluded rows (a duplicate in the file, a personal item kept off the books) stay visible with the reason. */
 export async function excludeBankTransaction(actor: Actor, clientId: string, txnId: string, reason: string) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   if (reason.trim().length < 3) throw new ValidationError("Record why this transaction is excluded.");
   const r = await prisma.bankTransaction.updateMany({ where: { id: txnId, clientId, status: "UNREVIEWED" }, data: { status: "EXCLUDED", excludedReason: reason.trim().slice(0, 200), reviewedById: actor.id, reviewedAt: new Date(), flag: null, flagNote: null } });
   if (!r.count) throw new ValidationError("Only an unreviewed transaction can be excluded. Reverse a posted one instead.");
@@ -507,7 +520,7 @@ export async function excludeBankTransaction(actor: Actor, clientId: string, txn
 
 /** A person confirms a flagged, already-posted row is fine as it is (recorded with their note). */
 export async function clearBankFlag(actor: Actor, clientId: string, txnId: string, note: string) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   if (note.trim().length < 5) throw new ValidationError("Note what you checked.");
   const t = await prisma.bankTransaction.findFirst({ where: { id: txnId, clientId, flag: { not: null } } });
   if (!t) throw new ValidationError("That transaction isn't flagged.");
@@ -516,7 +529,7 @@ export async function clearBankFlag(actor: Actor, clientId: string, txnId: strin
 }
 
 export async function includeBankTransaction(actor: Actor, clientId: string, txnId: string) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const r = await prisma.bankTransaction.updateMany({ where: { id: txnId, clientId, status: "EXCLUDED" }, data: { status: "UNREVIEWED", excludedReason: null, reviewedById: null, reviewedAt: null } });
   if (!r.count) throw new ValidationError("That transaction isn't excluded.");
   await audit(prisma, { actorId: actor.id, action: "ledger.bank_included", entityType: "BankTransaction", entityId: txnId, clientId });
@@ -545,7 +558,7 @@ export async function accountBalance(clientId: string, accountId: string, asOf: 
  * ledger matches the statement to the cent and every bank row through that date is reviewed.
  */
 export async function reconcileAccount(actor: Actor, clientId: string, accountId: string, input: { statementDate: string; statementBalance: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   if (!isYmd(input.statementDate)) throw new ValidationError("Enter the statement's ending date.");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!account || (account.subtype !== "BANK" && account.subtype !== "CREDIT_CARD")) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
@@ -678,7 +691,7 @@ const DRAW_WORDS = /\b(OWNER DRAW|DRAW|TRANSFER TO .*(SAVINGS|PERSONAL)|ZELLE TO
 export type Flag = { kind: "UNREVIEWED" | "CLOSED_PERIOD" | "MISSING_STATEMENT" | "UNRECONCILED" | "SUSPENSE" | "POSSIBLE_DRAW" | "NO_OPENING" | "POSSIBLE_DUPLICATE_INCOME" | "UNDEPOSITED" | "BANK_ROW_FLAGGED" | "BANK_CONNECTION"; severity: "HIGH" | "MEDIUM"; message: string };
 
 export async function ledgerFlags(actor: Actor, clientId: string, today = todayCentral()) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const book = await bookOf(clientId);
   const flags: Flag[] = [];
   if (!book.openingDate) flags.push({ kind: "NO_OPENING", severity: "HIGH", message: "Opening balances haven't been entered, so the Balance Sheet can't tie to the bank yet." });
@@ -738,7 +751,7 @@ export async function ledgerFlags(actor: Actor, clientId: string, today = todayC
 
 /** Everything the ledger page shows for one client. */
 export async function ledgerOverview(actor: Actor, clientId: string) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const book = await prisma.ledgerBook.findUnique({ where: { clientId } });
   if (!book) return { book: null as null };
   const [accounts, entries, bank, imports, recons] = await Promise.all([

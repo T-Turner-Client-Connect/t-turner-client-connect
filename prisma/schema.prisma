@@ -35,12 +35,12 @@ enum Role {
 }
 
 model User {
-  id                          String    @id @default(cuid())
-  email                       String    @unique
+  id                          String                  @id @default(cuid())
+  email                       String                  @unique
   name                        String
-  role                        Role      @default(STAFF)
+  role                        Role                    @default(STAFF)
   passwordHash                String?
-  active                      Boolean   @default(true)
+  active                      Boolean                 @default(true)
   // TOTP secret (base32), stored encrypted with APP_ENCRYPTION_KEY.
   mfaSecretEnc                String?
   mfaEnabledAt                DateTime?
@@ -52,15 +52,22 @@ model User {
   // Admin-granted: open identity documents for every client (not only
   // assigned ones). Has no effect on the Owner's Office, which is bound to
   // the owner's own account.
-  identityAccessAll           Boolean   @default(false)
+  identityAccessAll           Boolean                 @default(false)
   identityAccessGrantedBy     String?
   identityAccessGrantedAt     DateTime?
   // Tabitha can let a staff member manage bookkeeping billing.
-  bookkeepingBillingAccess    Boolean   @default(false)
+  bookkeepingBillingAccess    Boolean                 @default(false)
   bookkeepingBillingGrantedBy String?
   bookkeepingBillingGrantedAt DateTime?
-  createdAt                   DateTime  @default(now())
-  updatedAt                   DateTime  @updatedAt
+  // Owner-granted: may REQUEST a Managed Business conversion. Never approves.
+  businessConversionAccess    Boolean                 @default(false)
+  businessConversionGrantedBy String?
+  businessConversionGrantedAt DateTime?
+  businessAccessRequests      BusinessAccessRequest[] @relation("BusinessAccessRequester")
+  businessAccessDecisions     BusinessAccessRequest[] @relation("BusinessAccessDecider")
+  businessAccessEvents        BusinessAccessEvent[]
+  createdAt                   DateTime                @default(now())
+  updatedAt                   DateTime                @updatedAt
 
   sessions         Session[]
   resetTokens      PasswordResetToken[]
@@ -182,6 +189,23 @@ enum ClientType {
   NONPROFIT
 }
 
+/// Managed Business Client access for one client record (one business).
+/// OFF for everyone by default — registration answers, client type, tax return
+/// type and services never change it. Only the owner can turn it ACTIVE, after
+/// a request; REMOVED blocks access at once and keeps every record.
+enum BusinessAccess {
+  OFF
+  ACTIVE
+  REMOVED
+}
+
+enum BusinessAccessRequestStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  CANCELLED
+}
+
 enum ClientStatus {
   PROSPECT
   ACTIVE
@@ -189,62 +213,69 @@ enum ClientStatus {
 }
 
 model Client {
-  id                    String       @id @default(cuid())
-  firstName             String?
+  id                      String                  @id @default(cuid())
+  firstName               String?
   // Middle name or initial, kept separate from the first name.
-  middleName            String?
-  lastName              String?
+  middleName              String?
+  lastName                String?
   // What the client likes to be called ("Liz" for Elizabeth). Used in greetings.
-  preferredName         String?
+  preferredName           String?
   // Display name: "First Last" for individuals, or the business name.
-  displayName           String
-  businessName          String?
-  email                 String?
-  emailNormalized       String?
-  phone                 String?
+  displayName             String
+  businessName            String?
+  email                   String?
+  emailNormalized         String?
+  phone                   String?
   // E.164 (+15551234567) when the number could be parsed, used for matching.
-  phoneNormalized       String?
+  phoneNormalized         String?
   // Spouse on a joint return. One client record holds the couple; each tax
   // year's TaxPrepCase keeps that year's filing details. The spouse's contact
   // details are separate from the client's own (and their messaging consent).
-  spouseFirstName       String?
-  spouseMiddleName      String?
-  spouseLastName        String?
-  spouseEmail           String?
-  spousePhone           String?
-  spousePhoneNormalized String?
-  addressLine1          String?
-  addressLine2          String?
-  city                  String?
-  state                 String?
-  postalCode            String?
-  clientType            ClientType   @default(INDIVIDUAL)
-  status                ClientStatus @default(ACTIVE)
-  services              String[]
-  tags                  String[]
-  notes                 String?
+  spouseFirstName         String?
+  spouseMiddleName        String?
+  spouseLastName          String?
+  spouseEmail             String?
+  spousePhone             String?
+  spousePhoneNormalized   String?
+  addressLine1            String?
+  addressLine2            String?
+  city                    String?
+  state                   String?
+  postalCode              String?
+  clientType              ClientType              @default(INDIVIDUAL)
+  // Regular Tax Client unless the owner approved Managed Business access.
+  // clientType is informational only and never grants business access.
+  businessAccess          BusinessAccess          @default(OFF)
+  businessAccessChangedAt DateTime?
+  businessAccessChangedBy String?
+  businessAccessRequests  BusinessAccessRequest[]
+  businessAccessEvents    BusinessAccessEvent[]
+  status                  ClientStatus            @default(ACTIVE)
+  services                String[]
+  tags                    String[]
+  notes                   String?
   // The client's ID in TaxAct (or other tax software), used to match
   // e-file status imports. Never matched by name alone.
-  taxSoftwareId         String?      @unique
+  taxSoftwareId           String?                 @unique
   // True when the record (or part of it) came from tax-preparation software
   // such as a TaxAct export. Drives Section 7216 eligibility checks.
-  taxReturnDerived      Boolean      @default(false)
+  taxReturnDerived        Boolean                 @default(false)
   // Tax entity for deadline cards: SOLE_PROPRIETOR | PARTNERSHIP | S_CORP |
   // C_CORP | NONPROFIT | TRUST_ESTATE. Null = not recorded yet.
-  entityType            String?
+  entityType              String?
   // Month (1–12) the business's tax year ends. Null = calendar year (December).
-  fiscalYearEnd         Int?
+  fiscalYearEnd           Int?
   // Does this owner have a nonprofit? YES | NO | NOT_CONFIRMED (null = not asked yet). Kept on the owner's main record.
-  hasNonprofit          String?
-  source                String?
-  assignedToId          String?
-  assignedTo            User?        @relation("AssignedStaff", fields: [assignedToId], references: [id], onDelete: SetNull)
-  archivedAt            DateTime?
+  hasNonprofit            String?
+  source                  String?
+  assignedToId            String?
+  assignedTo              User?                   @relation("AssignedStaff", fields: [assignedToId], references: [id], onDelete: SetNull)
+  archivedAt              DateTime?
   // Set when staff merged this duplicate into another record (it is archived,
   // never deleted, so its own history stays readable).
-  mergedIntoId          String?
-  createdAt             DateTime     @default(now())
-  updatedAt             DateTime     @updatedAt
+  mergedIntoId            String?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
 
   contacts              Contact[]
   groups                ClientGroup[]
@@ -776,7 +807,9 @@ model PortalAccess {
   role               PortalRole @default(OWNER)
   canMessage         Boolean    @default(true)
   canUpload          Boolean    @default(true)
-  canViewBookkeeping Boolean    @default(true)
+  // Per-login business view. Has no effect unless the client itself is a
+  // Managed Business (Client.businessAccess = ACTIVE). Off by default.
+  canViewBookkeeping Boolean    @default(false)
   canViewTax         Boolean    @default(true)
   canViewContracts   Boolean    @default(true)
   // Invoices and payment requests the owner explicitly published to this account.
@@ -3994,4 +4027,46 @@ model TaxSummaryCheck {
   createdAt      DateTime         @default(now())
 
   @@unique([summaryId, code])
+}
+
+/// A request to convert a client (one business) to Managed Business access.
+/// Raised by the owner or staff she authorized; only the owner decides.
+model BusinessAccessRequest {
+  id            String                      @id @default(cuid())
+  clientId      String
+  client        Client                      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  requestedById String
+  requestedBy   User                        @relation("BusinessAccessRequester", fields: [requestedById], references: [id])
+  // Services the firm actively provides (bookkeeping, payroll, accounting, reporting…).
+  services      String[]
+  reason        String
+  status        BusinessAccessRequestStatus @default(PENDING)
+  decidedById   String?
+  decidedBy     User?                       @relation("BusinessAccessDecider", fields: [decidedById], references: [id])
+  decidedAt     DateTime?
+  decisionNote  String?
+  createdAt     DateTime                    @default(now())
+
+  @@index([status, createdAt])
+  @@index([clientId, createdAt])
+}
+
+/// Append-only history of every business-access change (never edited or deleted).
+model BusinessAccessEvent {
+  id           String          @id @default(cuid())
+  clientId     String?
+  client       Client?         @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  actorId      String?
+  actor        User?           @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  // REQUESTED | APPROVED | DECLINED | CANCELLED | REMOVED | REQUESTER_GRANTED | REQUESTER_REVOKED | LOGIN_VIEW_ON | LOGIN_VIEW_OFF
+  action       String
+  fromStatus   BusinessAccess?
+  toStatus     BusinessAccess?
+  requestId    String?
+  targetUserId String?
+  note         String?
+  createdAt    DateTime        @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([createdAt])
 }

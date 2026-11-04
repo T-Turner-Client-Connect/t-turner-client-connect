@@ -64,9 +64,11 @@ export default async function PortalPreview({
     "home") as View;
   const client = await prisma.client.findUnique({
     where: { id },
-    select: { id: true, displayName: true, businessName: true },
+    select: { id: true, displayName: true, businessName: true, businessAccess: true },
   });
   if (!client) notFound();
+  // The preview shows what the owner would see — a Regular Tax Client never sees the Business side.
+  const PREVIEW_PERMS = { ...OWNER_PREVIEW_PERMS, canViewBookkeeping: client.businessAccess === "ACTIVE" };
   await audit(prisma, {
     actorId: user.id,
     action: "portal.staff_preview",
@@ -88,7 +90,7 @@ export default async function PortalPreview({
   let body: React.ReactNode;
   if (view === "home") {
     const [home, greet] = await Promise.all([
-      loadPortalHome(id, OWNER_PREVIEW_PERMS, null),
+      loadPortalHome(id, PREVIEW_PERMS, null),
       loadGreetingName(id, null),
     ]);
     body = (
@@ -119,7 +121,7 @@ export default async function PortalPreview({
       <PortalDocumentsView
         docs={await loadPortalDocuments(
           id,
-          OWNER_PREVIEW_PERMS,
+          PREVIEW_PERMS,
           year ? { year } : {},
         )}
         linkFor={linkFor}

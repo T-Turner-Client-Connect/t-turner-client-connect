@@ -55,7 +55,7 @@ function Wordmark({ small }: { small?: boolean }) {
   );
 }
 
-function NavLinks({ q, pathname, unread, onNavigate }: { q: string; pathname: string; unread: number; onNavigate?: () => void }) {
+function NavLinks({ q, pathname, unread, onNavigate, business }: { q: string; pathname: string; unread: number; onNavigate?: () => void; business: boolean }) {
   const isActive = (href: string) => (href === "/client" ? pathname === "/client" : pathname === href || (pathname.startsWith(`${href}/`) && href !== "/client/taxes"));
   return (
     <nav aria-label="Portal" className="space-y-1 px-3">
@@ -76,7 +76,7 @@ function NavLinks({ q, pathname, unread, onNavigate }: { q: string; pathname: st
         </Link>
       ))}
       <div className="mx-3 my-4 h-px bg-white/15" aria-hidden />
-      {MORE.map(([href, label, Icon]) => (
+      {MORE.filter(([href]) => business || href !== "/client/bookkeeping").map(([href, label, Icon]) => (
         <Link
           key={href}
           href={`${href}${q}`}
@@ -93,7 +93,7 @@ function NavLinks({ q, pathname, unread, onNavigate }: { q: string; pathname: st
 }
 
 /** Client portal frame: navy sidebar on large screens, top bar with a menu drawer on phones. */
-type Account = { id: string; name: string; personal?: boolean; owner?: string | null };
+type Account = { id: string; name: string; personal?: boolean; owner?: string | null; business?: boolean };
 
 /** Business tabs: Personal first, then each business this login may open. The selected one is always named. */
 function AccountTabs({ accounts, current, pathname }: { accounts: Account[]; current: string; pathname: string }) {
@@ -125,6 +125,8 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
   const sp = useSearchParams();
   const account = sp.get("account") ?? accounts[0]?.id ?? "";
   const q = account ? `?account=${account}` : "";
+  // Bookkeeping link only for a Managed Business this login may see (the page and data are gated on the server too).
+  const business = !!accounts.find((a) => a.id === account)?.business;
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
   const [more, setMore] = useState(false);
@@ -146,7 +148,7 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
           <Wordmark />
         </Link>
       </div>
-      <NavLinks q={q} pathname={pathname} unread={unread} onNavigate={onNavigate} />
+      <NavLinks q={q} pathname={pathname} unread={unread} onNavigate={onNavigate} business={business} />
       <div className="relative mt-auto min-h-56 flex-1">
         <Mountains variant="dark" className="absolute inset-x-0 bottom-0 h-56 w-full" />
         <div className="absolute bottom-6 left-6 text-[11px] font-semibold leading-6 tracking-[0.35em] text-navy-100/90">
@@ -164,7 +166,7 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
     return path === "/client" ? pathname === "/client" : pathname === path || (pathname.startsWith(`${path}/`) && path !== "/client/taxes");
   };
   const withQ = (href: string) => (href.includes("?") ? `${href}${account ? `&account=${account}` : ""}` : `${href}${q}`);
-  const allMore = [...MAIN.filter(([h]) => !TOP.some(([t]) => t.split("?")[0] === h)), ...MORE];
+  const allMore = [...MAIN.filter(([h]) => !TOP.some(([t]) => t.split("?")[0] === h)), ...MORE].filter(([href]) => business || href !== "/client/bookkeeping");
 
   return (
     <>

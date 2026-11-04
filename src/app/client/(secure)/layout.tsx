@@ -19,6 +19,8 @@ export default async function PortalLayout({ children }: { children: React.React
           id: a.clientId,
           name: a.client.businessName || a.client.displayName,
           personal: a.client.clientType === "INDIVIDUAL",
+          // Business side only for an owner-approved Managed Business this login was given.
+          business: a.canViewBookkeeping,
           // "Owner: …" under a business heading — the name already on the owner's record.
           owner: names?.owner ?? null,
           order: names?.order ?? 0,

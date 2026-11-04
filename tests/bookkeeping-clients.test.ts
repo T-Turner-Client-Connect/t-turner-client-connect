@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, prisma, resetDb, managed } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -33,6 +33,7 @@ async function setup() {
   await saveProfile(tabitha, bakery.id, { active: true, frequency: "MONTHLY", payroll: true, payrollFrequency: "BIWEEKLY", payrollProvider: "Gusto", assignedToId: daria.id });
   const { token } = await invitePortalUser(tabitha, bakery.id, { email: "owner@bakery.example", name: "Owner", role: "OWNER" });
   const u = await acceptPortalInvite(token!, "Owner-Pass-1234");
+  await managed(bakery.id);
   return { tabitha, otherAdmin, daria, bakery, owner: { id: u.id, name: u.name, email: u.email } };
 }
 

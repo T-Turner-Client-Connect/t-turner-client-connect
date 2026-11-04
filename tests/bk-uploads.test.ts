@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, prisma, resetDb, managed } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { portalUploadDocument, staffUploadDocument } from "@/lib/services/documents";
@@ -55,6 +55,7 @@ describe("what's uploaded, the period it covers, and its as-of date", () => {
     const period = await openPeriod(tabitha, biz.id, 2026, 3);
     const { token } = await invitePortalUser(tabitha, biz.id, { email: "owner@fictional.example", name: "Pat Owner", role: "OWNER" });
     const login = await acceptPortalInvite(token!, "Owner-Pass-12345");
+    await managed(biz.id); // a business the firm manages
     const f = uploadFieldsFromForm(form({ docType: "BALANCE_SHEET", periodKind: "MONTH", periodYear: "2026", periodMonth: "3", asOf: "2026-03-31" }));
     const before = new Date();
     const doc = await portalUploadDocument({ id: login.id, name: login.name, email: login.email }, { clientId: biz.id, periodId: period.id, docType: f.type, coverage: f.coverage, asOf: f.asOf, bytes: pdf(), originalName: "bs.pdf" });

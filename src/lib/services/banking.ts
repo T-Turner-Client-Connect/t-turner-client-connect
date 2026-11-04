@@ -6,7 +6,7 @@ import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { createLinkToken, exchangePublicToken, getAccounts, PlaidError, plaidMode, removeItem, syncPage, type PlaidTxn } from "@/lib/plaid";
 import { ValidationError } from "./clients";
-import { assertLedger, bookOf, crossSourceMatch, toDate, ymdOf } from "./ledger";
+import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, crossSourceMatch, toDate, ymdOf } from "./ledger";
 import { isReportApprover } from "./bookkeeping-clients";
 
 /**
@@ -25,7 +25,7 @@ export const BANK_CONSENT_TEXT =
 // --- Connecting (sandbox only in this phase) ----------------------------------------------------
 
 export async function startBankLink(actor: Actor, clientId: string) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   await bookOf(clientId);
   return createLinkToken(`client:${clientId}`);
 }
@@ -35,7 +35,7 @@ export async function startBankLink(actor: Actor, clientId: string) {
  * access and how, and lists the bank's accounts for staff to map to ledger accounts.
  */
 export async function completeBankLink(actor: Actor, clientId: string, input: { publicToken: string; authorizedByName: string; authorizationMethod: "CLIENT_PRESENT" | "CLIENT_PORTAL" | "WRITTEN_AUTHORIZATION"; institutionName?: string; confirmed: boolean }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   await bookOf(clientId);
   if (!input.confirmed) throw new ValidationError("Confirm the client authorized read-only access.");
   const who = input.authorizedByName.trim().slice(0, 120);
@@ -58,7 +58,7 @@ export async function completeBankLink(actor: Actor, clientId: string, input: { 
 
 /** Each bank account feeds exactly one of the client's own bank or card accounts in the ledger. */
 export async function mapBankAccount(actor: Actor, clientId: string, connectionAccountId: string, ledgerAccountId: string | null) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const ca = await prisma.bankConnectionAccount.findFirst({ where: { id: connectionAccountId, connection: { clientId } } });
   if (!ca) throw new ValidationError("Bank account not found.");
   if (ledgerAccountId) {
@@ -99,6 +99,7 @@ export async function syncConnection(connectionId: string, trigger: "DAILY" | "M
   const conn = await prisma.bankConnection.findUnique({ where: { id: connectionId }, include: { accounts: true } });
   if (!conn || conn.status === "DISCONNECTED") throw new ValidationError("Connection not found.");
   if (actor) await assertLedger(actor, conn.clientId);
+  await assertManagedBusiness(conn.clientId);
   const run = await prisma.bankSyncRun.create({ data: { connectionId, trigger } });
   await prisma.bankConnection.update({ where: { id: connectionId }, data: { lastAttemptAt: new Date() } });
   const r: SyncResult = { added: 0, matched: 0, modified: 0, removed: 0, skipped: 0, flagged: 0 };
@@ -211,7 +212,9 @@ export async function runDailyBankRetrieval(now = new Date()) {
     try { await prisma.jobLock.create({ data: { name: "bank-retrieval", lockedUntil: until, runId } }); } catch { return { ok: 0, failed: 0, skipped: "another run is in progress" }; }
   }
   try {
-    const due = await prisma.bankConnection.findMany({ where: { status: { in: ["ACTIVE", "ERROR"] }, OR: [{ lastSuccessAt: null }, { lastSuccessAt: { lt: new Date(now.getTime() - 20 * 3600_000) } }] }, select: { id: true }, take: 200 });
+    // Only owner-approved Managed Businesses are pulled; a removed business's feed simply stops.
+    const managed = (await prisma.client.findMany({ where: { businessAccess: "ACTIVE" }, select: { id: true } })).map((c) => c.id);
+    const due = await prisma.bankConnection.findMany({ where: { status: { in: ["ACTIVE", "ERROR"] }, clientId: { in: managed }, OR: [{ lastSuccessAt: null }, { lastSuccessAt: { lt: new Date(now.getTime() - 20 * 3600_000) } }] }, select: { id: true }, take: 200 });
     let ok = 0, failed = 0;
     for (const c of due) {
       try { await syncConnection(c.id, "DAILY"); ok++; } catch { failed++; }
