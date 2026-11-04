@@ -124,14 +124,6 @@ export default async function ClientOverview({ params, searchParams }: { params:
     <div className="space-y-5" data-testid="client-overview">
       {/* Banner */}
       <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-6 py-6 text-white ring-1 ring-gold-500/40 sm:px-8" data-testid="overview-banner">
-        <svg aria-hidden viewBox="0 0 400 160" preserveAspectRatio="xMaxYMax slice" className="pointer-events-none absolute inset-y-0 right-0 h-full w-1/2 opacity-25">
-          <g fill="currentColor" className="text-navy-100">
-            <rect x="200" y="40" width="34" height="120" /><rect x="240" y="10" width="40" height="150" /><rect x="286" y="55" width="30" height="105" /><rect x="320" y="25" width="44" height="135" /><rect x="368" y="70" width="32" height="90" /><rect x="160" y="80" width="34" height="80" />
-          </g>
-          <g fill="var(--color-gold-400)" opacity="0.6">
-            {Array.from({ length: 30 }, (_, i) => <rect key={i} x={246 + (i % 4) * 9} y={20 + Math.floor(i / 4) * 16} width="4" height="7" />)}
-          </g>
-        </svg>
         <div className="relative flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-4">
             <Landmark className="mt-1 hidden size-14 shrink-0 text-gold-400 sm:block" aria-hidden />
