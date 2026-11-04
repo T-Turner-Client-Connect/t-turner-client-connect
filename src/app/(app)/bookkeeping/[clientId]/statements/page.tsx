@@ -64,7 +64,7 @@ export default async function StatementsPage({ params, searchParams }: { params:
 
   return (
     <div className="space-y-5" data-testid="bk-statements">
-      <p className="text-sm"><Link className="underline" href={`${base}/close${period ? `?period=${period.id}` : ""}`}>← Bookkeeping dashboard</Link></p>
+      <p className="text-sm"><Link className="underline" href={`${base}${period ? `?period=${period.id}` : ""}`}>← Bookkeeping dashboard</Link></p>
       <section className="rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-5 py-5 text-white ring-1 ring-gold-500/40 sm:px-7">
         <p className="text-xs uppercase tracking-[0.2em] text-gold-300">{biz}</p>
         <h1 className="mt-1 font-serif text-2xl font-bold text-white">Statements &amp; approvals — {label}</h1>

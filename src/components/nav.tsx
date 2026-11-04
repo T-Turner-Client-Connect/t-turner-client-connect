@@ -104,7 +104,7 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
     { href: base, label: "Client Overview", icon: LayoutGrid, active: pathname === base },
     { href: `/clients/${id}?tab=overview`, label: "Client Profile", icon: Users, active: false },
     { href: `${base}/coetha`, label: "Coetha AI", icon: Sparkles, active: pathname === `${base}/coetha` },
-    { href: `${base}/close`, label: "Bookkeeping Management", icon: ClipboardList, active: pathname === `${base}/close` },
+    { href: base, label: "Bookkeeping Management", icon: ClipboardList, active: false },
     { href: `${base}/banking`, label: "Banking & Reconciliation", icon: Building2, active: pathname.startsWith(`${base}/banking`) || (pathname === `${base}/books` && tab === "bank") },
     { href: `${base}/records`, label: "Historical Records", icon: History, active: pathname === `${base}/records` },
     { href: `${base}/books?tab=journal`, label: "General Ledger", icon: BookOpen, active: pathname === `${base}/books` && (tab === "journal" || tab === "accounts" || !tab || tab === "overview") },

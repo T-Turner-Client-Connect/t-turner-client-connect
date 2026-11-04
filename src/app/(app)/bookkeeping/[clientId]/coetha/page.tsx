@@ -166,7 +166,7 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="kind-RECOMMENDATION">
         <SectionTitle icon={AlertTriangle} title={KIND_LABEL.RECOMMENDATION} count={recs.length} />
         <p className="mt-1 text-sm text-navy-800">Tax classification: <strong>{tp.label ?? "Not set"}</strong>{tp.basis ? ` · ${tp.basis === "ACCRUAL" ? "Accrual" : "Cash"} basis` : ""} · Fiscal year ends month {tp.fiscalYearEnd}{tp.taxYear ? ` · Tax year ${tp.taxYear}` : ""}. Coetha applies its equity and compensation rules; she can only recommend a change.</p>
-        <p className="mt-1 text-xs text-slate-600">Internal only — never shown to the client. {work.drafts} draft request{work.drafts === 1 ? "" : "s"} · {work.outstanding} sent and waiting · {work.recsWaiting} reconciliation{work.recsWaiting === 1 ? "" : "s"} awaiting approval · <Link className="underline" href={`${base}/close`}>Bookkeeping management</Link></p>
+        <p className="mt-1 text-xs text-slate-600">Internal only — never shown to the client. {work.drafts} draft request{work.drafts === 1 ? "" : "s"} · {work.outstanding} sent and waiting · {work.recsWaiting} reconciliation{work.recsWaiting === 1 ? "" : "s"} awaiting approval · <Link className="underline" href={base}>Bookkeeping management</Link></p>
         {recs.length + classes.length === 0 ? <p className="mt-2 text-sm text-slate-600">No open findings.</p> : (
           <ul className="mt-3 space-y-3">
             {[...classes, ...recs].map((p) => <RecommendationCard key={p.id} p={p} clientId={clientId} canApprove={v.canApprove} booksHref={`${base}/books?tab=bank`} />)}

@@ -33,7 +33,7 @@ export default async function PayrollPage({ params }: { params: Promise<{ client
     return (
       <>
         <PageHeader title="Payroll" subtitle={client.businessName || client.displayName} />
-        <Card><p className="text-sm text-slate-700">This client doesn&apos;t run payroll. Turn it on under <Link className="font-semibold underline" href={`${base}/close`}>Bookkeeping settings</Link>.</p></Card>
+        <Card><p className="text-sm text-slate-700">This client doesn&apos;t run payroll. Turn it on under <Link className="font-semibold underline" href={base}>Bookkeeping settings</Link>.</p></Card>
       </>
     );
   }

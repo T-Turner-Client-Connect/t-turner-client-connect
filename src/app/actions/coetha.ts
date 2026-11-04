@@ -9,7 +9,7 @@ import { setOwnerSwitch, SWITCH_LABEL, type OwnerSwitch } from "@/lib/services/o
 const refresh = (clientId: string) => {
   revalidatePath(`/bookkeeping/${clientId}/coetha`);
   revalidatePath(`/bookkeeping/${clientId}/books`);
-  revalidatePath(`/bookkeeping/${clientId}/close`);
+  revalidatePath(`/bookkeeping/${clientId}`);
   revalidatePath("/owner/coetha-review");
 };
 

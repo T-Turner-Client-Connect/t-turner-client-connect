@@ -77,7 +77,7 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
                   <td className="pr-2 text-center">{r.drafts || "—"}</td>
                   <td className="pr-2 text-center">{r.requestDrafts ? `${r.requestDrafts} draft` : ""}{r.requestDrafts && r.requestsOpen ? " · " : ""}{r.requestsOpen ? `${r.requestsOpen} sent` : !r.requestDrafts ? "—" : ""}</td>
                   <td className="pr-2 text-center">{r.reconReady ? `${r.reconReady} ready` : ""}{r.reconReady && r.reconIssues ? " · " : ""}{r.reconIssues ? <span className="text-red-700">{r.reconIssues} issue{r.reconIssues === 1 ? "" : "s"}</span> : !r.reconReady ? "—" : ""}</td>
-                  <td className="whitespace-nowrap text-right text-xs"><Link className="font-semibold underline" href={`/bookkeeping/${r.c.id}/coetha`}>Open</Link> · <Link className="underline" href={`/bookkeeping/${r.c.id}/close`}>Month</Link></td>
+                  <td className="whitespace-nowrap text-right text-xs"><Link className="font-semibold underline" href={`/bookkeeping/${r.c.id}/coetha`}>Open</Link> · <Link className="underline" href={`/bookkeeping/${r.c.id}`}>Month</Link></td>
                 </tr>
               ))}
               {!rows.length && <tr><td colSpan={7} className="py-3 text-slate-600">No bookkeeping clients yet.</td></tr>}
