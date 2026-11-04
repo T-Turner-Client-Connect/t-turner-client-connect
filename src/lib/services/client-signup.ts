@@ -8,7 +8,7 @@ import { isReportApprover } from "./bookkeeping-clients";
 import { hashPassword, passwordProblem } from "@/lib/auth/password";
 import { hashToken, newToken } from "@/lib/auth/tokens";
 import { authSettings, emailProviderConfigured } from "@/lib/auth/client-auth";
-import { sign } from "@/lib/crypto";
+import { encryptBytes, fileKeyVersionOf, looksEncrypted, openStoredBytes, sign } from "@/lib/crypto";
 import { brandedEmailHtml, sendEmail } from "@/lib/email";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import { appUrl } from "@/lib/integrations";
@@ -287,8 +287,9 @@ export async function uploadOnboardingFile(user: PortalActor, file: { bytes: Uin
   if ((await prisma.onboardingFile.count({ where: { applicationId: app.id } })) >= 20) throw new ValidationError("You can upload up to 20 files now; send more after your account is set up.");
   // Client-document store, held privately until the account is connected.
   const storageKey = `client_document/onboarding/${newToken().slice(0, 32)}`;
-  await storage.put(storageKey, file.bytes);
-  await prisma.onboardingFile.create({ data: { applicationId: app.id, storageKey, originalName: file.originalName.replace(/[^\w.\- ()]/g, "_").slice(0, 150), mimeType: type.mime, sizeBytes: file.bytes.length } });
+  // Encrypted at rest from the start (the header says so; older plaintext held files still read).
+  await storage.put(storageKey, encryptBytes(file.bytes));
+  await prisma.onboardingFile.create({ data: { applicationId: app.id, storageKey, encrypted: true, originalName: file.originalName.replace(/[^\w.\- ()]/g, "_").slice(0, 150), mimeType: type.mime, sizeBytes: file.bytes.length } });
 }
 
 /** Possible existing records for an application — exact email/phone, same business or same full name. Staff-only. */
@@ -313,7 +314,8 @@ async function finishLink(applicationId: string, clientId: string, portalUserId:
     create: { portalUserId, clientId, role: "OWNER", canViewTax: true, canViewIdentity: true, grantedById },
   });
   for (const f of app.files.filter((f) => !f.movedDocumentId)) {
-    const bytes = await storage.get(f.storageKey);
+    const held = await storage.get(f.storageKey);
+    const bytes = held ? openStoredBytes(held) : null;
     const scan = bytes ? await scanBytes(bytes, f.originalName) : "PENDING";
     if (scan === "INFECTED") {
       await storage.remove(f.storageKey).catch(() => {});
@@ -321,7 +323,7 @@ async function finishLink(applicationId: string, clientId: string, portalUserId:
     }
     const doc = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({
-        data: { kind: "CLIENT_DOCUMENT", storageKey: f.storageKey, originalName: f.originalName, title: f.originalName.replace(/\.[^.]+$/, ""), mimeType: f.mimeType, sizeBytes: f.sizeBytes, uploadedByPortalUserId: portalUserId },
+        data: { kind: "CLIENT_DOCUMENT", storageKey: f.storageKey, originalName: f.originalName, title: f.originalName.replace(/\.[^.]+$/, ""), mimeType: f.mimeType, sizeBytes: f.sizeBytes, uploadedByPortalUserId: portalUserId, encrypted: !!held && looksEncrypted(held), keyVersion: held ? fileKeyVersionOf(held) : null, sha256: bytes ? createHash("sha256").update(bytes).digest("hex") : null },
       });
       return tx.document.create({
         // Year unknown at sign-up and quarantined until clean; staff review it.

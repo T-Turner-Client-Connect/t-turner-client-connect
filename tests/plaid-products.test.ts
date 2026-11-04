@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { authorizeCoetha, makeUser, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { setupLedger } from "@/lib/services/ledger";
@@ -59,6 +59,7 @@ async function world() {
   const conn = await completeBankLink(daria, biz.id, { publicToken: "tok", authorizedByName: "Pat Pretend", authorizationMethod: "CLIENT_PRESENT", institutionName: "Pretend National Bank", confirmed: true });
   await monitorConnectionAccount(daria, biz.id, conn.accounts.find((a) => a.mask === "0042")!.id, chk.id);
   await monitorConnectionAccount(daria, biz.id, conn.accounts.find((a) => a.mask === "7001")!.id, card.id);
+  await authorizeCoetha(biz.id);
   return { tabitha, daria, biz, chk, card, conn };
 }
 

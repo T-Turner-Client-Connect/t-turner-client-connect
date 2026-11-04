@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, managed, prisma, resetDb } from "./db";
+import { authorizeCoetha, makeUser, managed, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { categorizeBankTransaction, importBankCsv, setupLedger } from "@/lib/services/ledger";
@@ -60,6 +60,7 @@ async function setup({ on = true } = {}) {
   const vessel = await createClient(tabitha, { businessName: "Vessel Example LLC (fictional)", clientType: "BUSINESS", status: "ACTIVE", assignedToId: daria.id, email: "owner@vessel.example" });
   const harbor = await createClient(tabitha, { businessName: "Harbor Example Co (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
   await managed(vessel.id, harbor.id);
+  await authorizeCoetha(vessel.id, harbor.id);
   for (const c of [vessel, harbor]) await setupLedger(tabitha, c.id, { basis: "CASH" });
   const acct = async (clientId: string, code: string) => (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId, code } })).id;
   const checking = await acct(vessel.id, "1000");

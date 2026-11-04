@@ -17,6 +17,15 @@ export async function makeUser(role: "ADMIN" | "STAFF", name = role === "ADMIN" 
 export { prisma };
 
 /**
+ * Test fixture: the client authorized the Coetha AI notice (current version) in the portal.
+ * The notice, its versions and the refusals are tested in coetha-consent.test.ts.
+ */
+export async function authorizeCoetha(...clientIds: string[]) {
+  const { COETHA_CONSENT_VERSION } = await import("@/lib/services/coetha-consent");
+  await prisma.coethaConsent.createMany({ data: clientIds.map((clientId) => ({ clientId, status: "AUTHORIZED", version: COETHA_CONSENT_VERSION, method: "PORTAL", decidedByName: "Fixture owner" })) });
+}
+
+/**
  * Test fixture: these fictional businesses are ones the firm manages, as if Tabitha had
  * approved Managed Business access and turned on the business view for their logins.
  * Call it after the logins exist. (Real approval is tested in business-access.test.ts.)

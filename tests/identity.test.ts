@@ -179,7 +179,7 @@ describe("identity documents", () => {
     const doc = await prisma.document.findUniqueOrThrow({ where: { id: ss.documentId }, include: { file: true } });
     expect(doc.file.encrypted).toBe(true);
     const raw = await storage.get(doc.file.storageKey);
-    expect(Buffer.from(raw!).subarray(0, 4).toString()).toBe("TCE1");
+    expect(Buffer.from(raw!).subarray(0, 4).toString()).toBe("TCE2"); // versioned format with a key id (TCE1 files still open)
     expect(Buffer.from(raw!).includes(Buffer.from("fictional id"))).toBe(false);
     expect(Buffer.from((await readDocumentBytes(doc.file))!).equals(Buffer.from(bytes))).toBe(true);
   });
