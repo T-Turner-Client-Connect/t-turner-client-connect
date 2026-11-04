@@ -33,10 +33,11 @@ export function BkUploadFields({ business, typeName = "docType", types = Object.
             <select className="input" name="periodKind" defaultValue="MONTH" data-testid="bk-period-kind">
               <option value="MONTH">A month</option>
               <option value="QUARTER">A quarter</option>
+              <option value="YEAR">A full year</option>
               <option value="RANGE">A date range</option>
             </select>
           </Field>
-          <Field label="Year (month or quarter)"><select className="input" name="periodYear" defaultValue={year}>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>
+          <Field label="Year (month, quarter or year)"><select className="input" name="periodYear" defaultValue={year}>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>
           <Field label="Month"><select className="input" name="periodMonth" defaultValue={month ?? ""}><option value="">—</option>{MONTH_NAMES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select></Field>
           <Field label="Quarter"><select className="input" name="periodQuarter" defaultValue=""><option value="">—</option>{[1, 2, 3, 4].map((q) => <option key={q} value={q}>Q{q}</option>)}</select></Field>
           <Field label="From (date range)"><input className="input" type="date" name="periodStart" /></Field>

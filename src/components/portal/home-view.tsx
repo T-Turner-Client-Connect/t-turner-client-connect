@@ -38,20 +38,19 @@ function CardHead({ icon: Icon, title, sub, badge }: { icon: React.ComponentType
   );
 }
 
-export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: { data: Home; q: string; readOnly?: boolean; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; year?: number; previewHref?: (path: string, extra: string) => string }) {
-  // In the owner's View as Client, links open the matching read-only preview page.
+type TileOpts = { data: Pick<Home, "questionnaires">; q: string; readOnly?: boolean; year?: number; previewHref?: (path: string, extra: string) => string };
+
+/**
+ * The five headline actions on the regular tax Home (Tax Questionnaire, Upload Documents,
+ * Retrieve Tax Filings, Appointments, News & Updates). The business dashboard shows the same ones.
+ */
+export function homeTiles({ data, q, readOnly, year, previewHref }: TileOpts) {
   const href = (path: string, extra = "") => (previewHref ? previewHref(path, extra) : readOnly ? "#" : `${path}${q}${extra ? `${q ? "&" : "?"}${extra}` : ""}`);
   const browsable = !!previewHref;
   const years = data.questionnaires.map((x) => x.year).sort((a, b) => a - b);
   const thisYear = new Date().getFullYear();
   const selected = year && years.includes(year) ? year : years.includes(thisYear - 1) ? thisYear - 1 : years.at(-1) ?? thisYear;
-  const status = data.statuses.find((s) => s.year === selected);
-  const doneCount = status?.steps.filter((s) => s.done).length ?? 0;
-  const pill = status ? (status.steps.find((s) => !s.done)?.value ?? "Complete") : "Not started";
   const q12 = data.questionnaires.find((x) => x.year === selected);
-  const next = nextDeadline(data);
-  const req = data.requests[0];
-
   // A year without a questionnaire link is "Coming soon" — never another year's form.
   const qAvailable = !!q12?.url && !q12.completed;
   const disabled = readOnly && !browsable ? "Disabled in staff preview" : undefined;
@@ -71,6 +70,19 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: {
     { title: "Appointments", sub: "Schedule or manage your appointment", icon: CalendarDays, href: link(href("/client/appointments")), testId: "appointments-button", disabledNote: disabled },
     { title: "News & Updates", sub: "Tax updates & office news", icon: Mail, href: link(href("/client/news")), testId: "news-button", disabledNote: disabled },
   ];
+  return { tiles, selected, years };
+}
+
+export function PortalHomeView({ data, q, readOnly, name, year, previewHref }: { data: Home; q: string; readOnly?: boolean; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; year?: number; previewHref?: (path: string, extra: string) => string }) {
+  // In the owner's View as Client, links open the matching read-only preview page.
+  const href = (path: string, extra = "") => (previewHref ? previewHref(path, extra) : readOnly ? "#" : `${path}${q}${extra ? `${q ? "&" : "?"}${extra}` : ""}`);
+  const browsable = !!previewHref;
+  const { tiles, selected, years } = homeTiles({ data, q, readOnly, year, previewHref });
+  const status = data.statuses.find((s) => s.year === selected);
+  const doneCount = status?.steps.filter((s) => s.done).length ?? 0;
+  const pill = status ? (status.steps.find((s) => !s.done)?.value ?? "Complete") : "Not started";
+  const next = nextDeadline(data);
+  const req = data.requests[0];
   const countdownLines = data.countdowns.cards.flatMap((c) => c.lines);
   const news = data.updates.map((a) => ({ id: a.id, title: a.title, body: a.body, topic: a.topic, clientId: a.clientId, pinned: a.pinned, at: a.publishedAt ?? a.createdAt }));
 

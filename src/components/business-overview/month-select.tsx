@@ -16,7 +16,7 @@ export function MonthSelect({ base, value, choices }: { base: string; value: str
       <span className="sr-only">Month</span>
       <select
         value={value}
-        onChange={(e) => router.push(`${base}?month=${e.target.value}`)}
+        onChange={(e) => router.push(`${base}${base.includes("?") ? "&" : "?"}month=${e.target.value}`)}
         className="appearance-none bg-transparent pr-6 text-base font-semibold text-white focus:outline-none"
         data-testid="overview-month"
       >

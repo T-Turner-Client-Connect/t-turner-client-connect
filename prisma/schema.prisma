@@ -1222,9 +1222,16 @@ model DocumentRequest {
   createdBy    User               @relation(fields: [createdById], references: [id])
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
+  // Business tax-document requests made from the client's own facts (payroll, entity type,
+  // prior-year documents…): the tax year, the upload type a file is saved as, and the rule
+  // that asked for it (one request per rule per year). Null for requests staff write by hand.
+  taxYear      Int?
+  docType      String?
+  ruleKey      String?
 
   documents Document[]
 
+  @@unique([clientId, taxYear, ruleKey])
   @@index([clientId, status])
 }
 
@@ -4047,6 +4054,8 @@ model BankConnection {
   createdAt           DateTime                @default(now())
   disconnectedAt      DateTime?
   disconnectedById    String?
+  // The client's own "Refresh now" from the portal (rate-limited: once per 5 minutes).
+  lastClientRefreshAt DateTime?
   accounts            BankConnectionAccount[]
   runs                BankSyncRun[]
 
@@ -4054,20 +4063,42 @@ model BankConnection {
 }
 
 model BankConnectionAccount {
-  id                String         @id @default(cuid())
-  connectionId      String
-  connection        BankConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  providerAccountId String
-  name              String
-  mask              String?
+  id                    String             @id @default(cuid())
+  connectionId          String
+  connection            BankConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  providerAccountId     String
+  name                  String
+  mask                  String?
   // depository / credit / loan … as the bank reports it
-  type              String
-  subtype           String?
+  type                  String
+  subtype               String?
   // The client's ledger bank or card account it feeds. Unmapped accounts are not retrieved.
-  ledgerAccountId   String?        @unique
-  createdAt         DateTime       @default(now())
+  ledgerAccountId       String?            @unique
+  // Balances as the bank last reported them through Plaid (read-only), and when.
+  currentBalanceCents   Int?
+  availableBalanceCents Int?
+  isoCurrency           String?
+  balanceAsOf           DateTime?
+  createdAt             DateTime           @default(now())
+  dailyBalances         BankBalanceDaily[]
 
   @@unique([connectionId, providerAccountId])
+}
+
+// One balance per bank account per day (Central time), kept up to date by each retrieval.
+// Today's change on the balance ticker = today's balance minus the latest earlier day's.
+model BankBalanceDaily {
+  id                    String                @id @default(cuid())
+  accountId             String
+  account               BankConnectionAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  clientId              String
+  day                   DateTime              @db.Date
+  currentBalanceCents   Int
+  availableBalanceCents Int?
+  recordedAt            DateTime              @default(now())
+
+  @@unique([accountId, day])
+  @@index([clientId, day])
 }
 
 model BankSyncRun {

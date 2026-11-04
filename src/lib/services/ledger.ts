@@ -609,6 +609,14 @@ export type ReportRow = { accountId: string; code: string; name: string; months:
 /** Profit & Loss with a column per month and a total, from this client's entries only. Owner draws are equity, so never here. */
 export async function profitAndLoss(actor: Actor, clientId: string, input: { from: string; to: string; basis?: Basis }) {
   await assertLedger(actor, clientId);
+  return profitAndLossFor(clientId, input);
+}
+
+/**
+ * The same report without a staff actor. Callers check access first: the client portal uses it
+ * only after requireClientAccess(…, "bookkeeping"), and only for months whose statements were released.
+ */
+export async function profitAndLossFor(clientId: string, input: { from: string; to: string; basis?: Basis }) {
   const book = await bookOf(clientId);
   if (!isYmd(input.from) || !isYmd(input.to) || input.from > input.to) throw new ValidationError("Choose a valid date range.");
   const basis = input.basis ?? (book.basis as Basis);

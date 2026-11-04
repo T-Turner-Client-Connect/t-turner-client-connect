@@ -63,7 +63,31 @@ export type CloseStep = { label: string; done: boolean };
 
 export type Deadline = { date: string; title: string; status: "ON_TRACK" | "DUE_SOON" | "UPCOMING" | "PAST_DUE" };
 
-const deadlineStatus = (date: string, today: string, onTrack = false): Deadline["status"] => {
+/**
+ * The month's close as status steps only (no staff notes): shared by the staff Client Overview
+ * and the client's own business dashboard.
+ */
+export async function monthlyCloseSteps(clientId: string, periodId: string, profile: { payroll: boolean; payrollProvider: string | null } | null) {
+  const ws = await bookkeepingWorkspace(clientId, periodId);
+  const items = ws.summary?.items ?? [];
+  const ok = (key: string) => {
+    const i = items.find((x) => x.key === key);
+    return !!i && (i.state === "DONE" || i.state === "NOT_NEEDED" || i.state === "RECEIVED");
+  };
+  const reports = ws.summary?.reports ?? [];
+  const steps: CloseStep[] = [
+    { label: "Bank statements received", done: ok("BANK_STATEMENTS") },
+    { label: "Transactions categorized", done: ok("CATEGORIZE") },
+    { label: "Accounts reconciled", done: ok("RECONCILE") },
+    ...(profile?.payroll ? [{ label: `Payroll recorded${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`, done: ok("PAYROLL_ENTRIES") }] : []),
+    { label: "Financial statements prepared", done: ok("PREPARE_REPORTS") || reports.length > 0 },
+    { label: "Owner review & approval", done: reports.some((r) => r.reviewStatus === "APPROVED") },
+    { label: "Released to client", done: ws.summary?.stage === "DELIVERED" },
+  ];
+  return { steps, percent: Math.round((steps.filter((s) => s.done).length / steps.length) * 100) };
+}
+
+export const deadlineStatus = (date: string, today: string, onTrack = false): Deadline["status"] => {
   const d = daysBetween(today, date);
   if (d < 0) return "PAST_DUE";
   if (onTrack) return "ON_TRACK";
@@ -88,27 +112,7 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
   const monthChoices = Array.from(new Set([selected, ...periods.slice(0, 18).map((p) => monthStr(p.year, p.month))])).sort().reverse();
 
   // --- Monthly close: the month's checklist and report approval ---------------------------------
-  let close: { steps: CloseStep[]; percent: number } | null = null;
-  if (period) {
-    const ws = await bookkeepingWorkspace(clientId, period.id);
-    const items = ws.summary?.items ?? [];
-    const item = (key: string) => items.find((i) => i.key === key);
-    const ok = (key: string) => {
-      const i = item(key);
-      return !!i && (i.state === "DONE" || i.state === "NOT_NEEDED" || i.state === "RECEIVED");
-    };
-    const reports = ws.summary?.reports ?? [];
-    const steps: CloseStep[] = [
-      { label: "Bank statements received", done: ok("BANK_STATEMENTS") },
-      { label: "Transactions categorized", done: ok("CATEGORIZE") },
-      { label: "Accounts reconciled", done: ok("RECONCILE") },
-      ...(profile?.payroll ? [{ label: `Payroll recorded${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`, done: ok("PAYROLL_ENTRIES") }] : []),
-      { label: "Financial statements prepared", done: ok("PREPARE_REPORTS") || reports.length > 0 },
-      { label: "Owner review & approval", done: reports.some((r) => r.reviewStatus === "APPROVED") },
-      { label: "Released to client", done: ws.summary?.stage === "DELIVERED" },
-    ];
-    close = { steps, percent: Math.round((steps.filter((s) => s.done).length / steps.length) * 100) };
-  }
+  const close = period ? await monthlyCloseSteps(clientId, period.id, profile) : null;
 
   // --- Ledger figures: the month and the five before it -----------------------------------------
   type Perf = { month: string; income: number; expenses: number };
