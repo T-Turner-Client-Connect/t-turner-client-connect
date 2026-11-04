@@ -143,7 +143,8 @@ export async function businessRequestChecklist(clientId: string, taxYear: number
   const rows = await prisma.documentRequest.findMany({
     where: {
       clientId,
-      status: { not: "CANCELLED" },
+      // Never a cancelled request, and never a draft: Coetha's drafts (#82) wait for Tabitha and the client never sees them.
+      status: { notIn: ["CANCELLED", "DRAFT"] },
       OR: [
         { taxYear, ruleKey: { in: keys } },
         ...(kind === "BOOKKEEPING" ? [{ ruleKey: null, OR: [{ status: { in: ["OPEN" as const, "SUBMITTED" as const] } }, { updatedAt: { gte: since } }] }] : []),

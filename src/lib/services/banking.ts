@@ -5,9 +5,11 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { appUrl } from "@/lib/integrations";
-import { createLinkToken, currentPlaidMode, envOfMode, exchangePublicToken, getAccounts, PLAID_MODE_TEXT, PlaidError, plaidWebhookUrl, REAUTH_CODES, removeItem, syncPage, type PlaidAccount, type PlaidTxn } from "@/lib/plaid";
+import { createLinkToken, currentPlaidMode, envOfMode, exchangePublicToken, getAccounts, PLAID_MODE_TEXT, PlaidError, plaidWebhookUrl, REAUTH_CODES, removeItem, syncPage, liabilitiesFlag, type PlaidAccount, type PlaidTxn } from "@/lib/plaid";
 import { ValidationError } from "./clients";
-import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, crossSourceMatch, toDate, ymdOf } from "./ledger";
+import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, crossSourceMatch, FEED_SUBTYPES, normDesc, officeBookClientIds, toDate, ymdOf } from "./ledger";
+import { applySharedCardDetection, feedsShared } from "./bank-accounts";
+import { refreshLiabilities } from "./plaid-products";
 import { isReportApprover } from "./bookkeeping-clients";
 
 /**
@@ -64,10 +66,12 @@ export async function completeBankLink(actor: Actor, clientId: string, input: { 
     data: {
       clientId, itemId: item_id, accessTokenEnc: encryptSecret(access_token), environment, institutionName: input.institutionName?.trim().slice(0, 120) || null,
       authorizedByName: who, authorizationMethod: input.authorizationMethod, consentVersion: BANK_CONSENT_VERSION, connectedById: actor.id,
-      accounts: { create: accounts.map((a) => ({ providerAccountId: a.account_id, name: (a.official_name || a.name).slice(0, 120), mask: a.mask ?? null, type: a.type, subtype: a.subtype ?? null })) },
+      accounts: { create: accounts.map((a) => ({ providerAccountId: a.account_id, name: (a.official_name || a.name).slice(0, 120), mask: a.mask ?? null, type: a.type, subtype: a.subtype ?? null, ...balanceData(a) })) },
     },
     include: { accounts: true },
   });
+  // Employee / authorized-user cards on one shared credit account are suggested as one liability.
+  await applySharedCardDetection(conn.id);
   await audit(prisma, { actorId: actor.id, action: "banking.connected", entityType: "BankConnection", entityId: conn.id, clientId, details: { environment, institution: conn.institutionName, accounts: conn.accounts.length, authorizedByName: who, method: input.authorizationMethod, consentVersion: BANK_CONSENT_VERSION } });
   return conn;
 }
@@ -93,15 +97,22 @@ export async function completeBankReauth(actor: Actor, clientId: string, connect
   await closeReauthTask(clientId);
 }
 
-/** Each bank account feeds exactly one of the client's own bank or card accounts in the ledger. */
+/** Plaid's cached balances, in cents (credit: amount owed). */
+const balanceData = (a: PlaidAccount) => ({
+  currentBalanceCents: a.balances?.current != null ? Math.round(a.balances.current * 100) : null,
+  creditLimitCents: a.balances?.limit != null ? Math.round(a.balances.limit * 100) : null,
+  balanceAsOf: a.balances ? new Date() : null,
+});
+
+/** Each bank account feeds exactly one of the client's own bank or card accounts in the ledger (employee cards on one shared account feed that account). */
 export async function mapBankAccount(actor: Actor, clientId: string, connectionAccountId: string, ledgerAccountId: string | null) {
   await assertLedgerWrite(actor, clientId, "banking");
   const ca = await prisma.bankConnectionAccount.findFirst({ where: { id: connectionAccountId, connection: { clientId } } });
   if (!ca) throw new ValidationError("Bank account not found.");
   if (ledgerAccountId) {
-    const la = await prisma.ledgerAccount.findFirst({ where: { id: ledgerAccountId, clientId, active: true, subtype: { in: ["BANK", "CREDIT_CARD"] } } });
+    const la = await prisma.ledgerAccount.findFirst({ where: { id: ledgerAccountId, clientId, active: true, subtype: { in: FEED_SUBTYPES } } });
     if (!la) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
-    const taken = await prisma.bankConnectionAccount.findFirst({ where: { ledgerAccountId, NOT: { id: ca.id } } });
+    const taken = feedsShared(ca) ? null : await prisma.bankConnectionAccount.findFirst({ where: { ledgerAccountId, NOT: { id: ca.id }, OR: [{ sharedWithId: null }, { sharedStatus: "SEPARATE" }] } });
     if (taken) throw new ValidationError("That ledger account already receives another bank account's transactions.");
   }
   await prisma.bankConnectionAccount.update({ where: { id: ca.id }, data: { ledgerAccountId } });
@@ -133,14 +144,16 @@ async function collectBatch(token: string, start: string | null) {
   for (let attempt = 0; attempt < 3; attempt++) {
     let cursor = start;
     const added: PlaidTxn[] = [], modified: PlaidTxn[] = [], removed: { transaction_id: string; account_id?: string }[] = [];
+    const accounts = new Map<string, PlaidAccount>();
     try {
       for (let page = 0; page < 50; page++) {
         const p = await syncPage(token, cursor);
         added.push(...p.added); modified.push(...p.modified); removed.push(...p.removed);
+        for (const a of p.accounts ?? []) accounts.set(a.account_id, a);
         cursor = p.next_cursor;
         if (!p.has_more) break;
       }
-      return { added, modified, removed, cursor };
+      return { added, modified, removed, cursor, accounts: [...accounts.values()] };
     } catch (err) {
       if (err instanceof PlaidError && err.code === "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" && attempt < 2) continue;
       throw err;
@@ -167,8 +180,12 @@ export async function syncConnection(connectionId: string, trigger: SyncTrigger,
   const r: SyncResult = { added: 0, matched: 0, modified: 0, removed: 0, skipped: 0, flagged: 0 };
   try {
     const token = decryptSecret(conn.accessTokenEnc);
-    const { added, modified, removed, cursor } = await collectBatch(token, conn.cursor);
-    const ledgerFor = new Map(conn.accounts.filter((a) => a.ledgerAccountId).map((a) => [a.providerAccountId, a.ledgerAccountId!]));
+    const { added, modified, removed, cursor, accounts: seen } = await collectBatch(token, conn.cursor);
+    // An employee card on a shared credit account feeds the primary card's liability account.
+    const byId = new Map(conn.accounts.map((a) => [a.id, a]));
+    const target = (a: (typeof conn.accounts)[number]) => (feedsShared(a) ? byId.get(a.sharedWithId!)?.ledgerAccountId ?? a.ledgerAccountId : a.ledgerAccountId);
+    const ledgerFor = new Map(conn.accounts.filter((a) => target(a)).map((a) => [a.providerAccountId, target(a)!]));
+    const sharedLedgers = new Set(conn.accounts.filter((a) => feedsShared(a)).map((a) => target(a)).filter((x): x is string => !!x));
     const book = await bookOf(conn.clientId);
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"bank-rows:" + conn.clientId}))`;
@@ -179,6 +196,11 @@ export async function syncConnection(connectionId: string, trigger: SyncTrigger,
         // Plaid's transaction_id is unique per account: the same transaction is never added twice.
         if (await tx.bankTransaction.count({ where: { accountId, providerId: t.transaction_id } })) { r.skipped++; continue; }
         const row = { date: t.date, amountCents: toCents(t), description: descOf(t) };
+        // Shared credit account: the same charge reported under two cards is one charge.
+        if (sharedLedgers.has(accountId)) {
+          const twins = await tx.bankTransaction.findMany({ where: { accountId, source: "PLAID", date: toDate(t.date), amountCents: row.amountCents, NOT: { providerAccountId: t.account_id } }, select: { description: true } });
+          if (twins.some((x) => normDesc(x.description) === normDesc(row.description))) { r.matched++; continue; }
+        }
         const m = await crossSourceMatch(tx, accountId, row, "PLAID");
         if (m.match) {
           // Already imported from a statement: link it, don't add a second row.
@@ -189,7 +211,7 @@ export async function syncConnection(connectionId: string, trigger: SyncTrigger,
         const beforeOpening = book.openingDate && t.date < ymdOf(book.openingDate);
         await tx.bankTransaction.create({
           data: {
-            clientId: conn.clientId, accountId, date: toDate(t.date), amountCents: row.amountCents, description: row.description, fingerprint: `plaid:${t.transaction_id}`, source: "PLAID", providerId: t.transaction_id,
+            clientId: conn.clientId, accountId, date: toDate(t.date), amountCents: row.amountCents, description: row.description, fingerprint: `plaid:${t.transaction_id}`, source: "PLAID", providerId: t.transaction_id, providerAccountId: t.account_id,
             ...(beforeOpening ? { status: "EXCLUDED", excludedReason: "Before the opening balances date (already included in the opening balance)" } : {}),
             ...(m.ambiguous ? { flag: "POSSIBLE_DUPLICATE", flagNote: "Looks like more than one row imported from a statement. Check before posting." } : {}),
           },
@@ -224,12 +246,19 @@ export async function syncConnection(connectionId: string, trigger: SyncTrigger,
         }
         r.removed++;
       }
+      // Balances Plaid returned with the batch (when it includes them), for outstanding balances.
+      for (const a of seen) {
+        const ca = conn.accounts.find((x) => x.providerAccountId === a.account_id);
+        if (ca && a.balances) await tx.bankConnectionAccount.update({ where: { id: ca.id }, data: balanceData(a) });
+      }
       // The cursor moves only with the stored rows.
       await tx.bankConnection.update({ where: { id: connectionId }, data: { cursor, lastSuccessAt: new Date(), lastError: null, errorCode: null, reauthRequiredAt: null, status: "ACTIVE" } });
     });
     await prisma.bankSyncRun.update({ where: { id: run.id }, data: { status: "OK", finishedAt: new Date(), ...r } });
     // Balances ride along with every successful retrieval; a balance problem never fails the sync.
     await refreshBalances(connectionId, token).catch(() => undefined);
+    // Card and loan terms (Plaid Liabilities), only when Tabitha enabled the product.
+    if (liabilitiesFlag()) await refreshLiabilities(connectionId).catch(() => undefined);
     await audit(prisma, { actorId: actor?.id ?? null, action: "banking.synced", entityType: "BankConnection", entityId: connectionId, clientId: conn.clientId, details: { trigger, ...r } });
     if (conn.status === "NEEDS_REAUTH") await closeReauthTask(conn.clientId);
     await notifyIfNeeded(conn.clientId);
@@ -333,7 +362,8 @@ export async function runDailyBankRetrieval(now = new Date()) {
   }
   try {
     // Only owner-approved Managed Businesses are pulled; a removed business's feed simply stops.
-    const managed = (await prisma.client.findMany({ where: { businessAccess: "ACTIVE" }, select: { id: true } })).map((c) => c.id);
+    // Every business the office keeps books for (Managed Business or active Bookkeeping Client).
+    const managed = await officeBookClientIds();
     const due = await prisma.bankConnection.findMany({
       where: { environment: env, status: { in: ["ACTIVE", "ERROR"] }, clientId: { in: managed }, OR: [{ lastSuccessAt: null }, { lastSuccessAt: { lt: new Date(now.getTime() - 20 * 3600_000) } }] },
       orderBy: [{ lastSuccessAt: { sort: "asc", nulls: "first" } }],

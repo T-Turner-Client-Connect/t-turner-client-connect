@@ -104,7 +104,9 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
     { href: base, label: "Client Overview", icon: LayoutGrid, active: pathname === base },
     { href: `/clients/${id}?tab=overview`, label: "Client Profile", icon: Users, active: false },
     { href: `${base}/coetha`, label: "Coetha AI", icon: Sparkles, active: pathname === `${base}/coetha` },
-    { href: `${base}/books?tab=bank`, label: "Banking & Reconciliation", icon: Building2, active: pathname === `${base}/books` && tab === "bank" },
+    { href: `${base}/close`, label: "Bookkeeping Management", icon: ClipboardList, active: pathname === `${base}/close` },
+    { href: `${base}/banking`, label: "Banking & Reconciliation", icon: Building2, active: pathname.startsWith(`${base}/banking`) || (pathname === `${base}/books` && tab === "bank") },
+    { href: `${base}/records`, label: "Historical Records", icon: History, active: pathname === `${base}/records` },
     { href: `${base}/books?tab=journal`, label: "General Ledger", icon: BookOpen, active: pathname === `${base}/books` && (tab === "journal" || tab === "accounts" || !tab || tab === "overview") },
     { href: `${base}/payroll`, label: "Payroll & ADP", icon: UsersRound, active: pathname === `${base}/payroll` },
     { href: `/clients/${id}?tab=taxes`, label: "Taxes & Compliance", icon: ClipboardList, active: false },
@@ -114,7 +116,7 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
     { href: `${base}/books?tab=reports`, label: "Financial Statements", icon: FileBarChart, active: pathname === `${base}/books` && tab === "reports" },
     { href: `/clients/${id}?tab=documents`, label: "Documents", icon: FolderOpen, active: false },
     { href: `/clients/${id}?tab=messages`, label: "Communication", icon: MessageSquareText, active: false },
-    { href: `${base}/close`, label: "History & Reports", icon: History, active: pathname === `${base}/close` || pathname === `${base}/profile` },
+    { href: `${base}/profile`, label: "Business Profile", icon: History, active: pathname === `${base}/profile` },
   ];
   return (
     <div className="space-y-4" data-testid="workspace-nav">

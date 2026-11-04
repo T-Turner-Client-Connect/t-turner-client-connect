@@ -1,565 +1,326 @@
 import Link from "next/link";
-import { BusinessTabs } from "@/components/business-tabs";
-import { BkUploadFields, UploadMeta } from "@/components/bk-upload";
-import { recordHeading } from "@/lib/services/related-businesses";
-import { QUESTION_STATUS } from "@/lib/services/bookkeeping-questions";
+import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { ActionForm } from "@/components/action-form";
-import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader } from "@/components/ui";
 import {
-  askQuestionAction, checklistItemAction, classifyDocumentAction, resolveQuestionAction, reviseTargetAction, coethaLinkAction, deliverApprovedAction, openPeriodForClientAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
-} from "@/app/actions/bookkeeping-clients";
-import { periodStatusAction, requestDocumentAction, staffMessageAction } from "@/app/actions/workspace";
+  ArrowRight, Ban, BarChart3, CalendarDays, CheckCircle2, ChevronRight, Clock, Coins, CreditCard, FileText, Info, Landmark, Lightbulb, Link2, ListChecks, MonitorCheck, Percent, RefreshCw, Scale, Settings, SquareCheckBig, TrendingDown, TrendingUp, Upload,
+} from "lucide-react";
+import { ActionForm } from "@/components/action-form";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
-import { BK_DOC_TYPES, bookkeepingWorkspace, FREQUENCIES, HISTORY_LABELS, isReportApprover, PAYROLL_FREQUENCIES, periodLabel, reportCaption, reportHistory, reportsDue, REVIEW_LABELS, STAGES, workMonth } from "@/lib/services/bookkeeping-clients";
-import { BASIS, PERIOD_TYPES, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
-import { accountLabel, canOpenCoetha } from "@/lib/services/bookkeeping-profile";
-import { packetsInPeriod } from "@/lib/services/financial-packet";
-import { MONTHS, PERIOD_LABELS } from "@/lib/services/bookkeeping";
-import { downloadToken, REPORT_LABELS } from "@/lib/services/documents";
-import { ScanStatus } from "@/components/scan-status";
-import { scanHealth } from "@/lib/services/documents";
-import { fmtDate, fmtDateTime } from "@/lib/format";
+import { businessOverview } from "@/lib/services/business-overview";
+import { bankingRegistry, monthlyAccountProgress, REGISTRY_TYPES, registryLabel } from "@/lib/services/bank-accounts";
+import { canManageBanking, canSendClientRequests, canViewBanking } from "@/lib/services/bk-permissions";
+import { rangeText, requestsFor } from "@/lib/services/client-requests";
+import { monthlyChecklist } from "@/lib/services/monthly-workflow";
+import { accountBalance, todayCentral, usd } from "@/lib/services/ledger";
+import { workMonth } from "@/lib/services/bookkeeping-clients";
+import { MONTH_NAMES } from "@/lib/bk-uploads";
+import { retrieveNowAction } from "@/app/actions/ledger";
+import { uploadForRequestAction, uploadStatementAction } from "@/app/actions/bk-workflow";
 
-export const metadata = { title: "Bookkeeping workspace" };
+export const metadata = { title: "Bookkeeping" };
 
-const WAITING = {
-  WAITING_CLIENT: { text: "Waiting on client", tone: "amber" },
-  RECEIVED: { text: "Received — staff to review", tone: "navy" },
-  STAFF_TODO: { text: "Staff work", tone: "navy" },
-  DONE: { text: "Done", tone: "green" },
-  NOT_NEEDED: { text: "Not needed", tone: "gray" },
-} as const;
-const REVIEW_TONE: Record<string, "gray" | "gold" | "red" | "green"> = { DRAFT: "gray", AWAITING_REVIEW: "gold", CHANGES_REQUESTED: "red", APPROVED: "green" };
+/**
+ * The staff / admin bookkeeping dashboard for one business (Tabitha's design). Coetha does the
+ * routine work; this page shows where everything stands, from real data only, and lets the office
+ * upload the statements Coetha asks for when a new client has no bank feed.
+ */
 
-export default async function BookkeepingWorkspace({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ period?: string; year?: string; month?: string }> }) {
+const card = "min-w-0 rounded-2xl border border-gold-200/80 bg-gradient-to-b from-white to-ivory-50 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)]";
+const smallBtn = "inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-sm font-semibold text-navy-900 shadow-sm hover:bg-ivory-50";
+const fmtSync = (d: Date) => d.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" }).replace(/, (\d{1,2}:)/, " at $1");
+const fmtShort = (d: Date) => d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" });
+const shiftYm = (y: number, m: number, n: number) => { const d = new Date(Date.UTC(y, m - 1 + n, 1)); return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 }; };
+
+const PILL: Record<string, string> = { DONE: "bg-emerald-50 text-emerald-800 ring-emerald-200", IN_PROGRESS: "bg-gold-100 text-gold-800 ring-gold-300", NOT_DUE: "bg-gold-100 text-gold-800 ring-gold-300", MISSING: "bg-red-50 text-red-700 ring-red-200" };
+function RowIcon({ state, red }: { state: string; red?: boolean }) {
+  if (state === "DONE") return <CheckCircle2 className="size-6 shrink-0 fill-emerald-600 text-white" aria-label="Complete" />;
+  if (state === "MISSING" || red) return <Ban className="size-6 shrink-0 text-red-600" aria-label="Not done" />;
+  return <Clock className="size-6 shrink-0 text-gold-500" aria-label="In progress" />;
+}
+
+const STATUS: Record<string, [string, string]> = {
+  APPROVED: ["Reconciled", "bg-emerald-50 text-emerald-800"],
+  READY: ["Awaiting Approval", "bg-gold-100 text-gold-800"],
+  IN_PROGRESS: ["In Progress", "bg-gold-100 text-gold-800"],
+  AWAITING_DATA: ["Awaiting Data", "bg-gold-100 text-gold-800"],
+  EXCEPTION: ["Issue", "bg-red-50 text-red-700"],
+  NOT_DUE: ["Not Yet Due", "bg-slate-100 text-slate-700"],
+};
+
+export default async function BookkeepingDashboard({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ period?: string; year?: string; month?: string }> }) {
   await connection();
   const user = await requireUser();
   const { clientId } = await params;
   const sp = await searchParams;
-  if (!(await prisma.client.count({ where: { id: clientId } }))) notFound();
-  // Year + month picker: go to that month if it's open, otherwise offer to open it.
-  const picked = sp.year && sp.month ? { year: Number(sp.year), month: Number(sp.month) } : null;
-  const pickedPeriod = picked ? await prisma.bookkeepingPeriod.findUnique({ where: { clientId_year_month: { clientId, year: picked.year, month: picked.month } }, select: { id: true } }).catch(() => null) : null;
-  const notOpened = picked && !pickedPeriod && picked.month >= 1 && picked.month <= 12 ? picked : null;
-  const [ws, approver, staff] = await Promise.all([
-    bookkeepingWorkspace(clientId, pickedPeriod?.id ?? sp.period),
-    isReportApprover(user),
-    prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
-  ]);
-  const { client, profile, period, summary } = ws;
-  // The selected business, shown on every card where work is saved.
-  const heading = await recordHeading(clientId);
-  const biz = heading?.title ?? client.displayName;
-  const freq = profile?.frequency ?? "MONTHLY";
-  const label = period ? periodLabel(freq, period.year, period.month) : null;
-  const link = (id: string) => `/api/documents/${downloadToken(id, { staffId: user.id })}`;
-  const work = workMonth(freq);
-  const target = notOpened ?? (period ? { year: period.year, month: period.month } : work);
-  const thisYear = new Date().getFullYear();
-  const years = Array.from({ length: 8 }, (_, i) => thisYear + 1 - i);
-  // Earlier versions of each report (kept as history), newest first.
-  const history = (d: { replacesId: string | null }) => {
-    const out = [];
-    let id = d.replacesId;
-    while (id && out.length < 50) {
-      const prev = period?.documents.find((x) => x.id === id);
-      if (!prev) break;
-      out.push(prev);
-      id = prev.replacesId;
-    }
-    return out;
-  };
-  const statements = period?.documents.filter((d) => !(d.category === "BOOKKEEPING" && d.reportType)) ?? [];
-  const byKind = (k: string) => statements.filter((d) => d.docType === k);
-  const unlabeled = statements.filter((d) => !d.docType || !(d.docType in BK_DOC_TYPES));
-  // Everything else the client provided (P&L, Balance Sheet, packet, receipts, schedules, other).
-  const otherKinds = statements.filter((d) => d.docType && d.docType in BK_DOC_TYPES && !["BANK_STATEMENT", "CARD_STATEMENT", "PAYROLL_REPORT"].includes(d.docType));
-  const conversations = period ? period.conversations : [];
-  const [accounts, fiscal] = await Promise.all([
-    prisma.bookkeepingAccount.findMany({ where: { clientId, active: true }, orderBy: { institution: "asc" } }),
-    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { fiscalYearEnd: true } }),
-  ]);
-  const packets = period ? await packetsInPeriod(period.id, { staff: true }) : [];
-  const histories = new Map(await Promise.all((summary?.reports ?? []).map(async (d) => [d.id, await reportHistory(d.id)] as const)));
-  const isAdminUser = user.role === "ADMIN";
-  const canCoetha = await canOpenCoetha(user, clientId);
-  const health = await scanHealth();
-  const otherThreads = await prisma.conversation.findMany({ where: { clientId, periodId: null }, orderBy: { lastMessageAt: "desc" }, take: 5, select: { id: true, subject: true, awaitingStaff: true, lastMessageAt: true } });
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, bookkeepingProfile: { select: { frequency: true } } } });
+  if (!client) notFound();
+  const base = `/bookkeeping/${clientId}`;
+  // The month shown: ?period, ?year&month, else the month being worked.
+  const byPeriod = sp.period ? await prisma.bookkeepingPeriod.findFirst({ where: { id: sp.period, clientId }, select: { year: true, month: true } }) : null;
+  const sel = byPeriod ?? (sp.year && sp.month && Number(sp.month) >= 1 && Number(sp.month) <= 12 ? { year: Number(sp.year), month: Number(sp.month) } : workMonth(client.bookkeepingProfile?.frequency ?? "MONTHLY"));
+  const ym = `${sel.year}-${String(sel.month).padStart(2, "0")}`;
+  const monthLabel = `${MONTH_NAMES[sel.month - 1]} ${sel.year}`;
+  const today = todayCentral();
 
-  const fileRow = (d: (typeof statements)[number]) => (
-    <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">{fileBody(d)}</li>
-  );
-  const fileBody = (d: (typeof statements)[number]) => (
-      <span>
-        {d.scanStatus === "CLEAN" ? <a className="underline" href={link(d.id)} target="_blank" rel="noopener">{d.title}</a> : <span>{d.title}</span>}
-        <span className="ml-1"><ScanStatus doc={d} health={health} /></span>
-        <UploadMeta d={d} />
-      </span>
-  );
+  const [o, banking, manage, canSend] = await Promise.all([businessOverview(user, clientId, ym), canViewBanking(user, clientId), canManageBanking(user, clientId), canSendClientRequests(user, clientId)]);
+  const [reg, prog, reqs] = await Promise.all([banking ? bankingRegistry(user, clientId) : null, banking ? monthlyAccountProgress(user, clientId, sel.year, sel.month) : null, requestsFor(clientId)]);
+  const pct = o.close.percent;
+
+  // Accounts overview (registry: top-level accounts; employee cards live under their shared account).
+  const rows = reg?.rows ?? [];
+  const bankCount = rows.filter((r) => r.accountType === "CHECKING" || r.accountType === "SAVINGS").length;
+  const cardCount = rows.filter((r) => r.accountType === "CREDIT_CARD").length;
+  const recOf = new Map((prog?.rows ?? []).map((r) => [r.account.id, r.rec]));
+  const balanceOf = async (r: (typeof rows)[number]) => {
+    const feed = r.feeds.find((f) => f.currentBalanceCents != null);
+    if (feed) return feed.currentBalanceCents!;
+    const rec = recOf.get(r.id);
+    if (rec?.endingBalanceCents != null) return rec.endingBalanceCents;
+    return r.ledgerAccountId ? accountBalance(clientId, r.ledgerAccountId, today).catch(() => 0) : 0;
+  };
+  const balances = new Map(await Promise.all(rows.map(async (r) => [r.id, await balanceOf(r)] as const)));
+  const toReconcile = rows.filter((r) => recOf.get(r.id)?.status !== "APPROVED" && recOf.has(r.id)).reduce((n, r) => n + Math.abs(balances.get(r.id) ?? 0), 0);
+  const recent = [...rows].sort((a, b) => (b.lastSync?.getTime() ?? 0) - (a.lastSync?.getTime() ?? 0)).slice(0, 5);
+  const reconciled = prog?.reconciled ?? 0, recTotal = prog?.total ?? 0;
+
+  // Coetha tiles.
+  const requestsNeeded = reqs.all.filter((r) => (r.status === "DRAFT" || r.status === "OPEN") && r.kind !== "YEAR_END").length;
+  const recommendations = (o.coetha.proposals.RECOMMENDATION ?? 0) + (o.coetha.proposals.CLASSIFICATION ?? 0);
+  const tiles = [
+    { label: "Banking & Accounts", icon: Landmark, href: `${base}/banking`, badge: 0 },
+    { label: "Credit Cards", icon: CreditCard, href: `${base}/banking#group-CREDIT_CARD`, badge: 0 },
+    { label: "Reconciliations", icon: SquareCheckBig, href: `${base}/banking/reconciliation?month=${ym}`, badge: 0 },
+    { label: "Requests & Items Needed", icon: FileText, href: `${base}/records`, badge: requestsNeeded },
+    { label: "Recommendations", icon: Lightbulb, href: `${base}/coetha`, badge: recommendations },
+  ];
+
+  // Statements Coetha asked for (new clients / missing statements): upload straight to the request.
+  const statementRequests = reqs.all.filter((r) => (r.status === "OPEN" || (r.status === "DRAFT" && r.routing !== "REVIEW")) && (r.docType === "BANK_STATEMENT" || r.docType === "CARD_STATEMENT"));
+
+  // Month tiles: four months back, the month shown, two ahead.
+  const months = await Promise.all([-4, -3, -2, -1, 0, 1, 2].map(async (n) => {
+    const t = shiftYm(sel.year, sel.month, n);
+    const c = await monthlyChecklist(clientId, t.year, t.month, { today });
+    const started = c.items.some((i) => i.state !== "NOT_DUE");
+    return { ...t, percent: c.percent, state: c.percent === 100 ? "COMPLETE" : started ? "IN_PROGRESS" : "NOT_STARTED", current: n === 0 };
+  }));
 
   return (
-    <>
-      <p className="mb-2 text-sm"><Link className="underline" href="/bookkeeping">← Bookkeeping Clients</Link></p>
-      <BusinessTabs clientId={clientId} base="/bookkeeping" isAdmin={user.role === "ADMIN"} />
-      <PageHeader
-        title={biz}
-        subtitle={
-          <>
-            {heading?.owner && <span className="block" data-testid="owner-line">Owner: <strong>{heading.owner}</strong></span>}
-            {profile ? `${FREQUENCIES[freq as keyof typeof FREQUENCIES]} bookkeeping` : "Not on the bookkeeping list yet"} · Assigned: {client.assignedTo?.name ?? "unassigned"}
-            {profile?.payroll && ` · Payroll ${profile.payrollFrequency ? PAYROLL_FREQUENCIES[profile.payrollFrequency as keyof typeof PAYROLL_FREQUENCIES].toLowerCase() : ""}${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`}
-            {" · "}<Link className="underline" href={`/clients/${clientId}?tab=overview`}>Client record</Link>
-          </>
-        }
-        actions={
-          <div className="flex flex-wrap gap-2">
-            <LinkButton href={`/bookkeeping/${clientId}/profile`} variant="secondary" data-testid="business-profile-button">Business profile</LinkButton>
-            <LinkButton href={`/bookkeeping/${clientId}/books`} variant="secondary" data-testid="books-button">Books &amp; Ledger</LinkButton>
-            <LinkButton href="#upload-financials" data-testid="upload-financials-button">Upload Monthly Financials</LinkButton>
-          </div>
-        }
-      />
-      {(!profile || !profile.active) && (
-        <div className="mb-4">
-          <Notice tone="warn" title={profile ? "Bookkeeping is paused for this client" : "Not a Bookkeeping Client yet"}>
-            {profile ? "Set Status to Active in Service details to show them on the list again." : <>Save the Service details on the left, or use <Link className="underline" href={`/bookkeeping/new?client=${clientId}`}>Add Bookkeeping Client</Link>, to put them on the list.</>}
-          </Notice>
+    <div className="space-y-5" data-testid="bk-dashboard">
+      {/* Banner */}
+      <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-6 pb-14 pt-6 text-white ring-1 ring-gold-500/40 sm:px-8" data-testid="bk-banner">
+        <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 hidden w-[55%] sm:block">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/glass-buildings.jpg" alt="" className="size-full object-cover object-right" />
+          <span className="absolute inset-0 bg-gradient-to-r from-navy-950 via-navy-950/30 to-transparent" />
         </div>
-      )}
+        <div className="relative">
+          <h1 className="font-serif text-2xl font-bold leading-tight text-white" data-testid="bk-name">{o.client.name}</h1>
+          <p className="font-serif text-lg text-navy-100">Bookkeeping Services</p>
+        </div>
+      </section>
 
-      <div className="grid gap-4 lg:grid-cols-4">
-        <aside className="space-y-4 lg:col-span-1">
-          <div id="coetha" className="scroll-mt-6"><Card title={`Work with Coetha — ${biz}`}>
-            <div className="space-y-2 text-sm" data-testid="coetha">
-              <Link href={`/bookkeeping/${clientId}/coetha`} className="inline-flex w-full items-center justify-center rounded-xl bg-gradient-to-b from-gold-300 to-gold-500 px-4 py-2.5 font-semibold text-navy-950 shadow hover:to-gold-600" data-testid="coetha-in-app">Coetha in Client Connect →</Link>
-              <p className="text-xs text-slate-600">Coetha drafts categories, discrepancies, adjusting entries and a month summary from this business&apos;s connected bank data. Only Tabitha approves her work.</p>
-              <p className="text-xs text-slate-600" data-testid="coetha-business">For <strong>{biz}</strong> only — this business&apos;s own Claude Project or conversation. Opens Claude in a new tab, using <strong>your own</strong> Claude access. Nothing syncs automatically — documents and answers stay in Claude unless you upload or copy them here.</p>
-              {profile?.coethaUrl ? (
-                canCoetha ? (
-                  <a href={profile.coethaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center rounded-xl bg-navy-900 px-4 py-2.5 font-semibold text-white hover:bg-navy-800" data-testid="coetha-open">Open in Claude ↗</a>
-                ) : (
-                  <p className="text-slate-600">Available to Admins and this client&apos;s assigned staff member.</p>
-                )
-              ) : (
-                <p className="text-slate-600" data-testid="coetha-none">No Coetha link saved for {client.displayName} yet.</p>
-              )}
-              {profile?.coethaUpdatedAt && <p className="text-xs text-slate-500">Link updated {fmtDateTime(profile.coethaUpdatedAt)}</p>}
-              {approver && profile && (
-                <details>
-                  <summary className="cursor-pointer text-xs underline">{profile.coethaUrl ? "Change or remove link (Tabitha)" : "Add link (Tabitha)"}</summary>
-                  <ActionForm action={coethaLinkAction.bind(null, clientId, false)} className="mt-2 space-y-2">
-                    <Field label="Claude Project or conversation link"><input className="input" name="url" type="url" placeholder="https://claude.ai/project/…" defaultValue={profile.coethaUrl ?? ""} /></Field>
-                    <Button type="submit" variant="secondary">Save link</Button>
-                  </ActionForm>
-                  {profile.coethaUrl && (
-                    <ActionForm action={coethaLinkAction.bind(null, clientId, true)} confirm="Remove this client's Coetha link?" className="mt-2">
-                      <Button type="submit" variant="ghost">Remove link</Button>
-                    </ActionForm>
-                  )}
-                  <p className="mt-1 text-xs text-slate-500">Save only the link. Never a Claude password or anything from your own login.</p>
-                </details>
-              )}
+      {/* Financial Overview */}
+      <section className={clsx(card, "relative -mt-16 mx-1 p-4 sm:mx-3 sm:p-5")} data-testid="financial-overview">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <h2 className="font-serif text-xl font-bold text-navy-900">Financial Overview</h2>
+            <p className="flex items-center gap-1.5 text-sm text-navy-800" data-testid="last-bank-update">
+              <span className={clsx("size-2.5 rounded-full", reg?.lastSync ? "bg-emerald-600" : "bg-slate-300")} aria-hidden />
+              Last bank update: <strong className="font-semibold text-navy-900">{reg?.lastSync ? fmtSync(reg.lastSync) : "Not connected yet"}</strong>
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {manage && (reg?.connections.some((c) => c.status === "ACTIVE" || c.status === "ERROR") ?? false) && (
+              <ActionForm action={retrieveNowAction.bind(null, clientId)} showSuccess={false}><button type="submit" className={smallBtn} data-testid="refresh-data"><RefreshCw className="size-4" aria-hidden /> Refresh Data</button></ActionForm>
+            )}
+            <span title="Figures come only from this business's own books and bank feeds."><Info className="size-5 text-navy-700" aria-label="About these figures" /></span>
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            { icon: Landmark, label: "Total Bank Balance", value: o.ledger ? usd(o.ledger.bank) : "—", sub: o.ledger ? `(${o.ledger.bankAccounts} account${o.ledger.bankAccounts === 1 ? "" : "s"})` : "Books not set up", tone: "text-gold-600", id: "fo-bank" },
+            { icon: TrendingUp, label: "Income (MTD)", value: o.ledger ? usd(o.ledger.income) : "—", tone: "text-emerald-600", id: "fo-income" },
+            { icon: TrendingDown, label: "Expenses (MTD)", value: o.ledger ? usd(o.ledger.expenses) : "—", tone: "text-red-500", id: "fo-expenses" },
+            { icon: Coins, label: "Net Profit (MTD)", value: o.ledger ? usd(o.ledger.net) : "—", tone: "text-gold-600", id: "fo-net" },
+          ].map((k) => (
+            <div key={k.label} className="flex items-center gap-3 rounded-xl border border-ivory-200 bg-white px-4 py-3" data-testid={k.id}>
+              <k.icon className={clsx("size-9 shrink-0", k.tone)} aria-hidden />
+              <div className="min-w-0">
+                <p className="text-sm text-navy-800">{k.label}</p>
+                <p className="truncate font-serif text-xl font-bold text-navy-900">{k.value}</p>
+                {k.sub && <p className="text-xs text-slate-600">{k.sub}</p>}
+              </div>
             </div>
-          </Card></div>
-          <Card title="Year and month">
-            <form method="get" className="mb-3 flex flex-wrap items-end gap-2" data-testid="month-picker">
-              <Field label="Year"><select className="input w-24" name="year" defaultValue={target.year}>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>
-              <Field label="Month"><select className="input w-32" name="month" defaultValue={target.month}>{MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select></Field>
-              <Button type="submit" variant="secondary">Go</Button>
-            </form>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Opened months</p>
-            <ul className="space-y-1 text-sm" data-testid="prior-months">
-              {ws.periods.map((p) => (
-                <li key={p.id}>
-                  <Link href={`/bookkeeping/${clientId}/close?period=${p.id}`} className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 ${p.id === period?.id ? "bg-navy-900 text-white" : "hover:bg-ivory-50"}`}>
-                    <span>{periodLabel(freq, p.year, p.month)}</span>
-                    <Badge tone={STAGES[p.summary.stage].tone}>{STAGES[p.summary.stage].label}</Badge>
-                  </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)]">
+        {/* Monthly Progress */}
+        <div className={clsx(card, "p-4 sm:p-5")} data-testid="monthly-progress">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="flex items-center gap-2 font-serif text-xl font-bold text-navy-900"><CalendarDays className="size-6 text-gold-600" aria-hidden /> Monthly Progress – {monthLabel}</h2>
+            <span className="rounded-lg bg-gold-200 px-3 py-1 text-sm font-semibold text-navy-950" data-testid="progress-pill">{pct}% Complete</span>
+          </div>
+          <div className="mt-3 h-3 overflow-hidden rounded-full bg-ivory-200" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><div className="h-full rounded-full bg-emerald-600" style={{ width: `${pct}%` }} /></div>
+          <ul className="mt-3 divide-y divide-ivory-200">
+            {o.close.steps.map((s) => {
+              const red = s.key === "RELEASED" && s.state !== "DONE";
+              const tone = s.state === "DONE" ? PILL.DONE : red ? PILL.MISSING : PILL[s.state ?? "NOT_DUE"];
+              const action = s.key === "RECONCILED" && s.state !== "DONE" ? { label: "Review", href: `${base}/banking/reconciliation?month=${ym}` }
+                : s.key === "PREPARED" && s.state !== "NA" ? { label: s.state === "DONE" ? "View" : "View Draft", href: `${base}/statements?year=${sel.year}&month=${sel.month}` }
+                : s.key === "APPROVAL" && s.state === "IN_PROGRESS" ? { label: "Review", href: `${base}/statements?year=${sel.year}&month=${sel.month}` }
+                : s.key === "CATEGORIZED" && s.state === "IN_PROGRESS" ? { label: "Review", href: `${base}/books?tab=bank` }
+                : null;
+              return (
+                <li key={s.label} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2" data-item={s.key} data-state={s.state} title={s.detail}>
+                  <RowIcon state={s.state ?? "NOT_DUE"} red={red} />
+                  <span className="min-w-0 flex-1 text-[15px] text-navy-900">{s.label}</span>
+                  <span className={clsx("rounded-full px-3 py-0.5 text-xs font-semibold ring-1", tone)}>{s.pill ?? s.detail}</span>
+                  {action && <Link href={action.href} className="rounded-md border border-navy-200 bg-white px-2.5 py-0.5 text-xs font-semibold text-navy-900 hover:bg-ivory-50">{action.label}</Link>}
                 </li>
-              ))}
-              {ws.periods.length === 0 && <li className="text-slate-600">No months yet. Choose a year and month above.</li>}
-            </ul>
-          </Card>
-          <Card title="Service details">
-            <ActionForm action={saveBookkeepingProfileAction.bind(null, clientId)} className="space-y-2 text-sm">
-              <Field label="Schedule"><select className="input" name="frequency" defaultValue={freq}>{Object.entries(FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
-              {isAdminUser ? (
-                <Field label="Assigned staff">
-                  <select className="input" name="assignedToId" defaultValue={client.assignedToId ?? "none"}><option value="none">Unassigned</option>{staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
-                </Field>
-              ) : (
-                <p className="text-xs text-slate-600">Assigned staff: {client.assignedTo?.name ?? "unassigned"} (only an Admin changes this)</p>
-              )}
-              <label className="flex items-center gap-2"><input type="checkbox" name="payroll" defaultChecked={profile?.payroll} /> Runs payroll</label>
-              <Field label="Payroll frequency"><select className="input" name="payrollFrequency" defaultValue={profile?.payrollFrequency ?? ""}><option value="">—</option>{Object.entries(PAYROLL_FREQUENCIES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
-              <Field label="Payroll provider"><input className="input" name="payrollProvider" defaultValue={profile?.payrollProvider ?? ""} /></Field>
-              <Field label="Accounts to collect"><input className="input" name="accounts" defaultValue={profile?.accounts ?? ""} /></Field>
-              <Field label="Documents due (month after)" hint="Leave blank for no deadline.">
-                <select className="input" name="documentsDueDay" defaultValue={profile?.documentsDueDay ?? ""}><option value="">No deadline</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
-              </Field>
-              <Field label="P&L target (month after)" hint="Quarterly clients: applies to quarter-end months.">
-                <select className="input" name="reportsDueDay" defaultValue={profile?.reportsDueDay ?? ""}><option value="">Office default — the 15th</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
-              </Field>
-              <Field label="Tabitha's review by (month after)" hint="Optional — shown on the schedule only when set.">
-                <select className="input" name="reviewDueDay" defaultValue={profile?.reviewDueDay ?? ""}><option value="">Not scheduled</option>{Array.from({ length: 31 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d === 31 ? "Last day" : `Day ${d}`}</option>)}</select>
-              </Field>
-              <Field label="Notes"><textarea className="input" name="notes" rows={2} defaultValue={profile?.notes ?? ""} /></Field>
-              <Field label="Status"><select className="input" name="active" defaultValue={String(profile?.active ?? true)}><option value="true">Active</option><option value="false">Paused</option></select></Field>
-              <Button type="submit" variant="secondary">Save</Button>
-            </ActionForm>
-          </Card>
-        </aside>
+              );
+            })}
+          </ul>
+        </div>
 
-        <div className="space-y-4 lg:col-span-3">
-          {notOpened && (
-            <section className="rounded-2xl border border-gold-300 bg-ivory-50 p-5" data-testid="not-opened">
-              <p className="font-semibold">{MONTHS[notOpened.month - 1]} {notOpened.year} isn&apos;t opened yet.</p>
-              <p className="text-sm text-slate-600">Opening it creates the month&apos;s checklist. Uploading a report for this month (below) also opens it.</p>
-              <ActionForm action={openPeriodForClientAction.bind(null, clientId)} className="mt-2">
-                <input type="hidden" name="year" value={notOpened.year} />
-                <input type="hidden" name="month" value={notOpened.month} />
-                <Button type="submit">Open {MONTHS[notOpened.month - 1]} {notOpened.year}</Button>
-              </ActionForm>
-            </section>
-          )}
-          {!period || !summary ? (
-            !notOpened && <Notice title="No month open yet">Choose a year and month on the left, or upload a report below — that opens the month too.</Notice>
-          ) : (
-            <>
-              <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-navy-900 px-5 py-4 text-white" data-testid="period-header">
+        <div className="space-y-4">
+          {/* Coetha – Senior Accountant */}
+          <div className="overflow-hidden rounded-2xl ring-1 ring-gold-500/40" data-testid="coetha-card">
+            <div className="flex items-start justify-between gap-2 bg-gradient-to-br from-navy-900 to-navy-950 px-4 py-3 text-white">
+              <div className="flex min-w-0 items-center gap-3">
+                <MonitorCheck className="size-8 text-gold-400" aria-hidden />
                 <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-gold-300">{label}</p>
-                  <p className="font-serif text-2xl font-bold text-white">{STAGES[summary.stage].label}</p>
-                  <p className="text-sm text-navy-100">{summary.done} of {summary.total} checklist items · {summary.missing} missing from the client · client status: {PERIOD_LABELS[period.status]}</p>
-                  <p className="text-xs text-navy-100">
-                    {summary.due.documents ? `Documents due ${fmtDate(summary.due.documents)}` : "No document deadline set"}
-                    {reportsDue(freq, period.month) ? (summary.due.reports ? ` · P&L target ${fmtDate(summary.due.reports)}` : " · no report deadline set") : " · reports at quarter end"}
-                  </p>
-                  {summary.overdue.length > 0 && <p className="mt-1 inline-block rounded-full bg-red-600 px-3 py-0.5 text-xs font-semibold text-white" data-testid="overdue">{summary.overdue.join(" · ")}</p>}
-                  {summary.flags.length > 0 && <p className="mt-1 inline-block rounded-full bg-amber-400 px-3 py-0.5 text-xs font-semibold text-navy-950" data-testid="flags">{summary.flags.join(" · ")}</p>}
+                  <h2 className="font-serif text-lg font-bold text-white">Coetha – Senior Accountant</h2>
+                  <p className="text-xs text-navy-100">Account Monitoring • Reconciliation • Document Requests • Recommendations</p>
                 </div>
-                <ActionForm action={periodStatusAction.bind(null, clientId, period.id)} className="flex flex-wrap items-end gap-2 text-navy-900">
-                  <select className="input w-auto" name="status" defaultValue={period.status} aria-label="Client-facing status">{Object.entries(PERIOD_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-                  <Button type="submit" variant="gold">Update</Button>
-                </ActionForm>
-              </section>
-
-              <div className="grid gap-4 xl:grid-cols-2">
-                <Card title={`Schedule — ${biz}`}>
-                  <dl className="space-y-1 text-sm" data-testid="schedule">
-                    <div className="flex justify-between gap-2"><dt>Work starts</dt><dd>{fmtDate(new Date(period.year, period.month, 1))} (the 1st)</dd></div>
-                    {summary.due.reports ? (
-                      <>
-                        <div className="flex justify-between gap-2"><dt>Original P&amp;L target</dt><dd data-testid="original-target">{fmtDate(summary.due.reports)}</dd></div>
-                        {summary.due.review && <div className="flex justify-between gap-2"><dt>Tabitha&apos;s review by</dt><dd>{fmtDate(summary.due.review)}</dd></div>}
-                        {summary.revisions.map((r) => (
-                          <div key={r.id} className="flex justify-between gap-2 text-amber-900"><dt>Revised estimate ({fmtDate(r.createdAt)})</dt><dd>{fmtDate(r.targetOn)} — {r.reason}</dd></div>
-                        ))}
-                      </>
-                    ) : (
-                      <p className="text-slate-600">Quarterly client: records are collected this month; reports are delivered at quarter end.</p>
-                    )}
-                  </dl>
-                  <p className="mt-1 text-xs text-slate-600">The target assumes all records and answers are in. Revisions are added here; the original target is never changed.</p>
-                  {summary.due.reports && (
-                    <details className="mt-2 text-sm">
-                      <summary className="cursor-pointer underline">Record a revised estimate</summary>
-                      <ActionForm action={reviseTargetAction.bind(null, clientId, period.id)} className="mt-2 flex flex-wrap items-end gap-2" resetOnSuccess>
-                        <Field label="Revised date"><input className="input" type="date" name="targetOn" required /></Field>
-                        <Field label="Why"><input className="input w-64" name="reason" required placeholder="e.g. waiting on the March bank statement" /></Field>
-                        <Button type="submit" variant="secondary">Record</Button>
-                      </ActionForm>
-                    </details>
-                  )}
-                </Card>
-                <Card title={`Questions for the client — ${biz}`}>
-                  <ul className="space-y-2 text-sm" data-testid="questions">
-                    {summary.questions.map((c) => (
-                      <li key={c.id} className="flex flex-wrap items-center justify-between gap-2">
-                        <span>
-                          <Link className="underline" href={`/clients/${clientId}?tab=messages&c=${c.id}`}>{c.subject}</Link>{" "}
-                          <span data-testid="question-status"><Badge tone={QUESTION_STATUS[c.questionStatus as keyof typeof QUESTION_STATUS].tone}>{QUESTION_STATUS[c.questionStatus as keyof typeof QUESTION_STATUS].label}</Badge></span>
-                          {c.responseDueAt && c.questionStatus === "OPEN" && <span className="block text-xs text-slate-600">Answer requested by {fmtDate(c.responseDueAt)}</span>}
-                        </span>
-                        {c.questionStatus !== "RESOLVED" && (
-                          <ActionForm action={resolveQuestionAction.bind(null, clientId, c.id)} showSuccess={false}><Button type="submit" variant="ghost">Mark resolved</Button></ActionForm>
-                        )}
-                      </li>
-                    ))}
-                    {summary.questions.length === 0 && <li className="text-slate-600">No questions this month.</li>}
-                  </ul>
-                  <details className="mt-2 text-sm" open={summary.questions.length === 0}>
-                    <summary className="cursor-pointer underline">Ask the client a question</summary>
-                    <ActionForm action={askQuestionAction.bind(null, clientId, period.id)} className="mt-2 grid gap-2" resetOnSuccess>
-                      <Field label="Subject"><input className="input" name="subject" required placeholder="e.g. $1,240 deposit on March 4" /></Field>
-                      <Field label="Question"><textarea className="input min-h-20" name="body" required /></Field>
-                      <Field label="Answer requested by (optional)"><input className="input" type="date" name="dueOn" /></Field>
-                      <div><Button type="submit" variant="secondary">Send to client portal</Button></div>
-                    </ActionForm>
-                  </details>
-                </Card>
               </div>
+              <span className="shrink-0 rounded-md bg-emerald-100 px-2.5 py-0.5 text-sm font-semibold text-emerald-800">Active</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 bg-white p-3 sm:grid-cols-5">
+              {tiles.map((t) => (
+                <Link key={t.label} href={t.href} className="relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl border border-ivory-200 bg-ivory-50 px-1 py-3 text-center text-[11px] font-semibold leading-tight text-navy-900 hover:border-gold-400" data-testid="coetha-tile">
+                  <t.icon className="size-7 text-gold-600" aria-hidden />
+                  {t.label}
+                  {t.badge > 0 && <span className="absolute -right-1 -top-1 flex size-6 items-center justify-center rounded-full bg-red-600 text-xs font-bold text-white" aria-label={`${t.badge} waiting`}>{t.badge}</span>}
+                </Link>
+              ))}
+            </div>
+          </div>
 
-              <Card title="Monthly checklist">
-                <ul className="divide-y divide-navy-100 text-sm" data-testid="checklist">
-                  {summary.items.map((i) => (
-                    <li key={i.id} className="flex flex-wrap items-center justify-between gap-2 py-2" data-item={i.key}>
-                      <span>
-                        <strong>{i.label}</strong> <span className="text-xs text-slate-500">· {i.kind === "CLIENT_DOCUMENT" ? "from client" : "staff"}</span>
-                        {i.files.length > 0 && <span className="block text-xs text-slate-600">{i.files.length} file{i.files.length === 1 ? "" : "s"} received</span>}
-                      </span>
-                      <span className="flex flex-wrap items-center gap-1">
-                        <Badge tone={WAITING[i.state].tone}>{WAITING[i.state].text}</Badge>
-                        {i.status !== "DONE" && <form action={checklistItemAction.bind(null, clientId, i.id, "DONE")}><Button variant="ghost">Mark done</Button></form>}
-                        {i.status === "OPEN" && <form action={checklistItemAction.bind(null, clientId, i.id, "NOT_NEEDED")}><Button variant="ghost">Not needed</Button></form>}
-                        {i.status !== "OPEN" && <form action={checklistItemAction.bind(null, clientId, i.id, "OPEN")}><Button variant="ghost">Reopen</Button></form>}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-                {period.requests.length > 0 && (
-                  <div className="mt-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Extra requests</p>
-                    <ul className="text-sm">{period.requests.map((r) => <li key={r.id}>{r.title} · <Badge tone={r.status === "OPEN" ? "amber" : r.status === "SUBMITTED" ? "gold" : "gray"}>{r.status === "OPEN" ? "Waiting on client" : r.status === "SUBMITTED" ? "Client uploaded — review" : r.status.toLowerCase()}</Badge></li>)}</ul>
-                  </div>
-                )}
-                <details className="mt-2">
-                  <summary className="cursor-pointer text-sm underline">Request something else from the client</summary>
-                  <ActionForm action={requestDocumentAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-end gap-2" resetOnSuccess>
-                    <input type="hidden" name="periodId" value={period.id} />
-                    <Field label="What you need"><input className="input w-72" name="title" required placeholder="e.g. Square sales report" /></Field>
-                    <Field label="Due"><input className="input" type="date" name="dueAt" /></Field>
-                    <Button type="submit" variant="secondary">Request</Button>
-                  </ActionForm>
-                </details>
-              </Card>
-
-              <div className="grid gap-4 xl:grid-cols-2">
-                <Card title="Bank & card statements">
-                  <ul className="text-sm">{[...byKind("BANK_STATEMENT"), ...byKind("CARD_STATEMENT")].map(fileRow)}</ul>
-                  {!byKind("BANK_STATEMENT").length && !byKind("CARD_STATEMENT").length && <p className="text-sm text-slate-600">None yet.</p>}
-                </Card>
-                <div id="payroll" className="scroll-mt-6"><Card title="Payroll reports">
-                  {profile?.payroll ? (
-                    <>
-                      <ul className="text-sm">{byKind("PAYROLL_REPORT").map(fileRow)}</ul>
-                      {!byKind("PAYROLL_REPORT").length && <p className="text-sm text-slate-600">None yet.</p>}
-                    </>
-                  ) : (
-                    <p className="text-sm text-slate-600">This client doesn&apos;t run payroll.</p>
-                  )}
-                </Card></div>
+          {/* Accounts Overview */}
+          <div className={clsx(card, "p-4")} data-testid="accounts-overview">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><BarChart3 className="size-6 text-gold-600" aria-hidden /> Accounts Overview</h2>
+              <div className="flex flex-wrap gap-2">
+                <Link href={`${base}/banking#connect`} className={smallBtn}><Link2 className="size-4" aria-hidden /> Connect Financial Institution</Link>
+                <Link href={`${base}/banking#manage`} className={smallBtn}><Settings className="size-4" aria-hidden /> Manage Accounts</Link>
               </div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3 rounded-xl bg-navy-900 px-3 py-3 text-white sm:grid-cols-3 2xl:grid-cols-5" data-testid="accounts-strip">
+              {[
+                { icon: Landmark, label: "Total Accounts", value: String(rows.length) },
+                { icon: BarChart3, label: "Bank Accounts", value: String(bankCount) },
+                { icon: CreditCard, label: "Credit Cards", value: String(cardCount) },
+                { icon: Percent, label: "Reconciled", value: `${reconciled} of ${recTotal}`, sub: recTotal ? `(${Math.round((reconciled / recTotal) * 100)}%)` : "" },
+                { icon: Scale, label: "Balance to Reconcile", value: usd(toReconcile) },
+              ].map((s) => (
+                <div key={s.label} className="flex min-w-0 items-center gap-2">
+                  <s.icon className="size-6 shrink-0 text-gold-400" aria-hidden />
+                  <div className="min-w-0"><p className="text-[11px] leading-tight text-navy-100">{s.label}</p><p className="font-semibold leading-tight">{s.value} <span className="whitespace-nowrap text-xs font-normal text-navy-100">{s.sub}</span></p></div>
+                </div>
+              ))}
+            </div>
+          </div>
 
-              {(unlabeled.length > 0 || otherKinds.length > 0) && (
-                <Card title="Other files this month">
-                  <ul className="divide-y divide-navy-100 text-sm">
-                    {[...otherKinds, ...unlabeled].map((d) => (
-                      <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
-                        {fileBody(d)}
-                        {(!d.docType || !(d.docType in BK_DOC_TYPES)) && (
-                          <ActionForm action={classifyDocumentAction.bind(null, clientId, d.id)} className="flex items-center gap-1" showSuccess={false}>
-                            <select className="input w-auto text-xs" name="docType" defaultValue="" aria-label="Label as"><option value="" disabled>Label as…</option>{Object.entries(BK_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-                            <Button type="submit" variant="ghost">Save</Button>
-                          </ActionForm>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </Card>
-              )}
-
-              <Card title={`Financial packets — ${biz}`}>
-                {packets.length === 0 ? (
-                  <p className="text-sm text-slate-600">No reports yet for {label}. Use Upload Monthly Financials.</p>
-                ) : (
-                  <ul className="divide-y divide-navy-100 text-sm" data-testid="packets">
-                    {packets.map((t) => {
-                      const r = reportPeriod(period.year, period.month, t, fiscal.fiscalYearEnd);
-                      const inPacket = summary.reports.filter((d) => (d.reportPeriodType ?? "MONTH") === t);
-                      const approved = inPacket.filter((d) => d.reviewStatus === "APPROVED" && d.visibility !== "PUBLISHED").length;
-                      const delivered = inPacket.filter((d) => d.visibility === "PUBLISHED").length;
+          {/* Recent Account Activity */}
+          <div className={clsx(card, "p-4")} data-testid="recent-activity">
+            <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><ListChecks className="size-6 text-gold-600" aria-hidden /> Recent Account Activity</h2>
+            {!recent.length ? <p className="mt-2 text-sm text-slate-600">No accounts registered yet.</p> : (
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full min-w-[30rem] text-xs sm:text-[13px]">
+                  <thead className="text-left text-xs text-slate-600"><tr><th className="py-1.5 pr-2 font-semibold">Account</th><th className="pr-2 font-semibold">Type</th><th className="pr-2 font-semibold">Last Sync</th><th className="pr-2 font-semibold">Status</th><th className="pr-2 text-right font-semibold">Balance</th><th /></tr></thead>
+                  <tbody className="divide-y divide-ivory-200">
+                    {recent.map((r) => {
+                      const rec = recOf.get(r.id);
+                      const [st, tone] = STATUS[rec?.status ?? "NOT_DUE"] ?? STATUS.NOT_DUE;
+                      const isCard = r.accountType !== "CHECKING" && r.accountType !== "SAVINGS";
                       return (
-                        <li key={t} className="flex flex-wrap items-center justify-between gap-2 py-2" data-packet={t}>
-                          <span>
-                            <strong>{PERIOD_TYPES[t]} packet</strong> · {r.cover}
-                            <span className="block text-xs text-slate-600">{inPacket.length} report{inPacket.length === 1 ? "" : "s"} · {delivered} delivered · {approved} approved, not yet delivered</span>
-                          </span>
-                          <span className="flex flex-wrap items-center gap-2">
-                            <a className="underline" href={`/api/bookkeeping/packet?period=${period.id}&type=${t}`} target="_blank" rel="noopener" data-testid="packet-preview">Preview packet PDF</a>
-                            {/* Stays mounted (disabled when nothing's waiting) so the delivery confirmation remains visible. */}
-                            <ActionForm action={deliverApprovedAction.bind(null, clientId, period.id, t)} confirm="Publish every approved report in this packet to the client's portal and notify them?">
-                              <Button type="submit" variant="secondary" disabled={approved === 0}>Deliver all approved</Button>
-                            </ActionForm>
-                          </span>
-                        </li>
+                        <tr key={r.id}>
+                          <td className="py-2 pr-2"><span className="flex items-center gap-1.5 whitespace-nowrap font-semibold text-navy-900">{isCard ? <CreditCard className="size-4 shrink-0 text-gold-600" aria-hidden /> : <Landmark className="size-4 shrink-0 text-gold-600" aria-hidden />}<span className="max-w-[9rem] truncate">{r.nickname || r.institution}</span> <span className="font-normal text-navy-800">••••{r.last4 ?? "—"}</span></span></td>
+                          <td className="pr-2">{isCard ? (REGISTRY_TYPES[r.accountType as keyof typeof REGISTRY_TYPES]?.label ?? "Card") : "Bank"}</td>
+                          <td className="whitespace-nowrap pr-2">{r.lastSync ? fmtShort(r.lastSync) : "—"}</td>
+                          <td className="pr-2"><span className={clsx("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold", tone)}>{rec?.status === "APPROVED" ? <CheckCircle2 className="size-3.5" aria-hidden /> : null}{st}</span></td>
+                          <td className="whitespace-nowrap pr-2 text-right tabular-nums">{usd(balances.get(r.id) ?? 0)}</td>
+                          <td><Link href={`${base}/banking/reconciliation?month=${ym}`} aria-label={`Open ${registryLabel(r)}`}><ChevronRight className="size-4 text-navy-800" aria-hidden /></Link></td>
+                        </tr>
                       );
                     })}
-                  </ul>
-                )}
-                <p className="mt-2 text-xs text-slate-600">The packet PDF has a cover page (period, basis, prepared for / by, contents) followed by your uploaded statements. Drafts are stamped and never reach the client.</p>
-              </Card>
-
-              <Card title={`Financial reports — ${biz}`}>
-                <div id="reports" className="scroll-mt-6" />
-                {summary.reports.length === 0 && <p className="text-sm text-slate-600">{reportsDue(freq, period.month) ? "No reports yet. Upload a draft below." : "Quarterly client: reports are prepared for the quarter-end month."}</p>}
-                <ul className="divide-y divide-navy-100 text-sm" data-testid="reports">
-                  {summary.reports.map((d) => {
-                    const status = d.visibility === "PUBLISHED" ? "DELIVERED" : d.reviewStatus ?? "DRAFT";
-                    return (
-                      <li key={(history(d).at(-1) ?? d).id} className="py-3" data-report={d.reportType}>
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span>
-                            <strong>{d.reportType ? REPORT_LABELS[d.reportType] : "Report"}</strong> <Badge tone="gray">v{d.version ?? 1}</Badge> · {d.scanStatus === "CLEAN" ? <a className="underline" href={link(d.id)} target="_blank" rel="noopener">{d.title}</a> : d.title}
-                            <span className="ml-1"><ScanStatus doc={d} health={health} /></span>
-                            <span className="block text-xs text-slate-600" data-testid="report-caption">{PERIOD_TYPES[(d.reportPeriodType ?? "MONTH") as PeriodType]} · {reportCaption(d, period.year, period.month, fiscal.fiscalYearEnd)}{d.bookkeepingAccount && ` · ${accountLabel(d.bookkeepingAccount)}`}</span>
-                            {d.submittedForReviewAt && <span className="block text-xs text-slate-500">Submitted {fmtDateTime(d.submittedForReviewAt)}{d.approvedAt && ` · approved ${fmtDateTime(d.approvedAt)}`}{d.publishedAt && d.visibility === "PUBLISHED" && ` · delivered ${fmtDateTime(d.publishedAt)}`}</span>}
-                          </span>
-                          <Badge tone={status === "DELIVERED" ? "green" : REVIEW_TONE[status]}>{status === "DELIVERED" ? "Delivered to client" : REVIEW_LABELS[status]}</Badge>
-                        </div>
-                        {d.reviewNote && d.reviewStatus === "CHANGES_REQUESTED" && <p className="mt-1 rounded-lg bg-red-50 px-3 py-2 text-red-900">Tabitha: {d.reviewNote}</p>}
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {(status === "DRAFT" || status === "CHANGES_REQUESTED") && d.scanStatus !== "CLEAN" && <span className="text-xs text-slate-600">Can be submitted for review once the malware scan passes.</span>}
-                          {(status === "DRAFT" || status === "CHANGES_REQUESTED") && d.scanStatus === "CLEAN" && (
-                            <ActionForm action={reportStepAction.bind(null, clientId, d.id, "submit")}><Button type="submit" variant="secondary">Submit for Tabitha&apos;s review</Button></ActionForm>
-                          )}
-                          {status === "AWAITING_REVIEW" && approver && (
-                            <>
-                              <ActionForm action={reportStepAction.bind(null, clientId, d.id, "approve")}><Button type="submit" variant="gold">Approve</Button></ActionForm>
-                              <ActionForm action={requestChangesAction.bind(null, clientId, d.id)} className="flex items-end gap-2">
-                                <input className="input w-64" name="note" placeholder="What needs to change?" required aria-label="Changes needed" />
-                                <Button type="submit" variant="ghost">Request changes</Button>
-                              </ActionForm>
-                            </>
-                          )}
-                          {status === "AWAITING_REVIEW" && !approver && <span className="text-xs text-slate-600">Waiting for Tabitha.</span>}
-                          {status === "APPROVED" && (
-                            <ActionForm action={reportStepAction.bind(null, clientId, d.id, "deliver")} confirm="Publish this approved report to the client's portal and notify them?"><Button type="submit">Deliver to client</Button></ActionForm>
-                          )}
-                        </div>
-                        <details className="mt-2" data-testid="revise">
-                          <summary className="cursor-pointer text-sm underline">Upload a revised version</summary>
-                          <ActionForm action={uploadMonthlyFinancialsAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-end gap-2" resetOnSuccess idempotent>
-                            <input type="hidden" name="replacesId" value={d.id} />
-                            <input type="hidden" name="year" value={period.year} />
-                            <input type="hidden" name="month" value={period.month} />
-                            <input type="hidden" name="reportType" value={d.reportType ?? "OTHER_REPORT"} />
-                            <input type="hidden" name="periodType" value={d.reportPeriodType ?? "MONTH"} />
-                            {d.reportBasis && <input type="hidden" name="basis" value={d.reportBasis} />}
-                            {d.reportIncludesYtd && <input type="hidden" name="includesYtd" value="on" />}
-                            {d.reportAsOf && <input type="hidden" name="asOf" value={`${d.reportAsOf.getFullYear()}-${String(d.reportAsOf.getMonth() + 1).padStart(2, "0")}-${String(d.reportAsOf.getDate()).padStart(2, "0")}`} />}
-                            <Field label={`Revised file (becomes v${(d.version ?? 1) + 1})`}><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" /></Field>
-                            <Button type="submit" variant="secondary">Upload revision</Button>
-                          </ActionForm>
-                          <p className="mt-1 text-xs text-slate-600">The revision starts as a staff-only draft and needs Tabitha&apos;s approval.{status === "DELIVERED" && " The client keeps this delivered version until the revision is approved and delivered."}</p>
-                        </details>
-                        {(histories.get(d.id)?.length ?? 0) > 0 && (
-                          <details className="mt-1" data-testid="approval-history">
-                            <summary className="cursor-pointer text-xs text-slate-600 underline">Revision &amp; approval history</summary>
-                            <ol className="mt-1 space-y-0.5 text-xs text-slate-600">
-                              {histories.get(d.id)!.map((h, i) => <li key={i}>{fmtDateTime(h.at)} · v{h.version} · {HISTORY_LABELS[h.action] ?? h.action} · {h.by}</li>)}
-                            </ol>
-                          </details>
-                        )}
-                        {history(d).length > 0 && (
-                          <details className="mt-1" data-testid="version-history">
-                            <summary className="cursor-pointer text-xs text-slate-600 underline">Version history ({history(d).length} earlier)</summary>
-                            <ul className="mt-1 space-y-0.5 text-xs text-slate-600">
-                              {history(d).map((h) => (
-                                <li key={h.id}>
-                                  v{h.version ?? 1} · {h.scanStatus === "CLEAN" ? <a className="underline" href={link(h.id)} target="_blank" rel="noopener">{h.title}</a> : h.title} · uploaded {fmtDateTime(h.createdAt)}{h.uploadedByStaff ? ` by ${h.uploadedByStaff.name}` : ""}
-                                  {h.approvedAt && ` · approved ${fmtDate(h.approvedAt)}`}{h.publishedAt && ` · delivered ${fmtDate(h.publishedAt)}`}
-                                  {h.visibility === "PUBLISHED" ? " · still shown to client until the new version is delivered" : " · replaced"}
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-                <p className="mt-2 text-xs text-slate-600">Reports are always saved as drafts. Only Tabitha can approve them, and nothing reaches the client (portal or message) until she does.</p>
-              </Card>
-
-              <Card title={`Add a client document to ${label}`}>
-                <ActionForm action={uploadBookkeepingFileAction.bind(null, clientId, period.id)} className="grid gap-2 sm:grid-cols-3" resetOnSuccess idempotent>
-                  <div className="sm:col-span-3" data-testid="staff-upload-target"><BkUploadFields business={biz} typeName="kind" year={period.year} month={period.month} /></div>
-                  <Field label="File" className="sm:col-span-3"><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required /></Field>
-                  <Field label="Account (optional)">
-                    <select className="input" name="accountId" defaultValue=""><option value="">—</option>{accounts.map((a) => <option key={a.id} value={a.id}>{accountLabel(a)}</option>)}</select>
-                  </Field>
-                  <Field label="Title (optional)"><input className="input" name="title" placeholder={`${label} bank statement`} /></Field>
-                  <div className="flex items-end"><Button type="submit" variant="secondary">Upload</Button></div>
-                </ActionForm>
-                <p className="mt-2 text-xs text-slate-600">Files the client provided, saved staff-only. Financial statements <em>we prepare</em> go through Upload Monthly Financials, so Tabitha approves them before delivery.</p>
-              </Card>
-
-              <Card title={`Questions & messages — ${biz}`}>
-                <ul className="space-y-1 text-sm" data-testid="bk-messages">
-                  {[...conversations, ...otherThreads].slice(0, 8).map((c) => (
-                    <li key={c.id}><Link className="underline" href={`/clients/${clientId}?tab=messages&c=${c.id}`}>{c.subject ?? "Conversation"}</Link> <span className="text-xs text-slate-500">· {fmtDate(c.lastMessageAt)}</span> {c.awaitingStaff && <Badge tone="gold">Needs reply</Badge>}</li>
-                  ))}
-                  {!conversations.length && !otherThreads.length && <li className="text-slate-600">No messages yet.</li>}
-                </ul>
-                <details className="mt-2">
-                  <summary className="cursor-pointer text-sm underline">Ask the client about {label}</summary>
-                  <ActionForm action={staffMessageAction.bind(null, clientId)} className="mt-2 space-y-2" resetOnSuccess idempotent>
-                    <input type="hidden" name="periodId" value={period.id} />
-                    <input type="hidden" name="channel" value="PORTAL" />
-                    <input type="hidden" name="subject" value={`Question about ${label}`} />
-                    <textarea className="input" name="body" rows={3} required aria-label="Question" />
-                    <Button type="submit">Send through portal</Button>
-                  </ActionForm>
-                </details>
-              </Card>
-            </>
-          )}
-
-          <section id="upload-financials" className="scroll-mt-6">
-            <Card title={`Upload Monthly Financials — ${biz}`}>
-              <p className="mb-2 rounded-lg bg-ivory-50 px-3 py-2 text-sm" data-testid="financials-target">Saving to: <strong>{biz}</strong></p>
-              <p className="mb-3 text-sm text-slate-600">A complete financial packet, or individual reports — Profit &amp; Loss, Gross Receipts, Balance Sheet, Bank Reconciliation, supporting schedules. It&apos;s filed under {biz} → year → month, saved as a <strong>staff-only draft</strong>, and reaches the client only after Tabitha approves it and staff deliver it.</p>
-              <ActionForm action={uploadMonthlyFinancialsAction.bind(null, clientId)} className="grid gap-3 sm:grid-cols-4" resetOnSuccess idempotent>
-                <Field label="Year"><select className="input" name="year" defaultValue={target.year}>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>
-                <Field label="Month or quarter">
-                  <select className="input" name="period" defaultValue={freq === "QUARTERLY" && target.month % 3 === 0 ? `Q${target.month / 3}` : `M${target.month}`}>
-                    <optgroup label="Month">{MONTHS.map((m, i) => <option key={m} value={`M${i + 1}`}>{m}</option>)}</optgroup>
-                    <optgroup label="Quarter">{[1, 2, 3, 4].map((q) => <option key={q} value={`Q${q}`}>Q{q} (ends {MONTHS[q * 3 - 1]})</option>)}</optgroup>
-                  </select>
-                </Field>
-                <Field label="Covers">
-                  <select className="input" name="covers" defaultValue="PERIOD">
-                    <option value="PERIOD">Just that month / quarter</option>
-                    <option value="YTD">Year to date through it</option>
-                  </select>
-                </Field>
-                <Field label="Report">
-                  <select className="input" name="reportType" defaultValue="">
-                    <option value="">Choose…</option>
-                    {Object.entries(REPORT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                  </select>
-                </Field>
-                <Field label="Accounting basis">
-                  <select className="input" name="basis" defaultValue={profile?.accountingBasis ?? ""}><option value="">{profile?.accountingBasis ? "—" : "Choose… (or set in Business profile)"}</option>{Object.entries(BASIS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-                </Field>
-                <Field label="Balance Sheet “as of”" hint="Defaults to the period end"><input className="input" type="date" name="asOf" /></Field>
-                <Field label="Account (bank reconciliation)">
-                  <select className="input" name="accountId" defaultValue=""><option value="">—</option>{accounts.map((a) => <option key={a.id} value={a.id}>{accountLabel(a)}</option>)}</select>
-                </Field>
-                <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" name="includesYtd" defaultChecked /> Shows monthly detail and year-to-date totals</label>
-                <Field label="Title (optional)" className="sm:col-span-2"><input className="input" name="title" placeholder="e.g. Profit & Loss — September 2026" /></Field>
-                <Field label="File (PDF, PNG or JPG, up to 5 MB)" className="sm:col-span-2"><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" /></Field>
-                <div className="flex items-end sm:col-span-4"><Button type="submit">Upload report</Button></div>
-              </ActionForm>
-              <p className="mt-2 text-xs text-slate-600">Uploading a P&amp;L or Balance Sheet for a month that already has one saves it as the next version; earlier versions stay in the history.</p>
-            </Card>
-          </section>
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <Link href={`${base}/banking/reconciliation?month=${ym}`} className="mt-2 flex items-center justify-end gap-1 text-sm font-semibold text-navy-900 underline decoration-gold-500">View All {rows.length} Accounts &amp; Reconciliations <ArrowRight className="size-4" aria-hidden /></Link>
+          </div>
         </div>
-      </div>
-    </>
+      </section>
+
+      {/* Monthly Bookkeeping Progress */}
+      <section className={clsx(card, "p-4 sm:p-5")} data-testid="bookkeeping-progress">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="flex items-center gap-2 font-serif text-xl font-bold text-navy-900"><BarChart3 className="size-6 text-gold-600" aria-hidden /> Monthly Bookkeeping Progress</h2>
+          <Link href={`${base}/statements`} className={smallBtn}>View Full Bookkeeping History <ArrowRight className="size-4" aria-hidden /></Link>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+          {months.map((m) => (
+            <Link key={`${m.year}-${m.month}`} href={`${base}/close?year=${m.year}&month=${m.month}`} className={clsx("rounded-xl border px-3 py-2.5 text-center", m.current ? "border-gold-400 bg-gold-50 shadow" : "border-ivory-200 bg-white hover:border-gold-300")} data-testid="month-tile" data-state={m.state}>
+              <p className="font-semibold text-navy-900">{MONTH_NAMES[m.month - 1].slice(0, 3)} {m.year}</p>
+              {m.state === "COMPLETE" ? <p className="mt-1 flex items-center justify-center gap-1 text-sm font-semibold text-emerald-700"><CheckCircle2 className="size-4" aria-hidden /> Complete</p>
+                : m.state === "IN_PROGRESS" ? (<><p className="mt-1 flex items-center justify-center gap-1 text-sm font-semibold text-navy-900"><span className="size-2 rounded-full bg-red-600" aria-hidden /> In Progress</p><span className="mt-1 flex items-center gap-1.5"><span className="h-1.5 flex-1 overflow-hidden rounded-full bg-ivory-200"><span className="block h-full rounded-full bg-emerald-600" style={{ width: `${m.percent}%` }} /></span><span className="text-xs">{m.percent}%</span></span></>)
+                : <p className="mt-1 flex items-center justify-center gap-1 text-sm text-navy-800"><span className="size-2 rounded-full bg-red-600" aria-hidden /> Not Started</p>}
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      {/* Statements Coetha asked for (only when she needs them) */}
+      {canSend && (
+        <section className={clsx(card, "p-4 sm:p-5")} data-testid="statement-uploads">
+          {statementRequests.length > 0 ? (
+            <>
+              <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><Upload className="size-5 text-gold-600" aria-hidden /> Upload statements Coetha requested <span className="rounded-full bg-red-600 px-2 py-0.5 font-sans text-xs font-bold text-white">{statementRequests.length}</span></h2>
+              <ul className="mt-2 divide-y divide-ivory-200">
+                {statementRequests.slice(0, 8).map((r) => (
+                  <li key={r.id} className="flex flex-wrap items-center gap-2 py-2 text-sm" data-testid="statement-request">
+                    <span className="min-w-0 flex-1"><strong className="text-navy-900">{r.bookkeepingAccount ? registryLabel(r.bookkeepingAccount) : "Account"}</strong> · {rangeText(r) ?? ""} <span className="text-xs text-slate-600">· {r.status === "OPEN" ? "asked of the client" : "draft"}</span></span>
+                    <ActionForm action={uploadForRequestAction.bind(null, clientId, r.id)} className="flex flex-wrap items-center gap-2" resetOnSuccess idempotent>
+                      <input className="input max-w-56 py-1 text-xs" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label={`Statement for ${r.title}`} />
+                      <button type="submit" className={smallBtn}><Upload className="size-4" aria-hidden /> Upload</button>
+                    </ActionForm>
+                  </li>
+                ))}
+              </ul>
+              {statementRequests.length > 8 && <Link className="text-xs underline" href={`${base}/records`}>+ {statementRequests.length - 8} more</Link>}
+            </>
+          ) : (
+            <p className="flex items-center gap-2 text-sm text-navy-800"><CheckCircle2 className="size-4 text-emerald-600" aria-hidden /> Coetha isn&apos;t waiting on any statements.</p>
+          )}
+          {rows.length > 0 && (
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer text-navy-900 underline decoration-gold-500">Upload a bank statement</summary>
+              <ActionForm action={uploadStatementAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-end gap-2" resetOnSuccess idempotent>
+                <label className="text-xs">Account<select className="input mt-1" name="accountId" required defaultValue="">{[<option key="" value="" disabled>Choose…</option>, ...rows.map((r) => <option key={r.id} value={r.id}>{registryLabel(r)}</option>)]}</select></label>
+                <label className="text-xs">Month<input className="input mt-1" type="month" name="month" required defaultValue={ym} /></label>
+                <input className="input max-w-64" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label="Statement file" />
+                <button type="submit" className={smallBtn}><Upload className="size-4" aria-hidden /> Upload</button>
+              </ActionForm>
+            </details>
+          )}
+        </section>
+      )}
+    </div>
   );
 }

@@ -30,6 +30,8 @@ export const SUBTYPES: Record<string, { label: string; type: AccountType }> = {
   AR: { label: "Accounts receivable", type: "ASSET" },
   CLEARING: { label: "Payments in transit (clearing)", type: "ASSET" },
   CREDIT_CARD: { label: "Credit card", type: "LIABILITY" },
+  LINE_OF_CREDIT: { label: "Line of credit", type: "LIABILITY" },
+  LOAN: { label: "Loan", type: "LIABILITY" },
   AP: { label: "Accounts payable", type: "LIABILITY" },
   OWNER_CONTRIBUTION: { label: "Owner contributions", type: "EQUITY" },
   OWNER_DRAW: { label: "Owner draws", type: "EQUITY" },
@@ -41,6 +43,9 @@ export const SUBTYPES: Record<string, { label: string; type: AccountType }> = {
   SUSPENSE: { label: "Needs review (suspense)", type: "EXPENSE" },
 };
 const DEBIT_NORMAL = new Set<string>(["ASSET", "EXPENSE"]);
+/** Ledger accounts that hold a bank feed or statement: bank (asset) and card / line of credit / loan (liabilities). */
+export const FEED_SUBTYPES = ["BANK", "CREDIT_CARD", "LINE_OF_CREDIT", "LOAN"];
+export const isFeedSubtype = (s: string | null | undefined) => !!s && FEED_SUBTYPES.includes(s);
 
 /** A small standard chart of accounts. Staff add, rename or deactivate accounts per client. */
 export const DEFAULT_CHART: { code: string; name: string; type: AccountType; subtype?: string }[] = [
@@ -120,13 +125,31 @@ export async function assertLedger(actor: Actor, clientId: string, area: BooksAr
   if (!(await canUseLedger(actor, clientId, area, action))) throw new ForbiddenError("Only Admins, the staff member assigned to this client and staff Tabitha allows can work in its books.");
 }
 /**
- * Creating or changing business books, bank feeds or business invoices requires an
- * owner-approved Managed Business. Reading existing history does not, so removing
- * access never hides past records from the office.
+ * Who may WORK on a business's books from the office (ledger writes, bank feeds, Coetha,
+ * business invoicing): any client the office keeps books for — an active Bookkeeping Client —
+ * or an owner-approved Managed Business. This is about the OFFICE only. Client-facing portal
+ * access (the client seeing their business books, statements and uploads into bookkeeping
+ * months) is a separate gate (effectiveGrant in src/lib/portal/access.ts) and still requires
+ * owner-approved Managed Business access. Nothing here grants or changes client access.
+ */
+export async function officeMayWorkBooks(clientId: string, db: Tx | typeof prisma = prisma) {
+  const c = await db.client.findUnique({ where: { id: clientId }, select: { businessAccess: true, archivedAt: true, bookkeepingProfile: { select: { active: true } } } });
+  if (!c || c.archivedAt) return false;
+  return c.businessAccess === "ACTIVE" || !!c.bookkeepingProfile?.active;
+}
+export const OFFICE_BOOKS_REFUSED = "This client is a Regular Tax Client and isn't on the Bookkeeping Client list. Add them as a Bookkeeping Client (or approve Managed Business access) before building business books, bank feeds or business invoices.";
+/**
+ * Kept under its old name so every caller stays the same: office work on a business's books.
+ * (Previously this required Managed Business access; now any active Bookkeeping Client is
+ * enough for the office. Reading existing history never needed either.)
  */
 export async function assertManagedBusiness(clientId: string, db: Tx | typeof prisma = prisma) {
-  const c = await db.client.findUnique({ where: { id: clientId }, select: { businessAccess: true } });
-  if (c?.businessAccess !== "ACTIVE") throw new ForbiddenError("This client is a Regular Tax Client. Business books, bank feeds and business invoicing need owner-approved Managed Business access.");
+  if (!(await officeMayWorkBooks(clientId, db))) throw new ForbiddenError(OFFICE_BOOKS_REFUSED);
+}
+/** Client IDs whose books the office works on (for scheduled jobs). */
+export async function officeBookClientIds() {
+  const rows = await prisma.client.findMany({ where: { archivedAt: null, OR: [{ businessAccess: "ACTIVE" }, { bookkeepingProfile: { active: true } }] }, select: { id: true } });
+  return rows.map((r) => r.id);
 }
 export async function assertLedgerWrite(actor: Actor, clientId: string, area: BooksArea = "ledger") {
   await assertLedger(actor, clientId, area, "edit");
@@ -418,7 +441,7 @@ export function fingerprints(rows: ParsedRow[]) {
 export async function importBankCsv(actor: Actor, clientId: string, accountId: string, input: { fileName: string; text: string }) {
   await assertLedgerWrite(actor, clientId, "banking");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
-  if (!account || (account.subtype !== "BANK" && account.subtype !== "CREDIT_CARD")) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
+  if (!account || !isFeedSubtype(account.subtype)) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
   if (input.text.length > 5_000_000) throw new ValidationError("That file is too large. Import one statement at a time.");
   const { rows, problems } = parseBankCsv(input.text);
   if (!rows.length) throw new ValidationError(`No transactions could be read. ${problems.slice(0, 3).join("; ")}`);
@@ -522,7 +545,7 @@ export async function categorizeBankTransactionTx(tx: Tx, actor: Actor, clientId
     const e = await post(tx, actor, clientId, { date, memo: (input.memo?.trim() || t.description).slice(0, 300), lines, source: "BANK", sourceKey: `bank:${t.id}:${t.postings + 1}` });
     await tx.bankTransaction.update({ where: { id: t.id }, data: { journalEntryId: e.id } });
     let matched: string | null = null;
-    if (cat.subtype === "BANK" || cat.subtype === "CREDIT_CARD") {
+    if (isFeedSubtype(cat.subtype)) {
       const lo = new Date(t.date.getTime() - TRANSFER_WINDOW_DAYS * 86_400_000);
       const hi = new Date(t.date.getTime() + TRANSFER_WINDOW_DAYS * 86_400_000);
       // Money out of one account shows as money in (or a payment) on the other.
@@ -589,7 +612,7 @@ export async function reconcileAccount(actor: Actor, clientId: string, accountId
   await assertLedgerWrite(actor, clientId, "banking");
   if (!isYmd(input.statementDate)) throw new ValidationError("Enter the statement's ending date.");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
-  if (!account || (account.subtype !== "BANK" && account.subtype !== "CREDIT_CARD")) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
+  if (!account || !isFeedSubtype(account.subtype)) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
   const statementCents = parseCents(input.statementBalance, "statement ending balance");
   const ledgerCents = await accountBalance(clientId, accountId, input.statementDate, "CASH");
   const unreviewed = await prisma.bankTransaction.count({ where: { clientId, accountId, status: "UNREVIEWED", date: { lte: toDate(input.statementDate) } } });
@@ -724,7 +747,7 @@ export async function setBasis(actor: Actor, clientId: string, basis: Basis) {
 
 const DRAW_WORDS = /\b(OWNER DRAW|DRAW|TRANSFER TO .*(SAVINGS|PERSONAL)|ZELLE TO|VENMO|CASH APP|ATM WITHDRAWAL)\b/;
 
-export type Flag = { kind: "UNREVIEWED" | "CLOSED_PERIOD" | "MISSING_STATEMENT" | "UNRECONCILED" | "SUSPENSE" | "POSSIBLE_DRAW" | "NO_OPENING" | "POSSIBLE_DUPLICATE_INCOME" | "UNDEPOSITED" | "BANK_ROW_FLAGGED" | "BANK_CONNECTION"; severity: "HIGH" | "MEDIUM"; message: string };
+export type Flag = { kind: "CARD_PAYMENT_AS_EXPENSE" | "UNREVIEWED" | "CLOSED_PERIOD" | "MISSING_STATEMENT" | "UNRECONCILED" | "SUSPENSE" | "POSSIBLE_DRAW" | "NO_OPENING" | "POSSIBLE_DUPLICATE_INCOME" | "UNDEPOSITED" | "BANK_ROW_FLAGGED" | "BANK_CONNECTION"; severity: "HIGH" | "MEDIUM"; message: string };
 
 export async function ledgerFlags(actor: Actor, clientId: string, today = todayCentral()) {
   await assertLedger(actor, clientId);
@@ -748,7 +771,7 @@ export async function ledgerFlags(actor: Actor, clientId: string, today = todayC
     if (late) flags.push({ kind: "CLOSED_PERIOD", severity: "HIGH", message: `${late} imported bank transaction${late === 1 ? "" : "s"} fall in a closed period (through ${ymdOf(book.lockedThrough)}) — possibly missing from approved statements. Tabitha decides how to correct.` });
   }
   const lastMonth = addMonths(monthOf(today), -1);
-  const banks = await prisma.ledgerAccount.findMany({ where: { clientId, active: true, subtype: { in: ["BANK", "CREDIT_CARD"] } } });
+  const banks = await prisma.ledgerAccount.findMany({ where: { clientId, active: true, subtype: { in: FEED_SUBTYPES } } });
   for (const b of banks) {
     const [range, recon] = await Promise.all([
       prisma.bankTransaction.aggregate({ where: { accountId: b.id }, _min: { date: true }, _max: { date: true } }),
@@ -781,6 +804,11 @@ export async function ledgerFlags(actor: Actor, clientId: string, today = todayC
     const waiting = natural("ASSET", (await balancesBy(clientId, { date: { lte: old }, basis: basisFilter("CASH") })).get(clearing.id));
     if (waiting > 0) flags.push({ kind: "UNDEPOSITED", severity: "MEDIUM", message: `${usd(waiting)} in Payments in Transit is more than 10 days old and hasn't been matched to a bank deposit.` });
   }
+  // A payment from the bank to a card / LOC / loan posted to an expense would double-count the
+  // charges already on the card (or book principal as expense).
+  const cardWords = /\b(PAYMENT|PMT|AUTOPAY|EPAY|CARD PMT|LOAN PMT)\b/;
+  const payAsExpense = posted.filter((t) => cardWords.test(normDesc(t.description)) && /\b(CARD|CREDIT|AMEX|VISA|MASTERCARD|DISCOVER|LOAN|LINE OF CREDIT|LOC)\b/.test(normDesc(t.description)) && t.journalEntry?.lines.some((l) => l.account.type === "EXPENSE" && l.account.subtype !== "SUSPENSE")).length;
+  if (payAsExpense) flags.push({ kind: "CARD_PAYMENT_AS_EXPENSE", severity: "HIGH", message: `${payAsExpense} card or loan payment${payAsExpense === 1 ? " was" : "s were"} posted as an expense. A payment to a card, line of credit or loan is a transfer to the liability account; the charges were already expensed on the card.` });
   if (drawLike) flags.push({ kind: "POSSIBLE_DRAW", severity: "MEDIUM", message: `${drawLike} withdrawal${drawLike === 1 ? "" : "s"} that look like owner draws or personal transfers were posted as expenses. Owner draws belong in equity unless Tabitha approved an exception.` });
   return flags;
 }

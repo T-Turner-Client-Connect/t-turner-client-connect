@@ -15,6 +15,7 @@ export const DEFAULT_COETHA_MODEL = "claude-sonnet-5-5";
 export const coethaModel = () => process.env.COETHA_MODEL?.trim() || DEFAULT_COETHA_MODEL;
 export const coethaKeyPresent = () => !!process.env.ANTHROPIC_API_KEY?.trim();
 
+export const RECOMMENDATION_CATEGORIES = ["INCORRECT_CLASSIFICATION", "DUPLICATE", "MISSING_ENTRY", "OWNER_DRAW", "SHAREHOLDER_DISTRIBUTION", "PARTNER_DRAW", "GUARANTEED_PAYMENT", "PAYROLL", "UNRECORDED_LIABILITY", "LOAN_PAYMENT_AS_EXPENSE", "CARD_PAYMENT_DOUBLE_COUNTED", "UNRECONCILED", "CLASSIFICATION_INCONSISTENCY", "OTHER"] as const;
 export const DISCREPANCY_TYPES = ["POSSIBLE_DUPLICATE", "MISSING_STATEMENT", "UNRECONCILED_DIFFERENCE", "OWNER_DRAW_VS_EXPENSE", "UNUSUAL_AMOUNT", "OTHER"] as const;
 
 export const CoethaOutput = z.object({
@@ -45,6 +46,22 @@ export const CoethaOutput = z.object({
     }),
   ),
   monthSummary: z.object({ month: z.string().describe("YYYY-MM"), summary: z.string(), highlights: z.array(z.string()) }),
+  recommendations: z.array(
+    z.object({
+      category: z.enum(RECOMMENDATION_CATEGORIES),
+      title: z.string(),
+      found: z.string().describe("What you found, with dates and amounts from the data"),
+      why: z.string().describe("Why it needs attention (tie it to the tax classification rules when relevant)"),
+      correction: z.string().describe("The proposed correction, in plain words"),
+      accountCodes: z.array(z.string()).describe("Codes of the accounts affected, from the chart"),
+      refs: z.array(z.string()).describe("T- or P-references of the supporting transactions; may be empty"),
+      impact: z.string().describe("The potential effect on the P&L and Balance Sheet"),
+    }),
+  ).optional(),
+  classificationRecommendation: z
+    .array(z.object({ recommended: z.enum(["FORM_1065", "FORM_1120S", "SCHEDULE_C", "OTHER_REVIEW"]), why: z.string() }))
+    .describe("Empty unless the data clearly suggests the business's tax classification is wrong; at most one item")
+    .optional(),
 });
 export type CoethaOutputT = z.infer<typeof CoethaOutput>;
 
@@ -57,6 +74,10 @@ Produce:
 2. discrepancies: possible duplicates, missing statements or months with no activity, unreconciled differences, owner draws or personal spending recorded (or likely to be recorded) as business expenses, and unusual amounts compared with the client's usual activity. Reference the transactions involved. Don't repeat the same issue twice.
 3. adjustingEntries: only when the data clearly supports one (for example, reclassifying an owner draw that was posted to an expense). Each entry must balance (total debits equal total credits), use only account codes from the chart, and be dated within the month being closed. Usually there are none; an empty list is fine.
 4. monthSummary: a short, plain-language draft summary of the month for Tabitha (activity, what's left to review, risks). Do not invent figures that aren't in the data.
+5. recommendations: the issues a senior accountant would raise — incorrect classifications, duplicates, missing journal entries, owner draws / shareholder distributions / partner draws / guaranteed payments versus expenses and payroll, unrecorded liabilities, loan payments booked as expenses, credit card payments double-counted as expenses, unreconciled accounts and anything inconsistent with the tax classification. For each, state what you found, why it needs attention, the proposed correction, the accounts affected, the supporting transactions and the potential financial statement impact.
+6. classificationRecommendation: only if the data clearly contradicts the business's tax classification. You never change it; Tabitha decides.
+
+The business's tax classification (taxProfile) decides the equity and compensation rules you apply (taxProfile.rules). Apply them: e.g. an S corporation's owner withdrawals are shareholder distributions and its owners need reasonable compensation through payroll; a partnership's are partner draws against each partner's capital account and fixed payments for services are guaranteed payments; a Schedule C owner's are owner draws.
 
 Be conservative and specific. Never invent transactions, balances, accounts or facts.`;
 
