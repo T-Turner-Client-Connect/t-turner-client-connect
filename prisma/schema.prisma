@@ -4683,6 +4683,8 @@ model PayrollConnection {
   updatedAt         DateTime  @updatedAt
 
   @@unique([clientId, provider])
+}
+
 // Square webhook deliveries, one row per Square event_id, so a replayed event is never applied twice.
 model SquareWebhookEvent {
   id          String    @id @default(cuid())
