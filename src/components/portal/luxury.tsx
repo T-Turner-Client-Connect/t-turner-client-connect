@@ -150,7 +150,7 @@ export function ImportantToKnow({ children }: { children: React.ReactNode }) {
 export function PanelHead({ icon: Icon, title, action }: { icon: React.ComponentType<{ className?: string }>; title: string; action?: React.ReactNode }) {
   return (
     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 border-b border-gold-100 pb-4">
-      <h2 className="flex items-center gap-3 font-serif text-xl sm:text-[1.375rem] font-bold text-navy-900">
+      <h2 className="flex items-center gap-3 font-serif text-xl sm:text-xl font-bold text-navy-900">
         <span className="flex size-11 items-center justify-center rounded-xl border border-gold-300 bg-gold-50"><Icon className="size-6 text-gold-600" aria-hidden /></span>
         {title}
       </h2>
