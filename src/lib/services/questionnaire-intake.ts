@@ -10,6 +10,7 @@ import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createDocumentRequest } from "@/lib/services/bookkeeping";
 import { brandedEmailHtml, sendTransactionalEmail } from "@/lib/email";
+import { canSend } from "./comm-prefs";
 import { formatPhone, normalizeEmail, normalizePhone } from "@/lib/normalize";
 
 // ---------------------------------------------------------------- status
@@ -79,6 +80,8 @@ export async function sendQuestionnaire(actor: Actor, clientId: string, taxYear:
   if (await prisma.questionnaireSubmission.count({ where: { clientId, taxYear } })) throw new ValidationError(`The ${taxYear} questionnaire is already completed for this client.`);
   const to = client.email && normalizeEmail(client.email);
   if (!to) throw new ValidationError("Add the client's email address before sending.");
+  const allowed = await canSend({ channel: "EMAIL", address: to, category: "ESSENTIAL", person: { clientId, contactId: null } });
+  if (!allowed.ok) throw new ValidationError(`Can't email this client: ${allowed.reason}.`);
   const url = await questionnaireUrl(clientId, client.clientType, taxYear);
   const q = await questionnaireFor(client.clientType, taxYear);
   if (!url || !q) throw new ValidationError(`There's no ${taxYear} questionnaire form set up yet (News & Countdowns → Tax questionnaires).`);

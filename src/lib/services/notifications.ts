@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { brandedNoticeHtml, sendTransactionalEmail } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
 import { sendSms } from "@/lib/twilio";
-import { smsSendAllowed } from "./sms-consent";
+import { canSend } from "./comm-prefs";
 import { chicagoParts } from "@/lib/tz";
 
 /**
@@ -34,7 +34,7 @@ const TEXT: Record<string, string> = {
 
 // Client texts are held outside 8 a.m.–8 p.m. Central and sent when the window opens.
 export const CLIENT_SMS_QUIET = { start: "08:00", end: "20:00" };
-function clientSmsAllowedNow(now = new Date()) {
+export function clientSmsAllowedNow(now = new Date()) {
   const p = chicagoParts(now);
   const t = `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
   return t >= CLIENT_SMS_QUIET.start && t < CLIENT_SMS_QUIET.end;
@@ -100,18 +100,23 @@ export async function dispatchPendingNotifications(portalUserId?: string) {
     if (claimed.count !== 1) continue;
     const text = notificationText(n.kind);
     let result: { ok: boolean; detail: string; sid?: string };
+    // Essential account notices: never stopped by marketing choices, only by a bounce/complaint/
+    // do-not-contact (email) or the STOP block / missing service consent (texts). Re-checked now.
+    const allowed = await canSend({ channel: n.channel, address: n.channel === "EMAIL" ? n.portalUser.email : n.portalUser.phoneNormalized, category: "ESSENTIAL" });
+    if (!allowed.ok) {
+      await prisma.notification.update({ where: { id: n.id }, data: { status: "SKIPPED", statusDetail: allowed.reason, sentAt: null } });
+      continue;
+    }
     if (n.channel === "EMAIL") {
       const ok = await sendTransactionalEmail(n.portalUser.email, text.subject, text.body, brandedNoticeHtml(text.heading, text.line, "Sign in to your portal", `${appUrl()}/client`));
       result = ok ? { ok, detail: "Accepted by email provider" } : { ok, detail: "Email provider not set up or rejected the message" };
     } else {
-      // Re-checked at send time: service-text consent on file and no STOP.
-      const phone = n.portalUser.phoneNormalized;
-      const allowed = phone ? await smsSendAllowed(phone, "SERVICE") : { ok: false, reason: "No mobile number" };
-      if (!allowed.ok) {
-        await prisma.notification.update({ where: { id: n.id }, data: { status: "SKIPPED", statusDetail: allowed.reason, sentAt: null } });
+      const r = await sendSms(n.portalUser.phoneNormalized!, text.sms);
+      if (r.blocked) {
+        await prisma.notification.update({ where: { id: n.id }, data: { status: "SKIPPED", statusDetail: r.detail, sentAt: null } });
         continue;
       }
-      result = await sendSms(phone!, text.sms);
+      result = r;
     }
     await prisma.notification.update({
       where: { id: n.id },

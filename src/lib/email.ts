@@ -21,6 +21,8 @@ export async function sendEmail(input: {
   html?: string;
   idempotencyKey?: string;
   tags?: Record<string, string>;
+  // Extra email headers, e.g. List-Unsubscribe on promotional email (RFC 8058).
+  headers?: Record<string, string>;
 }): Promise<EmailResult> {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.EMAIL_FROM_ADDRESS;
@@ -49,6 +51,7 @@ export async function sendEmail(input: {
         subject: input.subject,
         text: input.text,
         ...(input.html ? { html: input.html } : {}),
+        ...(input.headers ? { headers: input.headers } : {}),
         ...(input.tags ? { tags: Object.entries(input.tags).map(([name, value]) => ({ name, value })) } : {}),
       }),
     });

@@ -9,7 +9,9 @@ import { ValidationError } from "./clients";
 /**
  * News, Updates & Tax Countdowns. Announcements are read-only for clients
  * and never send texts or emails when published (so nothing promotional goes
- * out automatically). Tax dates are shown only after review with a source.
+ * out automatically). Staff can send one by email/text on purpose ("Send as
+ * email update" → a General business update campaign, which skips everyone
+ * who turned off general updates). Tax dates are shown only after review with a source.
  */
 
 export const AUDIENCES = { ALL: "All clients", INDIVIDUAL: "Individual clients", BUSINESS: "Business clients", BOOKKEEPING: "Bookkeeping clients" } as const;

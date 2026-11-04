@@ -5,7 +5,7 @@ import { ActionForm } from "@/components/action-form";
 import { AudiencePicker } from "@/components/audience-picker";
 import { RecipientReview } from "@/components/recipient-review";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
-import { deleteDraftAction, sendOrScheduleAction, setFlyerAction, testSendAction, updateCampaignAction } from "@/app/actions/campaigns";
+import { cancelScheduledAction, deleteDraftAction, sendOrScheduleAction, setFlyerAction, testSendAction, updateCampaignAction } from "@/app/actions/campaigns";
 import { liveSendBlockers } from "@/lib/services/campaigns";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
@@ -13,7 +13,7 @@ import { campaignRecipients } from "@/lib/services/campaigns";
 import { PURPOSE_LABELS } from "@/lib/consent";
 import { renderEmailHtml, renderSms } from "@/lib/campaigns/render";
 import { integrationStatus } from "@/lib/integrations";
-import { CHANNEL_LABELS } from "@/lib/format";
+import { CHANNEL_LABELS, fmtDateTime } from "@/lib/format";
 
 export const metadata = { title: "Campaign" };
 
@@ -287,10 +287,39 @@ async function FlyerStep({ campaign, editable }: { campaign: CampaignWithFlyer; 
 }
 
 async function SendStep({ campaignId, userEmail, actor }: { campaignId: string; userEmail: string; actor: Awaited<ReturnType<typeof requireUser>> }) {
+  const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
   const blockers = await liveSendBlockers(actor, campaignId);
   const { eligible } = await campaignRecipients(campaignId);
+  const results = await prisma.campaignMessage.groupBy({ by: ["channel", "status"], where: { campaignId }, _count: true });
+  const reasons = await prisma.campaignMessage.groupBy({ by: ["skipReason"], where: { campaignId, status: "SKIPPED" }, _count: true });
+  const label = { SKIPPED: "Skipped", SENDING: "Sending", PROVIDER_ACCEPTED: "Accepted by provider", FAILED: "Failed" } as const;
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      {campaign.status !== "DRAFT" && (
+        <Card title="Status" className="lg:col-span-2">
+          <p className="mb-2 text-sm">
+            <Badge tone={campaign.status === "SENT" ? "green" : campaign.status === "CANCELLED" ? "red" : "gold"}>{campaign.status.toLowerCase()}</Badge>
+            {campaign.scheduledAt && campaign.status === "SCHEDULED" && <> · sends {fmtDateTime(campaign.scheduledAt)} (preferences re-checked at that time)</>}
+            {campaign.sentAt && <> · sent {fmtDateTime(campaign.sentAt)}</>}
+          </p>
+          {results.length > 0 && (
+            <ul className="grid gap-1 text-sm sm:grid-cols-2">
+              {results.map((r) => <li key={`${r.channel}${r.status}`}>{r.channel === "EMAIL" ? "Email" : "Text"} — {label[r.status]}: <strong>{r._count}</strong></li>)}
+            </ul>
+          )}
+          {reasons.length > 0 && (
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer underline">Why recipients were skipped</summary>
+              <ul className="mt-1 list-disc pl-5">{reasons.map((r) => <li key={r.skipReason ?? "x"}>{r.skipReason}: {r._count}</li>)}</ul>
+            </details>
+          )}
+          {campaign.status === "SCHEDULED" && (
+            <ActionForm action={cancelScheduledAction.bind(null, campaignId)} className="mt-3" confirm="Cancel this scheduled campaign? Nothing will be sent.">
+              <Button type="submit" variant="danger">Cancel before sending</Button>
+            </ActionForm>
+          )}
+        </Card>
+      )}
       <Card title="Test send (staff only)">
         <p className="mb-3 text-sm text-slate-600">Sends one copy to a staff email address. Separate from live sending; never goes to clients.</p>
         <ActionForm action={testSendAction.bind(null, campaignId)} className="flex flex-wrap items-end gap-2">
@@ -299,14 +328,14 @@ async function SendStep({ campaignId, userEmail, actor }: { campaignId: string; 
         </ActionForm>
       </Card>
       <Card title="Send or schedule">
-        <p className="mb-2 text-sm">Final recipients right now: <strong>{eligible.length}</strong> message(s). Consent and opt-outs are re-checked immediately before sending.</p>
+        <p className="mb-2 text-sm">Final recipients right now: <strong>{eligible.length}</strong> message(s). Communication preferences, consent, unsubscribes and STOP replies are re-checked immediately before each message sends.</p>
         {blockers.length > 0 && (
           <Notice tone="warn" title="Live sending is locked">
             <ul className="list-disc pl-5">{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
           </Notice>
         )}
         <ActionForm action={sendOrScheduleAction.bind(null, campaignId)} className="mt-3 space-y-3" confirm="Send this campaign to the final recipients?">
-          <Field label="Schedule for (optional)"><input className="input" type="datetime-local" name="scheduledAt" disabled={blockers.length > 0} /></Field>
+          <Field label="Schedule for (Central time; leave blank to send now)"><input className="input" type="datetime-local" name="scheduledAt" disabled={blockers.length > 0} /></Field>
           <label className="flex items-start gap-2 text-sm"><input type="checkbox" name="confirm" className="mt-1 accent-navy-900" disabled={blockers.length > 0} /> I reviewed the final recipients and the preview.</label>
           <Button type="submit" variant="gold" disabled={blockers.length > 0}>Send campaign</Button>
         </ActionForm>

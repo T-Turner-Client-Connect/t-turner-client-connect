@@ -9,7 +9,7 @@
 | Staff invitation email | Built and tested: branded email, resend, revoke, private copy-link fallback, statuses. Sends nothing until Resend is configured | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` (verified domain), `RESEND_WEBHOOK_SECRET` — see below |
 | Password-reset email | Admin-generated links work now; email delivery needs Resend | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` |
 | Portal notifications (email/text) | Recorded; delivered only when enabled | `NOTIFICATIONS_ENABLED=true` + Resend/Twilio |
-| Campaign email/text sending | **Locked.** Drafts, audiences, previews and test sends (simulated without a provider) work | Resend + Twilio + `LIVE_SENDING_ENABLED=true` + the messaging stage |
+| Campaign email/text sending | **Locked.** Drafts, audiences, previews and test sends (simulated without a provider) work | Resend + Twilio + `LIVE_SENDING_ENABLED=true` + `CAMPAIGN_SENDING_ENABLED=true` + `BUSINESS_MAILING_ADDRESS` (delivery, unsubscribe links, STOP handling and preference checks are built) |
 | SMS consent, STOP/HELP, delivery receipts | Built: public consent page, per-phone consent ledger, signed Twilio webhooks | Twilio console webhook + Advanced Opt-Out — see SMS-PROGRAM.md |
 | Malware scanning | **Quarantine enforced.** Every client document is blocked (no download, not shown to clients) until a scanner returns clean | `MALWARE_SCAN_PROVIDER` + scanner settings — see below |
 | Jotform contracts | Links and in-portal embed work; completion confirmed by staff | `JOTFORM_API_KEY` + `JOTFORM_WEBHOOK_SECRET`, webhook `https://<site>/api/webhooks/jotform?secret=…`, hidden field `assignment_ref` on each form |

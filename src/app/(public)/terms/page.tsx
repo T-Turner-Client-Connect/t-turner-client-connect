@@ -27,9 +27,9 @@ export default function Terms() {
         </p>
         <p className="mt-3">Message frequency varies. Message and data rates may apply. Consent to text messages is optional and is not a condition of purchase.</p>
         <p className="mt-3">
-          Reply STOP to unsubscribe. You may receive a final confirmation of your opt-out. Reply HELP for assistance or contact our office at{" "}
-          <a className="font-semibold text-navy-800 underline" href={`tel:${BUSINESS.officePhoneTel}`}>{BUSINESS.officePhoneDisplay}</a>. To resume messages, provide a new opt-in through our{" "}
-          <Link className="underline" href="/sms-consent">consent form</Link>.
+          Reply STOP to unsubscribe. Replying STOP stops all text messages from us to that number, including appointment, billing and account texts; we will continue to send essential account notices by email and in your client portal. You may receive a final confirmation of your opt-out. Reply HELP for assistance or contact our office at{" "}
+          <a className="font-semibold text-navy-800 underline" href={`tel:${BUSINESS.officePhoneTel}`}>{BUSINESS.officePhoneDisplay}</a>. To resume messages, reply START (this restores the text messages you had agreed to before replying STOP), or opt in again through our{" "}
+          <Link className="underline" href="/sms-consent">consent form</Link>. You can also manage promotional texts, promotional emails and general business updates in Communication Preferences in your client portal.
         </p>
         <p className="mt-3">
           Delivery depends on mobile networks and service availability. Carriers are not liable for delayed or undelivered messages. Text messages are not an emergency service. Do not send

@@ -5,11 +5,13 @@ import { revalidatePath } from "next/cache";
 import type { CampaignChannel, CampaignPurpose } from "@prisma/client";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
-import { createCampaign, deleteDraft, sendOrSchedule, setAudience, setCampaignFlyer, setExclusions, updateCampaignDraft } from "@/lib/services/campaigns";
+import { campaignFromAnnouncement, createCampaign, deleteDraft, setAudience, setCampaignFlyer, setExclusions, updateCampaignDraft } from "@/lib/services/campaigns";
+import { cancelScheduled, scheduleCampaign } from "@/lib/services/campaign-dispatch";
 import { ValidationError } from "@/lib/services/clients";
 import { normalizeEmail } from "@/lib/normalize";
 import { sendTransactionalEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { chicagoLocalToUtc } from "@/lib/tz";
 
 export async function createCampaignAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
@@ -96,6 +98,31 @@ export async function sendOrScheduleAction(campaignId: string, _prev: ActionStat
   const actor = await requireUser();
   return run(async () => {
     if (fd.get("confirm") !== "on") throw new ValidationError("Tick the confirmation box to send.");
-    await sendOrSchedule(actor, campaignId);
+    const v = str(fd, "scheduledAt");
+    const when = v ? chicagoLocalToUtc(v) : null;
+    if (v && !when) throw new ValidationError("Choose a valid date and time.");
+    const r = await scheduleCampaign(actor, campaignId, when);
+    revalidatePath(`/campaigns/${campaignId}`);
+    return r ? `Sent: ${r.sent} accepted by the providers, ${r.skipped} skipped (preferences, opt-outs, STOP), ${r.failed} failed.` : "Scheduled. Preferences and opt-outs are checked again right before each message sends.";
   });
+}
+
+export async function cancelScheduledAction(campaignId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await cancelScheduled(actor, campaignId);
+    revalidatePath(`/campaigns/${campaignId}`);
+    return "Cancelled. Nothing was sent.";
+  });
+}
+
+/** News & Updates: start a General business update campaign from an announcement. */
+export async function campaignFromAnnouncementAction(announcementId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  let id = "";
+  const result = await run(async () => {
+    id = (await campaignFromAnnouncement(actor, announcementId)).id;
+  });
+  if (result?.ok) redirect(`/campaigns/${id}?step=audience`);
+  return result;
 }

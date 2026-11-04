@@ -38,7 +38,12 @@ export const PURPOSE_LABELS: Record<CampaignPurpose, string> = {
   SERVICE: "Service message (appointments, documents, deadlines)",
   TAX_PREP_PROMO: "Promotion — tax preparation",
   OTHER_SERVICES_PROMO: "Promotion — other services (bookkeeping, payroll, nonprofit…)",
+  GENERAL_UPDATE: "General business update (office hours, closures, news — not promotional)",
 };
+
+export function isPromotional(purpose: CampaignPurpose) {
+  return purpose === "TAX_PREP_PROMO" || purpose === "OTHER_SERVICES_PROMO";
+}
 
 export const TAX_INFO_KINDS: ConsentKind[] = ["TAX_INFO_USE", "TAX_INFO_DISCLOSURE"];
 
@@ -75,6 +80,8 @@ export type EligibilityInput = {
   // Client-level consent records (Section 7216 is always client-level).
   clientConsents: ConsentLike[];
   suppressions: ActiveSuppression[];
+  // This person turned off "General business updates" (Communication Preferences).
+  generalUpdatesOff?: boolean;
   now?: Date;
 };
 
@@ -89,7 +96,7 @@ const SUPPRESSION_TEXT: Record<SuppressionReason, string> = {
 /** Returns null when the address may be messaged, otherwise the reason it can't. */
 export function ineligibilityReason(input: EligibilityInput): string | null {
   const { channel, purpose, now = new Date() } = input;
-  const isPromo = purpose !== "SERVICE";
+  const isPromo = isPromotional(purpose);
 
   if (input.archived) return "Client is archived";
   if (!input.address) return channel === "EMAIL" ? "No valid email address" : "No valid mobile number";
@@ -100,6 +107,8 @@ export function ineligibilityReason(input: EligibilityInput): string | null {
     if (channel === "EMAIL" && s.reason === "UNSUBSCRIBE" && !isPromo) continue;
     return SUPPRESSION_TEXT[s.reason];
   }
+
+  if (purpose === "GENERAL_UPDATE" && input.generalUpdatesOff) return "Opted out of general business updates";
 
   if (channel === "SMS") {
     const marketing = currentConsent(input.personConsents, "SMS_MARKETING", now);
