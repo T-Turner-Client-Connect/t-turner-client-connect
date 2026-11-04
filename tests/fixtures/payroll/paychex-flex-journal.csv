@@ -1,0 +1,9 @@
+Payroll Journal,Pretend Riverside Smokehouse LLC (fictional)
+
+Check Date,Employee,Hours,Gross,Fed Inc Tax,Soc Sec,Medicare,AL Inc Tax,Pre-Tax Deductions,Post-Tax Deductions,Net Pay,Employer Soc Sec,Employer Medicare,FUTA,SUTA
+10/02/2026,"Rivera, Ana (fictional)",80.00,"2,400.00",-192.00,-148.80,-34.80,-96.00,-200.50,-200.50,"1,527.40",148.80,34.80,14.40,64.80
+10/02/2026,"Okafor, Ben (fictional)",72.50,"1,812.50",-145.00,-112.38,-26.28,-72.50,0.00,0.00,"1,456.34",112.38,26.28,10.88,48.94
+,Totals,,1.00,,,,,,,1.00,,,,
+10/16/2026,"Rivera, Ana (fictional)",80.00,"2,400.00",-192.00,-148.80,-34.80,-96.00,-200.50,-200.50,"1,527.40",148.80,34.80,14.40,64.80
+10/16/2026,"Okafor, Ben (fictional)",72.50,"1,812.50",-145.00,-112.38,-26.28,-72.50,0.00,0.00,"1,456.34",112.38,26.28,10.88,48.94
+,Totals,,1.00,,,,,,,1.00,,,,

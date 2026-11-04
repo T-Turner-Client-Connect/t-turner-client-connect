@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { makeUser, managed, prisma, resetDb } from "./db";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { setStaffPermissions } from "@/lib/auth/permissions";
 import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { setupLedger } from "@/lib/services/ledger";
@@ -93,7 +94,10 @@ describe("approver designation", () => {
     await expect(setPayrollApprover(s.daria, s.biz.id, s.d.id, { approver: true, required: true })).rejects.toBeInstanceOf(ForbiddenError);
     const ownerAsActor: Actor = { id: s.a.id, role: "ADMIN", name: s.a.name, email: s.a.email };
     await expect(setPayrollApprover(ownerAsActor, s.biz.id, s.d.id, { approver: true, required: true })).rejects.toBeInstanceOf(ForbiddenError);
-    await prisma.user.update({ where: { id: s.daria.id }, data: { bookkeepingBillingAccess: true } });
+    // Billing/Square grants alone don't open it: choosing approvers is "Payroll → Edit" in Staff Access & Permissions.
+    await setStaffPermissions(s.tabitha, s.daria.id, ["square.view", "square.edit", "billing.view", "billing.edit"]);
+    await expect(setPayrollApprover(s.daria, s.biz.id, s.d.id, { approver: true, required: true })).rejects.toBeInstanceOf(ForbiddenError);
+    await setStaffPermissions(s.tabitha, s.daria.id, ["payroll.edit"]);
     await setPayrollApprover(s.daria, s.biz.id, s.d.id, { approver: true, required: false });
     expect(await isPayrollApprover(s.d.id, s.biz.id)).toBe(true);
     expect(await prisma.auditLog.count({ where: { action: "payroll.approver_set", clientId: s.biz.id } })).toBe(4);
