@@ -89,7 +89,7 @@ export function CalendarViews({ view, anchor, appts, base, today, blocked = {}, 
           <Link href={link(view, prev)} className="rounded-lg p-2 hover:bg-navy-50" aria-label="Previous"><ChevronLeft className="size-5" /></Link>
           <Link href={link(view, next)} className="rounded-lg p-2 hover:bg-navy-50" aria-label="Next"><ChevronRight className="size-5" /></Link>
         </div>
-        <h2 className="min-w-0 flex-1 font-serif text-xl font-bold text-navy-900 sm:text-[1.375rem]">{title}</h2>
+        <h2 className="min-w-0 flex-1 font-serif text-xl font-bold text-navy-900 sm:text-xl">{title}</h2>
         {published !== undefined && published !== null && view === "month" && (
           <span className={clsx("rounded-full px-3 py-1 text-xs font-bold", published ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-600 ring-1 ring-slate-200")}>{published ? "Published" : "Not published"}</span>
         )}

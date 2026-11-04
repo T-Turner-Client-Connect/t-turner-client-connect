@@ -23,6 +23,15 @@
   --color-ivory-200: #f6efdd;
   --font-serif: Georgia, "Times New Roman", serif;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  /* Calm, regular-website heading scale (Tabitha: "not like we are screaming at people").
+     Small sizes (xs, sm, base) keep Tailwind's defaults; only the large steps are reduced. */
+  --text-lg: 1.0625rem;
+  --text-xl: 1.125rem;
+  --text-2xl: 1.25rem;
+  --text-3xl: 1.5rem;
+  --text-4xl: 1.75rem;
+  --text-5xl: 2rem;
+  --text-6xl: 2.5rem;
 }
 
 /* Base styles live in the base layer so utility classes (e.g. text-white) can override them. */

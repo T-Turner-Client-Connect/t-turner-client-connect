@@ -111,7 +111,7 @@ export default async function BookkeepingWorkspace({ params, searchParams }: { p
             {heading?.owner && <span className="block" data-testid="owner-line">Owner: <strong>{heading.owner}</strong></span>}
             {profile ? `${FREQUENCIES[freq as keyof typeof FREQUENCIES]} bookkeeping` : "Not on the bookkeeping list yet"} · Assigned: {client.assignedTo?.name ?? "unassigned"}
             {profile?.payroll && ` · Payroll ${profile.payrollFrequency ? PAYROLL_FREQUENCIES[profile.payrollFrequency as keyof typeof PAYROLL_FREQUENCIES].toLowerCase() : ""}${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`}
-            {" · "}<Link className="underline" href={`/clients/${clientId}`}>Client record</Link>
+            {" · "}<Link className="underline" href={`/clients/${clientId}?tab=overview`}>Client record</Link>
           </>
         }
         actions={
