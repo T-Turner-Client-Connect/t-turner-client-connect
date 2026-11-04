@@ -70,7 +70,8 @@ export function ActionForm({
       onSubmit={(e) => {
         e.preventDefault();
         if (confirm && !window.confirm(confirm)) return;
-        const fd = new FormData(e.currentTarget);
+        // Includes the clicked button's name/value, so a form can have more than one submit button.
+        const fd = new FormData(e.currentTarget, (e.nativeEvent as SubmitEvent).submitter);
         const big = [...fd.values()].find((v): v is File => v instanceof File && v.size > MAX_UPLOAD_BYTES);
         if (big) {
           setLocalError(`"${big.name}" is larger than ${MAX_UPLOAD_LABEL}. Nothing was uploaded.`);

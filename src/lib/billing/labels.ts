@@ -1,5 +1,6 @@
 export const STATE_LABELS: Record<string, { label: string; tone: "navy" | "gold" | "green" | "red" | "gray" | "amber" }> = {
   DRAFT: { label: "Draft", tone: "gray" },
+  PENDING_APPROVAL: { label: "Pending approval", tone: "amber" },
   OFFERED: { label: "Awaiting client acceptance", tone: "gold" },
   ACCEPTED: { label: "Accepted", tone: "navy" },
   ISSUED: { label: "Issued", tone: "navy" },
@@ -7,4 +8,4 @@ export const STATE_LABELS: Record<string, { label: string; tone: "navy" | "gold"
   VOID: { label: "Void", tone: "gray" },
 };
 
-export const METHOD_LABELS: Record<string, string> = { CASH: "Cash", CHECK: "Check", CARD: "Card", ACH: "Bank transfer (ACH)", ZELLE: "Zelle", CASH_APP: "Cash App", OTHER: "Other" };
+export const METHOD_LABELS: Record<string, string> = { CASH: "Cash", CHECK: "Check", CARD: "Card", ACH: "Bank transfer (ACH)", ZELLE: "Zelle", CASH_APP: "Cash App", VENMO: "Venmo", REFUND_TRANSFER: "Republic Bank Refund Transfer", OTHER: "Other" };

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Plus } from "lucide-react";
 import { Badge, Button, Card, Field, LinkButton, Notice, PageHeader, Stat } from "@/components/ui";
 import { ActionForm } from "@/components/action-form";
 import { addNonSquareRecurringAction } from "@/app/actions/manual-billing";
@@ -26,7 +27,8 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
         subtitle="Invoiced revenue and cash collected are tracked separately. Unpaid invoices never count as cash."
         actions={
           <>
-            <LinkButton href="/owner/invoices/new">New quote / invoice</LinkButton>
+            <LinkButton href="/owner/invoices/create" variant="gold" className="px-5 text-base shadow-md" data-testid="create-invoice"><Plus className="size-5" aria-hidden /> Create Invoice</LinkButton>
+            <LinkButton href="/owner/invoices/new" variant="secondary">Itemized quote</LinkButton>
             <LinkButton href="/owner/expenses" variant="secondary">Add expense</LinkButton>
           </>
         }

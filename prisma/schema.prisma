@@ -2197,6 +2197,8 @@ enum InvoiceState {
   ISSUED
   DECLINED
   VOID
+  // Submitted by authorized staff; waits for the owner to approve and send.
+  PENDING_APPROVAL
 }
 
 enum AmountType {
@@ -2256,6 +2258,25 @@ model Invoice {
   voidReason            String?
   // The one payment method selected for this invoice (changes need owner approval; see PaymentMethodChange).
   paymentMethod         String?
+  // "QUOTE" = itemized quote form; "INVOICE" = Create Invoice (one service, staff-chosen payment options).
+  formType              String         @default("QUOTE")
+  // Billing contact copied from the master client record when the invoice is created or edited.
+  billingName           String?
+  billingEmail          String?
+  billingPhone          String?
+  billingAddress        String?
+  // Payment methods staff offered on this invoice. Only methods the owner approved
+  // (an active PaymentInstruction) can be offered; the client sees only these.
+  offeredMethods        String[]       @default([])
+  // A Square payment link created in the firm's own Square account. Shown to the client only
+  // when the owner has enabled Square payment links (BillingSettings) and Square is configured.
+  squarePaymentUrl      String?
+  submittedAt           DateTime?
+  submittedById         String?
+  approvedAt            DateTime?
+  approvedById          String?
+  // First time the client opened the sent invoice in the portal.
+  viewedAt              DateTime?
   createdById           String
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
@@ -2301,11 +2322,16 @@ enum PaymentMethod {
   ZELLE
   CASH_APP
   OTHER
+  VENMO
+  // Republic Bank Refund Transfer deposit.
+  REFUND_TRANSFER
 }
 
 enum PaymentKind {
   PAYMENT
   REFUND
+  // An owner-approved balance adjustment (credit). Not cash: never counted as collected revenue.
+  CREDIT
 }
 
 enum PaymentStatus {
@@ -2316,24 +2342,26 @@ enum PaymentStatus {
 
 // Money movements. Only SUCCEEDED payments (minus refunds) count as collected.
 model Payment {
-  id          String        @id @default(cuid())
-  invoiceId   String
-  invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
-  clientId    String
-  client      Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  kind        PaymentKind   @default(PAYMENT)
-  status      PaymentStatus @default(SUCCEEDED)
-  amountCents Int
-  receivedOn  DateTime      @db.Date
-  method      PaymentMethod
+  id             String        @id @default(cuid())
+  invoiceId      String
+  invoice        Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  clientId       String
+  client         Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  kind           PaymentKind   @default(PAYMENT)
+  status         PaymentStatus @default(SUCCEEDED)
+  amountCents    Int
+  receivedOn     DateTime      @db.Date
+  method         PaymentMethod
   // "manual" until a payment provider is connected; then the provider's name.
-  source      String        @default("manual")
-  providerRef String?       @unique
-  reference   String?
-  note        String?
-  failureNote String?
-  createdById String
-  createdAt   DateTime      @default(now())
+  source         String        @default("manual")
+  providerRef    String?       @unique
+  reference      String?
+  note           String?
+  failureNote    String?
+  // The form's one-time key: a double-submitted form can't record the same payment twice.
+  idempotencyKey String?       @unique
+  createdById    String
+  createdAt      DateTime      @default(now())
 
   @@index([receivedOn])
   @@index([invoiceId])
@@ -2354,6 +2382,12 @@ model BillingSettings {
   defaultPaymentTerms     String?
   // Owner confirmed the payment provider's / legal rules for the plan fee.
   planFeeRulesConfirmedAt DateTime?
+  // Square payment links on invoices: off until the owner turns them on.
+  squareLinksEnabledAt    DateTime?
+  squareLinksEnabledById  String?
+  // Republic Bank Refund Transfer fees the owner has confirmed, shown to clients as written.
+  // Empty = no fee amounts are shown (none are assumed).
+  refundTransferFeeNote   String?
   updatedById             String?
   updatedAt               DateTime   @updatedAt
 }

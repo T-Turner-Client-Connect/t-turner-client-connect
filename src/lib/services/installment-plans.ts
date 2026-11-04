@@ -241,6 +241,8 @@ export const PAY_METHODS = {
   SQUARE_INVOICE: { label: "Square invoice (card)", fee: "Card rules apply (no fee on debit)" },
   SQUARE_AFTERPAY: { label: "Afterpay (through Square, if eligible)", fee: "Set by Square/Afterpay" },
   IN_HOUSE_PLAN: { label: "In-house payment plan (card on file)", fee: "Card rules apply (no fee on debit)" },
+  // Offered only on a firm invoice, per invoice, by staff (eligible tax returns only) — never chosen here.
+  REFUND_TRANSFER: { label: "Republic Bank Refund Transfer", fee: "Republic Bank's own fees and disclosures apply" },
 } as const;
 export type PayMethod = keyof typeof PAY_METHODS;
 
@@ -259,7 +261,7 @@ export async function savePaymentInstruction(actor: Actor, method: string, input
 
 /** Sets the invoice's one payment method the first time; afterwards changes need the owner's approval. */
 export async function chooseInvoiceMethod(who: { staff: Actor } | { portal: PortalActor }, invoiceId: string, method: string, reason?: string) {
-  if (!(method in PAY_METHODS) || method === "IN_HOUSE_PLAN") throw new ValidationError("Choose a payment method.");
+  if (!(method in PAY_METHODS) || method === "IN_HOUSE_PLAN" || method === "REFUND_TRANSFER") throw new ValidationError("Choose a payment method.");
   const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
   if (!inv || inv.state === "DRAFT" || inv.state === "VOID") throw new ForbiddenError("You don't have access to that invoice.");
   if ("portal" in who) await requireClientAccess(who.portal.id, inv.clientId, "billing");

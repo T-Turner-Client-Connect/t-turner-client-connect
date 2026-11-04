@@ -7,6 +7,8 @@ import { fmtDateTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { FeeSettingsCard } from "@/components/owner/fee-settings";
 import { PlanSettingsCards } from "@/components/owner/plan-settings";
+import { refundFeeNoteAction, squareLinksAction } from "@/app/actions/firm-invoices";
+import { squareSettings } from "@/lib/square";
 
 const plain = (type: string, v: number) => (type === "FLAT" || type === "PERCENT" ? (v / 100).toString() : "");
 
@@ -50,6 +52,31 @@ export default async function OwnerSettingsPage() {
         </Card>
 
         <div className="space-y-4">
+          <Card title="Invoice payment options">
+            <div className="space-y-4 text-sm" data-testid="invoice-payment-settings">
+              <div>
+                <p className="font-semibold text-navy-900">Square payment links on invoices{" "}
+                  {s.squareLinksEnabledAt ? <Badge tone="green">On</Badge> : <Badge tone="gray">Not enabled</Badge>}
+                </p>
+                <p className="mt-1 text-slate-700">
+                  When on, a client sees a &ldquo;Pay securely with Square&rdquo; button on an invoice that offers Square and has a link from the firm&apos;s own Square account attached. Client Connect never creates or sends Square invoices, never charges a card and never stores card details.
+                  {!squareSettings().configured && " Square isn't configured on this site, so no link is shown even when this is on."}
+                </p>
+                <ActionForm action={squareLinksAction.bind(null, !s.squareLinksEnabledAt)} className="mt-2" confirm={s.squareLinksEnabledAt ? undefined : "Turn on Square payment links? Clients will see the Square link on invoices that offer Square."}>
+                  <Button type="submit" variant="secondary">{s.squareLinksEnabledAt ? "Turn off Square links" : "Turn on Square links"}</Button>
+                </ActionForm>
+              </div>
+              <div className="border-t border-ivory-200 pt-4">
+                <p className="font-semibold text-navy-900">Republic Bank Refund Transfer — confirmed fees</p>
+                <p className="mt-1 text-slate-700">Shown to clients exactly as written, with Republic Bank&apos;s disclosures. Leave empty until the fees are confirmed: no amount is shown or assumed.</p>
+                <ActionForm action={refundFeeNoteAction} className="mt-2 space-y-2">
+                  <textarea className="input" name="note" rows={2} maxLength={1000} defaultValue={s.refundTransferFeeNote ?? ""} aria-label="Confirmed Refund Transfer fees" />
+                  <Button type="submit" variant="secondary">Save</Button>
+                </ActionForm>
+              </div>
+              <p className="text-xs text-slate-600">Which methods can be offered on invoices is set under &ldquo;Payment instructions clients see&rdquo; below: only methods turned on there can be chosen.</p>
+            </div>
+          </Card>
           <Card title="Payment provider">
             <p className="text-sm"><Badge tone="gray">Not connected</Badge></p>
             <p className="mt-2 text-sm text-slate-700">
