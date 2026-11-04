@@ -55,17 +55,17 @@ function Cell({ area, def, held, mode, standard }: { area: Area; def: ActionDef;
 export function PermissionMatrix({ held, mode }: { held: ReadonlySet<string>; mode: Mode }) {
   return (
     <div className="overflow-hidden rounded-xl border border-ivory-200" data-testid="permission-matrix">
-      <div className="hidden bg-navy-900 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-navy-100 md:grid md:grid-cols-[minmax(170px,1.2fr)_repeat(6,50px)_minmax(150px,1fr)] md:items-center md:gap-1.5">
+      <div className="hidden bg-navy-900 px-3 py-2 text-[11px] font-semibold uppercase tracking-normal text-navy-100 md:grid md:grid-cols-[minmax(170px,1.2fr)_repeat(6,66px)_minmax(150px,1fr)] md:items-center md:gap-1.5">
         <span>Area</span>
         {COLUMNS.map((c) => <span key={c} className="text-center">{ACTION_LABELS[c]}</span>)}
-        <span>More</span>
+        <span className="pl-2">More</span>
       </div>
       <ul className="divide-y divide-ivory-200">
         {AREAS.map((area, i) => {
           const actions = area.actions as readonly ActionDef[];
           const more = actions.filter((a) => !COLUMNS.includes(a.key));
           return (
-            <li key={area.key} data-area={area.key} className={clsx("grid gap-2 px-3 py-3 md:gap-1.5 md:grid-cols-[minmax(170px,1.2fr)_repeat(6,50px)_minmax(150px,1fr)] md:items-center", i % 2 ? "bg-ivory-100" : "bg-white")}>
+            <li key={area.key} data-area={area.key} className={clsx("grid gap-2 px-3 py-3 md:gap-1.5 md:grid-cols-[minmax(170px,1.2fr)_repeat(6,66px)_minmax(150px,1fr)] md:items-center", i % 2 ? "bg-ivory-100" : "bg-white")}>
               <div>
                 <p className="font-semibold text-navy-900">{area.label}</p>
                 <p className="text-xs text-slate-600">{area.description}</p>
