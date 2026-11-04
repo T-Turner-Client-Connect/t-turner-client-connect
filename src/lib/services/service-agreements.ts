@@ -3,7 +3,7 @@ import type { AgreementKind, ClientService, PricingAgreement, ServiceStatus, Ser
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
-import { assertOwner, ownerAudit } from "@/lib/auth/owner";
+import { assertOffice, ownerAudit } from "@/lib/auth/owner";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { OFFICE_TZ } from "@/lib/dates";
@@ -74,7 +74,7 @@ export async function feeSettings(): Promise<(FeeSetting & { verifiedNote: strin
  * card surcharge is stored as entered but never applied above the 3% cap.
  */
 export async function saveFeeSetting(actor: Actor, input: { method: string; enabled: boolean; percentBps: number; flatCents: number; verifiedNote?: string; providerName?: string }) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "settings");
   if (!(FEE_SETTING_KEYS as readonly string[]).includes(input.method)) throw new ValidationError("Choose a payment method that can carry a fee.");
   const key = input.method as FeeSettingKey;
   if (!Number.isInteger(input.percentBps) || input.percentBps < 0 || input.percentBps > 1000) throw new ValidationError("Enter a percentage from 0 to 10.");
@@ -169,7 +169,7 @@ export async function recordPaymentAuthorization(actor: Actor, serviceId: string
 
 /** The owner's documented exception: work may begin without the signed agreement. */
 export async function ownerOverride(actor: Actor, serviceId: string, reason: string) {
-  await assertOwner(actor, "full");
+  await assertOffice(actor, "billing", "approve");
   if (!reason.trim() || reason.trim().length < 10) throw new ValidationError("Document why work may begin without the signed agreement.");
   const s = await prisma.clientService.findUnique({ where: { id: serviceId } });
   if (!s) throw new ValidationError("Service not found.");

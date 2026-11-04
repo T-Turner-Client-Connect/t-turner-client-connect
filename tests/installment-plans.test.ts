@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { grantPerms, makeUser, OLD_BILLING_ONLY, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -26,7 +26,7 @@ async function setup() {
   await prisma.ownerAccess.create({ data: { userId: tabitha.id, isPrimary: true } });
   const daria = await makeUser("STAFF", "Daria");
   const delegate = await makeUser("ADMIN", "Billing Delegate");
-  await prisma.ownerAccess.create({ data: { userId: delegate.id, scope: "BILLING" } });
+  await grantPerms(delegate.id, OLD_BILLING_ONLY);
   const jane = await createClient(tabitha, { firstName: "Jane", lastName: "Williams", clientType: "INDIVIDUAL", status: "ACTIVE", email: "jane@fictional.example" });
   const omar = await createClient(tabitha, { firstName: "Omar", lastName: "Other", clientType: "INDIVIDUAL", status: "ACTIVE", email: "omar@fictional.example" });
   const login = async (clientId: string, email: string) => {

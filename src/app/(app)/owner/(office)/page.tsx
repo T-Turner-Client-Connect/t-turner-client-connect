@@ -5,7 +5,7 @@ import { ActionForm } from "@/components/action-form";
 import { addNonSquareRecurringAction } from "@/app/actions/manual-billing";
 import { nonSquareRecurring, PAY_METHODS } from "@/lib/services/manual-billing";
 import { prisma } from "@/lib/prisma";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { monthlySummary, receivables, todayYmd } from "@/lib/services/owner-billing";
 import { AGING_BUCKETS, money } from "@/lib/billing/pricing";
 import { nameOf, paymentStatus, squareRevenueSummary } from "@/lib/services/square-billing";
@@ -15,10 +15,13 @@ import { fmtDate, fmtDateTime } from "@/lib/format";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export default async function OwnerOverview({ searchParams }: { searchParams: Promise<{ year?: string }> }) {
-  const { actor } = await requireOwner("full");
+  const { actor, access } = await requireOffice("revenue");
   const thisYear = Number(todayYmd().slice(0, 4));
   const year = Number((await searchParams).year) || thisYear;
-  const [{ months, total }, r, sq, health, other, clientChoices] = await Promise.all([monthlySummary(actor, year), receivables(actor), squareRevenueSummary(), squareHealth(), nonSquareRecurring(actor), prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, businessName: true }, orderBy: { displayName: "asc" } })]);
+  // Each section shows only to staff holding its permission (the owner sees everything).
+  const mayAr = access.can("receivables", "view");
+  const maySq = access.can("square", "view");
+  const [{ months, total }, r, sq, health, other, clientChoices] = await Promise.all([monthlySummary(actor, year), mayAr ? receivables(actor) : null, maySq ? squareRevenueSummary() : null, maySq ? squareHealth() : null, maySq ? nonSquareRecurring(actor) : null, prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, businessName: true }, orderBy: { displayName: "asc" } })]);
   const month = year === thisYear ? months[Number(todayYmd().slice(5, 7)) - 1] : null;
   return (
     <>
@@ -27,9 +30,9 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
         subtitle="Invoiced revenue and cash collected are tracked separately. Unpaid invoices never count as cash."
         actions={
           <>
-            <LinkButton href="/owner/invoices/create" variant="gold" className="px-5 text-base shadow-md" data-testid="create-invoice"><Plus className="size-5" aria-hidden /> Create Invoice</LinkButton>
-            <LinkButton href="/owner/invoices/new" variant="secondary">Itemized quote</LinkButton>
-            <LinkButton href="/owner/expenses" variant="secondary">Add expense</LinkButton>
+            {access.can("billing", "create") && <LinkButton href="/owner/invoices/create" variant="gold" className="px-5 text-base shadow-md" data-testid="create-invoice"><Plus className="size-5" aria-hidden /> Create Invoice</LinkButton>}
+            {access.can("billing", "create") && <LinkButton href="/owner/invoices/new" variant="secondary">Itemized quote</LinkButton>}
+            {access.can("revenue", "create") && <LinkButton href="/owner/expenses" variant="secondary">Add expense</LinkButton>}
           </>
         }
       />
@@ -37,10 +40,10 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
         <Stat label={`Collected ${year}`} value={money(total.collectedCents - total.refundedCents)} hint={month ? `${money(month.collectedCents - month.refundedCents)} this month` : "Cash received, less refunds"} />
         <Stat label={`Invoiced ${year}`} value={money(total.invoicedCents)} hint="Accepted quotes and issued invoices" />
         <Stat label={`Expenses ${year}`} value={money(total.expensesCents)} hint={month ? `${money(month.expensesCents)} this month` : undefined} />
-        <Stat label="Outstanding now" value={money(r.totalOutstandingCents)} hint={`${r.clients.length} client${r.clients.length === 1 ? " owes" : "s owe"} a balance`} href="/owner/invoices?state=open" />
+        {r && <Stat label="Outstanding now" value={money(r.totalOutstandingCents)} hint={`${r.clients.length} client${r.clients.length === 1 ? " owes" : "s owe"} a balance`} href="/owner/invoices?state=open" />}
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-[3fr_2fr]">
+      {r && <div className="mt-6 grid gap-4 lg:grid-cols-[3fr_2fr]">
         <Card title="Who owes me" actions={<Link className="text-sm underline" href="/api/owner/export?type=receivables">Export CSV</Link>}>
           {r.clients.length === 0 ? (
             <p className="text-sm text-slate-600">No outstanding balances.</p>
@@ -67,7 +70,7 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
             ))}
           </ul>
         </Card>
-      </div>
+      </div>}
 
       <Card
         className="mt-6"
@@ -106,6 +109,7 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
           Invoices are &ldquo;invoiced revenue&rdquo; when accepted or issued; only recorded payments count as cash collected.
         </Notice>
       </div>
+      {sq && health && other && <>
       <Card
         className="mt-4"
         title="Square recurring billing (from Square)"
@@ -187,6 +191,7 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
           </ActionForm>
         </details>
       </Card>
+      </>}
     </>
   );
 }

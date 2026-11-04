@@ -4,7 +4,7 @@ import type { Invoice, InvoiceLine, Payment, PaymentMethod, Prisma } from "@pris
 import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
 import { ownerAudit } from "@/lib/auth/owner";
-import { assertCanChangeBillingSettings, assertCanReconcile, assertCanSendInvoices } from "@/lib/auth/billing-permissions";
+import { assertCanChangePaymentIntegrations, assertCanReconcile, assertCanSendInvoices } from "@/lib/auth/billing-permissions";
 import { squareRequest, squareSettings, SquareError, squareWebhookUrl, verifySquareSignature } from "@/lib/square";
 import { normalizeEmail, normalizePhone } from "@/lib/normalize";
 import { collectedCents, money } from "@/lib/billing/pricing";
@@ -99,7 +99,7 @@ export async function squareSendingState() {
 
 /** "Send invoices through Square": Tabitha's one switch for live Square invoices. Audited. */
 export async function setSquareSending(actor: Actor, enabled: boolean) {
-  await assertCanChangeBillingSettings(actor);
+  await assertCanChangePaymentIntegrations(actor);
   await billingSettings();
   const cfg = squareSettings();
   await prisma.billingSettings.update({
@@ -110,7 +110,7 @@ export async function setSquareSending(actor: Actor, enabled: boolean) {
 }
 
 export async function setSquareDeliveryOptions(actor: Actor, input: { delivery: string; acceptBank: boolean }) {
-  await assertCanChangeBillingSettings(actor);
+  await assertCanChangePaymentIntegrations(actor);
   if (input.delivery !== "EMAIL" && input.delivery !== "SHARE_MANUALLY") throw new ValidationError("Choose how the Square invoice reaches the client.");
   await billingSettings();
   await prisma.billingSettings.update({ where: { id: "default" }, data: { squareDelivery: input.delivery, squareAcceptBank: input.acceptBank } });

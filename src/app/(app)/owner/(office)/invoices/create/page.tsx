@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/ui";
 import { FirmInvoiceForm } from "@/components/owner/firm-invoice-form";
 import { saveFirmInvoiceAction } from "@/app/actions/firm-invoices";
-import { requireOwner } from "@/lib/auth/owner";
+import { requireOffice } from "@/lib/auth/owner";
 import { billingSettings, previewNextNumber, todayYmd } from "@/lib/services/owner-billing";
 import { approvedFirmMethods, invoiceClientChoices, squareLinksLive } from "@/lib/services/firm-invoices";
 import { squareSendingState } from "@/lib/services/square-invoicing";
@@ -12,7 +12,7 @@ import { DEFAULT_SERVICE } from "@/lib/billing/invoice-status";
 export const metadata = { title: "Create Invoice" };
 
 export default async function CreateInvoicePage({ searchParams }: { searchParams: Promise<{ client?: string }> }) {
-  const { actor, access } = await requireOwner("billing");
+  const { actor, access } = await requireOffice("billing", "create");
   const sp = await searchParams;
   const today = todayYmd(); // Central time
   const [clients, approved, live, settings, next, sending] = await Promise.all([invoiceClientChoices(actor), approvedFirmMethods(), squareLinksLive(), billingSettings(), previewNextNumber(Number(today.slice(0, 4))), squareSendingState()]);
@@ -28,7 +28,7 @@ export default async function CreateInvoicePage({ searchParams }: { searchParams
         squareLive={live}
         squareSending={sending.live}
         refundFeeNote={settings.refundTransferFeeNote}
-        canApprove={access.scope === "FULL"}
+        canApprove={access.can("billing", "send")}
         defaults={{
           clientId: clients.some((c) => c.id === sp.client) ? sp.client! : "",
           service: DEFAULT_SERVICE,

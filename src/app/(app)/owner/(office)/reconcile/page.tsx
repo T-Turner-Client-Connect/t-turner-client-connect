@@ -1,10 +1,8 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { applySquarePaymentAction, dismissSquarePaymentAction, reconcileNowAction } from "@/app/actions/square-invoicing";
-import { requireOwner } from "@/lib/auth/owner";
-import { canReconcile } from "@/lib/auth/billing-permissions";
+import { requireOffice } from "@/lib/auth/owner";
 import { SQUARE_STATUS_LABELS, squareReconcileView, squareSendingState } from "@/lib/services/square-invoicing";
 import { ymd } from "@/lib/services/owner-billing";
 import { money } from "@/lib/billing/pricing";
@@ -15,8 +13,8 @@ export const metadata = { title: "Reconcile Square payments" };
 
 /** Square payments matched to our invoices, and the ones staff need to look at. */
 export default async function ReconcilePage() {
-  const { actor } = await requireOwner("billing");
-  if (!(await canReconcile(actor))) notFound();
+  // Accounts receivable → Reconcile (the owner always can).
+  const { actor } = await requireOffice("receivables", "reconcile");
   const [v, sending] = await Promise.all([squareReconcileView(actor), squareSendingState()]);
   return (
     <>

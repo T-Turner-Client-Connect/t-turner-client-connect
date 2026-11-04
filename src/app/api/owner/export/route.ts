@@ -1,14 +1,16 @@
-import { ownerFromSession } from "@/lib/auth/owner";
+import { officeFromSession } from "@/lib/auth/owner";
 import { invoiceRows, monthlySummary, receivables, todayYmd } from "@/lib/services/owner-billing";
 import { listExpenses } from "@/lib/services/owner-expenses";
 import { dollars, toCsv } from "@/lib/csv";
 import { prisma } from "@/lib/prisma";
 
-// Owner-only CSV exports. Anyone else gets the same 404 as a missing page.
+// Owner's Office CSV exports. Anyone else gets the same 404 as a missing page.
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const type = url.searchParams.get("type");
-  const actor = await ownerFromSession("full");
+  // Each export needs the permission for what it contains (Staff Access & Permissions).
+  const need = ({ invoices: ["billing", "view"], payments: ["receivables", "view"], receivables: ["receivables", "view"], expenses: ["revenue", "view"], summary: ["revenue", "view"] } as const)[type as "invoices"];
+  const actor = need ? await officeFromSession(need[0], need[1]) : null;
   if (!actor) return new Response("Not found", { status: 404 });
   const year = Number(url.searchParams.get("year")) || Number(todayYmd().slice(0, 4));
   let csv: string;

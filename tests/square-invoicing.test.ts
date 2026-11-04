@@ -4,7 +4,9 @@ import { prisma, resetDb } from "./db";
 import { SquareMock } from "./square-mock";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { hashPassword } from "@/lib/auth/password";
-import { claimOwnerOffice, grantOwnerAccess } from "@/lib/auth/owner";
+import { claimOwnerOffice } from "@/lib/auth/owner";
+import { applyPermissionPreset, setStaffPermissions } from "@/lib/auth/permissions";
+import { DARIA_PRESET } from "@/lib/permissions";
 import { canChangeBillingSettings, canReconcile, canRecordPayments, canSendInvoices } from "@/lib/auth/billing-permissions";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -82,7 +84,8 @@ async function office(opts: { sending?: boolean } = { sending: true }) {
   const daria = await staffAccount("daria@tturnerassociates.example", "Daria", "STAFF");
   const marcus = await staffAccount("marcus@tturnerassociates.example", "Marcus", "STAFF");
   await claimOwnerOffice(tab, PASSWORD);
-  await grantOwnerAccess(tab, { userId: daria.id, scope: "BILLING", password: PASSWORD });
+  // Daria holds the Billing clerk preset: send, record payments, reconcile; no refunds or Square settings.
+  await applyPermissionPreset(tab, daria.id, DARIA_PRESET.key);
   await savePaymentInstruction(tab, "ZELLE", { details: "Send to: Tabitha Turner", active: true });
   await savePaymentInstruction(tab, "SQUARE_INVOICE", { details: "Pay by card through Square.", active: true });
   if (opts.sending) await setSquareSending(tab, true);
@@ -445,9 +448,9 @@ describe("Permissions (server-side)", () => {
     await expect(recordPayment(daria, { invoiceId: inv.id, kind: "REFUND", status: "SUCCEEDED", amountCents: 100, receivedOn: today, method: "CASH" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(setSquareDeliveryOptions(daria, { delivery: "EMAIL", acceptBank: true })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(setSquareLinksEnabled(daria, true)).rejects.toBeInstanceOf(ForbiddenError);
-    // A second full-access owner (not the primary) can't flip the Square switch either.
+    // Staff with every billing action except the integration and settings permissions can't flip the Square switch either.
     const partner = await staffAccount("partner@tturnerassociates.example", "Pat", "STAFF");
-    await grantOwnerAccess(tab, { userId: partner.id, scope: "FULL", password: PASSWORD });
+    await setStaffPermissions(tab, partner.id, [...DARIA_PRESET.keys, "billing.approve", "billing.refund", "billing.void", "billing.adjust", "square.edit"]);
     expect(await canChangeBillingSettings(partner)).toBe(false);
     await expect(setSquareSending(partner, false)).rejects.toBeInstanceOf(ForbiddenError);
     expect(await sendInvoiceViaSquare(daria, inv.id)).toMatchObject({ already: false });

@@ -25,7 +25,7 @@ export const BANK_CONSENT_TEXT =
 // --- Connecting (sandbox only in this phase) ----------------------------------------------------
 
 export async function startBankLink(actor: Actor, clientId: string) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   await bookOf(clientId);
   return createLinkToken(`client:${clientId}`);
 }
@@ -35,7 +35,7 @@ export async function startBankLink(actor: Actor, clientId: string) {
  * access and how, and lists the bank's accounts for staff to map to ledger accounts.
  */
 export async function completeBankLink(actor: Actor, clientId: string, input: { publicToken: string; authorizedByName: string; authorizationMethod: "CLIENT_PRESENT" | "CLIENT_PORTAL" | "WRITTEN_AUTHORIZATION"; institutionName?: string; confirmed: boolean }) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   await bookOf(clientId);
   if (!input.confirmed) throw new ValidationError("Confirm the client authorized read-only access.");
   const who = input.authorizedByName.trim().slice(0, 120);
@@ -58,7 +58,7 @@ export async function completeBankLink(actor: Actor, clientId: string, input: { 
 
 /** Each bank account feeds exactly one of the client's own bank or card accounts in the ledger. */
 export async function mapBankAccount(actor: Actor, clientId: string, connectionAccountId: string, ledgerAccountId: string | null) {
-  await assertLedgerWrite(actor, clientId);
+  await assertLedgerWrite(actor, clientId, "banking");
   const ca = await prisma.bankConnectionAccount.findFirst({ where: { id: connectionAccountId, connection: { clientId } } });
   if (!ca) throw new ValidationError("Bank account not found.");
   if (ledgerAccountId) {
@@ -98,7 +98,7 @@ export type SyncResult = { added: number; matched: number; modified: number; rem
 export async function syncConnection(connectionId: string, trigger: "DAILY" | "MANUAL", actor: Actor | null = null): Promise<SyncResult> {
   const conn = await prisma.bankConnection.findUnique({ where: { id: connectionId }, include: { accounts: true } });
   if (!conn || conn.status === "DISCONNECTED") throw new ValidationError("Connection not found.");
-  if (actor) await assertLedger(actor, conn.clientId);
+  if (actor) await assertLedger(actor, conn.clientId, "banking", "edit");
   await assertManagedBusiness(conn.clientId);
   const run = await prisma.bankSyncRun.create({ data: { connectionId, trigger } });
   await prisma.bankConnection.update({ where: { id: connectionId }, data: { lastAttemptAt: new Date() } });
@@ -188,7 +188,7 @@ export async function syncConnection(connectionId: string, trigger: "DAILY" | "M
 
 /** Manual "Retrieve now" for one client. */
 export async function retrieveNow(actor: Actor, clientId: string) {
-  await assertLedger(actor, clientId);
+  await assertLedger(actor, clientId, "banking", "edit");
   const conns = await prisma.bankConnection.findMany({ where: { clientId, status: { in: ["ACTIVE", "ERROR"] } } });
   if (!conns.length) throw new ValidationError("No bank connection to retrieve from.");
   const total: SyncResult = { added: 0, matched: 0, modified: 0, removed: 0, skipped: 0, flagged: 0 };
@@ -251,7 +251,7 @@ async function notifyIfNeeded(clientId: string, problem?: string) {
 
 /** What the Books page shows about bank connections. */
 export async function bankConnectionsView(actor: Actor, clientId: string) {
-  await assertLedger(actor, clientId);
+  await assertLedger(actor, clientId, "banking", "view");
   const conns = await prisma.bankConnection.findMany({ where: { clientId }, orderBy: { createdAt: "asc" }, include: { accounts: true, runs: { orderBy: { startedAt: "desc" }, take: 5 } } });
   return { mode: plaidMode(), connections: conns.map(({ accessTokenEnc: _hidden, cursor: _c, ...c }) => c) };
 }

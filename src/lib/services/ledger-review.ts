@@ -14,7 +14,7 @@ import { accountBalance, assertLedger, bookOf, ledgerFlags, normDesc, toDate, ym
 // --- Categorization rules and suggestions -----------------------------------------------------
 
 export async function addRule(actor: Actor, clientId: string, input: { matchText: string; direction?: "IN" | "OUT" | "ANY"; accountId: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedger(actor, clientId, "ledger", "edit");
   await bookOf(clientId);
   const matchText = normDesc(input.matchText);
   if (matchText.length < 3) throw new ValidationError("Enter at least 3 letters or digits to match.");
@@ -30,7 +30,7 @@ export async function addRule(actor: Actor, clientId: string, input: { matchText
 }
 
 export async function setRuleActive(actor: Actor, clientId: string, ruleId: string, active: boolean) {
-  await assertLedger(actor, clientId);
+  await assertLedger(actor, clientId, "ledger", "edit");
   const r = await prisma.categorizationRule.updateMany({ where: { id: ruleId, clientId }, data: { active } });
   if (!r.count) throw new ValidationError("Rule not found.");
   await audit(prisma, { actorId: actor.id, action: active ? "ledger.rule_on" : "ledger.rule_off", entityType: "CategorizationRule", entityId: ruleId, clientId });
