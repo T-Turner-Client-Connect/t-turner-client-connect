@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, prisma, resetDb, managed } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient, saveContact } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -52,6 +52,7 @@ describe("one owner, several businesses (fictional Steven Cox example)", () => {
     await grantOwnerPortalAccess(tabitha, steven.id, energy.id, login.id);
     await expect(requireClientAccess(login.id, drive.id)).rejects.toBeInstanceOf(ForbiddenError);
     await grantOwnerPortalAccess(tabitha, steven.id, drive.id, login.id);
+    await managed(energy.id, drive.id); // both businesses are managed by the firm
     expect((await accessibleClients(login.id)).map((a) => a.clientId).sort()).toEqual([steven.id, energy.id, drive.id].sort());
     expect(await prisma.portalUser.count({ where: { email: "steven@fictional.example" } })).toBe(1);
 
@@ -96,6 +97,7 @@ describe("one owner, several businesses (fictional Steven Cox example)", () => {
     await saveContact(tabitha, energy.id, null, { name: "Steven Cox", email: "steven@fictional.example", phone: "205-555-0100" });
     const { token } = await invitePortalUser(tabitha, energy.id, { email: "steven@fictional.example", name: "Steven Cox", role: "OWNER" });
     const login = await acceptPortalInvite(token!, "Steven-Pass-12345");
+    await managed(energy.id); // Energy is managed by the firm
     const actor = { id: login.id, name: login.name, email: login.email };
     const eDoc = await deliveredReport(tabitha, energy.id, "energy-history.pdf");
     await saveProfile(tabitha, energy.id, { active: true, frequency: "MONTHLY", payroll: true });

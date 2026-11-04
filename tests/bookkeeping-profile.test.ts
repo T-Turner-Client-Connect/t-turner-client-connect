@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PDFDocument } from "pdf-lib";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, prisma, resetDb, managed } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -38,6 +38,7 @@ async function setup() {
   const daria = await makeUser("STAFF", "Daria");
   const shop = await createClient(tabitha, { businessName: "Fictional Roofing LLC", clientType: "BUSINESS", status: "ACTIVE" });
   await saveProfile(tabitha, shop.id, { active: true, frequency: "MONTHLY", payroll: true, payrollFrequency: "BIWEEKLY", payrollProvider: "ADP" });
+  await managed(shop.id);
   return { tabitha, otherAdmin, daria, shop };
 }
 
@@ -137,6 +138,7 @@ describe("reporting periods and financial packets", () => {
     const { tabitha, daria, shop } = await setup();
     const { token } = await invitePortalUser(tabitha, shop.id, { email: "owner@roofing.example", name: "Owner", role: "OWNER" });
     const owner = await acceptPortalInvite(token!, "Owner-Pass-1234");
+    await managed(shop.id); // a business the firm manages
     await saveBusinessInfo(tabitha, shop.id, { legalName: "Fictional Roofing LLC", accountingBasis: "CASH", contactName: "Sam Example", contactTitle: "Member" });
     const acct = await saveAccount(daria, shop.id, null, { institution: "Fictional State Bank", accountType: "CHECKING", last4: "4884" });
     const up = (reportType: string, extra: object = {}) => pdf(2).then((bytes) => uploadMonthlyReport(daria, { clientId: shop.id, year: 2026, month: 9, periodType: "YEAR_TO_DATE", reportType, bytes, originalName: `${reportType}.pdf`, ...extra }));

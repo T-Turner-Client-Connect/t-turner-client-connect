@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
-import { allowedCategories, requireClientAccess } from "@/lib/portal/access";
+import { allowedCategories, effectiveGrantsFor, requireClientAccess } from "@/lib/portal/access";
 import { storage } from "@/lib/storage";
 import { decryptBytes, encryptBytes, sign, verifySignature } from "@/lib/crypto";
 import { imageSize, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
@@ -253,7 +253,7 @@ export async function portalUploadDocument(
   user: PortalActor,
   input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; docType?: string | null; coverage?: Coverage | null; asOf?: Date | null; bytes: Uint8Array; originalName: string },
 ) {
-  await requireClientAccess(user.id, input.clientId, "upload");
+  const uploadGrant = await requireClientAccess(user.id, input.clientId, "upload");
   const thisYear = new Date().getFullYear();
   if (typeof input.year === "number" && (input.year < thisYear - 15 || input.year > thisYear + 1)) throw new ValidationError("Choose a tax year from the list.");
   let periodId = input.periodId ?? null;
@@ -264,6 +264,8 @@ export async function portalUploadDocument(
   } else if (periodId && !(await prisma.bookkeepingPeriod.count({ where: { id: periodId, clientId: input.clientId } }))) {
     throw new ForbiddenError();
   }
+  // A bookkeeping month belongs to the Managed Business side: no business access, no upload into it.
+  if (periodId && !uploadGrant.canViewBookkeeping) throw new ForbiddenError("Your access to this account doesn't include that.");
   const period = periodId ? await prisma.bookkeepingPeriod.findUnique({ where: { id: periodId } }) : null;
   const stored = await storeDocumentFile(input.bytes, input.originalName, { portal: user }, input.clientId);
   try {
@@ -417,7 +419,7 @@ export async function deleteDocument(actor: Actor, documentId: string, reason: s
 }
 
 async function notifyClientUsers(clientId: string, kind: string, refId: string, category?: DocumentCategory) {
-  const grants = await prisma.portalAccess.findMany({ where: { clientId, revokedAt: null } });
+  const grants = await effectiveGrantsFor(clientId);
   for (const g of grants) {
     if (category && !allowedCategories(g).includes(category as never)) continue;
     await queuePortalNotification(g.portalUserId, kind, `${kind}:${refId}`);

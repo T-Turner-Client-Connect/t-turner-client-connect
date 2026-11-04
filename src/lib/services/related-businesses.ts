@@ -186,7 +186,7 @@ export async function grantOwnerPortalAccess(actor: Actor, personClientId: strin
   await prisma.portalAccess.upsert({
     where: { portalUserId_clientId: { portalUserId, clientId: businessClientId } },
     update: { revokedAt: null, role: "OWNER", grantedById: actor.id },
-    create: { portalUserId, clientId: businessClientId, role: "OWNER", canMessage: true, canUpload: true, canViewBookkeeping: true, canViewTax: true, canViewContracts: true, canViewIdentity: false, grantedById: actor.id },
+    create: { portalUserId, clientId: businessClientId, role: "OWNER", canMessage: true, canUpload: true, canViewBookkeeping: false, canViewTax: true, canViewContracts: true, canViewIdentity: false, grantedById: actor.id },
   });
   await audit(prisma, { actorId: actor.id, action: "portal.access_granted", entityType: "PortalUser", entityId: portalUserId, clientId: businessClientId, details: { via: "linked_owner", personClientId } });
 }

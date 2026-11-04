@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, prisma, resetDb, managed } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -36,6 +36,7 @@ async function setup() {
   const login = await acceptPortalInvite(token!, "Owner-Pass-12345");
   const client = { id: login.id, name: login.name, email: login.email };
   const canOpen = async (id: string) => !!(await authorizeDownload(downloadToken(id, { portalUserId: login.id }), { portalUserId: login.id }));
+  await managed(biz.id);
   return { tabitha, otherAdmin, daria, biz, period, client, canOpen };
 }
 

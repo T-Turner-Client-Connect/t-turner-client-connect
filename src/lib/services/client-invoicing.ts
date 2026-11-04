@@ -4,7 +4,7 @@ import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { normalizeEmail } from "@/lib/normalize";
 import { ValidationError } from "./clients";
-import { assertLedger, bookOf, isYmd, parseCents, postEntryTx, reverseEntry, toDate, todayCentral, ymdOf, type LineInput } from "./ledger";
+import { assertLedger, assertLedgerWrite, bookOf, isYmd, parseCents, postEntryTx, reverseEntry, toDate, todayCentral, ymdOf, type LineInput } from "./ledger";
 
 /**
  * Client Invoicing (foundation): a bookkeeping client's own invoices to THEIR customers, kept
@@ -40,7 +40,7 @@ export function assertStripeTestMode() {
 
 /** Records the client's own connected Stripe account (test mode). Payments go to that account, never the office's. */
 export async function linkStripeTestAccount(actor: Actor, clientId: string, stripeAccountId: string) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   assertStripeTestMode();
   if (!/^acct_[A-Za-z0-9]{8,}$/.test(stripeAccountId)) throw new ValidationError("Enter the connected account ID (acct_…).");
   if (await prisma.stripeConnectAccount.findFirst({ where: { stripeAccountId, NOT: { clientId } } })) throw new ValidationError("That Stripe account is already linked to a different client.");
@@ -52,7 +52,7 @@ export async function linkStripeTestAccount(actor: Actor, clientId: string, stri
 // --- Customers -----------------------------------------------------------------------------------
 
 export async function addCustomer(actor: Actor, clientId: string, input: { name: string; email?: string; phone?: string; address?: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   await bookOf(clientId);
   const name = input.name.trim().slice(0, 120);
   if (!name) throw new ValidationError("Enter the customer's name.");
@@ -85,7 +85,7 @@ async function cleanLines(clientId: string, lines: InvoiceLineInput[]) {
 }
 
 export async function createInvoice(actor: Actor, clientId: string, input: { customerId: string; issueDate: string; dueDate: string; lines: InvoiceLineInput[]; memo?: string; recurringId?: string | null }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   await bookOf(clientId);
   const customer = await prisma.invoiceCustomer.findFirst({ where: { id: input.customerId, clientId, active: true } });
   if (!customer) throw new ValidationError("Choose one of this client's customers.");
@@ -103,7 +103,7 @@ export async function createInvoice(actor: Actor, clientId: string, input: { cus
 
 /** Issuing records the receivable for accrual statements. Sending the invoice by email is a later step. */
 export async function issueInvoice(actor: Actor, clientId: string, invoiceId: string) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   return prisma.$transaction(async (tx) => {
     const inv = await tx.clientInvoice.findFirst({ where: { id: invoiceId, clientId }, include: { lines: true } });
     if (!inv) throw new ValidationError("Invoice not found.");
@@ -126,7 +126,7 @@ const PAYMENT_METHODS = ["STRIPE_TEST", "CHECK", "CASH", "ACH", "ZELLE", "OTHER"
  * recorded once, so a repeated webhook or a double click never doubles it.
  */
 export async function recordInvoicePayment(actor: Actor, clientId: string, invoiceId: string, input: { amount: string; fee?: string; receivedOn: string; method: string; reference?: string; stripePaymentIntentId?: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   if (!PAYMENT_METHODS.includes(input.method as (typeof PAYMENT_METHODS)[number])) throw new ValidationError("Choose how the customer paid.");
   if (input.method === "STRIPE_TEST") assertStripeTestMode();
   if (!isYmd(input.receivedOn) || input.receivedOn > todayCentral()) throw new ValidationError("Enter the date the payment was received (not in the future).");
@@ -172,7 +172,7 @@ export async function recordInvoicePayment(actor: Actor, clientId: string, invoi
 
 /** A void keeps the invoice with its reason; its receivable is reversed. Paid invoices are refunded, not voided. */
 export async function voidInvoice(actor: Actor, clientId: string, invoiceId: string, input: { date: string; reason: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   if (input.reason.trim().length < 5) throw new ValidationError("Record why the invoice is being voided.");
   const inv = await prisma.clientInvoice.findFirst({ where: { id: invoiceId, clientId } });
   if (!inv) throw new ValidationError("Invoice not found.");
@@ -197,7 +197,7 @@ const addMonthsYmd = (ymd: string, n: number) => {
 const STEP = { MONTHLY: 1, QUARTERLY: 3, YEARLY: 12 } as const;
 
 export async function addRecurringInvoice(actor: Actor, clientId: string, input: { customerId: string; cadence: keyof typeof STEP; startDate: string; dueDays?: number; lines: InvoiceLineInput[]; memo?: string }) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   if (!(input.cadence in STEP)) throw new ValidationError("Choose monthly, quarterly or yearly.");
   if (!isYmd(input.startDate)) throw new ValidationError("Choose the first invoice date.");
   const customer = await prisma.invoiceCustomer.findFirst({ where: { id: input.customerId, clientId, active: true } });
@@ -212,7 +212,7 @@ export async function addRecurringInvoice(actor: Actor, clientId: string, input:
 
 /** Creates the DRAFT invoices that are due (each date once). Drafts are reviewed and issued by staff. */
 export async function generateRecurringDrafts(actor: Actor, clientId: string, today = todayCentral()) {
-  await assertLedger(actor, clientId);
+  await assertLedgerWrite(actor, clientId);
   const due = await prisma.recurringInvoice.findMany({ where: { clientId, active: true, nextDate: { lte: toDate(today) } } });
   const made: string[] = [];
   for (const r of due) {

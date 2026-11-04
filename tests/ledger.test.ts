@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, prisma, resetDb, managed } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import {
@@ -19,6 +19,7 @@ async function setup() {
   const otherStaff = await makeUser("STAFF", "Other");
   const harbor = await createClient(tabitha, { businessName: "Harbor Example Co (fictional)", clientType: "BUSINESS", status: "ACTIVE", assignedToId: daria.id });
   const maple = await createClient(tabitha, { businessName: "Maple Example LLC (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
+  await managed(harbor.id, maple.id);
   await setupLedger(daria, harbor.id, { basis: "CASH" });
   const acct = async (clientId: string, code: string) => (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId, code } })).id;
   return { tabitha, daria, otherStaff, harbor, maple, acct };
