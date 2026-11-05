@@ -11,6 +11,7 @@ import {
   VENDORS,
   offboardingChecklist,
   reviewStatus,
+  type EditableReview,
   type VendorAnswer,
 } from "@/lib/access-review";
 import { ValidationError } from "./clients";
@@ -122,7 +123,7 @@ export async function accessReviewBoard(actor: Actor, now = new Date()) {
   const [staff, changes, history] = await Promise.all([
     staffSnapshot(),
     accessChangesSince(last?.completedAt ?? null, 100),
-    prisma.accessReview.findMany({ orderBy: { completedAt: "desc" }, take: 40, select: { id: true, completedAt: true, reviewerName: true, summary: true, vendorAnswers: true, staffSnapshot: true } }),
+    prisma.accessReview.findMany({ orderBy: { completedAt: "desc" }, take: 40, select: { id: true, completedAt: true, reviewerName: true, summary: true, vendorAnswers: true, staffSnapshot: true, _count: { select: { revisions: true } } } }),
   ]);
   return {
     status: reviewStatus(last?.completedAt, now),
@@ -138,6 +139,7 @@ export async function accessReviewBoard(actor: Actor, now = new Date()) {
         summary: h.summary,
         staffCount: ((h.staffSnapshot ?? []) as unknown[]).length,
         flagged: answers.filter((a) => !a.appropriate || !a.twoStep).length,
+        corrections: h._count.revisions,
       };
     }),
   };
@@ -200,12 +202,172 @@ export async function completeAccessReview(actor: Actor, input: ReviewInput, now
   });
 }
 
-/** One saved review, for the printable view. */
+/** One saved review, for the printable view, with its correction history (oldest first). */
 export async function getAccessReview(actor: Actor, id: string) {
   await assertOwner(actor);
-  const r = await prisma.accessReview.findUnique({ where: { id } });
+  const r = await prisma.accessReview.findUnique({ where: { id }, include: { revisions: { orderBy: { revisionNumber: "asc" } } } });
   if (!r) return null;
-  return { ...r, staff: r.staffSnapshot as unknown as StaffSnapshotRow[], vendors: r.vendorAnswers as unknown as VendorAnswer[], changeList: (r.changes ?? []) as unknown as AccessChange[] };
+  const { revisions, ...review } = r;
+  const corrections: ReviewCorrection[] = revisions.map((v) => ({
+    id: v.id,
+    revisionNumber: v.revisionNumber,
+    editedById: v.editedById,
+    editedByName: v.editedByName,
+    editedAt: v.editedAt,
+    reason: v.reason,
+    previous: v.previous as unknown as EditableReview,
+    updated: v.updated as unknown as EditableReview,
+    changedFields: v.changedFields,
+  }));
+  return {
+    ...review,
+    staff: r.staffSnapshot as unknown as StaffSnapshotRow[],
+    vendors: r.vendorAnswers as unknown as VendorAnswer[],
+    changeList: (r.changes ?? []) as unknown as AccessChange[],
+    corrections,
+    revision: corrections.at(-1)?.revisionNumber ?? 0,
+    lastCorrection: corrections.at(-1) ?? null,
+    // The values exactly as the review was completed: the first correction's "previous", or the review itself.
+    original: corrections[0]?.previous ?? editableOf(review),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Corrections (owner only)
+// ---------------------------------------------------------------------------------------------
+
+export type { EditableReview };
+
+export type ReviewCorrection = {
+  id: string;
+  revisionNumber: number;
+  editedById: string;
+  editedByName: string;
+  editedAt: Date;
+  reason: string;
+  previous: EditableReview;
+  updated: EditableReview;
+  changedFields: string[];
+};
+
+export type CorrectionInput = {
+  /** The revision number the edit form was opened at (0 = never corrected). */
+  expectedRevision: number;
+  reason: string;
+  summary: string;
+  findings?: string;
+  vendors: Record<string, { appropriate?: boolean; twoStep?: boolean; note?: string }>;
+};
+
+const CORRECTION_KEYS = new Set(["expectedRevision", "reason", "summary", "findings", "vendors"]);
+const VENDOR_FIELDS = new Set(["appropriate", "twoStep", "note"]);
+
+function editableOf(r: { summary: string; findings: string | null; vendorAnswers: unknown }): EditableReview {
+  return { summary: r.summary, findings: r.findings, vendorAnswers: r.vendorAnswers as VendorAnswer[] };
+}
+
+/** "vendor:github.twoStep"-style names of what differs between two versions (summary and findings first). */
+export function changedFieldsOf(before: EditableReview, after: EditableReview): string[] {
+  const out: string[] = [];
+  if (before.summary !== after.summary) out.push("summary");
+  if ((before.findings ?? null) !== (after.findings ?? null)) out.push("findings");
+  for (const a of after.vendorAnswers) {
+    const b = before.vendorAnswers.find((x) => x.key === a.key);
+    for (const f of ["appropriate", "twoStep", "note"] as const) if (!b || b[f] !== a[f]) out.push(`vendor:${a.key}.${f}`);
+  }
+  return out;
+}
+
+/**
+ * Corrects a completed review: only its summary, findings and vendor answers. Everything else —
+ * staff snapshot, completion time, reviewer, change list, created time — is never touched, so the
+ * 90-day schedule (based on completedAt) stays where it was and no new review is created.
+ * Each save appends one AccessReviewRevision holding the exact previous and updated values (the
+ * first one's "previous" is the original) and one OwnerAuditLog entry. Refused when nothing
+ * changed, when the reason is missing, or when someone saved a correction after the form was opened.
+ */
+export async function correctAccessReview(actor: Actor, reviewId: string, input: CorrectionInput, now = new Date()) {
+  await assertOwner(actor);
+  // Only the editable fields are accepted: anything else (completedAt, staffSnapshot, reviewer…) is refused.
+  const extra = Object.keys(input ?? {}).filter((k) => !CORRECTION_KEYS.has(k));
+  if (extra.length) throw new ValidationError(`These can't be changed on a completed review: ${extra.join(", ")}.`);
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 0) throw new ValidationError("Reload the review and try again.");
+  const reason = (input.reason ?? "").trim();
+  if (reason.length < 3) throw new ValidationError("Give a short reason for the correction.");
+  if (reason.length > 500) throw new ValidationError("Keep the reason under 500 characters.");
+  const summary = (input.summary ?? "").trim();
+  if (summary.length < 3) throw new ValidationError("The summary can't be empty.");
+  if (summary.length > 5000) throw new ValidationError("Keep the summary under 5,000 characters.");
+  const findings = (input.findings ?? "").trim().slice(0, 10000) || null;
+  const vendorsIn = input.vendors ?? {};
+
+  return prisma.$transaction(async (tx) => {
+    // One correction at a time per review: the row lock makes the revision check below exact.
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "AccessReview" WHERE "id" = ${reviewId} FOR UPDATE`;
+    if (!locked.length) throw new ValidationError("Access review not found.");
+    const review = await tx.accessReview.findUniqueOrThrow({ where: { id: reviewId } });
+    const latest = await tx.accessReviewRevision.findFirst({ where: { reviewId }, orderBy: { revisionNumber: "desc" }, select: { revisionNumber: true } });
+    const current = latest?.revisionNumber ?? 0;
+    if (current !== input.expectedRevision) {
+      throw new ValidationError(`This review was corrected (revision ${current}) after you opened it. Nothing was saved — reload the page to see the latest version, then make your correction again.`);
+    }
+    const before = editableOf(review);
+    const known = new Set(before.vendorAnswers.map((v) => v.key));
+    const unknown = Object.keys(vendorsIn).filter((k) => !known.has(k));
+    if (unknown.length) throw new ValidationError(`These vendor accounts aren't on this review: ${unknown.join(", ")}.`);
+    for (const [k, v] of Object.entries(vendorsIn)) {
+      const bad = Object.keys(v ?? {}).filter((f) => !VENDOR_FIELDS.has(f));
+      if (bad.length) throw new ValidationError(`Only "Access still appropriate", "Two-step verification on" and the note can be changed (${k}).`);
+    }
+    const vendorAnswers: VendorAnswer[] = before.vendorAnswers.map((a) => {
+      const v = vendorsIn[a.key];
+      if (!v) return a;
+      return {
+        key: a.key,
+        label: a.label,
+        appropriate: v.appropriate === undefined ? a.appropriate : !!v.appropriate,
+        twoStep: v.twoStep === undefined ? a.twoStep : !!v.twoStep,
+        note: v.note === undefined ? a.note : v.note.trim().slice(0, 1000),
+      };
+    });
+    const after: EditableReview = { summary, findings, vendorAnswers };
+    const changedFields = changedFieldsOf(before, after);
+    if (!changedFields.length) throw new ValidationError("Nothing changed, so nothing was saved.");
+
+    const revisionNumber = current + 1;
+    const revision = await tx.accessReviewRevision.create({
+      data: {
+        reviewId,
+        revisionNumber,
+        editedById: actor.id,
+        editedByName: actor.name,
+        editedAt: now,
+        reason,
+        previous: before as unknown as Prisma.InputJsonValue,
+        updated: after as unknown as Prisma.InputJsonValue,
+        changedFields,
+      },
+    });
+    // Only the three editable columns are written; completedAt, staffSnapshot, reviewer, changes and createdAt are not.
+    await tx.accessReview.update({ where: { id: reviewId }, data: { summary, findings, vendorAnswers: vendorAnswers as unknown as Prisma.InputJsonValue } });
+    await tx.ownerAuditLog.create({
+      data: {
+        actorId: actor.id,
+        action: "access_review.corrected",
+        entityType: "AccessReview",
+        entityId: reviewId,
+        // Field names and vendor keys only — no free text.
+        details: {
+          reviewId,
+          revisionId: revision.id,
+          revisionNumber,
+          changedFields,
+          vendorKeysChanged: [...new Set(changedFields.filter((f) => f.startsWith("vendor:")).map((f) => f.slice(7).split(".")[0]))],
+        },
+      },
+    });
+    return revision;
+  });
 }
 
 /**
