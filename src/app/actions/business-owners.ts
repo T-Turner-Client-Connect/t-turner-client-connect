@@ -10,6 +10,7 @@ import { archiveBusinessOwner, inviteBusinessOwner, saveBusinessOwner, setK1Shar
 import { staffUploadDocument } from "@/lib/services/documents";
 import { decidePersonalTaxRequest, requestPersonalTax } from "@/lib/services/personal-tax-requests";
 import { ValidationError } from "@/lib/services/clients";
+import { requestOwnerDocument } from "@/lib/services/owner-personal-docs";
 
 const refresh = (clientId: string) => revalidatePath(`/clients/${clientId}`);
 
@@ -78,6 +79,16 @@ export async function uploadK1Action(clientId: string, ownerId: string, _prev: A
     });
     refresh(clientId);
     return "K-1 saved. Only this owner (and staff) can open it.";
+  });
+}
+
+/** Ask one owner for a personal tax document (for a tax year) or an identity document. Only that owner sees and answers it. */
+export async function requestOwnerDocumentAction(clientId: string, ownerId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await requestOwnerDocument(actor, clientId, { businessOwnerId: ownerId, docType: str(fd, "docType"), taxYear: Number(str(fd, "taxYear")) || null, title: str(fd, "title") || undefined });
+    refresh(clientId);
+    return "Requested. Only this owner can see and answer it.";
   });
 }
 

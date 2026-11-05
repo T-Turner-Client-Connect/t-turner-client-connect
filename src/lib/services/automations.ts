@@ -70,7 +70,7 @@ type Target = { key: string; clientId: string; anchor: Date; kind: string };
 
 async function targetsFor(kind: AutomationKind, now: Date): Promise<Target[]> {
   if (kind === "MISSING_DOCUMENT_REMINDER") {
-    const reqs = await prisma.documentRequest.findMany({ where: { status: "OPEN", dueAt: { not: null }, client: { archivedAt: null }, AND: [notRoutineStatementRequest] }, select: { id: true, clientId: true, dueAt: true } });
+    const reqs = await prisma.documentRequest.findMany({ where: { status: "OPEN", dueAt: { not: null }, client: { archivedAt: null }, kind: { not: "OWNER_PERSONAL" }, AND: [notRoutineStatementRequest] }, select: { id: true, clientId: true, dueAt: true } });
     return reqs.map((r) => ({ key: `request:${r.id}`, clientId: r.clientId, anchor: r.dueAt!, kind: "DOCUMENT_REQUEST" }));
   }
   if (kind === "APPOINTMENT_REMINDER") {
