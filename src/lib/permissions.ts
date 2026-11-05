@@ -25,6 +25,7 @@ export const ACTION_LABELS = {
   delete_history: "Delete history",
   integrations: "Change integrations",
   settings: "Change billing settings",
+  all_clients: "All clients",
 } as const;
 
 export type PermAction = keyof typeof ACTION_LABELS;
@@ -88,6 +89,16 @@ export const AREAS = [
       { key: "view", description: "See payroll.", reserved: true },
       { key: "edit", description: "Choose which business owners approve each business's payroll, which approvals are required, and whether they see per-employee figures." },
       { key: "approve", description: "Approve payroll runs.", reserved: true },
+    ],
+  },
+  {
+    key: "payroll_taxes",
+    label: "ADP Payroll & Taxes",
+    description: "The ADP Payroll & Taxes workspace (sidebar): payroll schedules, workups, client approvals, reminders. Only the owner grants it. Nothing in it submits payroll, files taxes or moves money.",
+    actions: [
+      { key: "view", description: "Open the workspace and see the work queue, due dates, approvals and completed work for the clients assigned to them (read-only)." },
+      { key: "manage", description: "Do the work for every client: schedules, assignments, hours, workups, sending for client approval, recording Submitted in ADP and Processed, reminder settings." },
+      { key: "all_clients", description: "With View: see every client's payroll, not only the clients assigned to them." },
     ],
   },
   {
@@ -200,7 +211,7 @@ export const ALL_KEYS = ALL.map((x) => keyOf(x.area, x.def.key));
 export const OWNER_ONLY_KEYS = ALL.filter((x) => x.def.ownerOnly).map((x) => keyOf(x.area, x.def.key));
 export const GRANTABLE_KEYS = ALL_KEYS.filter((k) => !OWNER_ONLY_KEYS.includes(k));
 /** Only the owner can give these, even to someone a delegated staff manager could otherwise change. */
-export const OWNER_GRANTS_ONLY: PermKey[] = ["staff.manage"];
+export const OWNER_GRANTS_ONLY: PermKey[] = ["staff.manage", "payroll_taxes.view", "payroll_taxes.manage", "payroll_taxes.all_clients"];
 
 export function isKnownKey(k: string): k is PermKey {
   return (ALL_KEYS as string[]).includes(k);

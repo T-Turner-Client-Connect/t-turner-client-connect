@@ -12,12 +12,12 @@ import { appUrl } from "@/lib/integrations";
 import { sendSms } from "@/lib/twilio";
 import { chicagoParts } from "@/lib/tz";
 import { ValidationError } from "./clients";
-import { assertLedger, usd, ymdOf } from "./ledger";
+import { usd, ymdOf } from "./ledger";
 import { canSend } from "./comm-prefs";
 import { clientTextingOn } from "./staff-alerts";
 import { CLIENT_SMS_QUIET } from "./notifications";
 import { sendEmailCode, verifyEmailCode, verifySecondFactor } from "./mfa";
-import { assertStaff, event, LOCKED, loadRun } from "./payroll";
+import { assertPayrollWork, assertStaff, event, LOCKED, loadRun } from "./payroll";
 import { payrollCost } from "@/lib/payroll/register";
 import { NOTIFY_CHANNELS, type NotifyChannel } from "@/lib/payroll/fields";
 
@@ -272,7 +272,7 @@ async function notifyOne(runId: string, portalUserId: string, channel: "SMS", no
 /** Staff send the current version to the business's approvers (a new round each time). */
 export async function requestPayrollApproval(actor: Actor, clientId: string, runId: string, now = new Date()) {
   await assertStaff(actor);
-  await assertLedger(actor, clientId);
+  await assertPayrollWork(actor, clientId);
   const { all } = await requiredApprovers(clientId);
   if (!all.length) throw new ValidationError("No payroll approvers are set for this business. Tabitha chooses them in the Owner's Office → Payroll approvers.");
   const run = await prisma.$transaction(async (tx) => {
@@ -343,7 +343,7 @@ async function alertOffice(run: { id: string; clientId: string; createdById: str
  */
 export async function submitPayrollRun(actor: Actor, clientId: string, runId: string, input: { note?: string | null } = {}) {
   await assertStaff(actor);
-  await assertLedger(actor, clientId);
+  await assertPayrollWork(actor, clientId);
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"payroll-run:" + runId}))`;
     const { run, version } = await loadRun(clientId, runId, tx);
@@ -508,7 +508,7 @@ export async function payrollTextReply(fromNormalized: string, body: string): Pr
 
 export async function runTimeline(actor: Actor, clientId: string, runId: string) {
   await assertStaff(actor);
-  await assertLedger(actor, clientId);
+  await assertPayrollWork(actor, clientId);
   const { run, version } = await loadRun(clientId, runId);
   const [events, versions, approvals, notices, approvers] = await Promise.all([
     prisma.payrollRunEvent.findMany({ where: { runId }, orderBy: { createdAt: "asc" } }),

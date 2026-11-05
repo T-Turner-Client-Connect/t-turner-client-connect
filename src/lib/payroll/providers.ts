@@ -30,9 +30,50 @@ export interface PayrollProvider {
   configured(): boolean;
   /** Pay runs with a check date in [from, to] for one connected company. */
   fetchPayRuns(externalCompanyId: string, from: string, to: string): Promise<ProviderPayRun[]>;
+  /**
+   * Future (a later stage): upload one approved version's pay data to the provider. A success
+   * records SUBMITTED (method API); the provider's acknowledgement records PROVIDER_ACCEPTED.
+   * Refuses unless liveSubmissionGate() passes, and no implementation exists yet.
+   */
+  submitPayData(gate: LiveGateInput, run: ProviderRunRef, version: ProviderVersionRef): Promise<{ externalId: string }>;
+  /**
+   * Future: read the provider's payroll output to VERIFY a submitted run was processed. Only a
+   * verified result (or an uploaded ADP confirmation) may record PROCESSED. Same gate; not built.
+   */
+  verifyProcessed(gate: LiveGateInput, run: ProviderRunRef): Promise<{ processed: boolean; detail: string }>;
 }
 
+export type ProviderRunRef = { id: string; clientId: string; status: string; checkDate: Date };
+export type ProviderVersionRef = { id: string; number: number; contentHash: string };
+/** What a live provider call needs before it is allowed. None of it exists today. */
+export type LiveGateInput = {
+  /** PayrollConnection for this client and provider (the client's consent / authorization). */
+  connection: { status: string } | null;
+  /** The owner's live-submission switch (PayrollTaxSettings.providerLiveSubmission, a placeholder). */
+  ownerLiveSwitch: boolean;
+};
+
 export class ProviderNotConnectedError extends Error {}
+
+/**
+ * The one gate for live submission and verification: provider configured (credentials) AND the
+ * client's consent (connection CONNECTED) AND the owner's live-submission switch. Returns every
+ * reason it refuses (empty = allowed).
+ */
+export function liveSubmissionGate(provider: Pick<PayrollProvider, "label" | "configured">, gate: LiveGateInput): string[] {
+  const out: string[] = [];
+  if (!provider.configured()) out.push(`${provider.label} isn't configured (partner approval and production credentials).`);
+  if (gate.connection?.status !== "CONNECTED") out.push("This business hasn't authorized the provider connection.");
+  if (!gate.ownerLiveSwitch) out.push("The owner hasn't turned on live payroll submission.");
+  return out;
+}
+
+function refuse(provider: Pick<PayrollProvider, "label" | "configured">, gate: LiveGateInput, what: string): never {
+  const reasons = liveSubmissionGate(provider, gate);
+  // Even with every condition met there is deliberately no live code yet (a later stage adds it
+  // once the provider's API is confirmed). Nothing is ever sent from here.
+  throw new ProviderNotConnectedError(reasons.length ? `${what} refused: ${reasons.join(" ")}` : `${what} isn't available yet: the ${provider.label} API integration hasn't been built.`);
+}
 
 const has = (names: string[]) => names.every((n) => !!process.env[n]?.trim());
 
@@ -52,6 +93,12 @@ export const adpProvider: PayrollProvider = {
     // approves the application and grants documentation access.
     throw new ProviderNotConnectedError("Not connected — requires ADP partner approval (see setup guide).");
   },
+  async submitPayData(gate) {
+    refuse(this, gate, "Submitting pay data to ADP");
+  },
+  async verifyProcessed(gate) {
+    refuse(this, gate, "Checking ADP for processed payroll");
+  },
 };
 
 export const paychexProvider: PayrollProvider = {
@@ -68,6 +115,12 @@ export const paychexProvider: PayrollProvider = {
     // approves the app in Paychex Flex, then the company's payroll checks for the date range).
     // Deliberately not implemented until production access and documentation are granted.
     throw new ProviderNotConnectedError("Not connected — requires Paychex partner approval (see setup guide).");
+  },
+  async submitPayData(gate) {
+    refuse(this, gate, "Submitting pay data to Paychex");
+  },
+  async verifyProcessed(gate) {
+    refuse(this, gate, "Checking Paychex for processed payroll");
   },
 };
 

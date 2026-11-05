@@ -33,7 +33,13 @@ export default async function PayrollApprovalPage() {
 
       {views.map((v) => (
         <section key={v.run.id} className="space-y-3" data-testid="pending-run">
-          <h2 className="font-serif text-xl font-bold text-navy-900">{nameOf(v.run.clientId)} — pay date {dayOf(v.version.checkDate)}</h2>
+          <h2 className="font-serif text-xl font-bold text-navy-900">{nameOf(v.run.clientId)} — pay date {dayOf(v.version.checkDate)} <span className="ml-1 inline-flex items-center rounded-md border border-navy-900 px-1.5 align-middle font-sans text-sm font-bold" data-testid="approval-version">v{v.version.number}</span></h2>
+          {v.version.documentId && v.showDetail && (
+            <a href={`/api/client/payroll-preview/${v.version.id}`} target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-3 py-2 text-sm font-semibold text-navy-900 underline" data-testid="approval-preview-doc">
+              Open ADP&apos;s payroll preview (PDF) for v{v.version.number}
+            </a>
+          )}
+          <p className="text-xs text-slate-600">Your decision is recorded for version {v.version.number} exactly. If the office changes anything, it becomes a new version and asks you again.</p>
           <ApprovalSummary business={nameOf(v.run.clientId)} version={v.version} showDetail={v.showDetail} />
           {v.decisions.length > 0 && <p className="text-sm text-slate-700">So far: {v.decisions.map((d) => `${d.approverName} ${d.decision === "APPROVED" ? "approved" : "denied"}`).join(" · ")}</p>}
           {v.mine ? (

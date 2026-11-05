@@ -53,6 +53,8 @@ export const RUN_STATUS = {
   DENIED: "Denied — Needs Review",
   FULLY_APPROVED: "Fully Approved",
   SUBMITTED: "Submitted for Processing",
+  // Future (provider API): the provider acknowledged the pay data. Not processed yet.
+  PROVIDER_ACCEPTED: "Accepted by provider — awaiting processing",
   PROCESSED: "Processed by provider",
   DISCARDED: "Discarded",
 } as const;
