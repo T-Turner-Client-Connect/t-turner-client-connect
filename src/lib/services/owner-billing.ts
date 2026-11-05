@@ -394,6 +394,14 @@ export async function voidInvoice(actor: Actor, invoiceId: string, reason: strin
  */
 export async function portalBilling(user: PortalActor, clientId: string) {
   await requireClientAccess(user.id, clientId, "billing");
+  return publishedBillingFor(clientId);
+}
+
+/**
+ * The rows portalBilling returns, without a portal login (for the owner's View as Client).
+ * Callers check access first: portalBilling for a portal user, staff permissions for the preview.
+ */
+export async function publishedBillingFor(clientId: string) {
   const rows = await prisma.invoice.findMany({
     where: { clientId, publishedAt: { not: null }, state: { in: ["OFFERED", "ACCEPTED", "ISSUED", "DECLINED", "VOID"] } },
     include: { lines: true, installments: { orderBy: { seq: "asc" } }, payments: { where: { status: "SUCCEEDED" }, orderBy: { receivedOn: "asc" } } },

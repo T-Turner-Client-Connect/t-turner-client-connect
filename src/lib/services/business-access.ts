@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { assertOffice } from "@/lib/auth/owner";
 import { can } from "@/lib/auth/permissions";
+import { BUSINESS_VIEW_CLIENT, businessViewEligible } from "@/lib/portal/access";
 import { ValidationError } from "./clients";
 
 /**
@@ -129,14 +130,17 @@ export async function setConversionRequester(actor: Actor, userId: string, on: b
 
 /**
  * Per-login business view for a Managed Business. Turning it ON is owner-only and only for
- * an ACTIVE business; anyone who manages portal access may turn it OFF. Logged either way.
+ * an eligible business (approved Managed Business or active Bookkeeping Client); anyone who
+ * manages portal access may turn it OFF. Logged either way. An OWNER login of an active
+ * Bookkeeping Client has the business view without it (see hasBusinessView).
  */
 export async function assertLoginBusinessViewChange(tx: Tx, actor: Actor, accessId: string, next: boolean) {
-  const a = await tx.portalAccess.findUniqueOrThrow({ where: { id: accessId }, include: { client: { select: { businessAccess: true } } } });
+  const a = await tx.portalAccess.findUniqueOrThrow({ where: { id: accessId }, include: { client: { select: BUSINESS_VIEW_CLIENT } } });
   if (a.canViewBookkeeping === next) return;
   if (next) {
     if (!(await can(actor, "business_access", "manage"))) throw new ForbiddenError("Only Tabitha (or staff she allows to manage business access) can give a login access to a Managed Business.");
-    if (a.client.businessAccess !== "ACTIVE") throw new ValidationError("This client is a Regular Tax Client. Approve Managed Business access first.");
+    // Same eligibility the portal gate uses: an approved Managed Business or an active Bookkeeping Client.
+    if (!businessViewEligible(a.client)) throw new ValidationError("This client is a Regular Tax Client. Approve Managed Business access first.");
   }
   await log(tx, { clientId: a.clientId, actorId: actor.id, action: next ? "LOGIN_VIEW_ON" : "LOGIN_VIEW_OFF", targetUserId: a.portalUserId });
 }

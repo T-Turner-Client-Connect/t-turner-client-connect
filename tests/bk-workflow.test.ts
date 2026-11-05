@@ -275,17 +275,23 @@ describe("staff upload the statements Coetha asks for (new clients without a fee
 });
 
 describe("office work vs client portal access", () => {
-  it("the office keeps the books with client access OFF; the client portal stays closed", async () => {
+  it("the office keeps the books with client access OFF; only an OWNER login of the Bookkeeping Client gets the business view", async () => {
     const w = await world();
     expect((await prisma.client.findUniqueOrThrow({ where: { id: w.biz.id } })).businessAccess).toBe("OFF");
     // Office: books, accounts, entries.
     const e = await postJournalEntry(w.daria, w.biz.id, { date: "2026-10-05", memo: "Pretend owner contribution", lines: [{ accountId: await w.code(w.biz.id, "1000"), debit: "500" }, { accountId: await w.code(w.biz.id, "3000"), credit: "500" }] });
     expect(e.id).toBeTruthy();
     await expect(registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "SAVINGS", last4: "0043" })).resolves.toBeTruthy();
-    // Client: no bookkeeping view, and nothing granted automatically.
+    // Client: the business is on the Bookkeeping Client list, so its OWNER login has the business
+    // view with no approval step (Tabitha's rule). Nothing is switched on per login, Managed Business
+    // access stays OFF, and an authorized contact still needs the per-login switch.
     const { token } = await invitePortalUser(w.tabitha, w.biz.id, { email: "pat@pretend.example", name: "Pat Pretend", role: "OWNER" });
     const u = await acceptPortalInvite(token!, "Pretend-Strong-Pass-1");
-    await expect(requireClientAccess(u.id, w.biz.id, "bookkeeping")).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(requireClientAccess(u.id, w.biz.id, "bookkeeping")).resolves.toMatchObject({ canViewBookkeeping: true });
+    expect((await prisma.portalAccess.findFirstOrThrow({ where: { portalUserId: u.id, clientId: w.biz.id } })).canViewBookkeeping).toBe(false);
+    const { token: t2 } = await invitePortalUser(w.tabitha, w.biz.id, { email: "casey@pretend.example", name: "Casey Contact", role: "AUTHORIZED_CONTACT" });
+    const contact = await acceptPortalInvite(t2!, "Pretend-Strong-Pass-2");
+    await expect(requireClientAccess(contact.id, w.biz.id, "bookkeeping")).rejects.toBeInstanceOf(ForbiddenError);
     expect((await prisma.client.findUniqueOrThrow({ where: { id: w.biz.id } })).businessAccess).toBe("OFF");
     // A client that is neither a Bookkeeping Client nor a Managed Business is still refused.
     const plain = await createClient(w.tabitha, { businessName: "Pretend Tax-Only Shop", clientType: "BUSINESS", status: "ACTIVE" });

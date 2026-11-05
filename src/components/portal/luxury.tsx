@@ -9,23 +9,26 @@ export const luxCard = "min-w-0 rounded-3xl border border-gold-200/70 bg-white/9
 
 export type Tile = { title: string; sub: string; icon: React.ComponentType<{ className?: string }>; href: string | null; external?: boolean; testId: string; disabledNote?: string };
 
-/** Five headline actions, alternating navy and white like the reference design. */
-export function ActionTiles({ tiles }: { tiles: Tile[] }) {
+/**
+ * Headline actions, alternating navy and white like the reference design. `compact`: one slimmer
+ * row for the business dashboard (7 across on wide screens, 4 on tablets, 2 columns on phones).
+ */
+export function ActionTiles({ tiles, compact = false }: { tiles: Tile[]; compact?: boolean }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5" data-testid="action-tiles">
+    <div className={compact ? "grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-7" : "grid gap-3 sm:grid-cols-2 lg:grid-cols-5"} data-testid="action-tiles">
       {tiles.map((t, i) => {
         const navy = i % 2 === 0;
         const body = (
           <>
-            <t.icon className={`size-10 shrink-0 ${navy ? "text-gold-400" : "text-gold-600"}`} aria-hidden />
+            <t.icon className={`${compact ? "size-7 xl:size-6" : "size-10"} shrink-0 ${navy ? "text-gold-400" : "text-gold-600"}`} aria-hidden />
             <span className="min-w-0 flex-1">
-              <span className={`block font-serif text-[17px] font-bold leading-snug ${navy ? "text-white" : "text-navy-900"}`}>{t.title}</span>
-              <span className={`mt-0.5 block text-[13px] leading-snug ${navy ? "text-navy-100" : "text-slate-600"}`}>{t.disabledNote ?? t.sub}</span>
+              <span className={`block font-serif ${compact ? "text-[15px] xl:text-sm" : "text-[17px]"} font-bold leading-snug ${navy ? "text-white" : "text-navy-900"}`}>{t.title}</span>
+              <span className={`mt-0.5 ${compact ? "block text-xs xl:hidden" : "block text-[13px]"} leading-snug ${navy ? "text-navy-100" : "text-slate-600"}`}>{t.disabledNote ?? t.sub}</span>
             </span>
-            {t.href && <ChevronRight className={`size-5 shrink-0 transition group-hover:translate-x-0.5 ${navy ? "text-gold-400" : "text-gold-600"}`} aria-hidden />}
+            {t.href && <ChevronRight className={`${compact ? "size-4 xl:hidden" : "size-5"} shrink-0 transition group-hover:translate-x-0.5 ${navy ? "text-gold-400" : "text-gold-600"}`} aria-hidden />}
           </>
         );
-        const cls = `group flex min-h-[6.5rem] items-center gap-3 rounded-2xl px-4 py-4 shadow-[0_10px_24px_-16px_rgb(10_26_68/0.55)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_30px_-18px_rgb(10_26_68/0.6)] ${
+        const cls = `group flex ${compact ? "min-h-[4.75rem] gap-2 px-3 py-3" : "min-h-[6.5rem] gap-3 px-4 py-4"} items-center rounded-2xl shadow-[0_10px_24px_-16px_rgb(10_26_68/0.55)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_30px_-18px_rgb(10_26_68/0.6)] ${
           navy ? "bg-gradient-to-br from-navy-900 to-navy-950 ring-1 ring-gold-500/40" : "border border-gold-200 bg-white"
         }`;
         // Outside links (the questionnaire redirect, official sites) are plain links: no in-app prefetch.
@@ -38,7 +41,7 @@ export function ActionTiles({ tiles }: { tiles: Tile[] }) {
             {body}
           </Link>
         ) : (
-          <div key={t.testId} className={`${cls} cursor-not-allowed opacity-60`} aria-disabled="true" data-testid={t.testId} data-disabled="true">
+          <div key={t.testId} className={`${cls} cursor-not-allowed opacity-60`} aria-disabled="true" title={t.disabledNote} data-testid={t.testId} data-disabled="true">
             {body}
           </div>
         );
