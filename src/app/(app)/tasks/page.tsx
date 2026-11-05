@@ -10,14 +10,20 @@ import { addDays, endOfMonth, startOfMonth } from "date-fns";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { fmtDate } from "@/lib/format";
+import { visibleTasksWhere } from "@/lib/services/tasks";
+import { ACCESS_REVIEW_PATH, stageForDue } from "@/lib/access-review";
+
+const isReviewReminder = (t: { reminderKey: string | null }) => !!t.reminderKey?.startsWith("access-review:");
 
 export const metadata = { title: "Tasks & Calendar" };
 
 export default async function TasksPage({ searchParams }: { searchParams: Promise<{ view?: string; who?: string; month?: string }> }) {
   const user = await requireUser();
   const { view = "open", who = "all", month: monthParam } = await searchParams;
-  if (view === "calendar") return <CalendarView month={monthFromParam(monthParam)} />;
-  const where: Prisma.TaskWhereInput = { status: view === "done" ? "DONE" : "OPEN" };
+  // Owner-only tasks (the access-review reminder) are left out for everyone but the owner.
+  const visible = await visibleTasksWhere(user.id);
+  if (view === "calendar") return <CalendarView month={monthFromParam(monthParam)} visible={visible} />;
+  const where: Prisma.TaskWhereInput = { ...visible, status: view === "done" ? "DONE" : "OPEN" };
   if (who === "me") where.assigneeId = user.id;
   else if (who !== "all") where.assigneeId = who;
   const [tasks, staff, clients] = await Promise.all([
@@ -30,7 +36,8 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
     prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true }, orderBy: { displayName: "asc" }, take: 2000 }),
   ]);
-  const today = startOfDay(new Date());
+  const now = new Date();
+  const today = startOfDay(now);
   const tab = (v: string, label: string) => (
     <Link href={`/tasks?view=${v}&who=${who}`} className={buttonClass(view === v ? "primary" : "secondary")}>{label}</Link>
   );
@@ -62,23 +69,32 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
             <ul className="divide-y divide-navy-100 rounded-xl border border-navy-100 bg-white">
               {tasks.map((t) => {
                 const overdue = t.status === "OPEN" && t.dueAt && t.dueAt < today;
+                const review = isReviewReminder(t);
+                // The reminder is "upcoming" until its due date (Chicago calendar days).
+                const upcoming = review && t.status === "OPEN" && t.dueAt && stageForDue(t.dueAt, now).stage === "upcoming";
                 return (
-                  <li key={t.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+                  <li key={t.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3" data-testid={review ? "access-review-reminder-task" : undefined}>
                     <div className="min-w-0">
                       <p className="font-semibold text-navy-900">{t.title}</p>
-                      {t.details && <p className="text-sm text-slate-700">{t.details}</p>}
+                      {t.details && <p className="whitespace-pre-line break-words text-sm text-slate-700">{t.details}</p>}
                       <p className="text-sm text-slate-600">
                         {t.client ? <Link className="underline" href={`/clients/${t.client.id}`}>{t.client.displayName}</Link> : "No client"} · {t.assignee?.name ?? "Unassigned"}
                       </p>
                       <div className="mt-1 flex flex-wrap gap-1">
                         {t.dueAt && <Badge tone={overdue ? "red" : "gray"}>{overdue ? "Overdue · " : ""}Due {fmtDate(t.dueAt)}</Badge>}
+                        {upcoming && <Badge tone="navy">Upcoming</Badge>}
+                        {t.ownerOnly && <Badge tone="gray">Only you can see this</Badge>}
                         {t.priority === "HIGH" && <Badge tone="gold">High priority</Badge>}
                         {t.remindAt && <Badge tone="navy">Reminder {fmtDate(t.remindAt)}</Badge>}
                       </div>
                     </div>
-                    <ConfirmButton action={setTaskDoneAction.bind(null, t.id, t.status !== "DONE")} variant={t.status === "DONE" ? "secondary" : "primary"}>
-                      {t.status === "DONE" ? "Reopen" : "Mark done"}
-                    </ConfirmButton>
+                    {review ? (
+                      t.status === "OPEN" && <Link href={ACCESS_REVIEW_PATH} className={buttonClass("primary")}>Open access review</Link>
+                    ) : (
+                      <ConfirmButton action={setTaskDoneAction.bind(null, t.id, t.status !== "DONE")} variant={t.status === "DONE" ? "secondary" : "primary"}>
+                        {t.status === "DONE" ? "Reopen" : "Mark done"}
+                      </ConfirmButton>
+                    )}
                   </li>
                 );
               })}
@@ -117,10 +133,10 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
   );
 }
 
-async function CalendarView({ month }: { month: Date }) {
+async function CalendarView({ month, visible }: { month: Date; visible: Prisma.TaskWhereInput }) {
   const range = { gte: addDays(startOfMonth(month), -7), lte: addDays(endOfMonth(month), 7) };
   const [tasks, deadlines, appts, requests, clients, staff] = await Promise.all([
-    prisma.task.findMany({ where: { status: "OPEN", dueAt: range }, select: { id: true, title: true, dueAt: true, clientId: true } }),
+    prisma.task.findMany({ where: { ...visible, status: "OPEN", dueAt: range }, select: { id: true, title: true, dueAt: true, clientId: true, reminderKey: true } }),
     prisma.clientDeadline.findMany({ where: { dueAt: range }, include: { client: { select: { displayName: true } } } }),
     prisma.appointment.findMany({ where: { startsAt: range, status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "PROPOSED"] } }, include: { client: { select: { displayName: true } } } }),
     prisma.documentRequest.findMany({ where: { status: "OPEN", dueAt: range }, include: { client: { select: { displayName: true } } } }),
@@ -130,7 +146,7 @@ async function CalendarView({ month }: { month: Date }) {
   const upcoming = await prisma.appointment.findMany({ where: { status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "PROPOSED"] }, startsAt: { gte: new Date() } }, include: { client: { select: { displayName: true } } }, orderBy: { startsAt: "asc" }, take: 10 });
   const events: CalendarEvent[] = [
     ...appts.map((a) => ({ id: `a${a.id}`, at: a.startsAt, title: `🕑 ${a.client.displayName}: ${a.title}`, href: `/clients/${a.clientId}`, tone: "navy" as const })),
-    ...tasks.map((t) => ({ id: `t${t.id}`, at: t.dueAt!, title: `☐ ${t.title}`, href: t.clientId ? `/clients/${t.clientId}` : "/tasks", tone: "gray" as const })),
+    ...tasks.map((t) => ({ id: `t${t.id}`, at: t.dueAt!, title: `☐ ${t.title}`, href: t.clientId ? `/clients/${t.clientId}` : isReviewReminder(t) ? ACCESS_REVIEW_PATH : "/tasks", tone: "gray" as const })),
     ...deadlines.map((d) => ({ id: `d${d.id}`, at: d.dueAt, title: `⚑ ${d.client.displayName}: ${d.title}`, href: `/clients/${d.clientId}?tab=portal`, tone: "red" as const })),
     ...requests.map((r) => ({ id: `r${r.id}`, at: r.dueAt!, title: `📄 ${r.client.displayName}: ${r.title}`, href: `/clients/${r.clientId}?tab=bookkeeping`, tone: "gold" as const })),
   ];
