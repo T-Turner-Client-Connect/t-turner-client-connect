@@ -11,6 +11,7 @@ import { ledgerFlags, ledgerOverview, postJournalEntry, setupLedger } from "@/li
 import { addCustomer } from "@/lib/services/client-invoicing";
 import { startBankLink } from "@/lib/services/banking";
 import { completeSignup, saveOnboardingDetails, startSignup, submitOnboarding } from "@/lib/services/client-signup";
+import { enrollExistingClient } from "@/lib/services/bookkeeping-clients";
 import {
   approveBusinessAccess,
   cancelBusinessAccessRequest,
@@ -127,8 +128,11 @@ describe("the server blocks the Business side for Regular Tax Clients", () => {
     const res = await packetRoute(new Request(`https://portal.example.com/api/bookkeeping/packet?period=${period.id}&type=MONTH`));
     expect(res.status).toBe(403);
     portalSession = null;
-    // Control: once Tabitha approves this business, the same login sees the same file.
+    // Managed Business approval alone still opens nothing: the client stays on the tax portal.
     await approveBusinessAccess(tabitha, (await req(tabitha, llc.id)).id);
+    expect(JSON.stringify(await portalDocuments(login, llc.id))).not.toMatch(/Fictional P&L/);
+    // Control: once Tabitha enrolls it ("+ Add Bookkeeping Client"), the same login sees the same file.
+    await enrollExistingClient(tabitha, llc.id, { active: true, frequency: "MONTHLY", payroll: false });
     expect(JSON.stringify(await portalDocuments(login, llc.id))).toMatch(/Fictional P&L/);
   });
 
@@ -182,11 +186,14 @@ describe("conversion: requested by owner or authorized staff, approved only by t
 });
 
 describe("only the businesses assigned to a login, each kept separate", () => {
-  it("a Managed Business shows only after the owner turns on that login's view; other businesses stay Regular", async () => {
+  it("a Managed Business shows only once it's enrolled on the bookkeeping service; other businesses stay Regular", async () => {
     const { tabitha, daria, llc, corp, nonprofit, login } = await world();
     await approveBusinessAccess(tabitha, (await req(tabitha, llc.id)).id);
     const grant = await prisma.portalAccess.findFirstOrThrow({ where: { portalUserId: login.id, clientId: llc.id } });
-    expect((await requireClientAccess(login.id, llc.id)).canViewBookkeeping).toBe(false); // business approved, login not yet
+    expect((await requireClientAccess(login.id, llc.id)).canViewBookkeeping).toBe(false); // approved, not enrolled
+    // Not enrolled: the per-login switch can't be turned on, not even by Tabitha.
+    await expect(updatePortalAccess(tabitha, grant.id, { canViewBookkeeping: true })).rejects.toThrow(/Bookkeeping Clients list/);
+    await enrollExistingClient(tabitha, llc.id, { active: true, frequency: "MONTHLY", payroll: false });
     await expect(updatePortalAccess(daria, grant.id, { canViewBookkeeping: true })).rejects.toBeInstanceOf(ForbiddenError);
     await updatePortalAccess(tabitha, grant.id, { canViewBookkeeping: true });
     expect((await requireClientAccess(login.id, llc.id, "bookkeeping")).canViewBookkeeping).toBe(true);
@@ -224,6 +231,7 @@ describe("removal blocks at once and deletes nothing", () => {
     const { tabitha, llc, login } = await world();
     const r = await req(tabitha, llc.id);
     await approveBusinessAccess(tabitha, r.id);
+    await enrollExistingClient(tabitha, llc.id, { active: true, frequency: "MONTHLY", payroll: false });
     const grant = await prisma.portalAccess.findFirstOrThrow({ where: { portalUserId: login.id, clientId: llc.id } });
     await updatePortalAccess(tabitha, grant.id, { canViewBookkeeping: true });
     await setupLedger(tabitha, llc.id, { basis: "CASH" });
@@ -235,7 +243,8 @@ describe("removal blocks at once and deletes nothing", () => {
     expect((await requireClientAccess(login.id, llc.id)).canViewTax).toBe(true); // regular tax access stays
     expect(await prisma.ledgerAccount.count({ where: { clientId: llc.id } })).toBe(ledgerRows);
     expect(await prisma.ledgerBook.count({ where: { clientId: llc.id } })).toBe(1);
-    await expect(addCustomer(tabitha, llc.id, { name: "After removal" })).rejects.toThrow(/Regular Tax Client/);
+    // The office's own work follows the bookkeeping enrollment, not the portal: it can still keep the books.
+    await expect(addCustomer(tabitha, llc.id, { name: "After removal" })).resolves.toBeTruthy();
     // Staff can still OPEN the books and review flags — history stays readable after removal.
     expect((await ledgerOverview(tabitha, llc.id)).book).not.toBeNull();
     await expect(ledgerFlags(tabitha, llc.id)).resolves.toBeDefined();

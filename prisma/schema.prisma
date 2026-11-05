@@ -97,6 +97,7 @@ model User {
   signatureReqs    SignatureRequest[]
   contracts        ContractAssignment[]
   portalInvites    PortalInvite[]
+  inviteBatches    PortalInviteBatch[]  @relation("PortalInviteBatchCreatedBy")
   ownerAccess      OwnerAccess?         @relation("OwnerAccessUser")
   staffPermissions StaffPermission[]    @relation("StaffPermissionUser")
 }
@@ -347,6 +348,8 @@ model Client {
   payrollRuns            PayrollRun[]
   payrollApprovers       PayrollApprover[]
   payrollConnections     PayrollConnection[]
+  payrollSchedule        PayrollSchedule?
+  payrollCycles          PayrollCycle[]
   businessOwners         BusinessOwner[]
   ownerK1Grants          OwnerK1Grant[]
   jointFilingYears       JointFilingYear[]
@@ -358,6 +361,7 @@ model Client {
   clientLetters          ClientLetter[]
   coethaOptOut           CoethaOptOut?
   complianceEntities     ComplianceEntity[]
+  preparedInvitations    PortalInviteBatchRow[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -924,6 +928,58 @@ model PortalInvite {
   createdAt        DateTime   @default(now())
 
   @@index([email])
+}
+
+// Prepared invitations: staff gather clients into a draft batch, Tabitha reviews and approves
+// each row, and only then (with "Portal invitations authorized" on) are the invitations sent,
+// each through the ordinary single-invite path (invitePortalUser + the activation email).
+model PortalInviteBatch {
+  id            String                 @id @default(cuid())
+  title         String
+  // The import batch the clients came from, when prepared from an import.
+  importBatchId String?
+  createdById   String
+  createdBy     User                   @relation("PortalInviteBatchCreatedBy", fields: [createdById], references: [id])
+  lastSentAt    DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  rows          PortalInviteBatchRow[]
+
+  @@index([createdAt])
+}
+
+model PortalInviteBatchRow {
+  id                       String            @id @default(cuid())
+  batchId                  String
+  batch                    PortalInviteBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  clientId                 String
+  client                   Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contactId                String?
+  inviteeName              String
+  // Normalized; null = no email on file yet.
+  email                    String?
+  role                     PortalRole        @default(OWNER)
+  // The PortalPermissions flags this login starts with (never the business view).
+  permissions              Json
+  // Someone confirmed this address really is the same person on another record / login.
+  sharedEmailConfirmedAt   DateTime?
+  sharedEmailConfirmedById String?
+  // Tabitha's approval of this row. Any edit clears it.
+  approvedAt               DateTime?
+  approvedById             String?
+  // Set when sending starts (claimed once, so a row is never invited twice), then the outcome:
+  // SENT (accepted by the email provider) | EMAIL_FAILED | SKIPPED | NO_EMAIL | ACCESS_ADDED.
+  sendStartedAt            DateTime?
+  result                   String?
+  resultDetail             String?
+  resultAt                 DateTime?
+  portalInviteId           String?
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+
+  @@unique([batchId, clientId])
+  @@index([clientId])
+  @@index([portalInviteId])
 }
 
 model PortalSession {
@@ -4405,6 +4461,11 @@ model IntegrationSettings {
   coethaAutoSendRequests    Boolean   @default(true)
   coethaAutoSendChangedById String?
   coethaAutoSendChangedAt   DateTime?
+  // Owner-only safety lock (primary owner): "Portal invitations authorized". While off, staff
+  // can prepare invitation batches and Tabitha can approve them, but nothing is sent.
+  portalInvitesAuthorized   Boolean   @default(false)
+  portalInvitesChangedById  String?
+  portalInvitesChangedAt    DateTime?
   updatedById               String?
   updatedAt                 DateTime  @updatedAt
 }
@@ -4950,6 +5011,11 @@ model PayrollRunVersion {
   deductionsCents  Int               @default(0)
   netPayCents      Int
   reason           String?
+  // The ADP preview / register document this version was shown with (ADP Payroll & Taxes
+  // workspace). Its sha256 is bound into contentHash, so attaching or replacing the document
+  // makes a new version and earlier approvals stop counting.
+  documentId       String?
+  documentSha256   String?
   createdById      String?
   createdAt        DateTime          @default(now())
   lines            PayrollRunLine[]
@@ -6057,4 +6123,135 @@ model ComplianceSettings {
   approvalReminderEveryDays     Int      @default(3)
   updatedById                   String?
   updatedAt                     DateTime @updatedAt
+}
+
+// ===========================================================================
+// ADP PAYROLL & TAXES WORKSPACE (Stage 1: payroll)
+// ===========================================================================
+//
+// Schedules, pay cycles and reminders for the payroll the office runs in ADP. Nothing here
+// submits payroll, files taxes or moves money: every ADP step is a person's recorded action.
+// Access: Staff Access & Permissions area "payroll_taxes" (only the owner grants it).
+
+/// One per client: how often payroll runs and the office's deadlines before each pay date.
+model PayrollSchedule {
+  id                     String         @id @default(cuid())
+  clientId               String         @unique
+  client                 Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // WEEKLY | BIWEEKLY | SEMIMONTHLY | MONTHLY
+  frequency              String
+  // A known pay date the others follow from (WEEKLY / BIWEEKLY / MONTHLY).
+  anchorPayDate          DateTime       @db.Date
+  // SEMIMONTHLY: the two pay days of the month (31 = the last day of the month).
+  semiMonthlyDays        Int[]          @default([])
+  // Calendar days between the end of the pay period and the (unadjusted) pay date.
+  periodEndLagDays       Int            @default(5)
+  // Business days before the pay date.
+  hoursRequestLeadDays   Int            @default(5)
+  hoursDueDays           Int            @default(3)
+  approvalDueDays        Int            @default(2)
+  adpCutoffDays          Int            @default(2)
+  assignedStaffId        String?
+  active                 Boolean        @default(true)
+  // Automated reminders to this client's contacts. Off until staff turn it on AND the owner's
+  // master switch (PayrollTaxSettings.clientRemindersAuthorized) is on.
+  clientRemindersEnabled Boolean        @default(false)
+  notes                  String?
+  createdById            String
+  updatedById            String?
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+  cycles                 PayrollCycle[]
+}
+
+/// One client's payroll for one pay date: deadlines, the hours the client sent, the pay run.
+model PayrollCycle {
+  id                     String            @id @default(cuid())
+  clientId               String
+  client                 Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  scheduleId             String
+  schedule               PayrollSchedule   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  payDate                DateTime          @db.Date
+  periodStart            DateTime          @db.Date
+  periodEnd              DateTime          @db.Date
+  hoursRequestDate       DateTime          @db.Date
+  hoursDueDate           DateTime          @db.Date
+  approvalDueDate        DateTime          @db.Date
+  adpCutoffDate          DateTime          @db.Date
+  // Per-cycle override of the schedule's assigned staff member (null = the schedule's).
+  assignedStaffId        String?
+  hoursRequestedAt       DateTime?
+  hoursSubmittedAt       DateTime?
+  hoursSubmittedByPortal String?
+  hoursSubmittedByStaff  String?
+  // { employees: [{ name, regularHours, overtimeHours, notes }], notes, flags: [...], noChanges }
+  hoursSubmission        Json?
+  payrollRunId           String?           @unique
+  errorFlaggedAt         DateTime?
+  errorFlaggedById       String?
+  errorNote              String?
+  // Where this cycle's figures came from: REGISTER_IMPORT | MANUAL_TOTALS (today); MANUAL_ENTRY
+  // (staff-entered employee pay data) and PROVIDER_API arrive in a later stage, as PayrollRunLine rows.
+  workupSource           String?
+  // PROCESSED is only ever recorded with its verification, never inferred from SUBMITTED:
+  // CONFIRMATION_UPLOAD (ADP's confirmation / payroll summary) today; PROVIDER_OUTPUT_CHECK later.
+  processedVerification  String?
+  processedAt            DateTime?
+  processedById          String?
+  confirmationDocumentId String?
+  confirmationNote       String?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  reminders              PayrollReminder[]
+
+  @@unique([clientId, payDate])
+  @@index([payDate])
+}
+
+/// Reminder steps (relative to each deadline) and their channels: one global plan (key "global")
+/// and optional per-client plans (key = the client's id).
+model PayrollReminderPlan {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  steps       Json
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// Every automated reminder decision: sent, failed, skipped or held, with the reason.
+/// dedupeKey = cycle + step (+ approval round) + recipient + channel: one per step per recipient.
+model PayrollReminder {
+  id           String       @id @default(cuid())
+  cycleId      String
+  cycle        PayrollCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  clientId     String
+  step         String
+  round        Int?
+  // CLIENT | STAFF
+  audience     String
+  recipientKey String
+  // EMAIL | SMS | PORTAL
+  channel      String
+  // SENT | FAILED | SKIPPED | HELD
+  status       String
+  detail       String?
+  dedupeKey    String       @unique
+  createdAt    DateTime     @default(now())
+
+  @@index([cycleId])
+  @@index([status, createdAt])
+}
+
+/// Office-wide switches for the workspace (one row, id "default").
+model PayrollTaxSettings {
+  id                        String    @id @default("default")
+  // Owner only. While off, automated client reminders are recorded as HELD and never sent.
+  clientRemindersAuthorized Boolean   @default(false)
+  // Placeholder, owner only, nothing turns it on yet: live pay-data submission / verification
+  // through a provider API (src/lib/payroll/providers.ts). Off = every provider call refuses.
+  providerLiveSubmission    Boolean   @default(false)
+  changedAt                 DateTime?
+  changedById               String?
+  updatedAt                 DateTime  @updatedAt
 }

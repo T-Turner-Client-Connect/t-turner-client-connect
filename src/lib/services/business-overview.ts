@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
 import { audit } from "@/lib/audit";
 import { ValidationError } from "./clients";
-import { bookkeepingWorkspace, PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
+import { PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
 import { coethaCurrentWork, monthlyChecklist } from "./monthly-workflow";
 import { canUseLedger, profitAndLoss } from "./ledger";
 import { canManageBilling } from "./bookkeeping-profile";
@@ -63,30 +63,6 @@ export function nextPayDate(known: string | null, frequency: string | null, toda
 export type CloseStep = { key?: string; label: string; done: boolean; state?: string; detail?: string; pill?: string };
 
 export type Deadline = { date: string; title: string; status: "ON_TRACK" | "DUE_SOON" | "UPCOMING" | "PAST_DUE" };
-
-/**
- * The month's close as status steps only (no staff notes): shared by the staff Client Overview
- * and the client's own business dashboard.
- */
-export async function monthlyCloseSteps(clientId: string, periodId: string, profile: { payroll: boolean; payrollProvider: string | null } | null) {
-  const ws = await bookkeepingWorkspace(clientId, periodId);
-  const items = ws.summary?.items ?? [];
-  const ok = (key: string) => {
-    const i = items.find((x) => x.key === key);
-    return !!i && (i.state === "DONE" || i.state === "NOT_NEEDED" || i.state === "RECEIVED");
-  };
-  const reports = ws.summary?.reports ?? [];
-  const steps: CloseStep[] = [
-    { label: "Bank statements received", done: ok("BANK_STATEMENTS") },
-    { label: "Transactions categorized", done: ok("CATEGORIZE") },
-    { label: "Accounts reconciled", done: ok("RECONCILE") },
-    ...(profile?.payroll ? [{ label: `Payroll recorded${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`, done: ok("PAYROLL_ENTRIES") }] : []),
-    { label: "Financial statements prepared", done: ok("PREPARE_REPORTS") || reports.length > 0 },
-    { label: "Owner review & approval", done: reports.some((r) => r.reviewStatus === "APPROVED") },
-    { label: "Released to client", done: ws.summary?.stage === "DELIVERED" },
-  ];
-  return { steps, percent: Math.round((steps.filter((s) => s.done).length / steps.length) * 100) };
-}
 
 export const deadlineStatus = (date: string, today: string, onTrack = false): Deadline["status"] => {
   const d = daysBetween(today, date);

@@ -30,6 +30,9 @@ const TEXT: Record<string, string> = {
   COMPLIANCE_RETURN_READY: "A tax return is ready for your review",
   COMPLIANCE_APPROVAL_REMINDER: "A tax return is still waiting for your review",
   COMPLIANCE_RETURN_FILED: "Your return was filed",
+  // ADP Payroll & Taxes reminders: no amounts, no employee names.
+  PAYROLL_HOURS_REQUEST: "We need your payroll hours",
+  PAYROLL_APPROVAL_REMINDER: "Payroll is waiting for your approval",
   // Identity documents: deliberately generic (no document type or details).
   ID_EXPIRING: "A document on file needs to be updated soon",
   ID_EXPIRED: "A document on file needs to be updated",

@@ -18,10 +18,19 @@ export { prisma };
 
 /**
  * Test fixture: these fictional businesses are ones the firm manages, as if Tabitha had
- * approved Managed Business access and turned on the business view for their logins.
- * Call it after the logins exist. (Real approval is tested in business-access.test.ts.)
+ * approved Managed Business access, enrolled them with "+ Add Bookkeeping Client" (an ACTIVE
+ * bookkeeping profile — the only thing that opens the business side) and turned on the business
+ * view for their logins. A profile the test already made is left as it is. Call it after the
+ * logins exist. (Real approval and enrollment are tested in business-access.test.ts and
+ * books-progress.test.ts.) `managedOnly` is the same without enrollment.
  */
 export async function managed(...clientIds: string[]) {
+  await managedOnly(...clientIds);
+  for (const clientId of clientIds) await prisma.bookkeepingProfile.upsert({ where: { clientId }, create: { clientId, active: true }, update: {} });
+}
+
+/** Managed Business access and the per-login switch, without enrolling on the bookkeeping service (stays on the tax portal). */
+export async function managedOnly(...clientIds: string[]) {
   await prisma.client.updateMany({ where: { id: { in: clientIds } }, data: { businessAccess: "ACTIVE" } });
   await prisma.portalAccess.updateMany({ where: { clientId: { in: clientIds } }, data: { canViewBookkeeping: true } });
 }

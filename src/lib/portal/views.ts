@@ -5,6 +5,7 @@ import type { PortalAccess } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { conversationScope, k1VisibleWhere, portalDocumentScope } from "./access";
 import { serviceProfile } from "@/lib/services/service-profile";
+import { clientFacingRequestWhere } from "@/lib/services/client-request-scope";
 import { announcementsForClient, countdownsFor } from "@/lib/services/news";
 import { isPortalVerified, questionnaireUrl, questionnaireYears, taxYearStatuses, vaultYears } from "@/lib/services/tax-center";
 import { isStateCode } from "@/lib/resources/catalog";
@@ -50,7 +51,7 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
       orderBy: { publishedAt: "desc" },
       take: 10,
     }),
-    prisma.documentRequest.findMany({ where: { clientId, status: "OPEN" }, orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }] }),
+    prisma.documentRequest.findMany({ where: { clientId, status: "OPEN", AND: [clientFacingRequestWhere(perms.canViewBookkeeping)] }, orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }] }),
     prisma.clientDeadline.findMany({ where: { clientId, visibleToClient: true, dueAt: { gte: today } }, orderBy: { dueAt: "asc" }, take: 10 }),
     perms.canViewContracts ? prisma.contractAssignment.findMany({ where: { clientId, status: "ASSIGNED" }, orderBy: { createdAt: "asc" } }) : [],
     perms.canViewTax ? prisma.signatureRequest.findMany({ where: { clientId, status: { in: ["SENT", "VIEWED", "PARTIALLY_SIGNED"] } } }) : [],
@@ -121,6 +122,8 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
     },
     perms: personal ? perms : { ...perms, canViewIdentity: false },
     businessOnly: profile.businessOnly,
+    // Payroll is an assigned service (hasPayrollService): the business-tax Home shows its Payroll tile only then.
+    payrollService: profile.payroll,
     k1s: k1s.map((d) => ({ id: d.id, title: d.title, year: d.year, own: d.businessOwner?.portalUserId === viewerPortalUserId, ownerName: d.businessOwner?.contact.name ?? null })),
     payrollDocs,
     // "Request personal tax preparation" already sent from this login and still waiting.

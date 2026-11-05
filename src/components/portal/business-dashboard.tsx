@@ -1,7 +1,7 @@
 import Link from "next/link";
 import clsx from "clsx";
 import {
-  ArrowDown, ArrowRight, ArrowUp, BarChart3, BookOpen, Building2, CalendarPlus, CheckCircle2, Circle, ClipboardCheck, Coins, ExternalLink, FileBadge, FileSpreadsheet, FileText, IdCard, ReceiptText, Scale, Sparkles, TrendingDown, TrendingUp, Upload, UsersRound,
+  ArrowDown, ArrowRight, ArrowUp, BarChart3, BookOpen, Building2, CalendarPlus, ClipboardCheck, Coins, ExternalLink, FileBadge, FileSpreadsheet, FileText, IdCard, ReceiptText, Scale, Sparkles, TrendingDown, TrendingUp, Upload, UsersRound,
 } from "lucide-react";
 import { CHECKLIST_STATUS, type ChecklistStatus } from "@/lib/services/business-tax-requests";
 import { ActionForm } from "@/components/action-form";
@@ -13,6 +13,7 @@ import type { Deadline } from "@/lib/services/business-overview";
 import type { portalBusinessDashboard } from "@/lib/services/portal-business";
 import { portalUploadAction } from "@/app/actions/portal";
 import { ActionTiles, type Tile } from "./luxury";
+import { BooksProgressCard } from "./books-progress";
 import { LiveBankCard, LiveBankKpi, LiveBankProvider, LiveBankTicker } from "./business-live";
 
 type Dash = Awaited<ReturnType<typeof portalBusinessDashboard>>;
@@ -60,23 +61,6 @@ function Kpi({ icon: Icon, label, value, change, goodWhenDown = false, note, tes
           <p className="text-xs text-slate-600">{note}</p>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function Donut({ percent }: { percent: number }) {
-  const r = 52;
-  const c = 2 * Math.PI * r;
-  return (
-    <div className="relative size-32 shrink-0" role="img" aria-label={`${percent}% complete`}>
-      <svg viewBox="0 0 128 128" className="size-full -rotate-90">
-        <circle cx="64" cy="64" r={r} fill="none" stroke="var(--color-navy-900)" strokeWidth="12" />
-        <circle cx="64" cy="64" r={r} fill="none" stroke="var(--color-gold-500)" strokeWidth="12" strokeDasharray={`${(percent / 100) * c} ${c}`} strokeLinecap="round" />
-      </svg>
-      <span className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="font-serif text-xl font-bold text-navy-900">{percent}%</span>
-        <span className="text-xs text-navy-800">Complete</span>
-      </span>
     </div>
   );
 }
@@ -198,14 +182,9 @@ const UPLOADS_OFF = <p className="mt-2 rounded-lg bg-gold-50 px-3 py-2 text-sm t
  * which the client never sees). Without `readOnly`, links go to the client's own portal pages.
  */
 export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, readOnly, previewHref }: { d: Dash; tiles: Tile[]; q: string; base: string; linkFor: (id: string) => string; personalQ: string | null; readOnly?: boolean; previewHref?: (path: string, extra?: string) => string | null }) {
-  const mName = monthName(d.selected);
+  // "October 2026", or "Q4 2026" for a quarterly engagement.
+  const mName = d.periodLabel;
   const short = monthName(d.selected, { month: "long" });
-  const next = d.close?.steps.find((s) => !s.done);
-  const coethaSays = !d.close
-    ? `We haven't started ${mName} yet. Your bookkeeping progress will show here once we do.`
-    : !next
-      ? `${short}'s books are closed. Your financial statements are approved and ready for you below.`
-      : `${short}'s books are ${d.close.percent}% complete. We're working on: ${next.label.toLowerCase()}.`;
   const neededCount = d.checklist.filter((c) => c.status === "NEEDED" || c.status === "MORE_INFO").length;
   // Portal: the client's own page for this account. View as Client: the preview page, or null.
   const to = (path: string, extra?: string): string | null => (readOnly ? (previewHref?.(path, extra) ?? null) : `${path}${q}${extra ? `&${extra}` : ""}`);
@@ -243,7 +222,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
                 </p>
               </div>
             </div>
-            <MonthSelect base={base} value={d.selected} choices={d.monthChoices} />
+            <MonthSelect base={base} value={d.selected} choices={d.monthChoices} labels={d.choiceLabels} />
           </div>
         </section>
 
@@ -262,37 +241,21 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
           </p>
         )}
 
-        {/* 3. Monthly close + Coetha (client-facing status only) */}
-        <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className={clsx(card, "p-5")} data-testid="monthly-close">
-            <h2 className={h2}>{mName} – Monthly Close</h2>
-            {d.close ? (
-              <div className="mt-3 flex flex-wrap items-center gap-5">
-                <Donut percent={d.close.percent} />
-                <ul className="min-w-0 flex-1 divide-y divide-ivory-200">
-                  {d.close.steps.map((s) => (
-                    <li key={s.label} className="flex items-center gap-2 py-1.5 text-sm text-navy-900">
-                      {s.done ? <CheckCircle2 className="size-5 shrink-0 fill-emerald-600 text-white" aria-hidden /> : <Circle className="size-5 shrink-0 text-gold-500" aria-hidden />}
-                      {s.label}<span className="sr-only">{s.done ? " — done" : " — not done yet"}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="mt-3 text-sm text-navy-800">We haven&apos;t started this month yet.</p>
-            )}
-            <MaybeLink href={to("/client/bookkeeping")} className={clsx(textLink, "mt-3")}>See every month</MaybeLink>
-          </div>
+        {/* 3. Monthly Bookkeeping Progress Tracker + Coetha (client-facing status only, from the same stages) */}
+        {d.progress && (
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <BooksProgressCard progress={d.progress} links={{ "what-we-need": "#what-we-need", statements: "#statements" }} everyMonth={to("/client/bookkeeping")} />
 
-          <div className={clsx(navyCard, "flex flex-col p-5")} data-testid="coetha-card">
-            <h2 className="flex items-center gap-3 font-serif text-lg font-bold text-white"><Sparkles className="size-6 text-gold-400" aria-hidden /> Coetha | Senior Accountant</h2>
-            <p className="ml-9 text-sm text-navy-100">Status update for {d.client.name}</p>
-            <p className="mt-4 rounded-xl bg-white px-5 py-4 text-[15px] leading-snug text-navy-900" data-testid="coetha-message">{coethaSays}</p>
-            {d.perms.canMessage && (
-              <MaybeLink href={to("/client/messages")} className="mt-auto inline-flex items-center gap-1 pt-4 text-sm font-semibold text-gold-300 hover:text-gold-200">Message us <ArrowRight className="size-4" aria-hidden /></MaybeLink>
-            )}
-          </div>
-        </section>
+            <div className={clsx(navyCard, "flex flex-col p-5")} data-testid="coetha-card">
+              <h2 className="flex items-center gap-3 font-serif text-lg font-bold text-white"><Sparkles className="size-6 text-gold-400" aria-hidden /> Coetha | Senior Accountant</h2>
+              <p className="ml-9 text-sm text-navy-100">Status update for {d.client.name}</p>
+              <p className="mt-4 rounded-xl bg-white px-5 py-4 text-[15px] leading-snug text-navy-900" data-testid="coetha-message">{d.progress.headline}</p>
+              {d.perms.canMessage && (
+                <MaybeLink href={to("/client/messages")} className="mt-auto inline-flex items-center gap-1 pt-4 text-sm font-semibold text-gold-300 hover:text-gold-200">Message us <ArrowRight className="size-4" aria-hidden /></MaybeLink>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* 4. Payroll, filings, licenses, year-end */}
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">

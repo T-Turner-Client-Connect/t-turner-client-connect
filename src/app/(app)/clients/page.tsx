@@ -50,6 +50,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
             <LinkButton href={filters.archived ? "/clients" : "/clients?archived=1"} variant="secondary">
               {filters.archived ? "Back to current clients" : "View archive"}
             </LinkButton>
+            <LinkButton href="/clients/invitations" variant="secondary">Prepared invitations</LinkButton>
             <LinkButton href="/clients/onboarding" variant={signupsToReview ? "gold" : "secondary"}>Portal sign-ups{signupsToReview ? ` (${signupsToReview})` : ""}</LinkButton>
             <LinkButton href="/groups" variant="secondary">Groups</LinkButton>
             <LinkButton href="/clients/duplicates" variant="secondary">Possible duplicates</LinkButton>
