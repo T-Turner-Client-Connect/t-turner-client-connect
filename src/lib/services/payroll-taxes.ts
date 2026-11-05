@@ -731,6 +731,7 @@ export async function saveReminderPlan(actor: Actor, key: string, raw: unknown) 
 
 export async function resetClientPlan(actor: Actor, clientId: string) {
   await assertPayrollTaxManage(actor);
+  if (clientId === "global") throw new ValidationError("Edit the office-wide plan instead of resetting it.");
   const r = await prisma.payrollReminderPlan.deleteMany({ where: { key: clientId } });
   if (r.count) await audit(prisma, { actorId: actor.id, action: "payroll_taxes.reminder_plan_reset", entityType: "PayrollReminderPlan", entityId: clientId, clientId });
 }
