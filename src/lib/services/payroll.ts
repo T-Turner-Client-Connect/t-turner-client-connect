@@ -5,7 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
-import { assertLedger, assertLedgerWrite, bookOf, parseCsv, postEntryTx, todayCentral, usd, ymdOf } from "./ledger";
+import { assertLedger, assertLedgerWrite, bookOf, canUseLedger, parseCsv, postEntryTx, todayCentral, usd, ymdOf } from "./ledger";
+import { canManagePayrollTaxes } from "@/lib/payroll-taxes/access";
 import { openWorkPeriod, PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
 import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { PAYROLL_ACCESS } from "./bookkeeping-profile";
@@ -35,6 +36,22 @@ export const LOCKED = new Set(["SUBMITTED", "PROCESSED", "DISCARDED"]);
 export async function assertStaff(actor: Actor) {
   const u = await prisma.user.findUnique({ where: { id: actor.id }, select: { active: true } });
   if (!u?.active) throw new ForbiddenError("Only office staff can do that.");
+}
+
+/**
+ * Pay-run work (import, versions, sending for approval, recording the ADP submission): the books
+ * rule (Admins, the assigned staff member, ledger grants) as before, or the owner's
+ * "ADP Payroll & Taxes → Manage" grant. The ledger write rule for posting is unchanged.
+ */
+export async function assertPayrollWork(actor: Actor, clientId: string) {
+  if (await canUseLedger(actor, clientId)) return;
+  if (await canManagePayrollTaxes(actor)) return;
+  await assertLedger(actor, clientId);
+}
+
+/** A version's content hash: the figures (versionHash) plus, when present, the attached document. */
+export function contentHashOf(base: string, documentSha256: string | null | undefined) {
+  return documentSha256 ? createHash("sha256").update(`${base}|document:${documentSha256}`).digest("hex") : base;
 }
 
 // --- Setup --------------------------------------------------------------------------------
@@ -97,7 +114,7 @@ export type PreviewInput = { bytes: Uint8Array; fileName: string; preset: string
 /** What an import would create, per pay date, without saving anything. */
 export async function previewPayrollImport(actor: Actor, clientId: string, input: PreviewInput) {
   await assertStaff(actor);
-  await assertLedger(actor, clientId);
+  await assertPayrollWork(actor, clientId);
   const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId } });
   const preset = presetOf(input.preset);
   const provider = providerOf(preset, profile?.payrollSystem);
@@ -175,14 +192,16 @@ export async function event(tx: Tx, runId: string, kind: string, by: { userId?: 
   await tx.payrollRunEvent.create({ data: { runId, kind, actorUserId: by.userId ?? null, portalUserId: by.portalUserId ?? null, actorName: by.name ?? null, versionNumber: extra.versionNumber ?? null, note: extra.note?.slice(0, 500) ?? null } });
 }
 
-type VersionInput = Amounts & { checkDate: string; periodStart: string | null; periodEnd: string | null; lines: EmployeeLine[]; reason?: string | null };
+export type VersionDocument = { id: string; sha256: string };
+type VersionInput = Amounts & { checkDate: string; periodStart: string | null; periodEnd: string | null; lines: EmployeeLine[]; reason?: string | null; document?: VersionDocument | null; employeesOverride?: number };
 
 async function createVersion(tx: Tx, runId: string, number: number, v: VersionInput, createdById: string | null) {
-  const employees = v.lines.length;
-  const contentHash = versionHash({ ...v, employees });
+  const employees = v.employeesOverride ?? v.lines.length;
+  const contentHash = contentHashOf(versionHash({ ...v, employees }), v.document?.sha256);
   return tx.payrollRunVersion.create({
     data: {
       runId, number, contentHash, checkDate: d(v.checkDate)!, periodStart: d(v.periodStart), periodEnd: d(v.periodEnd), employees, ...amountsOf(v), reason: v.reason?.slice(0, 300) ?? null, createdById,
+      documentId: v.document?.id ?? null, documentSha256: v.document?.sha256 ?? null,
       lines: { create: v.lines.map((l, i) => ({ sortOrder: i, employeeName: l.employeeName.slice(0, 120), ...amountsOf(l) })) },
     },
   });
@@ -193,7 +212,7 @@ async function createVersion(tx: Tx, runId: string, number: number, v: VersionIn
  * DRAFT pay runs. Duplicates (same provider + check date + totals) are skipped. Pay dates that
  * don't tie out are reported and not created.
  */
-export async function createRunsFromPayDates(tx: Tx, actor: Actor, clientId: string, input: { provider: string; origin: "IMPORT" | "API" | "COETHA" | "MANUAL"; payDates: PayDateTotals[]; importId?: string | null; cashAccountId?: string | null; alreadyProcessed?: boolean }) {
+export async function createRunsFromPayDates(tx: Tx, actor: Actor, clientId: string, input: { provider: string; origin: "IMPORT" | "API" | "COETHA" | "MANUAL"; payDates: PayDateTotals[]; importId?: string | null; cashAccountId?: string | null; alreadyProcessed?: boolean; document?: VersionDocument | null; employeesOverride?: number; reason?: string | null }) {
   const created: string[] = [];
   const duplicates: string[] = [];
   const unbalanced: { checkDate: string; differenceCents: number }[] = [];
@@ -210,7 +229,7 @@ export async function createRunsFromPayDates(tx: Tx, actor: Actor, clientId: str
     const run = await tx.payrollRun.create({
       data: { clientId, provider: input.provider, origin: input.origin, importId: input.importId ?? null, dedupeKey, checkDate: d(p.checkDate)!, cashAccountId: input.cashAccountId ?? null, createdById: actor.id, ...(input.alreadyProcessed ? { status: "PROCESSED", submittedAt: new Date(), submittedById: actor.id, submissionMethod: "PROCESSED_AT_PROVIDER" } : {}) },
     });
-    const v = await createVersion(tx, run.id, 1, { ...p, reason: input.origin === "IMPORT" ? "Imported from the payroll register" : input.origin === "API" ? "Received from the payroll provider" : null }, actor.id);
+    const v = await createVersion(tx, run.id, 1, { ...p, document: input.document ?? null, employeesOverride: input.employeesOverride, reason: input.reason ?? (input.origin === "IMPORT" ? "Imported from the payroll register" : input.origin === "API" ? "Received from the payroll provider" : null) }, actor.id);
     await tx.payrollRun.update({ where: { id: run.id }, data: { currentVersionId: v.id } });
     await event(tx, run.id, "CREATED", { userId: actor.id, name: actor.name }, { versionNumber: 1, note: input.origin === "IMPORT" ? "Imported from the payroll register" : `Created (${input.origin.toLowerCase()})` });
     if (input.alreadyProcessed) await event(tx, run.id, "PROCESSED", { userId: actor.id, name: actor.name }, { versionNumber: 1, note: "Already processed and paid by the payroll provider (imported after the fact)" });
@@ -228,7 +247,7 @@ export type ImportInput = PreviewInput & { cashAccountId?: string | null; alread
  */
 export async function importPayrollRegister(actor: Actor, clientId: string, input: ImportInput) {
   await assertStaff(actor);
-  await assertLedger(actor, clientId);
+  await assertPayrollWork(actor, clientId);
   const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId } });
   if (!profile?.payroll) throw new ValidationError("Turn on payroll for this client first.");
   const preset = presetOf(input.preset);
@@ -273,7 +292,13 @@ export async function loadRun(clientId: string, runId: string, db: Tx | typeof p
   return { run, version };
 }
 
-export type EditInput = { checkDate?: string; periodStart?: string | null; periodEnd?: string | null; lines: (Partial<Amounts> & { employeeName: string })[]; reason: string };
+/**
+ * `document` (ADP Payroll & Taxes workspace): the preview document shown with the new version.
+ * Left out, the current version's document carries over; null removes it.
+ */
+export type EditInput = { checkDate?: string; periodStart?: string | null; periodEnd?: string | null; lines: (Partial<Amounts> & { employeeName: string })[]; reason: string; document?: VersionDocument | null; employeesOverride?: number };
+
+const documentOf = (v: { documentId: string | null; documentSha256: string | null }): VersionDocument | null => (v.documentId && v.documentSha256 ? { id: v.documentId, sha256: v.documentSha256 } : null);
 
 /**
  * Staff change a run's figures: a NEW version is created (the old one stays). Approvals given
@@ -282,7 +307,7 @@ export type EditInput = { checkDate?: string; periodStart?: string | null; perio
  */
 export async function editPayrollRun(actor: Actor, clientId: string, runId: string, input: EditInput) {
   await assertStaff(actor);
-  await assertLedger(actor, clientId);
+  await assertPayrollWork(actor, clientId);
   const reason = input.reason?.trim() ?? "";
   if (reason.length < 3) throw new ValidationError("Say what changed and why.");
   return prisma.$transaction(async (tx) => {
@@ -301,7 +326,7 @@ export async function editPayrollRun(actor: Actor, clientId: string, runId: stri
     const diff = differenceOf(totals);
     if (diff !== 0) throw new ValidationError(`Gross − employee taxes − deductions must equal net pay. It's off by ${usd(diff)}.`);
     const checkDate = input.checkDate || ymdOf(version.checkDate);
-    const v = await createVersion(tx, run.id, version.number + 1, { ...totals, lines, checkDate, periodStart: input.periodStart !== undefined ? input.periodStart : version.periodStart ? ymdOf(version.periodStart) : null, periodEnd: input.periodEnd !== undefined ? input.periodEnd : version.periodEnd ? ymdOf(version.periodEnd) : null, reason }, actor.id);
+    const v = await createVersion(tx, run.id, version.number + 1, { ...totals, lines, checkDate, periodStart: input.periodStart !== undefined ? input.periodStart : version.periodStart ? ymdOf(version.periodStart) : null, periodEnd: input.periodEnd !== undefined ? input.periodEnd : version.periodEnd ? ymdOf(version.periodEnd) : null, reason, document: input.document !== undefined ? input.document : documentOf(version), employeesOverride: input.employeesOverride }, actor.id);
     if (v.contentHash === version.contentHash) throw new ValidationError("Nothing changed.");
     const hadApprovals = await tx.payrollApproval.count({ where: { runId, round: run.approvalRound } });
     const backToDraft = run.status !== "DRAFT";
@@ -309,6 +334,32 @@ export async function editPayrollRun(actor: Actor, clientId: string, runId: stri
     await event(tx, run.id, "VERSIONED", { userId: actor.id, name: actor.name }, { versionNumber: v.number, note: reason });
     if (backToDraft || hadApprovals) await event(tx, run.id, "APPROVALS_INVALIDATED", { userId: actor.id, name: actor.name }, { versionNumber: v.number, note: "Changed after it was sent for approval: earlier approvals no longer count. Send it for approval again." });
     await audit(tx, { actorId: actor.id, action: "payroll.run_versioned", entityType: "PayrollRun", entityId: run.id, clientId, details: { from: version.number, to: v.number, reason, previousStatus: run.status, approvalsInvalidated: hadApprovals } });
+    return v;
+  });
+}
+
+/**
+ * Attaches (or replaces) the preview document a run is approved on. The figures stay the same,
+ * but the document's sha256 is part of the content hash, so this is a NEW version: earlier
+ * approvals stop counting and the run goes back to Draft, exactly like an edit.
+ */
+export async function attachRunDocument(actor: Actor, clientId: string, runId: string, document: VersionDocument, reason = "ADP preview attached") {
+  await assertStaff(actor);
+  await assertPayrollWork(actor, clientId);
+  if (!(await prisma.document.count({ where: { id: document.id, clientId, deletedAt: null } }))) throw new ValidationError("That document isn't in this client's file.");
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"payroll-run:" + runId}))`;
+    const { run, version } = await loadRun(clientId, runId, tx);
+    if (LOCKED.has(run.status)) throw new ValidationError(run.status === "DISCARDED" ? "This pay run was discarded." : "This pay run was submitted for processing, so it's locked.");
+    if (version.documentSha256 === document.sha256) throw new ValidationError("That document is already attached to the current version.");
+    const lines: EmployeeLine[] = version.lines.map((l) => ({ ...amountsOf(l), employeeName: l.employeeName }));
+    const v = await createVersion(tx, run.id, version.number + 1, { ...amountsOf(version), lines, employeesOverride: version.employees, checkDate: ymdOf(version.checkDate), periodStart: version.periodStart ? ymdOf(version.periodStart) : null, periodEnd: version.periodEnd ? ymdOf(version.periodEnd) : null, reason, document }, actor.id);
+    const hadApprovals = await tx.payrollApproval.count({ where: { runId, round: run.approvalRound } });
+    const backToDraft = run.status !== "DRAFT";
+    await tx.payrollRun.update({ where: { id: run.id }, data: { currentVersionId: v.id, ...(backToDraft ? { status: "DRAFT", fullyApprovedAt: null } : {}) } });
+    await event(tx, run.id, "VERSIONED", { userId: actor.id, name: actor.name }, { versionNumber: v.number, note: reason });
+    if (backToDraft || hadApprovals) await event(tx, run.id, "APPROVALS_INVALIDATED", { userId: actor.id, name: actor.name }, { versionNumber: v.number, note: "The preview document changed after it was sent for approval: earlier approvals no longer count. Send it for approval again." });
+    await audit(tx, { actorId: actor.id, action: "payroll.run_document_attached", entityType: "PayrollRun", entityId: run.id, clientId, details: { from: version.number, to: v.number, documentId: document.id, previousDocumentId: version.documentId, previousStatus: run.status, approvalsInvalidated: hadApprovals } });
     return v;
   });
 }
