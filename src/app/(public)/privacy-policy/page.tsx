@@ -86,15 +86,14 @@ export default function PrivacyPolicy() {
       <section>
         <h2>AI-assisted bookkeeping (Coetha)</h2>
         <p className={status}>
-          <strong>Status:</strong> AI-assisted bookkeeping is in use for bookkeeping clients who have received our written notice.
+          <strong>Status:</strong> Our office uses Coetha internally to assist with bookkeeping. Bank account connections through Plaid are not yet active.
         </p>
         <p className="mt-3">
-          We use Coetha, an AI-assisted bookkeeping tool that drafts transaction categories and bookkeeping entries for our staff to review. It uses an AI service provided by Anthropic.
+          Coetha is an AI-assisted bookkeeping tool our office uses to draft transaction categories, reconciliation notes, and bookkeeping entries for our staff to review. It uses an AI service provided by Anthropic.
         </p>
         <ul className={`${list} mt-3`}>
           <li>
-            <strong>Notice first, bookkeeping only.</strong> Coetha will not be used with your records until we have notified you in writing. Coetha is used for bookkeeping only; it does not
-            prepare, review, or file tax returns, and it cannot move money or change your accounts.
+            <strong>Bookkeeping only.</strong> Coetha assists our staff with bookkeeping only; it does not prepare, review, or file tax returns, and it cannot move money or change your accounts.
           </li>
           <li>
             <strong>Information sent to the AI service.</strong> Coetha works on one client business at a time. Client names are not sent. Before transaction information is sent, email
@@ -116,7 +115,7 @@ export default function PrivacyPolicy() {
           <li><strong>Netlify</strong> &mdash; hosts {BUSINESS.platformName}, including its database and file storage.</li>
           <li><strong>Plaid</strong> &mdash; bank account connections (not yet active; described above).</li>
           <li><strong>Square</strong> &mdash; invoices and payments.</li>
-          <li><strong>Anthropic</strong> &mdash; the AI service for AI-assisted bookkeeping (used only after we notify you, as described above).</li>
+          <li><strong>Anthropic</strong> &mdash; the AI service our office uses for AI-assisted bookkeeping, as described above.</li>
           <li><strong>Resend</strong> &mdash; email delivery.</li>
           <li><strong>Twilio</strong> &mdash; text message delivery for our SMS program.</li>
           <li><strong>Jotform</strong> &mdash; online forms and questionnaires.</li>
