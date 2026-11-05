@@ -357,6 +357,7 @@ model Client {
   billingSchedules       BillingSchedule[]
   clientLetters          ClientLetter[]
   coethaOptOut           CoethaOptOut?
+  complianceEntities     ComplianceEntity[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -1203,6 +1204,8 @@ model Document {
   // The owner a K-1 (category OWNER_K1) belongs to.
   businessOwnerId        String?
   businessOwner          BusinessOwner?       @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
+
+  complianceLink ComplianceDocument?
 
   @@index([clientId, category, year, month])
   @@index([visibility])
@@ -4665,18 +4668,19 @@ model BusinessAccessEvent {
 
 /// A business license or permit the office tracks for a bookkeeping client (renewal reminders on the overview).
 model BusinessLicense {
-  id            String    @id @default(cuid())
-  clientId      String
-  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  name          String
-  jurisdiction  String?
-  licenseNumber String?
-  renewalDate   DateTime? @db.Date
-  note          String?
-  archivedAt    DateTime?
-  createdById   String
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id             String                   @id @default(cuid())
+  clientId       String
+  client         Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name           String
+  jurisdiction   String?
+  licenseNumber  String?
+  renewalDate    DateTime?                @db.Date
+  note           String?
+  archivedAt     DateTime?
+  createdById    String
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+  complianceLink ComplianceEntityLicense?
 
   @@index([clientId, renewalDate])
 }
@@ -5141,10 +5145,11 @@ model BusinessOwner {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
-  k1Documents  Document[]
+  k1Documents        Document[]
   // Other owners' K-1s Tabitha shared with this owner, and who may see this owner's.
-  k1Viewing    OwnerK1Grant[] @relation("K1Viewer")
-  k1SharedWith OwnerK1Grant[] @relation("K1Holder")
+  k1Viewing          OwnerK1Grant[]          @relation("K1Viewer")
+  k1SharedWith       OwnerK1Grant[]          @relation("K1Holder")
+  complianceEntities ComplianceEntityOwner[]
 
   @@index([clientId])
   @@index([portalUserId])
@@ -5377,10 +5382,10 @@ model BillingScheduleItem {
 // One completed quarterly access review: who reviewed, when, and what access looked like then.
 // The next review is due 90 days after the latest completedAt (the automations cron reminds the owner).
 model AccessReview {
-  id            String   @id @default(cuid())
+  id            String                 @id @default(cuid())
   reviewerId    String
   reviewerName  String
-  completedAt   DateTime @default(now())
+  completedAt   DateTime               @default(now())
   // Required summary written by the owner.
   summary       String
   // Findings and the changes made because of the review (optional).
@@ -5391,7 +5396,7 @@ model AccessReview {
   vendorAnswers Json
   // Access changes since the previous review (permission grants/revokes, role and active changes, offboardings).
   changes       Json?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime               @default(now())
   // Owner corrections (summary, findings, vendor answers only). Append-only; the first one's
   // `previous` holds the values as originally completed. completedAt never changes.
   revisions     AccessReviewRevision[]
@@ -5536,4 +5541,520 @@ model CoethaOptOut {
   recordedById String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// ===========================================================================
+// TAX & COMPLIANCE CENTER
+// ---------------------------------------------------------------------------
+// One client relationship holds many compliance entities (the restaurant, the
+// owner's nonprofit, a second LLC…), each with its own profile, obligations,
+// calendar, approvals and documents. Rules are versioned seed data; an
+// obligation pins the rule version it was generated from. Nothing here files a
+// return, logs into an agency portal or moves money: staff file through the
+// authorized government portal and record the evidence. No passwords or MFA
+// secrets are stored — Filing Accounts hold a URL, the access method and a
+// reference (e.g. a password-manager item name) only.
+// ===========================================================================
+
+model ComplianceEntity {
+  id                         String             @id @default(cuid())
+  clientId                   String
+  client                     Client             @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  // LLC | CORPORATION | PARTNERSHIP | SOLE_PROPRIETORSHIP | NONPROFIT | OTHER
+  kind                       String
+  // PROPOSED (from a proposal, not yet approved) | ACTIVE | INACTIVE
+  status                     String             @default("ACTIVE")
+  legalName                  String?
+  dba                        String?
+  // AES-256-GCM (APP_ENCRYPTION_KEY). Only the last four are shown; reveal needs a reason and is audited.
+  einEncrypted               String?
+  einLast4                   String?
+  einHash                    String?
+  stateOfFormation           String?
+  statesOfOperation          String[]           @default([])
+  industry                   String?
+  naicsCode                  String?
+  activityDescription        String?
+  // e.g. restaurant, alcohol, retail, construction — drive rule applicability.
+  activityTags               String[]           @default([])
+  // Free text detail, e.g. "Single-member LLC", "Alabama corporation".
+  legalEntityType            String?
+  // SCHEDULE_C | PARTNERSHIP | S_CORP | C_CORP | EXEMPT_ORG | DISREGARDED | OTHER (null = not recorded)
+  taxClassification          String?
+  sCorpEffectiveDate         DateTime?          @db.Date
+  // Month 1–12 the tax year ends. Null = not recorded (never assumed).
+  fiscalYearEndMonth         Int?
+  // YES | NO | UNKNOWN
+  payrollStatus              String             @default("UNKNOWN")
+  employeeCount              Int?
+  payrollProvider            String?
+  // Issues Forms 1099 to contractors/vendors: YES | NO | UNKNOWN
+  issues1099                 String             @default("UNKNOWN")
+  // Business entity: does the owner own or operate a nonprofit? YES | NO | UNKNOWN
+  ownerHasNonprofit          String             @default("UNKNOWN")
+  // Nonprofit entity: the business entity it is linked to (never shares filings).
+  linkedEntityId             String?
+  linkedEntity               ComplianceEntity?  @relation("EntityLink", fields: [linkedEntityId], references: [id], onDelete: SetNull)
+  linkedFrom                 ComplianceEntity[] @relation("EntityLink")
+  // The NonprofitProfile (by its client record) holding the 990 tracker facts.
+  nonprofitClientId          String?
+  // DETERMINATION_LETTER | APPLICATION_PENDING | NOT_APPLIED | REVOKED | UNKNOWN
+  irsExemptionStatus         String?
+  // Contracted services (ServiceType keys) confirmed for this entity.
+  services                   String[]           @default([])
+  // Where each prepopulated fact came from: { field: "BookkeepingProfile" | "Client" | "Proposal" | "Staff" | ... }
+  factSources                Json               @default("{}")
+  // Client portal: shown to the client's logins (business owners need to be linked or granted).
+  portalVisible              Boolean            @default(false)
+  // Per-entity switch for client notices (also needs the office-wide owner switch).
+  clientNotificationsEnabled Boolean            @default(false)
+  proposalKey                String?
+  proposalRole               String?
+  notes                      String?
+  createdById                String?
+  createdAt                  DateTime           @default(now())
+  updatedAt                  DateTime           @updatedAt
+  archivedAt                 DateTime?
+
+  owners         ComplianceEntityOwner[]
+  viewers        ComplianceEntityViewer[]
+  locations      ComplianceLocation[]
+  taxAccounts    ComplianceTaxAccount[]
+  licenses       ComplianceEntityLicense[]
+  obligations    ComplianceObligation[]
+  periods        ComplianceFilingPeriod[]
+  filingAccounts ComplianceFilingAccount[]
+  authorizations ComplianceAuthorization[]
+  documents      ComplianceDocument[]
+
+  @@unique([clientId, proposalKey, proposalRole])
+  @@index([clientId])
+}
+
+/// Responsible client owner(s) of an entity (BusinessOwner rows of the same client).
+model ComplianceEntityOwner {
+  id              String           @id @default(cuid())
+  entityId        String
+  entity          ComplianceEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  businessOwnerId String
+  businessOwner   BusinessOwner    @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
+  createdById     String?
+  createdAt       DateTime         @default(now())
+
+  @@unique([entityId, businessOwnerId])
+}
+
+/// An explicit grant: this portal login may see this entity's compliance calendar.
+model ComplianceEntityViewer {
+  id           String           @id @default(cuid())
+  entityId     String
+  entity       ComplianceEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  portalUserId String
+  grantedById  String
+  createdAt    DateTime         @default(now())
+  revokedAt    DateTime?
+
+  @@unique([entityId, portalUserId])
+}
+
+model ComplianceLocation {
+  id         String           @id @default(cuid())
+  entityId   String
+  entity     ComplianceEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  label      String?
+  address1   String?
+  city       String?
+  county     String?
+  state      String?
+  postalCode String?
+  isPrimary  Boolean          @default(false)
+  source     String?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+}
+
+model ComplianceTaxAccount {
+  id                String           @id @default(cuid())
+  entityId          String
+  entity            ComplianceEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  // SALES_USE | WITHHOLDING | LOCAL | OTHER
+  type              String
+  agency            String
+  // FEDERAL | STATE | COUNTY | CITY
+  jurisdictionLevel String?
+  jurisdictionName  String?
+  accountNumberEnc  String?
+  accountLast4      String?
+  // MONTHLY | QUARTERLY | SEMIANNUAL | ANNUAL (null = not recorded)
+  filingFrequency   String?
+  effectiveDate     DateTime?        @db.Date
+  // ACTIVE | PENDING | CLOSED | SUSPENDED | UNKNOWN
+  status            String           @default("UNKNOWN")
+  source            String?
+  notes             String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  obligations ComplianceObligation[]
+}
+
+/// Reuses Business Licenses (renewal dates) for an entity.
+model ComplianceEntityLicense {
+  id                String           @id @default(cuid())
+  entityId          String
+  entity            ComplianceEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  businessLicenseId String           @unique
+  businessLicense   BusinessLicense  @relation(fields: [businessLicenseId], references: [id], onDelete: Restrict)
+  createdAt         DateTime         @default(now())
+}
+
+/// Versioned rules library. A rule key has one current version; editing adds a version.
+model ComplianceRule {
+  id                    String    @id @default(cuid())
+  ruleKey               String
+  version               Int
+  isCurrent             Boolean   @default(true)
+  // FEDERAL | STATE | COUNTY | CITY
+  jurisdictionLevel     String
+  jurisdictionName      String
+  formName              String
+  obligationName        String
+  // INCOME_TAX | SALES_USE | WITHHOLDING_PAYROLL | INFORMATION_RETURNS | LICENSE_PERMIT | PROPERTY | NONPROFIT | ANNUAL_REPORT | OTHER
+  category              String
+  conditions            Json      @default("{}")
+  // MONTHLY | QUARTERLY | SEMIANNUAL | ANNUAL | ONE_TIME | ACCOUNT (from the registered account)
+  frequency             String
+  dueRuleCode           String
+  dueRuleDescription    String
+  // NEXT_BUSINESS_DAY_FEDERAL | NEXT_BUSINESS_DAY_ALABAMA | NO_ADJUSTMENT
+  weekendRule           String
+  sourceUrls            String[]  @default([])
+  effectiveFrom         DateTime? @db.Date
+  effectiveTo           DateTime? @db.Date
+  // VERIFIED | NEEDS_VERIFICATION
+  verificationStatus    String    @default("NEEDS_VERIFICATION")
+  lastReviewedAt        DateTime?
+  lastReviewedBy        String?
+  notes                 String?
+  clientApprovalDefault Boolean   @default(false)
+  // Filing portal kind for "Open portal" (MAT, IRS_EFTPS, ...).
+  portalKind            String?
+  requiredDocs          String[]  @default([])
+  // ServiceType keys whose contract makes this obligation part of our work.
+  serviceTypes          String[]  @default([])
+  // SEED | OWNER_EDIT | CUSTOM
+  origin                String    @default("SEED")
+  changeReason          String?
+  editedById            String?
+  seedHash              String?
+  createdAt             DateTime  @default(now())
+
+  obligations ComplianceObligation[]
+
+  @@unique([ruleKey, version])
+  @@index([isCurrent])
+}
+
+/// Industry templates: rule bundles plus suggested activity tags. Owners can add their own.
+model ComplianceIndustryTemplate {
+  id           String    @id @default(cuid())
+  key          String    @unique
+  name         String
+  description  String?
+  ruleKeys     String[]  @default([])
+  activityTags String[]  @default([])
+  builtIn      Boolean   @default(false)
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  archivedAt   DateTime?
+}
+
+model ComplianceObligation {
+  id                     String                   @id @default(cuid())
+  entityId               String
+  entity                 ComplianceEntity         @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  clientId               String
+  // The exact rule version this obligation came from (null for a custom obligation).
+  ruleId                 String?
+  rule                   ComplianceRule?          @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+  ruleKey                String?
+  // ruleKey, or "custom:<id>" / "proposal:<item>" — one obligation per entity and key.
+  dedupeKey              String
+  title                  String
+  formName               String
+  jurisdictionLevel      String
+  jurisdictionName       String
+  category               String
+  frequency              String
+  dueRuleCode            String
+  dueRuleDescription     String
+  weekendRule            String
+  // PROPOSED | ACTIVE | SUSPENDED | CLOSED | INACTIVE
+  status                 String                   @default("PROPOSED")
+  // VERIFIED | NEEDS_VERIFICATION
+  verification           String                   @default("NEEDS_VERIFICATION")
+  // Exactly what must be verified (jurisdiction, registration, frequency, due date, authority…).
+  verifyItems            String[]                 @default([])
+  assignedStaffId        String?
+  reviewerId             String?
+  clientApprovalRequired Boolean                  @default(false)
+  clientVisible          Boolean                  @default(false)
+  serviceType            String?
+  taxAccountId           String?
+  taxAccount             ComplianceTaxAccount?    @relation(fields: [taxAccountId], references: [id], onDelete: SetNull)
+  filingAccountId        String?
+  filingAccount          ComplianceFilingAccount? @relation(fields: [filingAccountId], references: [id], onDelete: SetNull)
+  accessReference        String?
+  requiredDocs           String[]                 @default([])
+  // Internal prep deadline: days before the adjusted due date.
+  prepLeadDays           Int                      @default(10)
+  // Months an extension adds (e.g. 6 for 7004), null = no extension.
+  extensionMonths        Int?
+  // GENERATOR | PROPOSAL | CUSTOM | IMPORT
+  source                 String                   @default("GENERATOR")
+  // The first period starts on or after this date (no invented history).
+  startDate              DateTime?                @db.Date
+  notes                  String?
+  activatedAt            DateTime?
+  activatedById          String?
+  suspendedAt            DateTime?
+  closedAt               DateTime?
+  createdById            String?
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+
+  periods ComplianceFilingPeriod[]
+
+  @@unique([entityId, dedupeKey])
+  @@index([clientId])
+  @@index([status])
+}
+
+model ComplianceFilingPeriod {
+  id                  String               @id @default(cuid())
+  obligationId        String
+  obligation          ComplianceObligation @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  entityId            String
+  entity              ComplianceEntity     @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  clientId            String
+  // "2026-10", "2026-Q3", "2026-H2", "FY2026", "ONCE"
+  periodKey           String
+  // ORIGINAL | AMENDED
+  kind                String               @default("ORIGINAL")
+  parentPeriodId      String?
+  periodStart         DateTime             @db.Date
+  periodEnd           DateTime             @db.Date
+  statutoryDue        DateTime?            @db.Date
+  adjustedDue         DateTime?            @db.Date
+  // With a recorded extension, reminders follow this date (payment is still due on the original date).
+  extendedDue         DateTime?            @db.Date
+  prepDeadline        DateTime?            @db.Date
+  // CONFIRMED | NEEDS_VERIFICATION
+  dueCertainty        String               @default("NEEDS_VERIFICATION")
+  dueNote             String?
+  // NOT_STARTED | PREPARING | AWAITING_APPROVAL | APPROVED | SUBMITTED | ACCEPTED | REJECTED | NOT_REQUIRED
+  filingStatus        String               @default("NOT_STARTED")
+  // UNKNOWN | NOT_APPLICABLE | DUE | PAID
+  paymentStatus       String               @default("UNKNOWN")
+  amountDueCents      Int?
+  zeroReturn          Boolean              @default(false)
+  // MANUAL only. MAT_BULK is a disabled placeholder for a future owner-approved export.
+  filingChannel       String               @default("MANUAL")
+  submittedAt         DateTime?
+  actualFilingDate    DateTime?            @db.Date
+  confirmationNumber  String?
+  verifiedById        String?
+  verifiedAt          DateTime?
+  acceptedAt          DateTime?
+  acceptedById        String?
+  rejectedAt          DateTime?
+  rejectionReason     String?
+  paidAt              DateTime?
+  paidById            String?
+  paymentConfirmation String?
+  completedAt         DateTime?
+  prepTaskId          String?              @unique
+  nextCreatedAt       DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  evidence  ComplianceEvidence[]
+  versions  ComplianceReturnVersion[]
+  reminders ComplianceReminder[]
+  documents ComplianceDocument[]
+
+  @@unique([obligationId, periodKey, kind])
+  @@index([clientId])
+  @@index([adjustedDue])
+  @@index([filingStatus])
+}
+
+/// Evidence behind every status. Append-only.
+model ComplianceEvidence {
+  id           String                 @id @default(cuid())
+  periodId     String
+  period       ComplianceFilingPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  // FILING_CONFIRMATION | ACCEPTANCE | PAYMENT | REJECTION | NOT_REQUIRED | EXTENSION | OTHER
+  kind         String
+  documentId   String?
+  reference    String?
+  note         String?
+  recordedById String
+  recordedAt   DateTime               @default(now())
+
+  @@index([periodId])
+}
+
+/// Links a Document (category TAXES, docType COMPLIANCE_*) to the entity's Tax & Compliance folder.
+model ComplianceDocument {
+  id            String                  @id @default(cuid())
+  documentId    String                  @unique
+  document      Document                @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  entityId      String
+  entity        ComplianceEntity        @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  obligationId  String?
+  periodId      String?
+  period        ComplianceFilingPeriod? @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  // RETURN | SUPPORTING | FILING_CONFIRMATION | ACCEPTANCE | PAYMENT_RECEIPT | REJECTION | AUTHORIZATION | EXEMPTION | OTHER
+  kind          String
+  // Released to the client's compliance page (filed return, receipt).
+  publishedAt   DateTime?
+  publishedById String?
+  createdById   String
+  createdAt     DateTime                @default(now())
+
+  @@index([entityId])
+  @@index([periodId])
+}
+
+model ComplianceReturnVersion {
+  id                String                 @id @default(cuid())
+  periodId          String
+  period            ComplianceFilingPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  version           Int
+  documentIds       String[]
+  documentShas      String[]
+  amountDueCents    Int?
+  periodStart       DateTime               @db.Date
+  periodEnd         DateTime               @db.Date
+  dueDate           DateTime?              @db.Date
+  contentHash       String
+  // DRAFT | SENT | CHANGES_REQUESTED | APPROVED | SUPERSEDED
+  status            String                 @default("DRAFT")
+  note              String?
+  preparedById      String
+  sentAt            DateTime?
+  sentById          String?
+  invalidatedAt     DateTime?
+  invalidatedReason String?
+  createdAt         DateTime               @default(now())
+
+  approvals ComplianceApproval[]
+
+  @@unique([periodId, version])
+}
+
+/// The client's decision on one return version. Append-only.
+model ComplianceApproval {
+  id              String                  @id @default(cuid())
+  returnVersionId String
+  returnVersion   ComplianceReturnVersion @relation(fields: [returnVersionId], references: [id], onDelete: Restrict)
+  periodId        String
+  // APPROVED | CHANGES_REQUESTED
+  decision        String
+  portalUserId    String
+  signerName      String
+  ipAddress       String?
+  userAgent       String?
+  contentHash     String
+  comments        String?
+  createdAt       DateTime                @default(now())
+
+  @@index([periodId])
+}
+
+/// Filing Accounts & Portals. Never a password or MFA secret.
+model ComplianceFilingAccount {
+  id              String                    @id @default(cuid())
+  // Null for a firm-level record (e.g. the firm's MAT third-party agent account), reused across clients.
+  entityId        String?
+  entity          ComplianceEntity?         @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  firmLevel       Boolean                   @default(false)
+  // MAT | AVENU | JEFFCO_SRT | CITY_BIRMINGHAM | CITY_HUNTSVILLE | IRS_EFTPS | IRS_ESERVICES | IRS_FIRE | IRS_IRIS | AL_SOS | LICENSING | OTHER
+  portalKind      String
+  name            String
+  portalUrl       String
+  accessMethod    String?
+  accessReference String?
+  // The firm-level record this entity's access goes through (no duplicate firm records).
+  firmAccountId   String?
+  firmAccount     ComplianceFilingAccount?  @relation("FirmAccount", fields: [firmAccountId], references: [id], onDelete: SetNull)
+  clientAccounts  ComplianceFilingAccount[] @relation("FirmAccount")
+  // ACTIVE | PENDING | INACTIVE
+  status          String                    @default("ACTIVE")
+  notes           String?
+  createdById     String?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  obligations    ComplianceObligation[]
+  authorizations ComplianceAuthorization[]
+
+  @@index([entityId])
+}
+
+/// Authorization documents on file (Form 2848, AL 2848A, 8821…) with expiry.
+model ComplianceAuthorization {
+  id              String                   @id @default(cuid())
+  entityId        String
+  entity          ComplianceEntity         @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  filingAccountId String?
+  filingAccount   ComplianceFilingAccount? @relation(fields: [filingAccountId], references: [id], onDelete: SetNull)
+  formType        String
+  documentId      String?
+  effectiveDate   DateTime?                @db.Date
+  expiresAt       DateTime?                @db.Date
+  // ON_FILE | PENDING | EXPIRED | REVOKED
+  status          String                   @default("ON_FILE")
+  notes           String?
+  createdById     String?
+  createdAt       DateTime                 @default(now())
+}
+
+/// One row per reminder per period, step, recipient and channel. The unique key makes
+/// concurrent cron runs harmless. HELD = a safety switch was off; nothing was sent.
+model ComplianceReminder {
+  id        String                 @id @default(cuid())
+  periodId  String
+  period    ComplianceFilingPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  // PREP_TASK | D30 | D15 | D7 | D3 | D1 | OVERDUE:<date> | RETURN_READY:<v> | APPROVAL_DECISION:<id> | APPROVAL_REMINDER:<date> | APPROVAL_ESCALATION:<date> | FILED:<id>
+  step      String
+  // staff:<userId> | portal:<portalUserId>
+  recipient String
+  // IN_APP | EMAIL | PORTAL
+  channel   String
+  // CREATED | HELD | QUEUED | SENT | SKIPPED | FAILED
+  status    String
+  detail    String?
+  dedupeKey String                 @unique
+  readAt    DateTime?
+  createdAt DateTime               @default(now())
+
+  @@index([periodId])
+  @@index([recipient, readAt])
+}
+
+/// Office-wide Tax & Compliance settings (one row, id "default"). Switches default OFF.
+model ComplianceSettings {
+  id                            String   @id @default("default")
+  clientNotificationsAuthorized Boolean  @default(false)
+  staffEmailReminders           Boolean  @default(false)
+  reminderDays                  Int[]    @default([30, 15, 7, 3, 1])
+  prepTaskDays                  Int      @default(30)
+  defaultPrepLeadDays           Int      @default(10)
+  approvalEscalationDays        Int      @default(5)
+  approvalReminderEveryDays     Int      @default(3)
+  updatedById                   String?
+  updatedAt                     DateTime @updatedAt
 }

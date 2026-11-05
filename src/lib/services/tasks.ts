@@ -44,6 +44,14 @@ export async function saveTask(actor: Actor, taskId: string | null, input: TaskI
 }
 
 export async function setTaskDone(actor: Actor, taskId: string, done: boolean) {
+  // A Tax & Compliance preparation task stays open until its filing period is completed
+  // (filed with evidence, or not required with evidence) — it closes itself then.
+  if (done) {
+    const period = await prisma.complianceFilingPeriod.findUnique({ where: { prepTaskId: taskId }, select: { filingStatus: true } });
+    if (period && !["SUBMITTED", "ACCEPTED", "NOT_REQUIRED"].includes(period.filingStatus)) {
+      throw new ValidationError("This preparation task closes by itself once the filing is recorded with its evidence in Tax & Compliance.");
+    }
+  }
   return prisma.$transaction(async (tx) => {
     const task = await tx.task.update({ where: { id: taskId }, data: { status: done ? "DONE" : "OPEN", completedAt: done ? new Date() : null } });
     await audit(tx, { actorId: actor.id, action: done ? "task.completed" : "task.reopened", entityType: "Task", entityId: taskId, clientId: task.clientId });

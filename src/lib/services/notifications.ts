@@ -26,6 +26,10 @@ const TEXT: Record<string, string> = {
   NEW_INVOICE: "A new invoice is available",
   AGREEMENT_READY: "A pricing agreement is ready for your review and signature",
   DEADLINE_REMINDER: "A filing deadline is coming up",
+  // Tax & Compliance Center (sent only when the owner's compliance client-notification switch is on).
+  COMPLIANCE_RETURN_READY: "A tax return is ready for your review",
+  COMPLIANCE_APPROVAL_REMINDER: "A tax return is still waiting for your review",
+  COMPLIANCE_RETURN_FILED: "Your return was filed",
   // Identity documents: deliberately generic (no document type or details).
   ID_EXPIRING: "A document on file needs to be updated soon",
   ID_EXPIRED: "A document on file needs to be updated",
