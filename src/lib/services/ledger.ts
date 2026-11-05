@@ -7,6 +7,7 @@ import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { can } from "@/lib/auth/permissions";
+import { recordFileBalance } from "./manual-bank";
 
 /**
  * Client bookkeeping ledger: real double-entry books, one set per client.
@@ -383,10 +384,43 @@ function parseBankDate(s: string): string | null {
   return null;
 }
 
-export type ParsedRow = { date: string; amountCents: number; description: string };
+/** balanceCents: the bank's running balance after this row, only when the file has a balance column. */
+export type ParsedRow = { date: string; amountCents: number; description: string; balanceCents?: number | null };
 
-/** Reads a bank's CSV export: a date column, a description column, and either one signed amount or debit/credit columns. */
-export function parseBankCsv(text: string): { rows: ParsedRow[]; problems: string[] } {
+/**
+ * An optional running-balance column ("Balance", "Running Balance", "Ledger Balance", "Available
+ * Balance", …). When a file has several, the running/ledger balance is preferred over available.
+ */
+const BALANCE_HEADERS = [/^(running |ledger |current |account )?balance( \(usd\))?$/, /^balance (after|amount)$/, /^available balance( \(usd\))?$/];
+function balanceColumn(head: string[]) {
+  for (const re of BALANCE_HEADERS) {
+    const i = head.findIndex((h) => re.test(h));
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * The newest running balance in a bank file: the row last in time. Banks export oldest-first or
+ * newest-first; the dates say which. Same-day rows follow that order. When the dates don't say
+ * (all on one day, or out of order), nothing is picked.
+ */
+export function newestBalance(rows: ParsedRow[]): { status: "OK"; date: string; balanceCents: number } | { status: "AMBIGUOUS" | "NO_BALANCE"; reason: string } {
+  if (!rows.length) return { status: "NO_BALANCE", reason: "No rows with a balance." };
+  const dates = rows.map((r) => r.date);
+  const asc = dates.every((d, i) => i === 0 || dates[i - 1] <= d);
+  const desc = dates.every((d, i) => i === 0 || dates[i - 1] >= d);
+  let last: ParsedRow;
+  if (rows.length === 1) last = rows[0];
+  else if (asc && !desc) last = rows[rows.length - 1];
+  else if (desc && !asc) last = rows[0];
+  else return { status: "AMBIGUOUS", reason: "Couldn't tell which balance is newest (the rows aren't in date order, or they're all on one day). Enter the balance by hand." };
+  if (last.balanceCents == null) return { status: "NO_BALANCE", reason: "The newest row has no balance." };
+  return { status: "OK", date: last.date, balanceCents: last.balanceCents };
+}
+
+/** Reads a bank's CSV export: a date column, a description column, and either one signed amount or debit/credit columns (plus an optional running balance). */
+export function parseBankCsv(text: string): { rows: ParsedRow[]; problems: string[]; hasBalance: boolean } {
   const all = parseCsv(text);
   if (all.length < 2) throw new ValidationError("That file has no transactions.");
   const head = all[0].map((h) => h.trim().toLowerCase());
@@ -396,6 +430,7 @@ export function parseBankCsv(text: string): { rows: ParsedRow[]; problems: strin
   const iAmt = find(/^amount$|^amount \(usd\)$|^transaction amount$/);
   const iDebit = find(/debit|withdraw|money out|^payments?$/);
   const iCredit = find(/credit|deposit|money in/);
+  const iBal = balanceColumn(head);
   if (iDate < 0 || iDesc < 0 || (iAmt < 0 && (iDebit < 0 || iCredit < 0))) throw new ValidationError("Couldn't find the Date, Description and Amount (or Debit and Credit) columns. Export the statement as CSV with a header row.");
   const rows: ParsedRow[] = [];
   const problems: string[] = [];
@@ -413,12 +448,20 @@ export function parseBankCsv(text: string): { rows: ParsedRow[]; problems: strin
       }
       if (!date) throw new Error("date");
       if (!amountCents) { problems.push(`Row ${r + 1}: zero amount, skipped`); continue; }
-      rows.push({ date, amountCents, description: description || "(no description)" });
+      const row: ParsedRow = { date, amountCents, description: description || "(no description)" };
+      if (iBal >= 0) {
+        // An unreadable balance never stops the transaction itself from importing.
+        const raw = (cells[iBal] ?? "").trim();
+        let bal: number | null = null;
+        try { bal = raw ? parseCents(raw) : null; } catch { bal = null; }
+        row.balanceCents = bal;
+      }
+      rows.push(row);
     } catch {
       problems.push(`Row ${r + 1}: couldn't read the ${!date ? "date" : "amount"}, skipped`);
     }
   }
-  return { rows, problems };
+  return { rows, problems, hasBalance: iBal >= 0 };
 }
 
 export const normDesc = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
@@ -438,12 +481,12 @@ export function fingerprints(rows: ParsedRow[]) {
  * Rows already imported (for example from an overlapping statement) are skipped, never doubled.
  * Imported rows are not posted until staff review them.
  */
-export async function importBankCsv(actor: Actor, clientId: string, accountId: string, input: { fileName: string; text: string }) {
+export async function importBankCsv(actor: Actor, clientId: string, accountId: string, input: { fileName: string; text: string }, opts: { manualAccountId?: string | null; now?: Date } = {}) {
   await assertLedgerWrite(actor, clientId, "banking");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!account || !isFeedSubtype(account.subtype)) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
   if (input.text.length > 5_000_000) throw new ValidationError("That file is too large. Import one statement at a time.");
-  const { rows, problems } = parseBankCsv(input.text);
+  const { rows, problems, hasBalance } = parseBankCsv(input.text);
   if (!rows.length) throw new ValidationError(`No transactions could be read. ${problems.slice(0, 3).join("; ")}`);
   const prints = fingerprints(rows);
   const sha = createHash("sha256").update(input.text).digest("hex");
@@ -477,9 +520,11 @@ export async function importBankCsv(actor: Actor, clientId: string, accountId: s
     // Rows before the opening date are already inside the opening balances: kept, but excluded with that reason.
     const book = await bookOf(clientId, tx);
     if (book.openingDate) await tx.bankTransaction.updateMany({ where: { importId: imp.id, status: "UNREVIEWED", date: { lt: book.openingDate } }, data: { status: "EXCLUDED", excludedReason: "Before the opening balances date (already included in the opening balance)" } });
-    const updated = await tx.bankImport.update({ where: { id: imp.id }, data: { added, duplicates: duplicates + matched } });
-    await audit(tx, { actorId: actor.id, action: "ledger.bank_imported", entityType: "BankImport", entityId: imp.id, clientId, details: { account: account.code, rows: rows.length, added, duplicates, matchedToRetrieved: matched, flagged, skipped: problems.length } });
-    return { ...updated, matched, flagged, problems };
+    // The file's running balance, if it has one, becomes the business's "Updated by our office" balance.
+    const balance = hasBalance ? await recordFileBalance(tx, actor, clientId, account, rows, { fileName: input.fileName, importId: imp.id, manualAccountId: opts.manualAccountId ?? null, now: opts.now ?? new Date() }) : null;
+    const updated = await tx.bankImport.update({ where: { id: imp.id }, data: { added, duplicates: duplicates + matched, skipped: problems.length, balanceStatus: balance?.status ?? null } });
+    await audit(tx, { actorId: actor.id, action: "ledger.bank_imported", entityType: "BankImport", entityId: imp.id, clientId, details: { account: account.code, rows: rows.length, added, duplicates, matchedToRetrieved: matched, flagged, skipped: problems.length, ...(balance ? { balance: balance.status } : {}) } });
+    return { ...updated, matched, flagged, problems, balance };
   });
 }
 

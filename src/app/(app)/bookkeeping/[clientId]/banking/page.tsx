@@ -16,6 +16,8 @@ import { usd } from "@/lib/services/ledger";
 import { workMonth } from "@/lib/services/bookkeeping-clients";
 import { fmtDateTime } from "@/lib/format";
 import { monitorAccountAction, registerAccountAction, sharedCardAction } from "@/app/actions/bk-workflow";
+import { ManualBalancesSection } from "@/components/bk/manual-balances";
+import { manualAccountsForStaff } from "@/lib/services/manual-bank";
 
 export const metadata = { title: "Banking & Credit Card Connections" };
 
@@ -38,7 +40,10 @@ export default async function BankingPage({ params }: { params: Promise<{ client
   if (!(await canViewBanking(user, clientId))) {
     return <div className={clsx(card, "p-6 text-navy-900")}>Only Admins, the staff member assigned to {biz} and staff Tabitha allows can see its banking.</div>;
   }
-  const [reg, manage, mode, book] = await Promise.all([bankingRegistry(user, clientId), canManageBanking(user, clientId), currentPlaidMode(), prisma.ledgerBook.findUnique({ where: { clientId }, select: { clientId: true } })]);
+  const [reg, manage, mode, book, manual, plaidConns] = await Promise.all([
+    bankingRegistry(user, clientId), canManageBanking(user, clientId), currentPlaidMode(), prisma.ledgerBook.findUnique({ where: { clientId }, select: { clientId: true } }),
+    manualAccountsForStaff(user, clientId), prisma.bankConnection.count({ where: { clientId, status: { not: "DISCONNECTED" } } }),
+  ]);
   const wm = workMonth("MONTHLY");
   const recs = await prisma.accountReconciliation.findMany({ where: { clientId, year: wm.year, month: wm.month } });
   const recOf = (id: string) => recs.find((r) => r.bookkeepingAccountId === id) ?? null;
@@ -160,6 +165,9 @@ export default async function BankingPage({ params }: { params: Promise<{ client
           </section>
         );
       })}
+
+      {/* Until a bank feed is live: balances our office looks up and enters (shown on the client's dashboard). */}
+      <ManualBalancesSection clientId={clientId} rows={manual} canEdit={manage} plaidConnected={plaidConns > 0} ledgerChoices={reg.ledger.filter((l) => l.subtype === "BANK" || l.subtype === "CREDIT_CARD").map((l) => ({ id: l.id, label: `${l.code} ${l.name}`, linkedTo: manual.find((m) => m.ledgerAccountId === l.id)?.id ?? null }))} />
 
       {/* Manage accounts */}
       {manage && (

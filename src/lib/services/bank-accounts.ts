@@ -40,7 +40,7 @@ const SECRET = /\b(password|passcode|pwd|pin|username|user ?id|login|security (c
 const LONG_NUMBER = /\d[\d\s-]{6,}\d/;
 const clean = (v: string | null | undefined, n: number) => v?.replace(/\s+/g, " ").trim().slice(0, n) || null;
 
-function checkText(...vals: (string | null | undefined)[]) {
+export function checkText(...vals: (string | null | undefined)[]) {
   for (const v of vals) {
     if (!v) continue;
     if (SECRET.test(v)) throw new ValidationError("Don't save usernames, passwords, PINs, security codes or routing numbers. Only the institution, a nickname and the last 4 digits are kept.");
