@@ -86,10 +86,10 @@ export default function PrivacyPolicy() {
       <section>
         <h2>AI-assisted bookkeeping (Coetha)</h2>
         <p className={status}>
-          <strong>Status:</strong> AI-assisted bookkeeping is not yet active and is not used with any client&rsquo;s records.
+          <strong>Status:</strong> AI-assisted bookkeeping is in use for bookkeeping clients who have received our written notice.
         </p>
         <p className="mt-3">
-          We plan to offer Coetha, an AI-assisted bookkeeping tool that drafts transaction categories and bookkeeping entries for our staff to review. It uses an AI service provided by Anthropic.
+          We use Coetha, an AI-assisted bookkeeping tool that drafts transaction categories and bookkeeping entries for our staff to review. It uses an AI service provided by Anthropic.
         </p>
         <ul className={`${list} mt-3`}>
           <li>
@@ -116,7 +116,7 @@ export default function PrivacyPolicy() {
           <li><strong>Netlify</strong> &mdash; hosts {BUSINESS.platformName}, including its database and file storage.</li>
           <li><strong>Plaid</strong> &mdash; bank account connections (not yet active; described above).</li>
           <li><strong>Square</strong> &mdash; invoices and payments.</li>
-          <li><strong>Anthropic</strong> &mdash; the AI service for AI-assisted bookkeeping (not yet active; used only after we notify you, as described above).</li>
+          <li><strong>Anthropic</strong> &mdash; the AI service for AI-assisted bookkeeping (used only after we notify you, as described above).</li>
           <li><strong>Resend</strong> &mdash; email delivery.</li>
           <li><strong>Twilio</strong> &mdash; text message delivery for our SMS program.</li>
           <li><strong>Jotform</strong> &mdash; online forms and questionnaires.</li>
