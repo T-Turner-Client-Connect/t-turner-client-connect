@@ -57,6 +57,8 @@ const LINKS = [
   { href: "/notices", label: "Audits & Notices", icon: MailWarning, also: [] },
   { href: "/taxes/returns", label: "Tax returns", icon: FileCheck2, also: ["/taxes/questionnaires"] },
   { href: "/nonprofits", label: "Nonprofit filings", icon: HeartHandshake, also: [] },
+  // Shown only to staff with Tax & Compliance access (the page itself re-checks).
+  { href: "/compliance", label: "Tax & Compliance", icon: ClipboardList, also: [] },
   { href: "/resources", label: "Resource Center", icon: Landmark, also: [] },
   { href: "/news", label: "News & Countdowns", icon: Newspaper, also: [] },
   { href: "/appointments", label: "Appointments", icon: CalendarDays, also: [] },
@@ -158,11 +160,12 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
   );
 }
 
-function NavLinks({ onNavigate, unread, owner, payrollTaxes }: { onNavigate?: () => void; unread: number; owner: OwnerNav; payrollTaxes: boolean }) {
+function NavLinks({ onNavigate, unread, owner, payrollTaxes, compliance = false }: { onNavigate?: () => void; unread: number; owner: OwnerNav; payrollTaxes: boolean; compliance?: boolean }) {
   const pathname = usePathname();
   const ws = workspaceClientId(pathname);
   if (ws) return <WorkspaceLinks id={ws} onNavigate={onNavigate} />;
-  const links = payrollTaxes ? [...LINKS.slice(0, 3), PAYROLL_TAXES_LINK, ...LINKS.slice(3)] : LINKS;
+  const allowed = LINKS.filter((l) => l.href !== "/compliance" || compliance);
+  const links = payrollTaxes ? [...allowed.slice(0, 3), PAYROLL_TAXES_LINK, ...allowed.slice(3)] : allowed;
   return (
     <>
     <ul className="space-y-0.5">
@@ -233,7 +236,7 @@ function GlobalSearch({ onDone }: { onDone?: () => void }) {
   );
 }
 
-export function AppNav({ user, signOut, unread, owner, payrollTaxes = false }: { user: { name: string; role: string }; signOut: () => Promise<void>; unread: number; owner: OwnerNav; payrollTaxes?: boolean }) {
+export function AppNav({ user, signOut, unread, owner, payrollTaxes = false, compliance = false }: { user: { name: string; role: string }; signOut: () => Promise<void>; unread: number; owner: OwnerNav; payrollTaxes?: boolean; compliance?: boolean }) {
   const [open, setOpen] = useState(false);
   const footer = (
     <div className="border-t border-white/10 pt-4 text-sm">
@@ -250,7 +253,7 @@ export function AppNav({ user, signOut, unread, owner, payrollTaxes = false }: {
         <div className="space-y-6">
           <Brand />
           <GlobalSearch />
-          <nav aria-label="Main"><NavLinks unread={unread} owner={owner} payrollTaxes={payrollTaxes} /></nav>
+          <nav aria-label="Main"><NavLinks unread={unread} owner={owner} payrollTaxes={payrollTaxes} compliance={compliance} /></nav>
         </div>
         {footer}
       </aside>
@@ -270,7 +273,7 @@ export function AppNav({ user, signOut, unread, owner, payrollTaxes = false }: {
                 <button onClick={() => setOpen(false)} aria-label="Close menu" className="rounded-md p-2 text-white hover:bg-white/10"><X className="size-6" /></button>
               </div>
               <GlobalSearch onDone={() => setOpen(false)} />
-              <nav aria-label="Main"><NavLinks onNavigate={() => setOpen(false)} unread={unread} owner={owner} payrollTaxes={payrollTaxes} /></nav>
+              <nav aria-label="Main"><NavLinks onNavigate={() => setOpen(false)} unread={unread} owner={owner} payrollTaxes={payrollTaxes} compliance={compliance} /></nav>
             </div>
             {footer}
           </div>

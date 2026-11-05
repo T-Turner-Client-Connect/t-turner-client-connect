@@ -30,12 +30,9 @@ const isDup = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError 
 
 async function claim(data: { periodId: string; step: string; recipient: string; channel: string; status: string; detail?: string | null }) {
   const dedupeKey = `${data.periodId}:${data.step}:${data.recipient}:${data.channel}`;
-  try {
-    return await prisma.complianceReminder.create({ data: { ...data, dedupeKey } });
-  } catch (e) {
-    if (isDup(e)) return null;
-    throw e;
-  }
+  // ON CONFLICT DO NOTHING: of concurrent runs exactly one inserts (and only that one sends).
+  const r = await prisma.complianceReminder.createMany({ data: [{ ...data, dedupeKey }], skipDuplicates: true });
+  return r.count === 1 ? prisma.complianceReminder.findUniqueOrThrow({ where: { dedupeKey } }) : null;
 }
 
 type PeriodCtx = Prisma.ComplianceFilingPeriodGetPayload<{ include: { obligation: true; entity: { include: { client: { select: { displayName: true } } } } } }>;
@@ -98,7 +95,8 @@ async function ensurePrepTask(p: PeriodCtx, assignee: string | null, ownerId: st
   if (p.prepTaskId) return false;
   try {
     return await prisma.$transaction(async (tx) => {
-      await tx.complianceReminder.create({ data: { periodId: p.id, step: "PREP_TASK", recipient: `staff:${assignee ?? ownerId}`, channel: "IN_APP", status: "CREATED", dedupeKey: `${p.id}:PREP_TASK` } });
+      const claimed = await tx.complianceReminder.createMany({ data: [{ periodId: p.id, step: "PREP_TASK", recipient: `staff:${assignee ?? ownerId}`, channel: "IN_APP", status: "CREATED", dedupeKey: `${p.id}:PREP_TASK` }], skipDuplicates: true });
+      if (claimed.count !== 1) return false;
       const task = await tx.task.create({
         data: {
           title: `Prepare ${p.obligation.formName} — ${p.periodKey} (${p.entity.legalName || p.entity.dba || p.entity.client.displayName})`.slice(0, 200),

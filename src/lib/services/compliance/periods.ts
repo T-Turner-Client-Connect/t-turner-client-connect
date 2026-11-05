@@ -367,3 +367,17 @@ export async function setFilingChannel(actor: Actor, periodId: string, channel: 
   if (!(channel in FILING_CHANNELS) || !FILING_CHANNELS[channel as keyof typeof FILING_CHANNELS].enabled) throw new ValidationError("Only manual filing is available. MAT bulk-file export is disabled until the owner approves it.");
   await periodOr404(periodId);
 }
+
+/** Releases a filed return / confirmation / receipt to the client's compliance page (or withdraws it). */
+export async function publishComplianceDocument(actor: Actor, documentId: string, on: boolean) {
+  await assertComplianceManage(actor);
+  const link = await prisma.complianceDocument.findUnique({ where: { documentId }, include: { period: true, document: true } });
+  if (!link || link.document.deletedAt) throw new ValidationError("Document not found.");
+  if (on) {
+    if (!["RETURN", "FILING_CONFIRMATION", "ACCEPTANCE", "PAYMENT_RECEIPT"].includes(link.kind)) throw new ValidationError("Only the filed return, filing/acceptance confirmations and payment receipts are released to clients.");
+    if (!link.period || !["SUBMITTED", "ACCEPTED"].includes(link.period.filingStatus)) throw new ValidationError("Release documents after the filing is recorded as Submitted.");
+    if (link.document.scanStatus !== "CLEAN") throw new ValidationError("This file hasn't passed the malware scan yet.");
+  }
+  await prisma.complianceDocument.update({ where: { documentId }, data: { publishedAt: on ? new Date() : null, publishedById: on ? actor.id : null } });
+  await audit(prisma, { actorId: actor.id, action: on ? "compliance.document_published" : "compliance.document_unpublished", entityType: "Document", entityId: documentId, clientId: link.document.clientId });
+}

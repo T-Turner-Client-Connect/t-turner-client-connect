@@ -587,3 +587,36 @@ describe("prepopulation", () => {
     expect(f.registrations).toEqual([]);
   });
 });
+
+describe("ADP Payroll & Taxes → Taxes tab feed", () => {
+  it("reuses the payroll_taxes permission: payroll/sales-tax periods only, assigned clients only, NONE refused", async () => {
+    const { tab, none } = await office();
+    const pt = await staff("pt.fictional@example.com", "Pia Payroll", "STAFF");
+    await grantPerms(pt.id, ["payroll_taxes.view"]);
+    const { c, p } = await salesTaxPeriod(tab);
+    // An income-tax period on the same entity is not part of the feed.
+    const income = await prisma.complianceObligation.findFirstOrThrow({ where: { clientId: c.id, ruleKey: "AL_20S" } });
+    await activateObligation(tab, income.id);
+    const { payrollTaxesTaxFeed } = await import("@/lib/services/compliance/payroll-bridge");
+    await expect(payrollTaxesTaxFeed(none)).rejects.toThrow("Not found.");
+    expect((await payrollTaxesTaxFeed(pt)).rows).toHaveLength(0); // not assigned to this client
+    await prisma.client.update({ where: { id: c.id }, data: { assignedToId: pt.id } });
+    const feed = await payrollTaxesTaxFeed(pt);
+    expect(feed.rows.map((r) => r.id)).toEqual([p.id]);
+    expect(feed).toMatchObject({ canOpenBoard: false, canManage: false });
+    expect((await payrollTaxesTaxFeed(tab)).canManage).toBe(true);
+  });
+});
+
+describe("staff email switch", () => {
+  it("ON: reminder emails are attempted (not HELD); OFF: HELD", async () => {
+    const { tab } = await office();
+    await setComplianceSwitch(tab, "staffEmailReminders", true);
+    const { p } = await salesTaxPeriod(tab);
+    const emails = await prisma.complianceReminder.findMany({ where: { periodId: p.id, channel: "EMAIL" } });
+    expect(emails.length).toBeGreaterThan(0);
+    // No provider is configured in tests, so the attempt is recorded as FAILED — never silently sent or held.
+    expect(emails.every((r) => r.status === "FAILED")).toBe(true);
+    expect(await prisma.auditLog.count({ where: { action: "compliance.switch.staffEmailReminders.on", actorId: tab.id } })).toBe(1);
+  });
+});

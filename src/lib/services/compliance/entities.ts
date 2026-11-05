@@ -460,3 +460,15 @@ export async function entitiesForClient(actor: Actor, clientId: string) {
   await assertComplianceView(actor);
   return prisma.complianceEntity.findMany({ where: { clientId }, orderBy: [{ archivedAt: "asc" }, { createdAt: "asc" }], include: { _count: { select: { obligations: true } }, linkedEntity: { select: { id: true, legalName: true } } } });
 }
+
+/** Applies an industry template: adds its suggested activity tags (rules then evaluate as usual). */
+export async function applyIndustryTemplate(actor: Actor, entityId: string, templateKey: string) {
+  await assertComplianceManage(actor);
+  const e = await entityOr404(entityId);
+  const t = await prisma.complianceIndustryTemplate.findFirst({ where: { key: templateKey, archivedAt: null } });
+  if (!t) throw new ValidationError("Choose an industry template.");
+  const tags = [...new Set([...e.activityTags, ...t.activityTags])];
+  await prisma.complianceEntity.update({ where: { id: entityId }, data: { activityTags: tags, industry: e.industry ?? t.name, factSources: { ...((e.factSources as object) ?? {}), activityTags: `Template: ${t.name}` } } });
+  await audit(prisma, { actorId: actor.id, action: "compliance.template_applied", entityType: "ComplianceEntity", entityId, clientId: e.clientId, details: { template: t.key } });
+  return t;
+}

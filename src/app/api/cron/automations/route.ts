@@ -8,6 +8,7 @@ import { runDailyCoetha } from "@/lib/services/coetha";
 import { runDailyWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { runBillingSchedules } from "@/lib/services/billing-schedules";
 import { ensureAccessReviewReminder } from "@/lib/services/access-review";
+import { runComplianceCron } from "@/lib/services/compliance/reminders";
 import { generateCycles } from "@/lib/services/payroll-taxes";
 import { runPayrollReminders } from "@/lib/services/payroll-reminders";
 
@@ -45,5 +46,8 @@ export async function POST(req: Request) {
   // own switch are on; nothing here submits payroll, files taxes or moves money.
   const payrollCycles = await generateCycles().catch(() => ({ error: "failed" }));
   const payrollReminders = await runPayrollReminders().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders });
+  // Tax & Compliance Center: periods kept current, 30/15/7/3/1-day reminders and prep tasks, daily
+  // overdue escalation (deduped). Client and staff-email sends stay HELD while the owner's switches are off.
+  const compliance = await runComplianceCron().catch(() => ({ error: "failed" }));
+  return Response.json({ ok: true, compliance, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders });
 }

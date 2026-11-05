@@ -1,6 +1,7 @@
 import { PreviewBanner } from "@/components/preview-banner";
 import { PublicFooter } from "@/components/legal-links";
 import { AppNav } from "@/components/nav";
+import { complianceAccess } from "@/lib/services/compliance/access";
 import { requireUser } from "@/lib/auth/session";
 import { logoutAction } from "@/app/actions/auth";
 import { prisma } from "@/lib/prisma";
@@ -11,11 +12,11 @@ import Link from "next/link";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
-  const [unread, owner, ready, payrollTaxes] = await Promise.all([prisma.conversation.count({ where: { unreadByStaff: true, closedAt: null } }), ownerNavState(user), readyToPublish(), payrollTaxAccess(user)]);
+  const [unread, owner, ready, payrollTaxes, compliance] = await Promise.all([prisma.conversation.count({ where: { unreadByStaff: true, closedAt: null } }), ownerNavState(user), readyToPublish(), payrollTaxAccess(user), complianceAccess(user)]);
   return (
     <div className="min-h-dvh">
       <PreviewBanner />
-      <AppNav user={{ name: user.name, role: user.role }} signOut={logoutAction} unread={unread} owner={owner} payrollTaxes={payrollTaxes.level !== "NONE"} />
+      <AppNav user={{ name: user.name, role: user.role }} signOut={logoutAction} unread={unread} owner={owner} payrollTaxes={payrollTaxes.level !== "NONE"} compliance={compliance.level !== "NONE"} />
       <main className="px-4 py-6 sm:px-6 lg:ml-64 lg:px-12 lg:py-10 print:ml-0! print:p-0!">
         <div className="mx-auto max-w-6xl">
           {ready.length > 0 && (

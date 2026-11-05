@@ -190,7 +190,7 @@ export async function taxDueBoard(actor: Actor, f: BoardFilter = {}) {
 /** My in-app reminders (unread first). */
 export async function myReminders(actor: Actor, take = 20) {
   await assertComplianceView(actor);
-  return prisma.complianceReminder.findMany({ where: { recipient: `staff:${actor.id}`, channel: "IN_APP" }, orderBy: [{ createdAt: "desc" }], take, include: { period: { select: { id: true, periodKey: true, obligation: { select: { formName: true } } } } } });
+  return prisma.complianceReminder.findMany({ where: { recipient: `staff:${actor.id}`, channel: "IN_APP", period: { filingStatus: { notIn: COMPLETE_FILING }, obligation: { status: "ACTIVE" } } }, orderBy: [{ createdAt: "desc" }], take, include: { period: { select: { id: true, periodKey: true, obligation: { select: { formName: true } } } } } });
 }
 
 export async function entityWorkspace(actor: Actor, entityId: string) {
