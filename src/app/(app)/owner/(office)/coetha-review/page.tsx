@@ -11,6 +11,7 @@ import { coethaAutoSendOn } from "@/lib/services/owner-switches";
 import { officeBookClientIds } from "@/lib/services/ledger";
 import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { TAX_CLASSIFICATIONS, isTaxClassification } from "@/lib/services/tax-classification";
+import { optedOutClientIds } from "@/lib/services/coetha-opt-out";
 
 export const metadata = { title: "Coetha Accounting Review" };
 
@@ -35,9 +36,10 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
     prisma.accountReconciliation.groupBy({ by: ["clientId"], where: { clientId: { in: ids }, status: "EXCEPTION" }, _count: true }),
     canApproveCoethaWork(actor),
   ]);
-  const [held, autoSend] = await Promise.all([
+  const [held, autoSend, optedOut] = await Promise.all([
     prisma.documentRequest.findMany({ where: { clientId: { in: ids }, status: "DRAFT", routing: "REVIEW" }, orderBy: { createdAt: "desc" }, take: 50, include: { bookkeepingAccount: true } }),
     coethaAutoSendOn(),
+    optedOutClientIds(),
   ]);
   const n = (rows: { clientId: string; _count: number }[], id: string) => rows.find((r) => r.clientId === id)?._count ?? 0;
   const kinds = (id: string, k: string[]) => proposals.filter((p) => p.clientId === id && k.includes(p.kind)).length;
@@ -71,7 +73,7 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
             <tbody className="divide-y divide-ivory-200">
               {rows.map((r) => (
                 <tr key={r.c.id} className={clsx(focus === r.c.id && "bg-gold-50")}>
-                  <td className="py-2 pr-2 font-semibold text-navy-900"><Link className="underline decoration-gold-500" href={`/bookkeeping/${r.c.id}`} data-testid="review-client-link">{r.name}</Link></td>
+                  <td className="py-2 pr-2 font-semibold text-navy-900"><Link className="underline decoration-gold-500" href={`/bookkeeping/${r.c.id}`} data-testid="review-client-link">{r.name}</Link>{optedOut.has(r.c.id) && <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-800" data-testid="review-opt-out">Opted out of Coetha</span>}</td>
                   <td className="pr-2 text-xs text-navy-800">{isTaxClassification(r.c.bookkeepingProfile?.taxClassification) ? TAX_CLASSIFICATIONS[r.c.bookkeepingProfile!.taxClassification as keyof typeof TAX_CLASSIFICATIONS].label.split(" — ")[0] : <Link className="text-red-700 underline" href={`/bookkeeping/${r.c.id}/profile`}>Not set</Link>}{r.classification ? " · change suggested" : ""}</td>
                   <td className="pr-2 text-center">{r.findings || "—"}</td>
                   <td className="pr-2 text-center">{r.drafts || "—"}</td>
