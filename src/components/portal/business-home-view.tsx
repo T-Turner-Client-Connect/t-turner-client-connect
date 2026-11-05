@@ -18,17 +18,30 @@ const viewAll = "mt-4 inline-flex items-center gap-1 text-sm font-medium text-na
  * personal tax preparation). Shows only what this login was granted, plus the
  * owner's own K-1s, and a way to ask for personal tax preparation later.
  */
+/**
+ * The business quick-access tiles (Business Documents, Upload Documents, My K-1s, Payroll,
+ * Messages, Billing, Appointments), only those this login may use. Shared by this Home and the
+ * Managed Business dashboard. When `href` gives null (a page View as Client can't show), the
+ * tile is shown disabled.
+ */
+export function businessHomeTiles(data: Pick<Home, "perms" | "k1s" | "payrollDocs">, href: (path: string) => string | null, k1Href: string | null = "#k1s"): Tile[] {
+  const p = data.perms;
+  const off = "Not available in View as Client";
+  const t = (tile: Omit<Tile, "href">, h: string | null): Tile => (h === null ? { ...tile, href: null, disabledNote: off } : { ...tile, href: h });
+  return [
+    ...(p.canViewDocuments ? [t({ title: "Business Documents", sub: "Your business's secure document vault", icon: Folder, testId: "biz-documents" }, href("/client/documents"))] : []),
+    ...(p.canUpload ? [t({ title: "Upload Documents", sub: "Send files to our office securely", icon: CloudUpload, testId: "biz-upload" }, href("/client/documents"))] : []),
+    t({ title: "My K-1s", sub: data.k1s.length ? `${data.k1s.length} ready to view` : "Your Schedule K-1s appear here", icon: FileBadge, testId: "biz-k1s" }, k1Href),
+    ...(p.canViewPayroll ? [t({ title: "Payroll", sub: data.payrollDocs ? `${data.payrollDocs} payroll document${data.payrollDocs === 1 ? "" : "s"}` : "Payroll reports and filings", icon: Receipt, testId: "biz-payroll" }, href("/client/documents"))] : []),
+    ...(p.canMessage ? [t({ title: "Messages", sub: "Write to our team privately", icon: MessageCircle, testId: "biz-messages" }, href("/client/messages"))] : []),
+    ...(p.canViewBilling ? [t({ title: "Billing", sub: "Invoices and payments", icon: CreditCard, testId: "biz-billing" }, href("/client/billing"))] : []),
+    t({ title: "Appointments", sub: "Schedule time with our office", icon: CalendarDays, testId: "biz-appointments" }, href("/client/appointments")),
+  ];
+}
+
 export function BusinessHomeView({ data, href, name, accountName, clientId, linkFor, readOnly }: { data: Home; href: (path: string, extra?: string) => string; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; readOnly?: boolean }) {
   const p = data.perms;
-  const tiles: Tile[] = [
-    ...(p.canViewDocuments ? [{ title: "Business Documents", sub: "Your business's secure document vault", icon: Folder, href: href("/client/documents"), testId: "biz-documents" }] : []),
-    ...(p.canUpload ? [{ title: "Upload Documents", sub: "Send files to our office securely", icon: CloudUpload, href: href("/client/documents"), testId: "biz-upload" }] : []),
-    { title: "My K-1s", sub: data.k1s.length ? `${data.k1s.length} ready to view` : "Your Schedule K-1s appear here", icon: FileBadge, href: "#k1s", testId: "biz-k1s" },
-    ...(p.canViewPayroll ? [{ title: "Payroll", sub: data.payrollDocs ? `${data.payrollDocs} payroll document${data.payrollDocs === 1 ? "" : "s"}` : "Payroll reports and filings", icon: Receipt, href: href("/client/documents"), testId: "biz-payroll" }] : []),
-    ...(p.canMessage ? [{ title: "Messages", sub: "Write to our team privately", icon: MessageCircle, href: href("/client/messages"), testId: "biz-messages" }] : []),
-    ...(p.canViewBilling ? [{ title: "Billing", sub: "Invoices and payments", icon: CreditCard, href: href("/client/billing"), testId: "biz-billing" }] : []),
-    { title: "Appointments", sub: "Schedule time with our office", icon: CalendarDays, href: href("/client/appointments"), testId: "biz-appointments" },
-  ];
+  const tiles = businessHomeTiles(data, (path) => href(path));
   return (
     <div className="space-y-6" data-testid="business-home">
       <section className="relative overflow-hidden rounded-[2rem] border border-gold-300/70 bg-gradient-to-br from-white via-ivory-50 to-gold-50 shadow-[0_20px_45px_-28px_rgb(10_26_68/0.45)]" data-testid="hero">

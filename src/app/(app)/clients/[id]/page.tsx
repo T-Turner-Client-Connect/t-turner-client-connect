@@ -28,6 +28,7 @@ import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { can } from "@/lib/auth/permissions";
 import { CommPrefsStaffCard } from "@/components/client-tabs/comm-prefs-staff";
 import { OwnersCard } from "@/components/client-tabs/owners-card";
+import { businessViewEligible } from "@/lib/portal/access";
 import { formatAddress, hasSeparateMailing, separateMailingOf, streetAddressOf } from "@/lib/client-address";
 
 export const metadata = { title: "Client" };
@@ -62,6 +63,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
     where: { id },
     include: {
       assignedTo: { select: { name: true } },
+      bookkeepingProfile: { select: { active: true } },
       contacts: { orderBy: { name: "asc" }, include: { businessOwner: { select: { id: true } } } },
       groups: { include: { group: true } },
       taxPrepCases: { orderBy: { taxYear: "desc" }, take: 1 },
@@ -191,7 +193,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
 
           <NonprofitCard clientId={id} isAdmin={user.role === "ADMIN"} />
 
-          {client.clientType === "BUSINESS" && <OwnersCard clientId={id} actor={user} managedBusiness={client.businessAccess === "ACTIVE"} />}
+          {client.clientType === "BUSINESS" && <OwnersCard clientId={id} actor={user} managedBusiness={businessViewEligible(client)} />}
 
           <Card title="Contacts" actions={<span className="text-sm text-slate-600">{client.clientType === "BUSINESS" ? "Other people at this business (owners are listed above)" : "People at this business or household"}</span>}>
             {client.contacts.some((c) => !c.businessOwner) && (

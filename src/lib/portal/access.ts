@@ -1,5 +1,5 @@
 import "server-only";
-import type { BusinessAccess, DocumentCategory, PortalAccess, Prisma } from "@prisma/client";
+import type { BusinessAccess, DocumentCategory, PortalAccess, PortalRole, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ForbiddenError } from "@/lib/auth/actor";
 
@@ -18,31 +18,53 @@ const FLAG: Record<Permission, keyof PortalAccess> = {
   payrollApprove: "canApprovePayroll",
 };
 
+/** The client facts the business-view rule reads. Select them with `BUSINESS_VIEW_CLIENT`. */
+export type BusinessViewClient = { businessAccess: BusinessAccess | null | undefined; bookkeepingProfile?: { active: boolean } | null };
+export const BUSINESS_VIEW_CLIENT = { businessAccess: true, bookkeepingProfile: { select: { active: true } } } as const;
+
 /**
- * Managed Business gate. A login's business view (bookkeeping, ledger, business
- * statements, business invoicing) counts ONLY when the business itself is an
- * owner-approved Managed Business. Client type, registration answers, tax return
- * type and the per-login flag alone never grant it. Applied here, at the source,
- * so every portal page, action, API route and notification gets the same answer.
+ * Can this business have a business view at all? An owner-approved Managed Business (ACTIVE),
+ * or a client on the Bookkeeping Client list (an active bookkeeping profile — the list the staff
+ * /bookkeeping page shows). Removing Managed Business access (REMOVED) always takes it away.
  */
-export function effectiveGrant<T extends { canViewBookkeeping: boolean }>(grant: T, businessAccess: BusinessAccess | null | undefined): T {
-  return { ...grant, canViewBookkeeping: grant.canViewBookkeeping && businessAccess === "ACTIVE" };
+export function businessViewEligible(client: BusinessViewClient): boolean {
+  if (client.businessAccess === "REMOVED") return false;
+  return client.businessAccess === "ACTIVE" || !!client.bookkeepingProfile?.active;
+}
+
+/**
+ * The one rule for a login's business view (business dashboard, bookkeeping, ledger, business
+ * statements, business invoicing, bank feed). Every portal gate goes through it (effectiveGrant
+ * below), and so does View as Client, so the Home page and the gates can never disagree.
+ * - The business must be eligible (businessViewEligible), and
+ * - the login has the per-login switch on (canViewBookkeeping), or it is an OWNER login of a
+ *   client on the Bookkeeping Client list. Authorized contacts need the switch.
+ * Client type, registration answers and tax return type never grant it.
+ */
+export function hasBusinessView(grant: { canViewBookkeeping: boolean; role?: PortalRole | null }, client: BusinessViewClient): boolean {
+  if (!businessViewEligible(client)) return false;
+  return grant.canViewBookkeeping || (grant.role === "OWNER" && !!client.bookkeepingProfile?.active);
+}
+
+/** A grant with the business-view rule applied (canViewBookkeeping = hasBusinessView). */
+export function effectiveGrant<T extends { canViewBookkeeping: boolean; role?: PortalRole | null }>(grant: T, client: BusinessViewClient): T {
+  return { ...grant, canViewBookkeeping: hasBusinessView(grant, client) };
 }
 
 /** Client accounts this portal user may see (active grants, non-archived clients). */
 export async function accessibleClients(portalUserId: string) {
   const rows = await prisma.portalAccess.findMany({
     where: { portalUserId, revokedAt: null, client: { archivedAt: null } },
-    include: { client: { select: { id: true, displayName: true, businessName: true, clientType: true, businessAccess: true } } },
+    include: { client: { select: { id: true, displayName: true, businessName: true, clientType: true, ...BUSINESS_VIEW_CLIENT } } },
     orderBy: { client: { displayName: "asc" } },
   });
-  return rows.map((r) => effectiveGrant(r, r.client.businessAccess));
+  return rows.map((r) => effectiveGrant(r, r.client));
 }
 
 /** Portal grants for one client with the business gate applied (for notifications). */
 export async function effectiveGrantsFor(clientId: string, where: Prisma.PortalAccessWhereInput = {}) {
-  const rows = await prisma.portalAccess.findMany({ where: { ...where, clientId, revokedAt: null }, include: { client: { select: { businessAccess: true } } } });
-  return rows.map((r) => effectiveGrant(r, r.client.businessAccess));
+  const rows = await prisma.portalAccess.findMany({ where: { ...where, clientId, revokedAt: null }, include: { client: { select: BUSINESS_VIEW_CLIENT } } });
+  return rows.map((r) => effectiveGrant(r, r.client));
 }
 
 /**
@@ -53,11 +75,11 @@ export async function effectiveGrantsFor(clientId: string, where: Prisma.PortalA
 export async function requireClientAccess(portalUserId: string, clientId: string, permission?: Permission) {
   const row = await prisma.portalAccess.findFirst({
     where: { portalUserId, clientId, revokedAt: null, client: { archivedAt: null } },
-    include: { client: { select: { businessAccess: true } } },
+    include: { client: { select: BUSINESS_VIEW_CLIENT } },
   });
   if (!row) throw new ForbiddenError("You don't have access to that account.");
   const { client, ...grant } = row;
-  const access = effectiveGrant(grant, client.businessAccess);
+  const access = effectiveGrant(grant, client);
   if (permission && !access[FLAG[permission]]) throw new ForbiddenError("Your access to this account doesn't include that.");
   return access;
 }
