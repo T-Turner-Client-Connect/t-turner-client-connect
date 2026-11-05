@@ -102,7 +102,7 @@ export default function PrivacyPolicy() {
             their last four digits. Transaction amounts, dates, and descriptions are sent, and descriptions may still include merchant or payee names.
           </li>
           <li>
-            <strong>Human review.</strong> Coetha only drafts. Our team reviews its work, and nothing it drafts is sent to you or becomes part of your released financial statements
+            <strong>Human review.</strong> Coetha only drafts. Our team reviews and approves its work, and nothing it drafts is sent to you or becomes part of your released financial statements
             without that approval.
           </li>
         </ul>
