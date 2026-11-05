@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, managed, prisma, resetDb } from "./db";
+import { authorizeCoetha, makeUser, managed, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { openWorkPeriod, saveProfile } from "@/lib/services/bookkeeping-clients";
@@ -38,6 +38,7 @@ async function world() {
   await saveProfile(tabitha, biz.id, { active: true, frequency: "MONTHLY", payroll: false });
   await setupLedger(daria, biz.id, { basis: "CASH" });
   const code = async (c: string) => (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: biz.id, code: c } })).id;
+  await authorizeCoetha(biz.id);
   return { tabitha, daria, admin, biz, code };
 }
 

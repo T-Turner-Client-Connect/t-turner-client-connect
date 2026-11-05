@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, managed, prisma, resetDb } from "./db";
+import { authorizeCoetha, makeUser, managed, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient, ValidationError } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
@@ -259,6 +259,8 @@ describe("Client prefers no Coetha", () => {
 
   it("blocks every Coetha run, draft and request; clearing it restores them; both are audited", async () => {
     const s = await coethaSetup();
+    // #90's client authorization gate also applies; authorize so only the opt-out is tested here.
+    await authorizeCoetha(s.biz.id);
     const calls = stubModel();
     await setOwnerSwitch(s.tabitha, "coetha", true);
     const opts = { month: "2026-10", today: "2026-11-04" };

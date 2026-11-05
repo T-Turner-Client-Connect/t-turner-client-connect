@@ -10,6 +10,7 @@ import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, categor
 import { closeChecklist } from "./ledger-review";
 import { coethaOn } from "./owner-switches";
 import { assertCoethaAllowed, optedOutClientIds } from "./coetha-opt-out";
+import { assertCoethaConsent, consentStatesFor } from "./coetha-consent";
 import { CLASSIFICATION_RULES, setTaxClassification, taxProfile } from "./tax-classification";
 import { assertCanApproveCoethaWork, canApproveCoethaWork } from "@/lib/auth/permissions";
 
@@ -225,6 +226,8 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
   await assertCoethaAllowed(clientId);
   if (!(await coethaOn())) throw new ValidationError(COETHA_OFF);
   if (!coethaKeyPresent()) throw new ValidationError(COETHA_NO_KEY);
+  // The client's own authorization (current notice version), on top of the owner switch and the key.
+  await assertCoethaConsent(clientId);
   if (opts.month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(opts.month)) throw new ValidationError("Choose a month.");
   const lock = `coetha:${clientId}`;
   if (!(await takeLock(lock, 10))) throw new ValidationError("Coetha is already working on this business. Try again in a few minutes.");
@@ -275,7 +278,10 @@ export async function runDailyCoetha(now = new Date()) {
   const optedOut = await optedOutClientIds();
   const books = await prisma.ledgerBook.findMany({ where: { clientId: { in: (await officeBookClientIds()).filter((id) => !optedOut.has(id)) } }, select: { clientId: true, coethaRuns: { orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } } });
   const due: string[] = [];
+  // Only businesses whose client authorized the AI assistant (current notice version).
+  const consent = await consentStatesFor(books.map((b) => b.clientId));
   for (const b of books) {
+    if (!consent.get(b.clientId)?.ok) continue;
     const last = b.coethaRuns[0]?.startedAt ?? null;
     if (last && now.getTime() - last.getTime() < 20 * 3600_000) continue;
     const fresh = await prisma.bankTransaction.count({ where: { clientId: b.clientId, status: "UNREVIEWED", source: "PLAID", ...(last ? { createdAt: { gt: last } } : {}) } });

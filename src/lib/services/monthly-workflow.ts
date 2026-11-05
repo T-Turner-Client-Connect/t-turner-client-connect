@@ -259,6 +259,9 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
   if (actor) await assertLedger(actor, clientId);
   // "Client prefers no Coetha": no monitor, drafts, requests or recommendations for this client.
   await assertCoethaAllowed(clientId);
+  // Coetha's drafts and requests need the client's authorization of the current notice.
+  const { assertCoethaConsent } = await import("./coetha-consent");
+  await assertCoethaConsent(clientId);
   const today = opts.today ?? todayCentral();
   const ended = today > monthEnd(year, month);
   const ml = monthLabel(year, month);
@@ -405,7 +408,12 @@ async function recordRecommendations(clientId: string, y: number, m: number) {
 /** Hourly cron: every business the office keeps books for, its current work month, once a day. */
 export async function runDailyWorkflowMonitor(now = new Date()) {
   const optedOut = await optedOutClientIds();
-  const ids = (await officeBookClientIds()).filter((id) => !optedOut.has(id));
+  const { consentStatesFor } = await import("./coetha-consent");
+  const all = (await officeBookClientIds()).filter((id) => !optedOut.has(id));
+  const consent = await consentStatesFor(all);
+  // Clients who prefer no Coetha, and businesses without a current authorization, are skipped
+  // (their books are done without Coetha).
+  const ids = all.filter((id) => consent.get(id)?.ok);
   let ran = 0, failed = 0;
   for (const clientId of ids) {
     const last = await prisma.auditLog.findFirst({ where: { clientId, action: "coetha.workflow_checked" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });

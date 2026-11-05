@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
 import { assertOffice, ownerAudit } from "@/lib/auth/owner";
 import { storage } from "@/lib/storage";
+import { encryptBytes, openStoredBytes } from "@/lib/crypto";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import { ValidationError } from "./clients";
 
@@ -52,7 +53,8 @@ export async function createExpense(actor: Actor, input: ExpenseInput) {
     const type = sniffType(input.receipt.bytes);
     if (!type) throw new ValidationError("Receipts must be PDF, PNG or JPG.");
     receipt = { key: `owner_private/receipts/${randomBytes(16).toString("hex")}`, name: input.receipt.originalName.slice(0, 200), mime: type.mime };
-    await storage.put(receipt.key, input.receipt.bytes);
+    // Encrypted at rest; older plaintext receipts still open (openStoredBytes reads the header).
+    await storage.put(receipt.key, encryptBytes(input.receipt.bytes));
   }
   try {
     const e = await prisma.expense.create({
@@ -66,6 +68,7 @@ export async function createExpense(actor: Actor, input: ExpenseInput) {
         receiptKey: receipt?.key ?? null,
         receiptName: receipt?.name ?? null,
         receiptMime: receipt?.mime ?? null,
+        receiptEncrypted: receipt ? true : null,
         createdById: actor.id,
       },
     });
@@ -99,6 +102,7 @@ export async function readReceipt(actor: Actor, expenseId: string) {
   await assertOffice(actor, "revenue", "view");
   const e = await prisma.expense.findUnique({ where: { id: expenseId } });
   if (!e?.receiptKey) return null;
-  const bytes = await storage.get(e.receiptKey);
+  const stored = await storage.get(e.receiptKey);
+  const bytes = stored ? openStoredBytes(stored) : null;
   return bytes ? { bytes, name: e.receiptName ?? "receipt", mime: e.receiptMime ?? "application/octet-stream" } : null;
 }

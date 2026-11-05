@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { StaffCoethaConsent } from "@/components/coetha-consent";
+import { coethaConsentState } from "@/lib/services/coetha-consent";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
@@ -125,6 +127,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
           <p className="font-serif text-lg text-navy-100">Bookkeeping Services</p>
         </div>
       </section>
+      <StaffCoethaConsent clientId={clientId} state={await coethaConsentState(clientId)} />
 
       {/* Financial Overview */}
       <section className={clsx(card, "relative -mt-16 mx-1 p-4 sm:mx-3 sm:p-5")} data-testid="financial-overview">

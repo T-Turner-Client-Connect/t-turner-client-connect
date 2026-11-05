@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { authorizeCoetha, makeUser, prisma, resetDb } from "./db";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { applyPermissionPreset, can, setStaffPermissions } from "@/lib/auth/permissions";
 import { DARIA_PRESET, GRANTABLE_KEYS } from "@/lib/permissions";
@@ -155,6 +155,7 @@ describe("staff permissions x Coetha x bank feed", () => {
     const o = await office();
     const biz = await createClient(o.tabitha, { businessName: "Pretend Lantern Works LLC", clientType: "BUSINESS", status: "ACTIVE", assignedToId: o.daria.id });
     await prisma.client.update({ where: { id: biz.id }, data: { businessAccess: "ACTIVE" } });
+    await authorizeCoetha(biz.id);
     await setupLedger(o.tabitha, biz.id, { basis: "CASH" });
     const checking = (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: biz.id, code: "1000" } })).id;
     await importBankCsv(o.tabitha, biz.id, checking, { fileName: "oct.csv", text: CSV(["10/02/2026,OFFICE DEPOT #1123,-84.20", "10/06/2026,PAPER PRETEND CO,-12.00"]) });

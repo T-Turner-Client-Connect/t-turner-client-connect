@@ -7,7 +7,7 @@ import path from "node:path";
  * publicly reachable — files are only served through the authenticated
  * /api/files route). Locally it's a git-ignored folder.
  */
-type Driver = {
+export type Driver = {
   put(key: string, data: Uint8Array): Promise<void>;
   get(key: string): Promise<Uint8Array | null>;
   remove(key: string): Promise<void>;
@@ -42,28 +42,35 @@ const netlifyDriver: Driver = {
 
 const LOCAL_ROOT = path.join(process.cwd(), ".data", "uploads");
 
-function localPath(key: string) {
-  if (!/^[a-z0-9/_-]+$/i.test(key)) throw new Error("Invalid storage key");
-  return path.join(LOCAL_ROOT, key);
+/**
+ * A folder-backed store. The app's local driver uses .data/uploads; restore
+ * verification uses its own scratch folder so it can never touch real storage.
+ */
+export function createLocalStorage(root: string): Driver {
+  const localPath = (key: string) => {
+    if (!/^[a-z0-9/_-]+$/i.test(key) || key.includes("..")) throw new Error("Invalid storage key");
+    return path.join(root, key);
+  };
+  return {
+    async put(key, data) {
+      const file = localPath(key);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, data);
+    },
+    async get(key) {
+      try {
+        return new Uint8Array(await readFile(localPath(key)));
+      } catch {
+        return null;
+      }
+    },
+    async remove(key) {
+      await rm(localPath(key), { force: true });
+    },
+  };
 }
 
-const localDriver: Driver = {
-  async put(key, data) {
-    const file = localPath(key);
-    await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, data);
-  },
-  async get(key) {
-    try {
-      return new Uint8Array(await readFile(localPath(key)));
-    } catch {
-      return null;
-    }
-  },
-  async remove(key) {
-    await rm(localPath(key), { force: true });
-  },
-};
+const localDriver: Driver = createLocalStorage(LOCAL_ROOT);
 
 export const storage: Driver = {
   put: (k, d) => (onNetlify() ? netlifyDriver : localDriver).put(k, d),
@@ -73,4 +80,22 @@ export const storage: Driver = {
 
 export function storageDriverName(): string {
   return onNetlify() ? "Netlify Blobs (private)" : "Local folder (.data/uploads — development only)";
+}
+
+/** A throwaway in-memory store (restore verification from the Owner's Office, tests). */
+export function createMemoryStorage(): Driver & { keys(): string[] } {
+  const m = new Map<string, Uint8Array>();
+  return {
+    async put(k, d) {
+      m.set(k, new Uint8Array(d));
+    },
+    async get(k) {
+      const v = m.get(k);
+      return v ? new Uint8Array(v) : null;
+    },
+    async remove(k) {
+      m.delete(k);
+    },
+    keys: () => [...m.keys()],
+  };
 }

@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { PortalCoethaNotice } from "@/components/coetha-consent";
+import { coethaConsentState, portalMayDecideCoetha } from "@/lib/services/coetha-consent";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Notice, PageHeader } from "@/components/ui";
 import { portalUploadAction } from "@/app/actions/portal";
@@ -90,6 +92,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
   return (
     <>
       <PageHeader title="Bookkeeping & requests" subtitle={<span data-testid="bk-business">Checklist, reports and questions for <strong>{current.client.businessName || current.client.displayName}</strong> only.</span>} />
+      {(await portalMayDecideCoetha(user.id, current.clientId)) && <PortalCoethaNotice clientId={current.clientId} state={await coethaConsentState(current.clientId)} />}
       {looseRequests.length > 0 && (
         <Card title="Documents we need" className="mb-4"><ul className="divide-y divide-navy-100">{looseRequests.map((r) => requestItem(r, null))}</ul></Card>
       )}

@@ -4,6 +4,8 @@ import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import { AlertTriangle, ClipboardList, Inbox, Landmark, Scale, Sparkles } from "lucide-react";
 import { requireOffice } from "@/lib/auth/owner";
+import { ConsentBadge } from "@/components/coetha-consent";
+import { consentStatesFor } from "@/lib/services/coetha-consent";
 import { prisma } from "@/lib/prisma";
 import { card, h2, RecommendationCard } from "@/components/bk/parts";
 import { RequestList } from "@/components/bk/requests";
@@ -41,6 +43,7 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
     coethaAutoSendOn(),
     optedOutClientIds(),
   ]);
+  const consent = await consentStatesFor(ids);
   const n = (rows: { clientId: string; _count: number }[], id: string) => rows.find((r) => r.clientId === id)?._count ?? 0;
   const kinds = (id: string, k: string[]) => proposals.filter((p) => p.clientId === id && k.includes(p.kind)).length;
   const rows = clients.map((c) => ({
@@ -73,7 +76,7 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
             <tbody className="divide-y divide-ivory-200">
               {rows.map((r) => (
                 <tr key={r.c.id} className={clsx(focus === r.c.id && "bg-gold-50")}>
-                  <td className="py-2 pr-2 font-semibold text-navy-900"><Link className="underline decoration-gold-500" href={`/bookkeeping/${r.c.id}`} data-testid="review-client-link">{r.name}</Link>{optedOut.has(r.c.id) && <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-800" data-testid="review-opt-out">Opted out of Coetha</span>}</td>
+                  <td className="py-2 pr-2 font-semibold text-navy-900"><Link className="underline decoration-gold-500" href={`/bookkeeping/${r.c.id}`} data-testid="review-client-link">{r.name}</Link>{optedOut.has(r.c.id) && <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-800" data-testid="review-opt-out">Opted out of Coetha</span>}<div className="mt-0.5">{consent.get(r.c.id) && <ConsentBadge state={consent.get(r.c.id)!} />}</div></td>
                   <td className="pr-2 text-xs text-navy-800">{isTaxClassification(r.c.bookkeepingProfile?.taxClassification) ? TAX_CLASSIFICATIONS[r.c.bookkeepingProfile!.taxClassification as keyof typeof TAX_CLASSIFICATIONS].label.split(" — ")[0] : <Link className="text-red-700 underline" href={`/bookkeeping/${r.c.id}/profile`}>Not set</Link>}{r.classification ? " · change suggested" : ""}</td>
                   <td className="pr-2 text-center">{r.findings || "—"}</td>
                   <td className="pr-2 text-center">{r.drafts || "—"}</td>

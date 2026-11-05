@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeUser, prisma, resetDb } from "./db";
+import { authorizeCoetha, makeUser, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { saveProfile, openWorkPeriod, bookkeepingWorkspace } from "@/lib/services/bookkeeping-clients";
@@ -64,6 +64,7 @@ async function world(opts: { payroll?: boolean } = {}) {
   for (const c of [biz, other]) await saveProfile(tabitha, c.id, { active: true, frequency: "MONTHLY", payroll: !!opts.payroll, payrollFrequency: opts.payroll ? "BIWEEKLY" : null, payrollProvider: opts.payroll ? "ADP" : null });
   for (const c of [biz, other]) await setupLedger(daria, c.id, { basis: "CASH" });
   const code = async (clientId: string, c: string) => (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId, code: c } })).id;
+  await authorizeCoetha(biz.id, other.id);
   return { tabitha, daria, eve, biz, other, code };
 }
 type W = Awaited<ReturnType<typeof world>>;
