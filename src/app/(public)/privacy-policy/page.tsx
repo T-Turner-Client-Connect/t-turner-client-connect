@@ -93,8 +93,8 @@ export default function PrivacyPolicy() {
         </p>
         <ul className={`${list} mt-3`}>
           <li>
-            <strong>Your authorization first.</strong> Coetha will not be used with your records unless we have notified you and you have authorized it. You may decline, or withdraw your
-            authorization later; if you do, our staff will continue preparing your books without it.
+            <strong>Notice first, bookkeeping only.</strong> Coetha will not be used with your records until we have notified you in writing. Coetha is used for bookkeeping only; it does not
+            prepare, review, or file tax returns, and it cannot move money or change your accounts.
           </li>
           <li>
             <strong>Information sent to the AI service.</strong> Coetha works on one client business at a time. Client names are not sent. Before transaction information is sent, email
@@ -102,7 +102,7 @@ export default function PrivacyPolicy() {
             their last four digits. Transaction amounts, dates, and descriptions are sent, and descriptions may still include merchant or payee names.
           </li>
           <li>
-            <strong>Human review.</strong> Coetha only drafts. Our owner reviews and approves its work, and nothing it drafts is sent to you or becomes part of your released financial statements
+            <strong>Human review.</strong> Coetha only drafts. Our team reviews its work, and nothing it drafts is sent to you or becomes part of your released financial statements
             without that approval.
           </li>
         </ul>
@@ -116,7 +116,7 @@ export default function PrivacyPolicy() {
           <li><strong>Netlify</strong> &mdash; hosts {BUSINESS.platformName}, including its database and file storage.</li>
           <li><strong>Plaid</strong> &mdash; bank account connections (not yet active; described above).</li>
           <li><strong>Square</strong> &mdash; invoices and payments.</li>
-          <li><strong>Anthropic</strong> &mdash; the AI service for AI-assisted bookkeeping (not yet active; used only with your authorization, as described above).</li>
+          <li><strong>Anthropic</strong> &mdash; the AI service for AI-assisted bookkeeping (not yet active; used only after we notify you, as described above).</li>
           <li><strong>Resend</strong> &mdash; email delivery.</li>
           <li><strong>Twilio</strong> &mdash; text message delivery for our SMS program.</li>
           <li><strong>Jotform</strong> &mdash; online forms and questionnaires.</li>
@@ -161,8 +161,7 @@ export default function PrivacyPolicy() {
         <h2>Your choices</h2>
         <p>
           You may decline optional messaging. Reply STOP to unsubscribe from texts or HELP for assistance. To request access to, correction of, or deletion of your information, contact our office.
-          Some records must be retained for professional, legal, or operational reasons, as described under &ldquo;Retention.&rdquo; You may ask us at any time to disconnect a bank connection or,
-          once offered, to withdraw your authorization for AI-assisted bookkeeping.
+          Some records must be retained for professional, legal, or operational reasons, as described under &ldquo;Retention.&rdquo; You may ask us at any time to disconnect a bank connection.
         </p>
       </section>
       <section>
