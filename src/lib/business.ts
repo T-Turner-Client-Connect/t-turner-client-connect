@@ -20,10 +20,20 @@ export const BUSINESS = {
   platformIdentity: "TTurner Client Connect, operated by T. Turner & Associates, LLC",
   officePhoneDisplay: "205-639-1000",
   officePhoneTel: "+12056391000",
+  // Privacy questions and requests (Privacy Policy contact).
+  privacyEmail: "info@tturnerassociates.com",
 } as const;
 
-/** Date the Privacy Policy and Terms were published. Update when the text changes. */
+/** Date the Terms were published. Update when the text changes. */
 export const LEGAL_EFFECTIVE_DATE = "October 29, 2026";
+
+/**
+ * Date the current Privacy Policy text takes effect. Leave null until the owner
+ * approves publication, then set it to the actual publication date (for example
+ * "December 1, 2026") in the same change that is merged. While it is null, a
+ * production build refuses to publish the page; previews show "Pending publication".
+ */
+export const PRIVACY_EFFECTIVE_DATE: string | null = "November 5, 2026";
 
 // Exact consent wording. Any change must get a new version so stored
 // consents always point at the text the person actually saw.
