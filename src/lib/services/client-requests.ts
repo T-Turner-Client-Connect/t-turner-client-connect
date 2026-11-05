@@ -11,6 +11,7 @@ import { isYmd, todayCentral, toDate, ymdOf } from "./ledger";
 import { notifyClientUsers, staffUploadDocument } from "./documents";
 import { assertCanSendClientRequests } from "./bk-permissions";
 import { registryLabel } from "./bank-accounts";
+import { assertCoethaAllowed } from "./coetha-opt-out";
 
 /**
  * Targeted document requests to a business: monthly statements Coetha could not retrieve,
@@ -196,6 +197,8 @@ export async function createClientRequest(actor: Actor | null, clientId: string,
   }
   if (await alreadyReceived(clientId, input)) return { request: null, created: false, received: true };
   const source = opts.source ?? (actor ? "STAFF" : "COETHA");
+  // Coetha never drafts a request for a client who prefers no Coetha (staff requests are unaffected).
+  if (source === "COETHA") await assertCoethaAllowed(clientId);
   const createdById = actor?.id ?? (await coethaAuthor(clientId));
   if (!createdById) throw new ValidationError("No staff account to record the request under.");
   // Coetha's requests carry an explicit routing; staff requests are the staff member's own decision.
@@ -224,6 +227,8 @@ export async function sendClientRequest(actor: Actor | null, clientId: string, r
   // Unusual, sensitive or unclear requests: only Tabitha sends them, never Coetha on her own.
   if (draft.routing === "REVIEW" && !(actor && (await canApproveCoethaWork(actor)))) throw new ForbiddenError("Tabitha reviews this request before it goes to the client.");
   if (!actor) {
+    // Coetha never sends anything on her own for a client who prefers no Coetha.
+    await assertCoethaAllowed(clientId);
     // Coetha never sends what was already received or what isn't due yet.
     if (draft.periodEnd && ymdOf(draft.periodEnd) >= (opts.today ?? todayCentral())) throw new ValidationError("That period hasn't ended yet.");
     if (await alreadyReceived(clientId, { kind: draft.kind as RequestInput["kind"], docType: draft.docType, bookkeepingAccountId: draft.bookkeepingAccountId, start: draft.periodStart ? ymdOf(draft.periodStart) : null, end: draft.periodEnd ? ymdOf(draft.periodEnd) : null, taxYear: draft.taxYear })) throw new ValidationError("Already received.");

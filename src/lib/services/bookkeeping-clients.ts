@@ -555,15 +555,20 @@ export function periodSummary(p: PeriodFull, frequency = "MONTHLY", now = new Da
 export type ListFilters = { assignedTo?: string | null; frequency?: string | null; missing?: boolean; overdue?: boolean; review?: boolean; now?: Date };
 
 /** One row per bookkeeping client for the staff list, with filters. */
+/** Who is on the Bookkeeping list: an active profile on a client that isn't archived. (Client Letters uses the same rule.) */
+export const BOOKKEEPING_LIST_WHERE = { active: true, client: { archivedAt: null } } as const;
+
 export async function bookkeepingClients(f: ListFilters = {}) {
   const now = f.now ?? new Date();
   const assigned = f.assignedTo === "unassigned" ? { assignedToId: null } : f.assignedTo ? { assignedToId: f.assignedTo } : {};
   const profiles = await prisma.bookkeepingProfile.findMany({
-    where: { active: true, ...(f.frequency && f.frequency in FREQUENCIES ? { frequency: f.frequency } : {}), client: { archivedAt: null, ...assigned } },
+    where: { ...BOOKKEEPING_LIST_WHERE, ...(f.frequency && f.frequency in FREQUENCIES ? { frequency: f.frequency } : {}), client: { ...BOOKKEEPING_LIST_WHERE.client, ...assigned } },
     include: { client: { select: { id: true, displayName: true, assignedTo: { select: { id: true, name: true } } } } },
     orderBy: { client: { displayName: "asc" } },
   });
   const rows = [];
+  // "Client prefers no Coetha" (badge on the list).
+  const optedOut = new Set((await prisma.coethaOptOut.findMany({ where: { clientId: { in: profiles.map((p) => p.clientId) } }, select: { clientId: true } })).map((r) => r.clientId));
   for (const p of profiles) {
     const { year, month } = workMonth(p.frequency, now);
     const recent = await prisma.bookkeepingPeriod.findMany({ where: { clientId: p.clientId }, orderBy: [{ year: "desc" }, { month: "desc" }], take: 6, select: { id: true, year: true, month: true } });
@@ -578,7 +583,7 @@ export async function bookkeepingClients(f: ListFilters = {}) {
     const awaitingReview = summaries.some((r) => r.summary.stage === "AWAITING_REVIEW");
     const unread = await prisma.conversation.count({ where: { clientId: p.clientId, awaitingStaff: true } });
     const names = await ownerAndBusiness(p.clientId);
-    rows.push({ profile: p, client: p.client, owner: names?.owner ?? null, business: names?.business ?? null, order: names?.order ?? 0, workLabel: periodLabel(p.frequency, year, month), reportMonth: reportsDue(p.frequency, month), periodId: current?.id ?? null, summary, stage: (summary?.stage ?? "NOT_OPENED") as Stage, overdue, missing, awaitingReview, unread });
+    rows.push({ profile: p, client: p.client, owner: names?.owner ?? null, business: names?.business ?? null, order: names?.order ?? 0, workLabel: periodLabel(p.frequency, year, month), reportMonth: reportsDue(p.frequency, month), periodId: current?.id ?? null, summary, stage: (summary?.stage ?? "NOT_OPENED") as Stage, overdue, missing, awaitingReview, unread, coethaOptOut: optedOut.has(p.clientId) });
   }
   // One row per business, grouped by owner (e.g. Steven Cox · Energy Solutions, then Steven Cox · Drive Time).
   const who = (r: { owner: string | null; business: string | null; client: { displayName: string } }) => (r.owner ?? r.business ?? r.client.displayName).toLowerCase();

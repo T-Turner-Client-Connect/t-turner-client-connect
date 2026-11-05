@@ -14,6 +14,8 @@ import { RecommendationCard } from "@/components/bk/parts";
 import { COETHA_NO_KEY, COETHA_PRIVACY, coethaView, KIND_LABEL } from "@/lib/services/coetha";
 import { approveCoethaAction, bulkCoethaAction, rejectCoethaAction, runCoethaAction } from "@/app/actions/coetha";
 import { fmtDateTime } from "@/lib/format";
+import { canSetCoethaOptOut, coethaOptOutView } from "@/lib/services/coetha-opt-out";
+import { CoethaOptOutPanel } from "@/components/bk/coetha-opt-out-panel";
 
 export const metadata = { title: "Coetha AI" };
 
@@ -77,7 +79,8 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
   const lastRun = v.runs[0];
   // Office work: any Bookkeeping Client (client portal access is a separate matter).
   const office = await officeMayWorkBooks(clientId);
-  const canRun = v.status.ready && !!v.book && office;
+  const [optOut, canSetOptOut] = await Promise.all([coethaOptOutView(clientId), canSetCoethaOptOut(user, clientId)]);
+  const canRun = v.status.ready && !!v.book && office && !optOut;
   const recs = byKind("RECOMMENDATION");
   const classes = byKind("CLASSIFICATION");
   const tp = await taxProfile(clientId);
@@ -111,6 +114,9 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
           ) : null}
         </div>
       </section>
+
+      {/* "Client prefers no Coetha" */}
+      <CoethaOptOutPanel clientId={clientId} optOut={optOut} canSet={canSetOptOut} />
 
       {/* Why Coetha can't run yet */}
       {!v.status.enabled && (

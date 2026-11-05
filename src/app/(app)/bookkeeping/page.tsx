@@ -114,6 +114,7 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
                       {r.owner && r.business && <span className="block text-sm text-slate-700">{r.business}</span>}
                     </Link>
                     {r.unread > 0 && <Badge tone="gold" className="ml-2">{r.unread} message{r.unread === 1 ? "" : "s"}</Badge>}
+                    {r.coethaOptOut && <span data-testid="coetha-opt-out-badge"><Badge tone="gray" className="ml-2">Opted out of Coetha</Badge></span>}
                   </td>
                   <td className="px-3 py-3">{r.client.assignedTo?.name ?? <span className="text-red-700">Unassigned</span>}</td>
                   <td className="px-3 py-3">{FREQUENCIES[r.profile.frequency as keyof typeof FREQUENCIES]}</td>

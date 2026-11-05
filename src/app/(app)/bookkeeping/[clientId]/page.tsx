@@ -18,6 +18,8 @@ import { workMonth } from "@/lib/services/bookkeeping-clients";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
 import { retrieveNowAction } from "@/app/actions/ledger";
 import { uploadForRequestAction, uploadStatementAction } from "@/app/actions/bk-workflow";
+import { canSetCoethaOptOut, coethaOptOutView } from "@/lib/services/coetha-opt-out";
+import { CoethaOptOutPanel } from "@/components/bk/coetha-opt-out-panel";
 
 export const metadata = { title: "Bookkeeping" };
 
@@ -67,6 +69,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
 
   const [o, banking, manage, canSend] = await Promise.all([businessOverview(user, clientId, ym), canViewBanking(user, clientId), canManageBanking(user, clientId), canSendClientRequests(user, clientId)]);
   const [reg, prog, reqs] = await Promise.all([banking ? bankingRegistry(user, clientId) : null, banking ? monthlyAccountProgress(user, clientId, sel.year, sel.month) : null, requestsFor(clientId)]);
+  const [optOut, canSetOptOut] = await Promise.all([coethaOptOutView(clientId), canSetCoethaOptOut(user, clientId)]);
   const pct = o.close.percent;
 
   // Accounts overview (registry: top-level accounts; employee cards live under their shared account).
@@ -199,7 +202,11 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
                   <p className="text-xs text-navy-100">Account Monitoring • Reconciliation • Document Requests • Recommendations</p>
                 </div>
               </div>
-              <span className="shrink-0 rounded-md bg-emerald-100 px-2.5 py-0.5 text-sm font-semibold text-emerald-800">Active</span>
+              {optOut ? (
+                <span className="shrink-0 rounded-md bg-slate-200 px-2.5 py-0.5 text-sm font-semibold text-slate-800">Opted out</span>
+              ) : (
+                <span className="shrink-0 rounded-md bg-emerald-100 px-2.5 py-0.5 text-sm font-semibold text-emerald-800">Active</span>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-2 bg-white p-3 sm:grid-cols-5">
               {tiles.map((t) => (
@@ -211,6 +218,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
               ))}
             </div>
           </div>
+          <CoethaOptOutPanel clientId={clientId} optOut={optOut} canSet={canSetOptOut} />
 
           {/* Accounts Overview */}
           <div className={clsx(card, "p-4")} data-testid="accounts-overview">
