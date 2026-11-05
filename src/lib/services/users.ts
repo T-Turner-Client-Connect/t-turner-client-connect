@@ -1,5 +1,5 @@
 import "server-only";
-import type { Role } from "@prisma/client";
+import type { Prisma, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { assertAdmin, type Actor } from "@/lib/auth/actor";
@@ -104,16 +104,24 @@ export async function resetPassword(token: string, password: string) {
 
 export async function updateStaff(actor: Actor, userId: string, input: { role?: Role; active?: boolean }) {
   assertAdmin(actor);
-  const target = await prisma.user.findUnique({ where: { id: userId } });
+  await prisma.$transaction((tx) => applyStaffUpdate(tx, actor, userId, input));
+}
+
+/**
+ * Changes a staff member's role or active state inside the caller's transaction. Deactivating
+ * ends every session at once (a signed-in browser is signed out on its next request) and is
+ * audited. Shared by Settings → Team and Owner's Office offboarding, so both de-provision alike.
+ */
+export async function applyStaffUpdate(tx: Prisma.TransactionClient, actor: Actor, userId: string, input: { role?: Role; active?: boolean }) {
+  const target = await tx.user.findUnique({ where: { id: userId } });
   if (!target) throw new ValidationError("Staff member not found.");
   const losingAdmin = target.role === "ADMIN" && (input.role === "STAFF" || input.active === false);
   if (losingAdmin) {
-    const admins = await prisma.user.count({ where: { role: "ADMIN", active: true } });
+    const admins = await tx.user.count({ where: { role: "ADMIN", active: true } });
     if (admins <= 1) throw new ValidationError("Keep at least one active Admin.");
   }
-  await prisma.$transaction(async (tx) => {
-    await tx.user.update({ where: { id: userId }, data: input });
-    if (input.active === false) await tx.session.deleteMany({ where: { userId } });
-    await audit(tx, { actorId: actor.id, action: "user.updated", entityType: "User", entityId: userId, details: input });
-  });
+  await tx.user.update({ where: { id: userId }, data: input });
+  const sessionsEnded = input.active === false ? (await tx.session.deleteMany({ where: { userId } })).count : 0;
+  await audit(tx, { actorId: actor.id, action: "user.updated", entityType: "User", entityId: userId, details: input });
+  return { sessionsEnded };
 }

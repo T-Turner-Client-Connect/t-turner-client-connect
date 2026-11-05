@@ -11,7 +11,7 @@ export default async function OwnerLayout({ children }: { children: React.ReactN
   const tabs = officeTabs(access);
   return (
     <div>
-      <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl bg-navy-900 px-4 py-3 text-white">
+      <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl bg-navy-900 px-4 py-3 text-white print:hidden">
         <LockKeyhole className="size-5 text-gold-500" aria-hidden />
         <p className="flex-1 text-sm">
           <strong className="font-serif text-base">Owner&apos;s Office</strong>

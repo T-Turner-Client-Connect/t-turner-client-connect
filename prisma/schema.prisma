@@ -534,6 +534,9 @@ model Task {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
+  // Set when the task is one line of a staff offboarding checklist.
+  offboardingItem StaffOffboardingItem?
+
   @@index([status, dueAt])
   @@index([clientId])
 }
@@ -5375,6 +5378,93 @@ model BillingScheduleItem {
   createdAt   DateTime        @default(now())
 
   @@unique([scheduleId, periodKey])
+}
+
+// ===========================================================================
+// ACCESS REVIEWS & STAFF OFFBOARDING (Owner's Office → Access review; owner only)
+// ===========================================================================
+
+// One completed quarterly access review: who reviewed, when, and what access looked like then.
+// The next review is due 90 days after the latest completedAt (the automations cron reminds the owner).
+model AccessReview {
+  id            String   @id @default(cuid())
+  reviewerId    String
+  reviewerName  String
+  completedAt   DateTime @default(now())
+  // Required summary written by the owner.
+  summary       String
+  // Findings and the changes made because of the review (optional).
+  findings      String?
+  // Every staff account as it stood at completion: role, active, grants (keys + labels), two-step, last sign-in, created.
+  staffSnapshot Json
+  // The vendor checklist answers: [{ key, label, appropriate, twoStep, note }]. No credentials, ever.
+  vendorAnswers Json
+  // Access changes since the previous review (permission grants/revokes, role and active changes, offboardings).
+  changes       Json?
+  createdAt     DateTime @default(now())
+  // Owner corrections (summary, findings, vendor answers only). Append-only; the first one's
+  // `previous` holds the values as originally completed. completedAt never changes.
+  revisions     AccessReviewRevision[]
+
+  @@index([completedAt])
+}
+
+// One owner correction to a completed access review. Append-only (a database trigger refuses
+// UPDATE and DELETE): `previous` and `updated` each hold { summary, findings, vendorAnswers }.
+model AccessReviewRevision {
+  id             String       @id @default(cuid())
+  reviewId       String
+  review         AccessReview @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  // 1, 2, 3 … per review (the edit form carries the number it was opened at).
+  revisionNumber Int
+  editedById     String
+  editedByName   String
+  editedAt       DateTime     @default(now())
+  // Required short "reason for correction".
+  reason         String
+  previous       Json
+  updated        Json
+  // e.g. ["summary", "vendor:github.twoStep", "vendor:github.note"]
+  changedFields  String[]     @default([])
+
+  @@unique([reviewId, revisionNumber])
+}
+
+// Offboarding a staff member: the Client Connect account is deactivated at once (sessions ended,
+// grants removed); everything outside Client Connect becomes a checklist of tasks for the owner.
+model StaffOffboarding {
+  id               String                 @id @default(cuid())
+  userId           String
+  // Copied at the time so the record reads the same after later changes.
+  userName         String
+  userEmail        String
+  userRole         Role
+  reason           String
+  effectiveDate    DateTime               @db.Date
+  offboardedById   String
+  offboardedByName String
+  // Permission keys removed ("billing.view", ...) and legacy grants cleared.
+  removedGrants    String[]               @default([])
+  sessionsEnded    Int                    @default(0)
+  createdAt        DateTime               @default(now())
+  items            StaffOffboardingItem[]
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// One checklist line. Done = its task is DONE (the owner can finish it here or on Tasks).
+model StaffOffboardingItem {
+  id            String           @id @default(cuid())
+  offboardingId String
+  offboarding   StaffOffboarding @relation(fields: [offboardingId], references: [id], onDelete: Cascade)
+  seq           Int
+  key           String
+  label         String
+  taskId        String?          @unique
+  task          Task?            @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@unique([offboardingId, key])
 }
 
 // ---------------------------------------------------------------------------

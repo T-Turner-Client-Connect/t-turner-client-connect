@@ -241,7 +241,7 @@ export function AppNav({ user, signOut, unread, owner }: { user: { name: string;
   );
   return (
     <>
-      <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col justify-between overflow-y-auto bg-gradient-to-b from-navy-900 to-navy-950 px-4 py-5 lg:flex">
+      <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col justify-between overflow-y-auto bg-gradient-to-b from-navy-900 to-navy-950 px-4 py-5 lg:flex print:hidden!">
         <div className="space-y-6">
           <Brand />
           <GlobalSearch />
@@ -250,7 +250,7 @@ export function AppNav({ user, signOut, unread, owner }: { user: { name: string;
         {footer}
       </aside>
 
-      <header className="sticky top-0 z-30 flex items-center justify-between bg-navy-900 px-4 py-3 lg:hidden">
+      <header className="sticky top-0 z-30 flex items-center justify-between bg-navy-900 px-4 py-3 lg:hidden print:hidden!">
         <Brand />
         <button onClick={() => setOpen(true)} aria-label="Open menu" aria-expanded={open} className="rounded-md p-2 text-white hover:bg-white/10">
           <Menu className="size-6" />

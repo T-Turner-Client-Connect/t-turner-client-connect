@@ -7,6 +7,7 @@ import { runDailyBankRetrieval } from "@/lib/services/banking";
 import { runDailyCoetha } from "@/lib/services/coetha";
 import { runDailyWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { runBillingSchedules } from "@/lib/services/billing-schedules";
+import { ensureAccessReviewReminder } from "@/lib/services/access-review";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {
@@ -35,5 +36,7 @@ export async function POST(req: Request) {
   // invoice (idempotent). Sent only if she turned on auto-send AND live sending is on; Square only
   // through the existing send path with its own switch. Bookkeeping subscriptions in Square are untouched.
   const schedules = await runBillingSchedules().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules });
+  // Quarterly access review: one high-priority task for the owner when a review is due (never two open).
+  const accessReview = await ensureAccessReviewReminder().catch(() => "failed");
+  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview });
 }
