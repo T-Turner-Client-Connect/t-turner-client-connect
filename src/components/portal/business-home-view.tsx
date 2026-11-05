@@ -22,9 +22,10 @@ const viewAll = "mt-4 inline-flex items-center gap-1 text-sm font-medium text-na
  * The business quick-access tiles (Business Documents, Upload Documents, My K-1s, Payroll,
  * Messages, Billing, Appointments), only those this login may use. Shared by this Home and the
  * Managed Business dashboard. When `href` gives null (a page View as Client can't show), the
- * tile is shown disabled.
+ * tile is shown disabled. `payrollHref`: the dashboard's Payroll page (business view only); without
+ * it the Payroll tile opens the Document Vault, as on the business-only Home.
  */
-export function businessHomeTiles(data: Pick<Home, "perms" | "k1s" | "payrollDocs">, href: (path: string) => string | null, k1Href: string | null = "#k1s"): Tile[] {
+export function businessHomeTiles(data: Pick<Home, "perms" | "k1s" | "payrollDocs">, href: (path: string) => string | null, k1Href: string | null = "#k1s", payrollHref?: string | null): Tile[] {
   const p = data.perms;
   const off = "Not available in View as Client";
   const t = (tile: Omit<Tile, "href">, h: string | null): Tile => (h === null ? { ...tile, href: null, disabledNote: off } : { ...tile, href: h });
@@ -32,7 +33,7 @@ export function businessHomeTiles(data: Pick<Home, "perms" | "k1s" | "payrollDoc
     ...(p.canViewDocuments ? [t({ title: "Business Documents", sub: "Your business's secure document vault", icon: Folder, testId: "biz-documents" }, href("/client/documents"))] : []),
     ...(p.canUpload ? [t({ title: "Upload Documents", sub: "Send files to our office securely", icon: CloudUpload, testId: "biz-upload" }, href("/client/documents"))] : []),
     t({ title: "My K-1s", sub: data.k1s.length ? `${data.k1s.length} ready to view` : "Your Schedule K-1s appear here", icon: FileBadge, testId: "biz-k1s" }, k1Href),
-    ...(p.canViewPayroll ? [t({ title: "Payroll", sub: data.payrollDocs ? `${data.payrollDocs} payroll document${data.payrollDocs === 1 ? "" : "s"}` : "Payroll reports and filings", icon: Receipt, testId: "biz-payroll" }, href("/client/documents"))] : []),
+    ...(p.canViewPayroll ? [t({ title: "Payroll", sub: data.payrollDocs ? `${data.payrollDocs} payroll document${data.payrollDocs === 1 ? "" : "s"}` : "Payroll reports and filings", icon: Receipt, testId: "biz-payroll" }, payrollHref === undefined ? href("/client/documents") : payrollHref)] : []),
     ...(p.canMessage ? [t({ title: "Messages", sub: "Write to our team privately", icon: MessageCircle, testId: "biz-messages" }, href("/client/messages"))] : []),
     ...(p.canViewBilling ? [t({ title: "Billing", sub: "Invoices and payments", icon: CreditCard, testId: "biz-billing" }, href("/client/billing"))] : []),
     t({ title: "Appointments", sub: "Schedule time with our office", icon: CalendarDays, testId: "biz-appointments" }, href("/client/appointments")),

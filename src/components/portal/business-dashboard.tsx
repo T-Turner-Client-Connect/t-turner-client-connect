@@ -168,7 +168,7 @@ function RequestUpload({ clientId, item }: { clientId: string; item: Dash["check
   );
 }
 
-function NeedList({ items, clientId, canUpload }: { items: Dash["checklist"]; clientId: string; canUpload: boolean }) {
+export function NeedList({ items, clientId, canUpload }: { items: Dash["checklist"]; clientId: string; canUpload: boolean }) {
   return (
     <ul className="mt-2 grid gap-x-6 md:grid-cols-2">
       {items.map((c) => (
@@ -210,6 +210,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
   // Portal: the client's own page for this account. View as Client: the preview page, or null.
   const to = (path: string, extra?: string): string | null => (readOnly ? (previewHref?.(path, extra) ?? null) : `${path}${q}${extra ? `&${extra}` : ""}`);
   const canUpload = d.perms.canUpload && !readOnly;
+  const anchor = (href: string | null, id: string) => (href ? `${href}#${id}` : null);
   const ytd = d.figures?.ytd ?? null;
   const ytdNote = d.figures ? undefined : d.isReleased ? "See Financial statements below" : `Shown once ${mName} is released`;
   const yearEndCount = d.yearEndDocs.active ? d.yearEndDocs.items.length : 0;
@@ -301,7 +302,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
               {d.payroll && <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-sans text-xs font-semibold text-emerald-700">On Schedule</span>}
             </h3>
             <p className="mt-3 flex-1 text-sm text-navy-900">{!d.payroll ? "Not set up for this account." : d.payroll.next ? <>Next Pay Date: <span className="font-semibold">{dayLabel(d.payroll.next)}</span>{d.payroll.frequency && <><br />{d.payroll.frequency}</>}</> : "We'll show your next pay date here."}</p>
-            {d.payroll && <MaybeLink href={to("/client/documents")} className={clsx(textLink, "mt-3")}>View payroll</MaybeLink>}
+            {d.payroll && <MaybeLink href={to("/client/payroll")} className={clsx(textLink, "mt-3")} testId="view-payroll">View payroll</MaybeLink>}
           </div>
           <div className={clsx(card, "flex flex-col p-4")} data-testid="filings-card">
             <h3 className={h3}>
@@ -317,6 +318,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
               {d.licenses.count > 0 && (d.licenses.expired ? <span className="rounded-full bg-red-600 px-2 py-0.5 font-sans text-xs font-semibold text-white">{d.licenses.expired} Expired</span> : <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-sans text-xs font-semibold text-emerald-700">All Current</span>)}
             </h3>
             <p className="mt-3 flex-1 text-sm text-navy-900">{d.licenses.next ? <>Next Renewal: <span className="font-semibold">{dayLabel(d.licenses.next.renewal!)}</span><br />({d.licenses.next.name})</> : d.licenses.count ? "No upcoming renewal dates." : "Not set up — no licenses on file with us yet."}</p>
+            <MaybeLink href={to("/client/licenses")} className={clsx(textLink, "mt-3")} testId="view-licenses">View licenses</MaybeLink>
           </div>
           <div className={clsx(card, "flex flex-col p-4")} data-testid="year-end-card">
             <h3 className={h3}>
@@ -326,7 +328,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
             <div className="mt-3 flex-1 text-sm text-navy-900">
               {d.yearEnd ? <><p className="font-semibold">{d.yearEnd.taxYear} Year-End</p><p className="mt-1 inline-block rounded-full bg-gold-200 px-3 py-0.5 text-xs font-semibold text-navy-900">{d.yearEnd.label}</p></> : <p>Year-end W-2 / 1099 work hasn&apos;t started.</p>}
             </div>
-            <a href="#year-end-docs" className={clsx(textLink, "mt-3")}>View 1099 / W-2</a>
+            <MaybeLink href={to("/client/year-end")} className={clsx(textLink, "mt-3")} testId="view-year-end">View 1099 / W-2</MaybeLink>
           </div>
         </section>
 
@@ -344,7 +346,11 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
               <div><p className="font-serif text-xl font-bold text-navy-900">{usdc(d.invoicing.openCents)}</p><p className="text-sm text-navy-800">Open Invoices ({d.invoicing.openCount})</p></div>
               <div><p className="font-serif text-xl font-bold text-navy-900">{usdc(d.invoicing.collectedCents)}</p><p className="text-sm text-navy-800">Collected ({short})</p></div>
             </div>
-            {d.perms.canMessage && <MaybeLink href={to("/client/messages")} className={outlineBtn}>Ask us to send an invoice</MaybeLink>}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <MaybeLink href={to("/client/invoicing")} className={navyBtn} testId="view-invoices">View invoices</MaybeLink>
+              <MaybeLink href={anchor(to("/client/invoicing"), "payments")} className={textLink} testId="payment-history">Payment history</MaybeLink>
+              {d.perms.canMessage && <MaybeLink href={anchor(to("/client/invoicing"), "request")} className={outlineBtn} testId="request-invoice">Request an invoice</MaybeLink>}
+            </div>
           </div>
 
           <div className="min-w-0 rounded-2xl border-2 border-gold-400 bg-white p-5 shadow-[0_14px_32px_-24px_rgb(200_157_41/0.7)]" data-testid="my-account">
