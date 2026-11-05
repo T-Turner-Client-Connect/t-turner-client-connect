@@ -357,6 +357,8 @@ model Client {
   billingSchedules       BillingSchedule[]
   clientLetters          ClientLetter[]
   coethaOptOut           CoethaOptOut?
+  adpReferrals           AdpReferral[]
+  adpStatementLines      AdpStatementLine[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -5377,10 +5379,10 @@ model BillingScheduleItem {
 // One completed quarterly access review: who reviewed, when, and what access looked like then.
 // The next review is due 90 days after the latest completedAt (the automations cron reminds the owner).
 model AccessReview {
-  id            String   @id @default(cuid())
+  id            String                 @id @default(cuid())
   reviewerId    String
   reviewerName  String
-  completedAt   DateTime @default(now())
+  completedAt   DateTime               @default(now())
   // Required summary written by the owner.
   summary       String
   // Findings and the changes made because of the review (optional).
@@ -5391,7 +5393,7 @@ model AccessReview {
   vendorAnswers Json
   // Access changes since the previous review (permission grants/revokes, role and active changes, offboardings).
   changes       Json?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime               @default(now())
   // Owner corrections (summary, findings, vendor answers only). Append-only; the first one's
   // `previous` holds the values as originally completed. completedAt never changes.
   revisions     AccessReviewRevision[]
@@ -5536,4 +5538,195 @@ model CoethaOptOut {
   recordedById String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// ===========================================================================
+// OWNER'S OFFICE -> ADP REVENUE SHARE (owner only, never in a client's portal)
+// ===========================================================================
+// Tabitha's ADP Revenue Share relationship. ADP offers no API: referrals, statements (from ADP's
+// partner portal) and payments are entered or uploaded by the owner. Reconciliation is manual.
+// Deletes are soft (archivedAt + archivedReason); every change is in OwnerAuditLog.
+
+/// A business referred to ADP: an existing client (linked) or a prospect by name (linked later).
+model AdpReferral {
+  id             String                    @id @default(cuid())
+  clientId       String?
+  client         Client?                   @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  // Free text for a prospect who isn't a client yet; kept after the client is linked.
+  prospectName   String?
+  referredOn     DateTime                  @db.Date
+  // RUN | WFN (Workforce Now) | OTHER (productOther says what).
+  product        String
+  productOther   String?
+  // ADP's referral / reference id, when ADP gives one.
+  adpReference   String?
+  // REFERRED | SOLD | ACTIVE | CANCELLED | DECLINED
+  status         String                    @default("REFERRED")
+  notes          String?
+  createdById    String
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+  archivedAt     DateTime?
+  archivedById   String?
+  archivedReason String?
+  statusHistory  AdpReferralStatusChange[]
+  lines          AdpStatementLine[]
+
+  @@index([clientId])
+  @@index([archivedAt, referredOn])
+}
+
+/// Append-only: every status a referral has had, with who set it and when.
+model AdpReferralStatusChange {
+  id          String      @id @default(cuid())
+  referralId  String
+  referral    AdpReferral @relation(fields: [referralId], references: [id], onDelete: Restrict)
+  fromStatus  String?
+  toStatus    String
+  // The date the change happened (e.g. ADP's sold date), when the owner knows it.
+  effectiveOn DateTime?   @db.Date
+  note        String?
+  changedById String
+  changedAt   DateTime    @default(now())
+
+  @@index([referralId, changedAt])
+}
+
+/// One ADP Revenue Share statement (an ADP fiscal-quarter period) with its lines. Editable while
+/// DRAFT; once FINAL every change needs a revision note and lands in AdpStatementRevision.
+model AdpStatement {
+  id                 String                 @id @default(cuid())
+  periodLabel        String
+  periodStart        DateTime               @db.Date
+  periodEnd          DateTime               @db.Date
+  statementDate      DateTime               @db.Date
+  // The total printed on ADP's statement; a warning shows when it isn't the sum of the lines.
+  reportedTotalCents Int
+  notes              String?
+  // DRAFT | FINAL
+  status             String                 @default("DRAFT")
+  finalizedAt        DateTime?
+  finalizedById      String?
+  // The uploaded statement (PDF/CSV/XLSX) in the owner-only store ("owner_private/adp/...").
+  fileKey            String?                @unique
+  fileName           String?
+  fileMime           String?
+  fileSize           Int?
+  fileSha256         String?
+  fileUploadedAt     DateTime?
+  createdById        String
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  archivedAt         DateTime?
+  archivedById       String?
+  archivedReason     String?
+  lines              AdpStatementLine[]
+  revisions          AdpStatementRevision[]
+  payments           AdpPayment[]
+  matchEvents        AdpPaymentMatchEvent[]
+
+  @@index([fileSha256])
+  @@index([archivedAt, statementDate])
+}
+
+model AdpStatementLine {
+  id             String       @id @default(cuid())
+  statementId    String
+  statement      AdpStatement @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  referralId     String?
+  referral       AdpReferral? @relation(fields: [referralId], references: [id], onDelete: Restrict)
+  // A client directly (when there is no referral row for it).
+  clientId       String?
+  client         Client?      @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  // The name as printed on ADP's statement (kept from a CSV import).
+  adpName        String?
+  // COMMISSION | RESIDUAL | BONUS | ADJUSTMENT
+  type           String
+  // Cents; adjustments may be negative.
+  amountCents    Int
+  note           String?
+  sortOrder      Int          @default(0)
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  archivedAt     DateTime?
+  archivedById   String?
+  archivedReason String?
+
+  @@index([statementId, sortOrder])
+  @@index([referralId])
+  @@index([clientId])
+}
+
+/// Append-only history of a statement once it is Final: the finalize itself and every later change.
+model AdpStatementRevision {
+  id             String       @id @default(cuid())
+  statementId    String
+  statement      AdpStatement @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  revisionNumber Int
+  // FINALIZED | HEADER_EDITED | LINE_ADDED | LINE_EDITED | LINE_REMOVED | LINES_IMPORTED | FILE_ATTACHED | ARCHIVED
+  kind           String
+  reason         String?
+  previous       Json?
+  updated        Json?
+  editedById     String
+  editedByName   String
+  editedAt       DateTime     @default(now())
+
+  @@unique([statementId, revisionNumber])
+}
+
+/// A payment received from ADP. Optionally matched to a statement by the owner (manually).
+model AdpPayment {
+  id             String                 @id @default(cuid())
+  receivedOn     DateTime               @db.Date
+  amountCents    Int
+  // ACH | CHECK | OTHER
+  method         String
+  methodOther    String?
+  // The ADP period(s) this payment covers, as the owner describes them (e.g. "FY27 Q1").
+  periodsCovered String?
+  reference      String?
+  note           String?
+  // Manual match to a statement (no automatic reconciliation in this stage).
+  statementId    String?
+  statement      AdpStatement?          @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  matchedAt      DateTime?
+  matchedById    String?
+  createdById    String
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  archivedAt     DateTime?
+  archivedById   String?
+  archivedReason String?
+  matchEvents    AdpPaymentMatchEvent[]
+
+  @@index([archivedAt, receivedOn])
+  @@index([statementId])
+}
+
+/// Append-only: each manual match / unmatch of a payment to a statement.
+model AdpPaymentMatchEvent {
+  id          String        @id @default(cuid())
+  paymentId   String
+  payment     AdpPayment    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  statementId String?
+  statement   AdpStatement? @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  // MATCHED | UNMATCHED
+  action      String
+  note        String?
+  actorId     String
+  actorName   String
+  at          DateTime      @default(now())
+
+  @@index([paymentId, at])
+}
+
+/// Owner-editable settings for the tracker (one row, id "default").
+model AdpRevenueShareSettings {
+  id          String   @id @default("default")
+  // Shown on Overview and Reports: ADP's fiscal year is not the calendar year.
+  fiscalNote  String
+  updatedById String?
+  updatedAt   DateTime @updatedAt
 }
