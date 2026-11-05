@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { makeUser, managed, managedOnly, prisma, resetDb } from "./db";
+import { authorizeCoetha, makeUser, managed, managedOnly, prisma, resetDb } from "./db";
 import type { Actor } from "@/lib/auth/actor";
 import { ForbiddenError } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
@@ -420,6 +420,8 @@ describe("Statements are retrieved by our office, never asked of the client", ()
   it("no routine bank or card statement request reaches the client; Coetha makes an internal office task instead", async () => {
     const p = await people();
     const b = await business(p, "Statement Pretend Bistro LLC", "stmt-owner@fictional.example");
+    // #90's client authorization gate applies to Coetha's monitor; authorize so this tests only the statement rule.
+    await authorizeCoetha(b.biz.id);
     await prisma.bookkeepingAccount.create({ data: { clientId: b.biz.id, institution: "Fictional Card Co", accountType: "CREDIT_CARD", last4: "1111", ledgerAccountId: (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: b.biz.id, code: "2100" } })).id } });
     const period = await openWorkPeriod(p.daria, b.biz.id, 2026, 10);
     // An old routine statement request (from before this change) stays in the records but is never shown.
