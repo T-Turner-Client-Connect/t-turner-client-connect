@@ -8,6 +8,7 @@ import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { can } from "@/lib/auth/permissions";
 import { recordFileBalance } from "./manual-bank";
+import { once } from "./office-actions";
 
 /**
  * Client bookkeeping ledger: real double-entry books, one set per client.
@@ -481,7 +482,7 @@ export function fingerprints(rows: ParsedRow[]) {
  * Rows already imported (for example from an overlapping statement) are skipped, never doubled.
  * Imported rows are not posted until staff review them.
  */
-export async function importBankCsv(actor: Actor, clientId: string, accountId: string, input: { fileName: string; text: string }, opts: { manualAccountId?: string | null; now?: Date } = {}) {
+export async function importBankCsv(actor: Actor, clientId: string, accountId: string, input: { fileName: string; text: string }, opts: { manualAccountId?: string | null; now?: Date; idempotencyKey?: string | null } = {}) {
   await assertLedgerWrite(actor, clientId, "banking");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!account || !isFeedSubtype(account.subtype)) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
@@ -490,7 +491,8 @@ export async function importBankCsv(actor: Actor, clientId: string, accountId: s
   if (!rows.length) throw new ValidationError(`No transactions could be read. ${problems.slice(0, 3).join("; ")}`);
   const prints = fingerprints(rows);
   const sha = createHash("sha256").update(input.text).digest("hex");
-  return prisma.$transaction(async (tx) => {
+  // A double-click or retry of the same import form never imports twice.
+  return once(opts.idempotencyKey, actor, "bank_import", () => prisma.$transaction(async (tx) => {
     // Imports and daily retrieval for one client run one at a time.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"bank-rows:" + clientId}))`;
     const dates = rows.map((r) => r.date).sort();
@@ -525,7 +527,7 @@ export async function importBankCsv(actor: Actor, clientId: string, accountId: s
     const updated = await tx.bankImport.update({ where: { id: imp.id }, data: { added, duplicates: duplicates + matched, skipped: problems.length, balanceStatus: balance?.status ?? null } });
     await audit(tx, { actorId: actor.id, action: "ledger.bank_imported", entityType: "BankImport", entityId: imp.id, clientId, details: { account: account.code, rows: rows.length, added, duplicates, matchedToRetrieved: matched, flagged, skipped: problems.length, ...(balance ? { balance: balance.status } : {}) } });
     return { ...updated, matched, flagged, problems, balance };
-  });
+  }));
 }
 
 export const MATCH_WINDOW_DAYS = 3;

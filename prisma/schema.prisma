@@ -1201,9 +1201,13 @@ model Document {
   // The owner a K-1 (category OWNER_K1) belongs to.
   businessOwnerId        String?
   businessOwner          BusinessOwner?       @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
+  // A bank/card statement our office retrieved and filed for this account (Morning bank pull).
+  manualBankAccountId    String?
+  manualBankAccount      ManualBankAccount?   @relation(fields: [manualBankAccountId], references: [id], onDelete: SetNull)
 
   @@index([clientId, category, year, month])
   @@index([visibility])
+  @@index([manualBankAccountId])
 }
 
 model DocumentAccessLog {
@@ -5477,6 +5481,11 @@ model ManualBankAccount {
   ledgerAccount   LedgerAccount?      @relation(fields: [ledgerAccountId], references: [id], onDelete: SetNull)
   // The bank's own sign-in page (https only) for the morning bank pull. Never a username or password.
   signInUrl       String?
+  // Which balance the client's dashboard uses when this is the same real account as a bank-feed
+  // (Plaid) account: AUTO = the bank feed while it's active and current, else ours; OFFICE = ours.
+  balanceSource   String              @default("AUTO")
+  // Statements our office retrieved from the bank and filed (staff-only documents).
+  statements      Document[]
 
   @@index([clientId])
 }
@@ -5504,4 +5513,15 @@ model ManualBankBalance {
 
   @@index([accountId, asOf])
   @@index([clientId, asOf])
+}
+
+// One row per office form submission that must not run twice (a double-click or a retry sends
+// the same key): entering a balance, importing a bank file, filing a statement.
+model OfficeActionKey {
+  key       String   @id
+  actorId   String
+  kind      String
+  // The record the action created (balance, import or document), once it finished.
+  resultId  String?
+  createdAt DateTime @default(now())
 }

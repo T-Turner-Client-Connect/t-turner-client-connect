@@ -10,6 +10,7 @@ import {
 } from "@/lib/services/ledger";
 import { addRule } from "@/lib/services/ledger-review";
 import type { FileBalanceResult } from "@/lib/services/manual-bank";
+import { RepeatedSubmission } from "@/lib/services/office-actions";
 import { fmtDateTime } from "@/lib/format";
 import { clearBankFlag } from "@/lib/services/ledger";
 import { completeBankLink, completeBankReauth, disconnectBank, mapBankAccount, retrieveNow, startBankLink, startBankReauth } from "@/lib/services/banking";
@@ -89,7 +90,14 @@ export async function importBankAction(clientId: string, _prev: ActionState, fd:
     const f = fd.get("file");
     if (!(f instanceof File) || f.size === 0) throw new ValidationError("Choose the statement CSV file.");
     if (f.size > 5_000_000) throw new ValidationError("That file is too large. Import one statement at a time.");
-    const r = await importBankCsv(actor, clientId, str(fd, "accountId"), { fileName: f.name, text: await f.text() });
+    let r;
+    try {
+      r = await importBankCsv(actor, clientId, str(fd, "accountId"), { fileName: f.name, text: await f.text() }, { idempotencyKey: str(fd, "idempotencyKey") || null });
+    } catch (err) {
+      // The same form sent twice (double-click): already imported once.
+      if (err instanceof RepeatedSubmission) return err.message;
+      throw err;
+    }
     refresh(clientId);
     if (r.balance) revalidatePath(`/bookkeeping/${clientId}/banking`);
     return `Imported ${r.added} new transaction${r.added === 1 ? "" : "s"}${r.duplicates ? `; ${r.duplicates} already imported (skipped)` : ""}${r.problems.length ? `; ${r.problems.length} row(s) couldn't be read` : ""}.${fileBalanceText(r.balance)}`;

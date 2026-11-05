@@ -40,6 +40,7 @@ async function world() {
   const { token } = await invitePortalUser(tabitha, bakery.id, { email: "pat@fictional.example", name: "Pat Pretend", role: "OWNER" });
   const pat = await acceptPortalInvite(token!, "Pat-Strong-Pass-12345");
   await managed(bakery.id, other.id);
+  for (const c of [bakery, other]) await prisma.bookkeepingProfile.create({ data: { clientId: c.id, accountingBasis: "CASH" } });
   await setupLedger(daria, bakery.id, { basis: "CASH" });
   await setupLedger(tabitha, other.id, { basis: "CASH" });
   const checking = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: bakery.id, code: "1000" } });
@@ -186,7 +187,7 @@ describe("Morning bank pull", () => {
     expect(p.today).toBe("2026-11-04");
     expect(p).toMatchObject({ done: 1, total: 2 });
     expect(p.rows.map((x) => x.name)).toEqual(["Business Credit Card", "Operating checking"]); // done today → bottom
-    expect(p.rows[1].status).toMatchObject({ state: "BALANCE", by: "Daria", balanceCents: 11_500, added: 2, duplicates: 0 });
+    expect(p.rows[1].status).toMatchObject({ state: "DONE_BALANCE", by: "Daria", balanceCents: 11_500, added: 2, duplicates: 0 });
     // The next Central morning (8 AM Nov 5 = 14:00 UTC): nothing done yet today.
     const next = await morningPull(w.daria, new Date("2026-11-05T14:00:00Z"));
     expect(next.today).toBe("2026-11-05");
@@ -209,7 +210,7 @@ describe("Morning bank pull", () => {
     expect(again).toMatchObject({ added: 0, duplicates: 2, balance: { status: "DUPLICATE" } });
     expect(await prisma.bankTransaction.count({ where: { accountId: w.checking.id } })).toBe(2);
     const status = (await morningPull(w.daria, NOW)).rows.find((x) => x.manualAccountId === op.id)!.status;
-    expect(status).toMatchObject({ state: "BALANCE", added: 2, duplicates: 3 }); // all of today's imports into this account, Books page included
+    expect(status).toMatchObject({ state: "DONE_BALANCE", added: 2, duplicates: 3 }); // all of today's imports into this account, Books page included
   });
 
   it("a file whose newest balance can't be told shows a Problem for today", async () => {

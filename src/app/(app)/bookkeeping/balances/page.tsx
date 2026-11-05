@@ -37,7 +37,7 @@ export default async function TodaysBalancesPage() {
           No accounts to update. Add a business&apos;s accounts on its Banking page under &ldquo;Balances entered by our office&rdquo;.
         </div>
       ) : (
-        <ActionForm action={enterTodaysBalancesAction} className="space-y-4" resetOnSuccess>
+        <ActionForm action={enterTodaysBalancesAction} className="space-y-4" resetOnSuccess idempotent>
           <div className={clsx(card, "flex flex-wrap items-end gap-3 p-4")}>
             <label className="text-sm">As of (Central) for every balance below<input className="input mt-1" type="datetime-local" name="asOf" defaultValue={utcToChicagoLocal(now)} /></label>
             <p className="text-xs text-slate-600">{count} account{count === 1 ? "" : "s"} · leave a balance blank to skip it. Never enter usernames, passwords or full account numbers.</p>

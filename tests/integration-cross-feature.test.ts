@@ -134,9 +134,15 @@ describe("business owners x client business dashboard: financial data needs the 
     expect(homeKind((await accessibleClients(rowan.user.id)).find((a) => a.clientId === biz.id)!)).toBe("BUSINESS");
     const d = await portalBusinessDashboard(rowan.user, biz.id);
     expect(d).toBeTruthy();
-    await expect(portalBankFeed(rowan.user, biz.id)).resolves.toBeTruthy();
+    // Bank balances only once an administrator puts the business on the Bookkeeping Clients list
+    // (a Managed Business alone, or "Bookkeeping" picked at sign-up, isn't enough).
+    expect(d.feed).toBeNull();
+    await expect(portalBankFeed(rowan.user, biz.id)).rejects.toBeInstanceOf(ForbiddenError);
     // The other owner still sees none of it.
     await expect(portalBusinessDashboard(sage.user, biz.id)).rejects.toBeInstanceOf(ForbiddenError);
+    // (Putting it on the Bookkeeping Clients list also gives owners the business view — the existing rule.)
+    await prisma.bookkeepingProfile.create({ data: { clientId: biz.id, accountingBasis: "CASH" } });
+    await expect(portalBankFeed(rowan.user, biz.id)).resolves.toBeTruthy();
 
     // If the business stops being Managed, the grant stops working at once.
     await prisma.client.update({ where: { id: biz.id }, data: { businessAccess: "REMOVED" } });

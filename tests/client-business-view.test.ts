@@ -70,6 +70,8 @@ async function world() {
 
 /** A fictional connected bank, inserted directly (as the office's Plaid connection would leave it). */
 async function connectBank(tabitha: { id: string }, clientId: string, label: string, balanceCents: number) {
+  // Banking information reaches the client only for a business on the Bookkeeping Clients list.
+  await prisma.bookkeepingProfile.upsert({ where: { clientId }, create: { clientId, accountingBasis: "CASH" }, update: { active: true } });
   await setupLedger({ id: tabitha.id, role: "ADMIN", name: "Tabitha", email: "t@example.com" }, clientId, { basis: "CASH" });
   const checking = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId, code: "1000" } });
   const conn = await prisma.bankConnection.create({
@@ -106,7 +108,8 @@ describe("Personal / Business Home", () => {
     expect(d.client.name).toBe("Lakeside Pretend Bakery LLC");
     expect(d.figures).toBeNull(); // nothing released yet
     expect(d.isReleased).toBe(false);
-    expect(d.feed.connected).toBe(false);
+    // Not on the Bookkeeping Clients list: no banking information at all.
+    expect(d.feed).toBeNull();
     // A plain business with no payroll, cards, mortgage or contractors: only the basics are asked for.
     expect(d.checklist.map((c) => c.key)).toEqual(["BANK_STATEMENTS", "RECEIPTS"]);
     expect(d.checklist.every((c) => c.status === "NEEDED")).toBe(true);

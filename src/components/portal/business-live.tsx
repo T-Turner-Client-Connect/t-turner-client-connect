@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Landmark, RefreshCw } from "lucide-react";
-import type { BankFeed } from "@/lib/services/bank-feed";
+import type { BankFeed, FeedAccount } from "@/lib/services/bank-feed";
 import { asOfLabel, BankTicker, manualAsOf, manualLabel, officeDate, usdc } from "@/components/bank/bank-ticker";
 
 /**
@@ -12,7 +12,7 @@ import { asOfLabel, BankTicker, manualAsOf, manualLabel, officeDate, usdc } from
  */
 const POLL_MS = 20_000;
 
-type Live = { feed: BankFeed; refresh: () => Promise<void>; refreshing: boolean; note: string | null; now: Date; live: boolean };
+type Live = { feed: BankFeed | null; refresh: () => Promise<void>; refreshing: boolean; note: string | null; now: Date; live: boolean };
 const Ctx = createContext<Live | null>(null);
 const useLive = () => {
   const v = useContext(Ctx);
@@ -24,14 +24,14 @@ const useLive = () => {
  * `live={false}` (staff View as Client): shows the server-loaded feed only. The client's JSON
  * routes need a portal session, so nothing is fetched and Refresh is never offered.
  */
-export function LiveBankProvider({ account, initial, live = true, children }: { account: string; initial: BankFeed; live?: boolean; children: React.ReactNode }) {
+export function LiveBankProvider({ account, initial, live = true, children }: { account: string; initial: BankFeed | null; live?: boolean; children: React.ReactNode }) {
   const [feed, setFeed] = useState(initial);
   const [now, setNow] = useState(() => new Date());
   const [refreshing, setRefreshing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!live || !initial.connected) return;
+    if (!live || !initial?.connected) return;
     let stopped = false;
     const load = async () => {
       if (document.visibilityState !== "visible") return;
@@ -50,7 +50,7 @@ export function LiveBankProvider({ account, initial, live = true, children }: { 
       clearInterval(t);
       document.removeEventListener("visibilitychange", load);
     };
-  }, [account, initial.connected, live]);
+  }, [account, initial?.connected, live]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -73,7 +73,32 @@ export function LiveBankProvider({ account, initial, live = true, children }: { 
 
 export function LiveBankTicker() {
   const { feed, now } = useLive();
-  return <BankTicker feed={feed} now={now} />;
+  // No banking information for a client the office doesn't keep books for.
+  return feed ? <BankTicker feed={feed} now={now} /> : null;
+}
+
+function kpiLabel(feed: BankFeed, now: Date) {
+  if (feed.source === "MANUAL") return manualLabel(feed);
+  if (feed.source === "MIXED") return `${feed.stale ? "Not current" : "As of"} ${asOfLabel(feed.updatedAt, now)} · includes balances updated by our office`;
+  if (feed.connected) return `${feed.sandbox ? "Test data" : feed.stale ? "Not current" : "As of"} ${asOfLabel(feed.updatedAt, now)}`;
+  return "Bank feed being set up";
+}
+
+/** One account's "as of" line: the bank feed's own time, or "Updated by our office" for ours. */
+function accountAsOf(a: FeedAccount, now: Date) {
+  if (a.source === "OFFICE") return `${a.stale ? "Not current" : "Updated by our office"} · as of ${manualAsOf(a)}`;
+  return `${a.availableCents !== null && a.kind === "CASH" ? `${usdc(a.availableCents)} available · ` : ""}${a.stale ? "not current · " : ""}as of ${asOfLabel(a.asOf, now)}`;
+}
+
+/** Cash in the bank and what's owed on cards, side by side — never netted into one number here. */
+function BankTotals({ feed }: { feed: BankFeed }) {
+  const hasCredit = feed.accounts.some((a) => a.kind === "CREDIT");
+  return (
+    <dl className="mt-3 grid grid-cols-2 gap-2" data-testid="bank-totals">
+      <div className="rounded-lg bg-ivory-50 px-3 py-2"><dt className="text-xs text-slate-600">Cash in bank</dt><dd className="font-serif text-lg font-bold text-navy-900" data-testid="bank-cash-total">{feed.cashCents !== null ? usdc(feed.cashCents) : "—"}</dd></div>
+      {hasCredit && <div className="rounded-lg bg-ivory-50 px-3 py-2"><dt className="text-xs text-slate-600">Credit cards owed</dt><dd className="font-serif text-lg font-bold text-navy-900" data-testid="bank-credit-total">{feed.creditCents !== null ? usdc(feed.creditCents) : "—"}</dd></div>}
+    </dl>
+  );
 }
 
 /**
@@ -82,6 +107,7 @@ export function LiveBankTicker() {
  */
 export function LiveBankKpi({ className }: { className: string }) {
   const { feed, now } = useLive();
+  if (!feed) return null;
   const cash = feed.accounts.filter((a) => a.kind === "CASH" && a.currentCents !== null);
   return (
     <div className={className} data-testid="kpi-bank">
@@ -89,7 +115,7 @@ export function LiveBankKpi({ className }: { className: string }) {
       <div className="min-w-0">
         <p className="text-sm font-medium text-navy-800">Bank Balance{cash.length ? <span className="whitespace-nowrap text-slate-600"> ({cash.length} Account{cash.length === 1 ? "" : "s"})</span> : null}</p>
         <p className="truncate font-serif text-2xl font-bold text-navy-900" data-testid="kpi-bank-value">{cash.length ? usdc(cash.reduce((t, a) => t + a.currentCents!, 0)) : "—"}</p>
-        <p className="text-xs text-slate-600" data-testid="kpi-bank-label">{feed.connected ? `${feed.sandbox ? "Test data" : feed.stale ? "Not current" : "As of"} ${asOfLabel(feed.updatedAt, now)}` : feed.source === "MANUAL" ? manualLabel(feed) : "Bank feed being set up"}</p>
+        <p className="text-xs text-slate-600" data-testid="kpi-bank-label">{kpiLabel(feed, now)}</p>
       </div>
     </div>
   );
@@ -98,7 +124,9 @@ export function LiveBankKpi({ className }: { className: string }) {
 /** Each account's balance and the latest transactions, with an honest "updated" time and Refresh now. */
 export function LiveBankCard({ className, canRefresh }: { className: string; canRefresh: boolean }) {
   const { feed, refresh, refreshing, note, now, live } = useLive();
+  if (!feed) return null;
   if (!feed.connected && feed.source === "MANUAL") return <ManualBankCard className={className} feed={feed} />;
+  const someOffice = feed.accounts.some((a) => a.source === "OFFICE");
   const waitUntil = feed.nextRefreshAt && new Date(feed.nextRefreshAt) > now ? new Date(feed.nextRefreshAt) : null;
   return (
     <section className={className} data-testid="live-bank">
@@ -134,11 +162,13 @@ export function LiveBankCard({ className, canRefresh }: { className: string; can
                 <span className="min-w-0 text-sm font-semibold text-navy-900">{a.name}{a.mask && <span className="font-normal text-slate-600"> ••{a.mask}</span>}{a.institution && <span className="block text-xs font-normal text-slate-600">{a.institution}</span>}</span>
                 <span className="text-right">
                   <span className="block font-serif text-base font-bold text-navy-900">{a.currentCents !== null ? usdc(a.currentCents) : "—"}</span>
-                  <span className="block text-xs text-slate-600">{a.availableCents !== null && a.kind === "CASH" ? `${usdc(a.availableCents)} available · ` : ""}as of {asOfLabel(a.asOf, now)}</span>
+                  <span className="block text-xs text-slate-600" data-testid="bank-account-asof">{accountAsOf(a, now)}</span>
                 </span>
               </li>
             ))}
           </ul>
+          <BankTotals feed={feed} />
+          {someOffice && <p className="mt-2 text-xs text-slate-600" data-testid="bank-office-note">Accounts marked &ldquo;Updated by our office&rdquo; aren&apos;t on the bank feed yet; our office looks up their balances at your bank.</p>}
           <h3 className="mt-4 text-sm font-semibold text-navy-900">Recent transactions</h3>
           {feed.transactions.length ? (
             <ul className="mt-1 divide-y divide-ivory-200 text-sm" data-testid="bank-transactions">
@@ -177,14 +207,15 @@ function ManualBankCard({ className, feed }: { className: string; feed: BankFeed
       <ul className="mt-3 divide-y divide-ivory-200" data-testid="bank-accounts">
         {feed.accounts.map((a) => (
           <li key={a.id} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 py-2">
-            <span className="min-w-0 text-sm font-semibold text-navy-900">{a.name}{a.mask && <span className="font-normal text-slate-600"> ••{a.mask}</span>}{(a.institution || a.kind === "CREDIT") && <span className="block text-xs font-normal text-slate-600">{[a.institution, a.kind === "CREDIT" ? "Credit card · owed, not in the bank balance" : null].filter(Boolean).join(" · ")}</span>}</span>
+            <span className="min-w-0 text-sm font-semibold text-navy-900">{a.name}{a.mask && <span className="font-normal text-slate-600"> ••{a.mask}</span>}{(a.institution || a.kind === "CREDIT") && <span className="block text-xs font-normal text-slate-600">{[a.institution, a.kind === "CREDIT" ? "Credit card · owed" : null].filter(Boolean).join(" · ")}</span>}</span>
             <span className="text-right">
               <span className="block font-serif text-base font-bold text-navy-900">{a.currentCents !== null ? usdc(a.currentCents) : "—"}</span>
-              <span className="block text-xs text-slate-600">as of {manualAsOf(a)}</span>
+              <span className="block text-xs text-slate-600" data-testid="bank-account-asof">{accountAsOf(a, new Date())}</span>
             </span>
           </li>
         ))}
       </ul>
+      <BankTotals feed={feed} />
       <p className="mt-3 text-xs text-slate-500" data-testid="bank-manual-note">Our office looks up these balances at your bank and enters them here until your bank feed is connected. Transactions appear once the feed is connected.</p>
     </section>
   );

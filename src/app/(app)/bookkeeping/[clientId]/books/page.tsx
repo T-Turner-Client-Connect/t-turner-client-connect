@@ -218,7 +218,7 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
         <div className="grid gap-4 lg:grid-cols-3">
           <Card title="Import a statement (CSV)">
             {banks.length === 0 ? <p className="text-sm">Add a bank or credit card account first.</p> : (
-              <ActionForm action={importBankAction.bind(null, clientId)} className="space-y-2" resetOnSuccess>
+              <ActionForm action={importBankAction.bind(null, clientId)} className="space-y-2" resetOnSuccess idempotent>
                 <Field label="Account"><select className="input" name="accountId" required>{options(banks)}</select></Field>
                 <Field label="Statement file (.csv)" hint="Needs Date, Description and Amount (or Debit and Credit) columns. Rows already imported are skipped. A Balance column, if present, updates the client's dashboard balance."><input className="input" type="file" name="file" accept=".csv,text/csv" required /></Field>
                 <Button type="submit">Import</Button>

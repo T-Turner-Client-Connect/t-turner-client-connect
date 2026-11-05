@@ -4,7 +4,7 @@ import { Archive, ClipboardPen, ExternalLink, History, Plus } from "lucide-react
 import { ActionForm } from "@/components/action-form";
 import { card, h2, navyBtn, outlineBtn } from "@/components/bk/parts";
 import { archiveManualAccountAction, createManualAccountAction, enterManualBalanceAction, updateManualAccountLinksAction } from "@/app/actions/manual-bank";
-import { MANUAL_KINDS, MANUAL_STALE_DAYS, type manualAccountsForStaff } from "@/lib/services/manual-bank";
+import { BALANCE_SOURCES, MANUAL_KINDS, MANUAL_STALE_DAYS, type manualAccountsForStaff } from "@/lib/services/manual-bank";
 import { usd } from "@/lib/services/ledger";
 import { fmtDateTime } from "@/lib/format";
 import { fmtChicago, utcToChicagoLocal } from "@/lib/tz";
@@ -18,7 +18,8 @@ type Rows = Awaited<ReturnType<typeof manualAccountsForStaff>>;
  */
 type GlChoice = { id: string; label: string; linkedTo: string | null };
 
-export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected, ledgerChoices = [], now = new Date() }: { clientId: string; rows: Rows; canEdit: boolean; plaidConnected: boolean; ledgerChoices?: GlChoice[]; now?: Date }) {
+/** shownToClient: ids of our accounts whose figure the client's dashboard uses (bank-feed.ts chooseSources). */
+export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected, ledgerChoices = [], shownToClient, now = new Date() }: { clientId: string; rows: Rows; canEdit: boolean; plaidConnected: boolean; ledgerChoices?: GlChoice[]; shownToClient?: Set<string>; now?: Date }) {
   const nowLocal = utcToChicagoLocal(now);
   const active = rows.filter((r) => !r.archivedAt);
   const archived = rows.filter((r) => r.archivedAt);
@@ -29,7 +30,7 @@ export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected,
       <p className="mt-1 text-sm text-navy-800">
         Until the bank feed is connected, look up each balance at the bank and enter it here. The client&apos;s dashboard shows the checking and savings total as &ldquo;Updated by our office&rdquo;, and &ldquo;Not current&rdquo; after {MANUAL_STALE_DAYS} days. Notes are for the office only. Never enter usernames, passwords, security answers or full account numbers.
       </p>
-      {plaidConnected && <p className="mt-2 rounded-lg bg-navy-50 px-3 py-2 text-sm text-navy-900" data-testid="manual-plaid-wins">This business has a bank feed connected, so its dashboard shows the bank feed&apos;s balances instead of these.</p>}
+      {plaidConnected && <p className="mt-2 rounded-lg bg-navy-50 px-3 py-2 text-sm text-navy-900" data-testid="manual-plaid-note">This business also has a bank feed. Each account is counted once: when one of these is the same account as a bank-feed account (same GL account, or same institution and last 4), the dashboard uses the bank feed while it&apos;s current — unless you set its balance source to Office-entered.</p>}
       <p className="mt-1 flex flex-wrap gap-x-4 text-xs"><Link className="underline" href="/bookkeeping/balances">Enter today&apos;s balances for every business →</Link><Link className="underline" href="/bookkeeping/morning-pull">Morning bank pull →</Link></p>
       <p className="mt-1 text-xs text-slate-600">Bank sign-ins are kept in the firm&apos;s password manager, never in Client Connect.</p>
 
@@ -45,15 +46,16 @@ export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected,
                   <div className="min-w-0">
                     <p className="font-semibold text-navy-900">{a.name}{a.last4 && <span className="ml-1 font-normal text-navy-800">••{a.last4}</span>}</p>
                     <p className="text-xs text-slate-600">{[a.institution, MANUAL_KINDS[a.kind] ?? a.kind, a.kind === "CREDIT_CARD" ? "not counted as cash" : null, a.ledgerAccountId ? `GL ${ledgerChoices.find((l) => l.id === a.ledgerAccountId)?.label ?? "linked"}` : null].filter(Boolean).join(" · ")}</p>
+                    {shownToClient && a.latest && <p className={clsx("text-xs", shownToClient.has(a.id) ? "text-emerald-800" : "text-navy-800")} data-testid="manual-shown">{shownToClient.has(a.id) ? "Client's dashboard shows this balance" : "Client's dashboard shows the bank feed for this account"}{a.balanceSource === "OFFICE" ? " · source: Office-entered" : ""}</p>}
                     {a.signInUrl && <a href={a.signInUrl} target="_blank" rel="noopener noreferrer" className="mt-0.5 inline-flex items-center gap-1 text-xs font-semibold text-navy-900 underline"><ExternalLink className="size-3.5" aria-hidden /> Open bank site</a>}
                   </div>
                   <div className="text-right">
                     <p className="font-serif text-lg font-bold text-navy-900" data-testid="manual-latest">{a.latest ? usd(a.latest.balanceCents) : "—"}</p>
-                    <p className={clsx("text-xs", stale ? "font-semibold text-amber-800" : "text-slate-600")}>{a.latest ? `${stale ? "Not current · " : ""}as of ${fmtDateTime(a.latest.asOf)} · ${a.latest.enteredBy}` : "No balance entered yet"}</p>
+                    <p className={clsx("text-xs", stale ? "font-semibold text-amber-800" : "text-slate-600")}>{a.latest ? `${stale ? "Not current · " : ""}as of ${a.latest.source === "BANK_FILE" ? fmtChicago(a.latest.asOf, { month: "short", day: "numeric", year: "numeric" }) + " (bank file)" : fmtDateTime(a.latest.asOf)} · ${a.latest.enteredBy}` : "No balance entered yet"}</p>
                   </div>
                 </div>
                 {canEdit && (
-                  <ActionForm action={enterManualBalanceAction.bind(null, clientId, a.id)} className="mt-2 grid gap-2 rounded-xl bg-ivory-50 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end" resetOnSuccess>
+                  <ActionForm action={enterManualBalanceAction.bind(null, clientId, a.id)} className="mt-2 grid gap-2 rounded-xl bg-ivory-50 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end" resetOnSuccess idempotent>
                     <label className="text-sm">Balance<input className="input mt-1" name="amount" inputMode="decimal" required placeholder="e.g. 12,480.55" aria-label={`Balance for ${a.name}`} /></label>
                     <label className="text-sm">As of (Central)<input className="input mt-1" type="datetime-local" name="asOf" defaultValue={nowLocal} /></label>
                     <label className="text-sm">Note (office only)<input className="input mt-1" name="note" maxLength={500} placeholder="Optional" /></label>
@@ -74,7 +76,7 @@ export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected,
                           {canEdit && !b.corrected && (
                             <details className="mt-1">
                               <summary className="cursor-pointer text-xs font-semibold text-navy-900 underline">Correct this entry</summary>
-                              <ActionForm action={enterManualBalanceAction.bind(null, clientId, a.id)} className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end">
+                              <ActionForm action={enterManualBalanceAction.bind(null, clientId, a.id)} className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end" idempotent>
                                 <input type="hidden" name="correctsId" value={b.id} />
                                 <label className="text-xs">Correct balance<input className="input mt-1" name="amount" inputMode="decimal" required /></label>
                                 <label className="text-xs">As of (Central)<input className="input mt-1" type="datetime-local" name="asOf" defaultValue={utcToChicagoLocal(b.asOf)} /></label>
@@ -90,7 +92,7 @@ export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected,
                 )}
                 {canEdit && (
                   <details className="mt-2 text-sm">
-                    <summary className="cursor-pointer text-xs font-semibold text-navy-900 underline">Bank sign-in page &amp; GL link</summary>
+                    <summary className="cursor-pointer text-xs font-semibold text-navy-900 underline">Bank sign-in page, GL link &amp; balance source</summary>
                     <ActionForm action={updateManualAccountLinksAction.bind(null, clientId, a.id)} className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] sm:items-end">
                       <label className="text-xs">Bank&apos;s sign-in page (https)<input className="input mt-1" name="signInUrl" type="url" inputMode="url" defaultValue={a.signInUrl ?? ""} placeholder="https://www.pretendbank.example/sign-in" /></label>
                       <label className="text-xs">GL account for CSV imports
@@ -98,6 +100,9 @@ export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected,
                           <option value="">Not linked</option>
                           {ledgerChoices.filter((l) => !l.linkedTo || l.linkedTo === a.id).map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
                         </select>
+                      </label>
+                      <label className="text-xs sm:col-span-2">Balance source on the client&apos;s dashboard
+                        <select className="input mt-1" name="balanceSource" defaultValue={a.balanceSource}>{Object.entries(BALANCE_SOURCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
                       </label>
                       <button type="submit" className={outlineBtn}>Save</button>
                     </ActionForm>

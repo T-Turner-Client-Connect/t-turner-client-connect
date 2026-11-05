@@ -33,6 +33,16 @@ export function businessViewEligible(client: BusinessViewClient): boolean {
 }
 
 /**
+ * Does the office keep this client's books? Only a client an administrator put on the Bookkeeping
+ * Clients list (an active BookkeepingProfile). A Managed Business not on the list, a paused
+ * profile, or services picked at sign-up never count. Client-facing banking information (bank
+ * balances, accounts, totals, ticker) needs this AND the login's business view.
+ */
+export function hasBookkeepingService(client: { bookkeepingProfile?: { active: boolean } | null }): boolean {
+  return client.bookkeepingProfile?.active === true;
+}
+
+/**
  * The one rule for a login's business view (business dashboard, bookkeeping, ledger, business
  * statements, business invoicing, bank feed). Every portal gate goes through it (effectiveGrant
  * below), and so does View as Client, so the Home page and the gates can never disagree.

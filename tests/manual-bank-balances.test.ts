@@ -51,6 +51,8 @@ async function world() {
   const { token: t2 } = await invitePortalUser(tabitha, other.id, { email: "sam@fictional.example", name: "Sam Sample", role: "OWNER" });
   const sam = await acceptPortalInvite(t2!, "Sam-Strong-Pass-12345");
   await managed(bakery.id, other.id);
+  // Both are on the Bookkeeping Clients list (banking information is shown only for those).
+  for (const c of [bakery, other]) await prisma.bookkeepingProfile.create({ data: { clientId: c.id, accountingBasis: "CASH" } });
   return { tabitha, daria, bea, vic, stranger, bakery, other, pat: { id: pat.id, name: pat.name, email: pat.email }, sam: { id: sam.id, name: sam.name, email: sam.email } };
 }
 
@@ -204,6 +206,7 @@ describe("client dashboard: Bank Balance from our office", () => {
     const w = await world();
     await bakeryAccounts(w);
     const d = await portalBusinessDashboard(w.pat, w.bakery.id);
+    if (!d.feed) throw new Error("expected a bank feed");
     expect(d.feed).toMatchObject({ source: "MANUAL", connected: false, stale: false, transactions: [] });
     expect(d.feed.accounts.map((a) => [a.name, a.kind, a.currentCents])).toEqual([["Operating checking", "CASH", 1_248_055], ["Reserve savings", "CASH", 500_000], ["Business card", "CREDIT", 90_000]]);
     expect(d.feed.netCents).toBe(1_248_055 + 500_000 - 90_000);
@@ -241,16 +244,14 @@ describe("client dashboard: Bank Balance from our office", () => {
     expect(text(cardHtml(feed))).toContain("Not current: our office last updated these balances");
   });
 
-  it("a Plaid connection takes precedence over balances entered by our office", async () => {
+  it("a Plaid connection for a different account doesn't hide the office's accounts", async () => {
     const w = await world();
     await bakeryAccounts(w);
     await connectPlaid(w.tabitha, w.bakery.id, 333_300);
     const feed = await portalBankFeed(w.pat, w.bakery.id);
-    expect(feed).toMatchObject({ source: "PLAID", connected: true });
-    expect(feed.accounts.map((a) => a.name)).toEqual(["Plaid Checking"]);
-    const html = kpi(feed);
-    expect(html).toContain("$3,333.00");
-    expect(html).not.toContain("Updated by our office");
+    expect(feed).toMatchObject({ source: "MIXED", connected: true, cashCents: 333_300 + 1_248_055 + 500_000, creditCents: 90_000 });
+    expect(feed.accounts.map((a) => [a.name, a.source])).toEqual([["Plaid Checking", "PLAID"], ["Operating checking", "OFFICE"], ["Reserve savings", "OFFICE"], ["Business card", "OFFICE"]]);
+    expect(text(kpi(feed))).toContain("includes balances updated by our office");
   });
 
   it("another business's balances never appear, and its owner can't read this business's", async () => {
@@ -277,6 +278,7 @@ describe("client dashboard: Bank Balance from our office", () => {
     const dash = find(tree, BusinessDashboardView);
     expect(dash).not.toBeNull();
     const d = (dash!.props as { d: Awaited<ReturnType<typeof businessDashboardFor>> }).d;
+    if (!d.feed) throw new Error("expected a bank feed");
     expect(d.feed).toMatchObject({ source: "MANUAL", netCents: 1_658_055 });
     expect(JSON.stringify(d)).not.toContain("Office-only");
     expect(text(kpi(d.feed))).toContain("Updated by our office");

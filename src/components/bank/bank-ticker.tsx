@@ -82,14 +82,14 @@ export function BankTicker({ feed, now, noneText = "Our office is setting up you
           <Landmark className="size-4 text-gold-400" aria-hidden />
           <span className="font-semibold text-white">{name(a)}</span>
           <span className="font-serif font-bold text-gold-300">{usdc(a.currentCents!)}</span>
-          {!manual && <Change cents={a.changeCents} credit={a.kind === "CREDIT"} />}
-          <span className="text-xs text-navy-200">as of {manual ? manualAsOf(a) : asOfLabel(a.asOf, now)}</span>
+          {a.source !== "OFFICE" && <Change cents={a.changeCents} credit={a.kind === "CREDIT"} />}
+          <span className="text-xs text-navy-200">{a.source === "OFFICE" && !manual ? "by our office · " : ""}as of {a.source === "OFFICE" ? manualAsOf(a) : asOfLabel(a.asOf, now)}</span>
           <span className="text-gold-500" aria-hidden>◆</span>
         </span>
       ))}
       {feed.netCents !== null && (
         <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap px-4 py-2 text-sm">
-          <span className="font-semibold uppercase tracking-[0.12em] text-gold-300">Total</span>
+          <span className="font-semibold uppercase tracking-[0.12em] text-gold-300">Net: cash less cards owed</span>
           <span className="font-serif font-bold text-white">{usdc(feed.netCents)}</span>
           <span className="text-gold-500" aria-hidden>◆</span>
         </span>
@@ -109,9 +109,11 @@ export function BankTicker({ feed, now, noneText = "Our office is setting up you
         {manual && <li>{feed.stale ? "Not current: these are the last balances our office entered." : "Balances updated by our office."}</li>}
         {feed.stale && !feed.sandbox && !manual && <li>Not current: these are the last figures the bank sent.</li>}
         {shown.map((a) => (
-          <li key={a.id}>{name(a)}: {usdc(a.currentCents!)}, {manual ? "" : `${changeText(a)}, `}as of {manual ? manualAsOf(a) : asOfLabel(a.asOf, now)}.</li>
+          <li key={a.id}>{name(a)}: {usdc(a.currentCents!)}, {a.source === "OFFICE" ? "updated by our office, " : `${changeText(a)}, `}as of {a.source === "OFFICE" ? manualAsOf(a) : asOfLabel(a.asOf, now)}.</li>
         ))}
-        {feed.netCents !== null && <li>Total across all accounts: {usdc(feed.netCents)}.</li>}
+        {feed.cashCents !== null && <li>Cash in bank: {usdc(feed.cashCents)}.</li>}
+        {feed.creditCents !== null && <li>Credit cards owed: {usdc(feed.creditCents)}.</li>}
+        {feed.netCents !== null && <li>Net, cash less cards owed: {usdc(feed.netCents)}.</li>}
       </ul>
       <div aria-hidden className="bank-ticker-track flex w-max" style={{ ["--ticker-duration" as string]: duration }}>
         <div className="flex">{items}</div>

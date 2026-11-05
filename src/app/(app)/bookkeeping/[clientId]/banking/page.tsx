@@ -18,6 +18,7 @@ import { fmtDateTime } from "@/lib/format";
 import { monitorAccountAction, registerAccountAction, sharedCardAction } from "@/app/actions/bk-workflow";
 import { ManualBalancesSection } from "@/components/bk/manual-balances";
 import { manualAccountsForStaff } from "@/lib/services/manual-bank";
+import { bankFeed } from "@/lib/services/bank-feed";
 
 export const metadata = { title: "Banking & Credit Card Connections" };
 
@@ -44,6 +45,8 @@ export default async function BankingPage({ params }: { params: Promise<{ client
     bankingRegistry(user, clientId), canManageBanking(user, clientId), currentPlaidMode(), prisma.ledgerBook.findUnique({ where: { clientId }, select: { clientId: true } }),
     manualAccountsForStaff(user, clientId), prisma.bankConnection.count({ where: { clientId, status: { not: "DISCONNECTED" } } }),
   ]);
+  // Which of our figures the client's dashboard uses (each real account counted once).
+  const shownToClient = new Set((await bankFeed(clientId)).accounts.filter((a) => a.source === "OFFICE").map((a) => a.id));
   const wm = workMonth("MONTHLY");
   const recs = await prisma.accountReconciliation.findMany({ where: { clientId, year: wm.year, month: wm.month } });
   const recOf = (id: string) => recs.find((r) => r.bookkeepingAccountId === id) ?? null;
@@ -167,7 +170,7 @@ export default async function BankingPage({ params }: { params: Promise<{ client
       })}
 
       {/* Until a bank feed is live: balances our office looks up and enters (shown on the client's dashboard). */}
-      <ManualBalancesSection clientId={clientId} rows={manual} canEdit={manage} plaidConnected={plaidConns > 0} ledgerChoices={reg.ledger.filter((l) => l.subtype === "BANK" || l.subtype === "CREDIT_CARD").map((l) => ({ id: l.id, label: `${l.code} ${l.name}`, linkedTo: manual.find((m) => m.ledgerAccountId === l.id)?.id ?? null }))} />
+      <ManualBalancesSection clientId={clientId} rows={manual} canEdit={manage} plaidConnected={plaidConns > 0} shownToClient={shownToClient} ledgerChoices={reg.ledger.filter((l) => l.subtype === "BANK" || l.subtype === "CREDIT_CARD").map((l) => ({ id: l.id, label: `${l.code} ${l.name}`, linkedTo: manual.find((m) => m.ledgerAccountId === l.id)?.id ?? null }))} />
 
       {/* Manage accounts */}
       {manage && (

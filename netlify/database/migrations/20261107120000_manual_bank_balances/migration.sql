@@ -1,14 +1,19 @@
--- Balances entered by our office: until a Plaid bank feed is live, staff record each account's
--- balance (typed in after looking at the bank, or the running balance in an imported bank CSV)
--- so the client's dashboard shows a current Bank Balance; plus the bank's sign-in page for the
--- morning bank pull. Additive only: two new tables and two new BankImport columns with defaults.
--- Never usernames, passwords, security answers, PINs or full account numbers — a name, the
--- institution, at most the last 4 digits and an https sign-in page address. Balances are
--- append-only (a correction is a new row pointing at the one it corrects).
+-- Balances entered by our office: until a Plaid bank feed is live for an account, staff record
+-- its balance (typed in after looking at the bank, or the running balance in an imported bank
+-- CSV) so the client's dashboard shows a current Bank Balance; the bank's sign-in page for the
+-- morning bank pull; the balance source per account; statements our office files (linked to the
+-- account); and one-time keys so a double-click can't save twice.
+-- Additive only: three new tables, two new BankImport columns with defaults and one new nullable
+-- Document column. Never usernames, passwords, security answers, PINs or full account numbers —
+-- a name, the institution, at most the last 4 digits and an https sign-in page address.
+-- Balances are append-only (a correction is a new row pointing at the one it corrects).
 
 -- AlterTable
 ALTER TABLE "BankImport" ADD COLUMN     "balanceStatus" TEXT,
 ADD COLUMN     "skipped" INTEGER NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "Document" ADD COLUMN     "manualBankAccountId" TEXT;
 
 -- CreateTable
 CREATE TABLE "ManualBankAccount" (
@@ -23,6 +28,7 @@ CREATE TABLE "ManualBankAccount" (
     "createdById" TEXT NOT NULL,
     "ledgerAccountId" TEXT,
     "signInUrl" TEXT,
+    "balanceSource" TEXT NOT NULL DEFAULT 'AUTO',
 
     CONSTRAINT "ManualBankAccount_pkey" PRIMARY KEY ("id")
 );
@@ -44,6 +50,17 @@ CREATE TABLE "ManualBankBalance" (
     CONSTRAINT "ManualBankBalance_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "OfficeActionKey" (
+    "key" TEXT NOT NULL,
+    "actorId" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "resultId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "OfficeActionKey_pkey" PRIMARY KEY ("key")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "ManualBankAccount_ledgerAccountId_key" ON "ManualBankAccount"("ledgerAccountId");
 
@@ -55,6 +72,12 @@ CREATE INDEX "ManualBankBalance_accountId_asOf_idx" ON "ManualBankBalance"("acco
 
 -- CreateIndex
 CREATE INDEX "ManualBankBalance_clientId_asOf_idx" ON "ManualBankBalance"("clientId", "asOf");
+
+-- CreateIndex
+CREATE INDEX "Document_manualBankAccountId_idx" ON "Document"("manualBankAccountId");
+
+-- AddForeignKey
+ALTER TABLE "Document" ADD CONSTRAINT "Document_manualBankAccountId_fkey" FOREIGN KEY ("manualBankAccountId") REFERENCES "ManualBankAccount"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "ManualBankAccount" ADD CONSTRAINT "ManualBankAccount_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -68,6 +91,7 @@ ALTER TABLE "ManualBankBalance" ADD CONSTRAINT "ManualBankBalance_accountId_fkey
 -- AddForeignKey
 ALTER TABLE "ManualBankBalance" ADD CONSTRAINT "ManualBankBalance_correctsId_fkey" FOREIGN KEY ("correctsId") REFERENCES "ManualBankBalance"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
--- Only ever the last 4 digits (never a full account number), and only an https sign-in page.
+-- Only ever the last 4 digits (never a full account number), only an https sign-in page, and a known balance source.
 ALTER TABLE "ManualBankAccount" ADD CONSTRAINT "ManualBankAccount_last4_check" CHECK ("last4" IS NULL OR "last4" ~ '^[0-9]{4}$');
 ALTER TABLE "ManualBankAccount" ADD CONSTRAINT "ManualBankAccount_signInUrl_check" CHECK ("signInUrl" IS NULL OR "signInUrl" LIKE 'https://%');
+ALTER TABLE "ManualBankAccount" ADD CONSTRAINT "ManualBankAccount_balanceSource_check" CHECK ("balanceSource" IN ('AUTO', 'OFFICE'));
