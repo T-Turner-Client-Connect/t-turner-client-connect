@@ -5392,8 +5392,32 @@ model AccessReview {
   // Access changes since the previous review (permission grants/revokes, role and active changes, offboardings).
   changes       Json?
   createdAt     DateTime @default(now())
+  // Owner corrections (summary, findings, vendor answers only). Append-only; the first one's
+  // `previous` holds the values as originally completed. completedAt never changes.
+  revisions     AccessReviewRevision[]
 
   @@index([completedAt])
+}
+
+// One owner correction to a completed access review. Append-only (a database trigger refuses
+// UPDATE and DELETE): `previous` and `updated` each hold { summary, findings, vendorAnswers }.
+model AccessReviewRevision {
+  id             String       @id @default(cuid())
+  reviewId       String
+  review         AccessReview @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  // 1, 2, 3 … per review (the edit form carries the number it was opened at).
+  revisionNumber Int
+  editedById     String
+  editedByName   String
+  editedAt       DateTime     @default(now())
+  // Required short "reason for correction".
+  reason         String
+  previous       Json
+  updated        Json
+  // e.g. ["summary", "vendor:github.twoStep", "vendor:github.note"]
+  changedFields  String[]     @default([])
+
+  @@unique([reviewId, revisionNumber])
 }
 
 // Offboarding a staff member: the Client Connect account is deactivated at once (sessions ended,
