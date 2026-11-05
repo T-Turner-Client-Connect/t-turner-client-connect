@@ -12,7 +12,7 @@ import { asOfLabel, BankTicker, usdc } from "@/components/bank/bank-ticker";
  */
 const POLL_MS = 20_000;
 
-type Live = { feed: BankFeed; refresh: () => Promise<void>; refreshing: boolean; note: string | null; now: Date };
+type Live = { feed: BankFeed; refresh: () => Promise<void>; refreshing: boolean; note: string | null; now: Date; live: boolean };
 const Ctx = createContext<Live | null>(null);
 const useLive = () => {
   const v = useContext(Ctx);
@@ -20,14 +20,18 @@ const useLive = () => {
   return v;
 };
 
-export function LiveBankProvider({ account, initial, children }: { account: string; initial: BankFeed; children: React.ReactNode }) {
+/**
+ * `live={false}` (staff View as Client): shows the server-loaded feed only. The client's JSON
+ * routes need a portal session, so nothing is fetched and Refresh is never offered.
+ */
+export function LiveBankProvider({ account, initial, live = true, children }: { account: string; initial: BankFeed; live?: boolean; children: React.ReactNode }) {
   const [feed, setFeed] = useState(initial);
   const [now, setNow] = useState(() => new Date());
   const [refreshing, setRefreshing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!initial.connected) return;
+    if (!live || !initial.connected) return;
     let stopped = false;
     const load = async () => {
       if (document.visibilityState !== "visible") return;
@@ -46,7 +50,7 @@ export function LiveBankProvider({ account, initial, children }: { account: stri
       clearInterval(t);
       document.removeEventListener("visibilitychange", load);
     };
-  }, [account, initial.connected]);
+  }, [account, initial.connected, live]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -64,7 +68,7 @@ export function LiveBankProvider({ account, initial, children }: { account: stri
     }
   }, [account]);
 
-  return <Ctx.Provider value={{ feed, refresh, refreshing, note, now }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ feed, refresh, refreshing, note, now, live }}>{children}</Ctx.Provider>;
 }
 
 export function LiveBankTicker() {
@@ -72,7 +76,7 @@ export function LiveBankTicker() {
   return <BankTicker feed={feed} now={now} />;
 }
 
-/** Bank Balance KPI (same card as the staff overview), from the live feed. */
+/** Bank Balance KPI, from the live feed: the total of cash accounts, "(N Accounts)" and when the bank last reported. */
 export function LiveBankKpi({ className }: { className: string }) {
   const { feed, now } = useLive();
   const cash = feed.accounts.filter((a) => a.kind === "CASH" && a.currentCents !== null);
@@ -80,9 +84,9 @@ export function LiveBankKpi({ className }: { className: string }) {
     <div className={className} data-testid="kpi-bank">
       <Landmark className="size-10 shrink-0 text-gold-600" aria-hidden />
       <div className="min-w-0">
-        <p className="text-sm font-medium text-navy-800">Bank Balance</p>
-        <p className="truncate font-serif text-xl font-bold text-navy-900" data-testid="kpi-bank-value">{cash.length ? usdc(cash.reduce((t, a) => t + a.currentCents!, 0)) : "—"}</p>
-        <p className="text-sm text-slate-600">{feed.connected ? `${cash.length} account${cash.length === 1 ? "" : "s"} · ${feed.sandbox ? "test data" : feed.stale ? "not current" : "as of"} ${asOfLabel(feed.updatedAt, now)}` : "Bank feed being set up"}</p>
+        <p className="text-sm font-medium text-navy-800">Bank Balance{cash.length ? <span className="whitespace-nowrap text-slate-600"> ({cash.length} Account{cash.length === 1 ? "" : "s"})</span> : null}</p>
+        <p className="truncate font-serif text-2xl font-bold text-navy-900" data-testid="kpi-bank-value">{cash.length ? usdc(cash.reduce((t, a) => t + a.currentCents!, 0)) : "—"}</p>
+        <p className="text-xs text-slate-600">{feed.connected ? `${feed.sandbox ? "Test data" : feed.stale ? "Not current" : "As of"} ${asOfLabel(feed.updatedAt, now)}` : "Bank feed being set up"}</p>
       </div>
     </div>
   );
@@ -90,7 +94,7 @@ export function LiveBankKpi({ className }: { className: string }) {
 
 /** Each account's balance and the latest transactions, with an honest "updated" time and Refresh now. */
 export function LiveBankCard({ className, canRefresh }: { className: string; canRefresh: boolean }) {
-  const { feed, refresh, refreshing, note, now } = useLive();
+  const { feed, refresh, refreshing, note, now, live } = useLive();
   const waitUntil = feed.nextRefreshAt && new Date(feed.nextRefreshAt) > now ? new Date(feed.nextRefreshAt) : null;
   return (
     <section className={className} data-testid="live-bank">
@@ -105,7 +109,7 @@ export function LiveBankCard({ className, canRefresh }: { className: string; can
             {feed.connected && <p className="text-xs text-slate-600" data-testid="bank-last-sync">Last successful sync with your bank: {feed.lastSyncAt ? asOfLabel(feed.lastSyncAt, now) : "not yet"}</p>}
           </div>
         </div>
-        {feed.connected && canRefresh && (
+        {feed.connected && canRefresh && live && (
           <button type="button" onClick={refresh} disabled={refreshing || !!waitUntil} className="inline-flex items-center gap-2 rounded-lg border-[1.5px] border-navy-900 bg-white px-3 py-1.5 text-sm font-semibold text-navy-900 hover:bg-ivory-50 disabled:cursor-not-allowed disabled:opacity-60" data-testid="bank-refresh">
             <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} aria-hidden />
             {refreshing ? "Checking…" : waitUntil ? `Refresh again at ${asOfLabel(waitUntil.toISOString(), now)}` : "Refresh now"}
@@ -147,7 +151,7 @@ export function LiveBankCard({ className, canRefresh }: { className: string; can
           ) : (
             <p className="mt-1 text-sm text-slate-600">Posted transactions appear here as your bank reports them.</p>
           )}
-          <p className="mt-3 text-xs text-slate-500">Banks report balances and transactions several times a day; this page shows each update as soon as it arrives.</p>
+          <p className="mt-3 text-xs text-slate-500">Banks report balances and transactions several times a day; {live ? "this page shows each update as soon as it arrives." : "View as Client shows the figures as of when this page opened."}</p>
         </>
       )}
     </section>

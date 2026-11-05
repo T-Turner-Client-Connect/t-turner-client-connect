@@ -14,18 +14,22 @@ import { deadlineStatus, monthlyCloseSteps, nextPayDate, YEAR_END_STAGES, type D
 import { PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
 import { clientReceivableWhere, REPORT_LABELS } from "./documents";
 import { profitAndLossFor } from "./ledger";
-import { portalBilling } from "./owner-billing";
-import { todayCentral } from "./square-billing";
+import { publishedBillingFor } from "./owner-billing";
+import { paymentStatus, scheduleText, squareBillingFor, todayCentral } from "./square-billing";
 
 /**
- * The client portal's Business dashboard for an owner-approved Managed Business. Same layout as
- * the staff Client Overview, with only what the client may see: released statements, status
- * steps (never staff notes), client-visible deadlines, their own invoices and their own bank feed.
- * Every entry point checks requireClientAccess(…, "bookkeeping"), which is only true for a
- * business whose Managed Business access is ACTIVE and a login given the business view.
+ * The client portal's Business dashboard for a business with a business view: an owner-approved
+ * Managed Business, or a client on the Bookkeeping Client list (see hasBusinessView in
+ * src/lib/portal/access.ts). Only what the client may see: released statements, status steps
+ * (never staff notes), client-visible deadlines, their own invoices and their own bank feed.
+ * Every portal entry point checks requireClientAccess(…, "bookkeeping"), which applies that rule.
  */
 
-/** Which Home a signed-in person sees for the account in view. */
+/**
+ * Which Home a signed-in person sees for the account in view. `access` is an effective grant
+ * (accessibleClients / requireClientAccess), whose canViewBookkeeping is hasBusinessView — the
+ * same rule the bookkeeping gate uses, so the Home and the gate always agree.
+ */
 export function homeKind(access: Pick<PortalAccess, "canViewBookkeeping">): "BUSINESS" | "PERSONAL" {
   return access.canViewBookkeeping ? "BUSINESS" : "PERSONAL";
 }
@@ -134,10 +138,23 @@ const releasedWhere = (clientId: string) => ({
   clientId, category: "BOOKKEEPING" as const, deletedAt: null, supersededAt: null, reportType: { not: null }, reviewStatus: "APPROVED", visibility: "PUBLISHED" as const, scanStatus: "CLEAN" as const, periodId: { not: null }, AND: [clientReceivableWhere],
 });
 
+/** What the viewer may do from the dashboard (a portal login's grant, or owner-level in View as Client). */
+export type BusinessDashboardPerms = { canUpload: boolean; canMessage: boolean; canViewBilling: boolean };
+
 export async function portalBusinessDashboard(user: PortalActor, clientId: string, month?: string | null) {
   const access = await requireClientAccess(user.id, clientId, "bookkeeping");
+  const viewer = await prisma.portalUser.findUnique({ where: { id: user.id }, select: { preferredState: true } });
+  return businessDashboardFor(clientId, month, { canUpload: access.canUpload, canMessage: access.canMessage, canViewBilling: access.canViewBilling }, viewer?.preferredState ?? null);
+}
+
+/**
+ * The dashboard's data for one business, without a portal login. Callers check access first:
+ * portalBusinessDashboard for a portal user; the staff View as Client page for staff.
+ * `preferredState` is the viewer's own state (for Business Resources) when the client has none.
+ */
+export async function businessDashboardFor(clientId: string, month: string | null | undefined, perms: BusinessDashboardPerms, preferredState: string | null) {
   const today = todayCentral();
-  const client = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { id: true, displayName: true, businessName: true, state: true, bookkeepingProfile: true } });
+  const client = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { id: true, displayName: true, businessName: true, state: true, status: true, bookkeepingProfile: true } });
   const profile = client.bookkeepingProfile;
 
   const [periods, released] = await Promise.all([
@@ -155,22 +172,42 @@ export async function portalBusinessDashboard(user: PortalActor, clientId: strin
 
   // Figures: released months only, from the books (which are closed once Tabitha approves).
   type Perf = { month: string; income: number; expenses: number };
-  let figures: null | { income: number; expenses: number; net: number; change: { income: number | null; expenses: number | null; net: number | null }; perf: Perf[] } = null;
+  type Change = { income: number | null; expenses: number | null; net: number | null };
+  // Year to date: the released months of the selected year through the selected month. The change
+  // is against the same months a year earlier, only when every one of those months was released too.
+  type Ytd = { year: number; months: number; income: number; expenses: number; net: number; change: Change };
+  let figures: null | { income: number; expenses: number; net: number; change: Change; perf: Perf[]; ytd: Ytd } = null;
   const book = await prisma.ledgerBook.findUnique({ where: { clientId }, select: { clientId: true } });
   if (book && isReleased) {
-    const pl = await profitAndLossFor(clientId, { from: `${shiftMonth(selected, -5)}-01`, to: `${selected}-${String(lastDay(sy, sm)).padStart(2, "0")}` });
-    const perf = pl.months
+    // One read covers the chart (six months back) and year to date (from January a year earlier).
+    const from = [`${sy - 1}-01`, shiftMonth(selected, -5)].sort()[0];
+    const pl = await profitAndLossFor(clientId, { from: `${from}-01`, to: `${selected}-${String(lastDay(sy, sm)).padStart(2, "0")}` });
+    const all = pl.months
       .map((m, i) => ({ month: m, income: pl.totalIncome.months[i] + pl.totalOtherIncome.months[i], expenses: pl.totalCogs.months[i] + pl.totalExpenses.months[i] + pl.totalOtherExpense.months[i] }))
       .filter((p) => releasedMonths.includes(p.month));
+    const perf = all.filter((p) => p.month >= shiftMonth(selected, -5));
     const cur = perf.find((p) => p.month === selected)!;
     const prev = perf.find((p) => p.month === shiftMonth(selected, -1));
     const pct = (now: number, before: number) => (before ? Math.round(((now - before) / Math.abs(before)) * 1000) / 10 : null);
+    const sum = (ps: Perf[]) => ps.reduce((t, p) => ({ income: t.income + p.income, expenses: t.expenses + p.expenses }), { income: 0, expenses: 0 });
+    const ytdRows = all.filter((p) => p.month >= `${sy}-01` && p.month <= selected);
+    const lastYearRows = ytdRows.map((p) => all.find((x) => x.month === `${sy - 1}${p.month.slice(4)}`));
+    const ytd = sum(ytdRows);
+    const before = lastYearRows.every(Boolean) ? sum(lastYearRows as Perf[]) : null;
     figures = {
       income: cur.income,
       expenses: cur.expenses,
       net: cur.income - cur.expenses,
       change: prev ? { income: pct(cur.income, prev.income), expenses: pct(cur.expenses, prev.expenses), net: pct(cur.income - cur.expenses, prev.income - prev.expenses) } : { income: null, expenses: null, net: null },
       perf,
+      ytd: {
+        year: sy,
+        months: ytdRows.length,
+        income: ytd.income,
+        expenses: ytd.expenses,
+        net: ytd.income - ytd.expenses,
+        change: before ? { income: pct(ytd.income, before.income), expenses: pct(ytd.expenses, before.expenses), net: pct(ytd.income - ytd.expenses, before.income - before.expenses) } : { income: null, expenses: null, net: null },
+      },
     };
   }
 
@@ -202,13 +239,18 @@ export async function portalBusinessDashboard(user: PortalActor, clientId: strin
   const invoicing = { openCents: open.reduce((t, i) => t + i.totalCents - i.paidCents, 0), openCount: open.length, collectedCents: collected._sum.amountCents ?? 0 };
 
   // Our invoices to this business (only what the owner published to the portal).
-  let account: null | { openCount: number; balanceCents: number; nextDue: string | null; latest: { number: string; title: string | null; status: string } | null } = null;
-  if (access.canViewBilling) {
-    const bills = await portalBilling(user, clientId);
+  // Plus the recurring service plan billed through Square, as the client's Billing page shows it
+  // (title, amount, schedule, next due date and payment status for this account only).
+  type Plan = { title: string | null; amountCents: number | null; schedule: string; nextDue: string | null; status: { label: string; tone: string }; autopay: boolean };
+  let account: null | { openCount: number; balanceCents: number; nextDue: string | null; latest: { number: string; title: string | null; status: string } | null; plan: Plan | null } = null;
+  if (perms.canViewBilling) {
+    const [bills, square] = await Promise.all([publishedBillingFor(clientId), squareBillingFor(clientId)]);
     const outstanding = bills.filter((b) => b.state !== "OFFERED" && b.state !== "DECLINED" && b.state !== "VOID" && (b.balanceCents ?? 0) > 0);
     const dues = outstanding.map((b) => b.dueDate).filter((d): d is string => !!d).sort();
     const latest = bills[0];
-    account = { openCount: outstanding.length, balanceCents: outstanding.reduce((t, b) => t + (b.balanceCents ?? 0), 0), nextDue: dues[0] ?? null, latest: latest ? { number: latest.number, title: latest.title, status: latest.status } : null };
+    const a = square.arrangements.find((x) => x.syncedAt) ?? null;
+    const plan: Plan | null = a ? { title: a.title, amountCents: a.amountCents, schedule: scheduleText(a), nextDue: a.nextDueDate ? ymd(a.nextDueDate) : null, status: paymentStatus(a), autopay: a.autopay } : null;
+    account = { openCount: outstanding.length, balanceCents: outstanding.reduce((t, b) => t + (b.balanceCents ?? 0), 0), nextDue: dues[0] ?? null, latest: latest ? { number: latest.number, title: latest.title, status: latest.status } : null, plan };
   }
 
   // Latest released statements (newest month with any delivered report).
@@ -223,8 +265,7 @@ export async function portalBusinessDashboard(user: PortalActor, clientId: strin
     : null;
 
   // Business resources: verified official links already in the Resource Center.
-  const viewer = await prisma.portalUser.findUnique({ where: { id: user.id }, select: { preferredState: true } });
-  const state = (client.state && isStateCode(client.state.toUpperCase()) ? client.state.toUpperCase() : null) ?? viewer?.preferredState ?? "AL";
+  const state = (client.state && isStateCode(client.state.toUpperCase()) ? client.state.toUpperCase() : null) ?? preferredState ?? "AL";
   const resourceRows = await prisma.resource.findMany({
     where: {
       hidden: false, status: "VERIFIED", url: { not: null }, county: null, city: null,
@@ -249,7 +290,8 @@ export async function portalBusinessDashboard(user: PortalActor, clientId: strin
   ]);
 
   return {
-    client: { id: client.id, name: client.businessName || client.displayName },
+    // Only the last four digits of the EIN ever leave the server.
+    client: { id: client.id, name: client.businessName || client.displayName, active: client.status === "ACTIVE", einLast4: profile?.einLast4 ?? null },
     services: ["Bookkeeping", ...(profile?.payroll ? ["Payroll"] : []), "Taxes", ...(lic.length ? ["Compliance"] : [])],
     basis: profile?.accountingBasis ?? null,
     selected,
@@ -273,6 +315,6 @@ export async function portalBusinessDashboard(user: PortalActor, clientId: strin
     yearEndDocs,
     books,
     feed,
-    perms: { canUpload: access.canUpload, canMessage: access.canMessage, canViewBilling: access.canViewBilling },
+    perms: { canUpload: perms.canUpload, canMessage: perms.canMessage, canViewBilling: perms.canViewBilling },
   };
 }
