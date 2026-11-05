@@ -1,10 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { VENDORS } from "@/lib/access-review";
-import { completeAccessReview, offboardStaff, setOffboardingItemDone } from "@/lib/services/access-review";
+import { completeAccessReview, correctAccessReview, offboardStaff, setOffboardingItemDone } from "@/lib/services/access-review";
 
 // Every action re-checks the owner binding in the service (assertOwner): a direct POST from anyone
 // else gets "Not found."
@@ -42,4 +43,22 @@ export async function offboardingItemAction(itemId: string, done: boolean, _prev
     revalidatePath("/tasks");
     return done ? "Marked done." : "Reopened.";
   });
+}
+
+/**
+ * Saves a correction to a completed review (owner only, re-checked in the service). The form sends
+ * the vendor keys printed on that review and the revision number it was opened at.
+ */
+export async function correctAccessReviewAction(reviewId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  const result = await run(async () => {
+    const keys = fd.getAll("vendorKey").filter((k): k is string => typeof k === "string");
+    const vendors = Object.fromEntries(keys.map((k) => [k, { appropriate: fd.get(`appropriate:${k}`) === "on", twoStep: fd.get(`twoStep:${k}`) === "on", note: str(fd, `note:${k}`) }]));
+    const expectedRevision = Number.parseInt(str(fd, "expectedRevision"), 10);
+    await correctAccessReview(actor, reviewId, { expectedRevision, reason: str(fd, "reason"), summary: str(fd, "summary"), findings: str(fd, "findings"), vendors });
+    revalidatePath("/owner/access-review");
+    revalidatePath(`/owner/access-review/reviews/${reviewId}`);
+  });
+  if (result?.ok) redirect(`/owner/access-review/reviews/${reviewId}?corrected=1`);
+  return result;
 }

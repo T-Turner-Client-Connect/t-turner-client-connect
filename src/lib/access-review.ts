@@ -62,3 +62,28 @@ export function reviewStatus(lastCompletedAt: Date | null | undefined, now = new
 
 /** Title of the owner's reminder task (also its dedupe key: one open task at a time). */
 export const REVIEW_TASK_TITLE = "Quarterly access review due";
+
+/** The only parts of a completed review that can ever be corrected (summary, findings, vendor answers). */
+export type EditableReview = { summary: string; findings: string | null; vendorAnswers: VendorAnswer[] };
+
+export type CorrectionRow = { field: string; label: string; previous: string; updated: string };
+
+const VENDOR_FIELD_LABELS = { appropriate: "Access still appropriate", twoStep: "Two-step verification on", note: "Note" } as const;
+
+/** One correction as readable lines: each changed field (or vendor answer) with previous → updated. */
+export function correctionRows(c: { previous: EditableReview; updated: EditableReview; changedFields: string[] }): CorrectionRow[] {
+  const yes = (b: boolean | undefined) => (b ? "Yes" : "Not confirmed");
+  const text = (t: string | null | undefined) => (t && t.length ? t : "—");
+  return c.changedFields.map((field) => {
+    if (field === "summary") return { field, label: "Summary", previous: text(c.previous.summary), updated: text(c.updated.summary) };
+    if (field === "findings") return { field, label: "Findings and changes made", previous: text(c.previous.findings), updated: text(c.updated.findings) };
+    const m = /^vendor:([^.]+)\.(appropriate|twoStep|note)$/.exec(field);
+    if (!m) return { field, label: field, previous: "—", updated: "—" };
+    const [, key, f] = m as unknown as [string, string, keyof typeof VENDOR_FIELD_LABELS];
+    const b = c.previous.vendorAnswers.find((v) => v.key === key);
+    const a = c.updated.vendorAnswers.find((v) => v.key === key);
+    const label = `${a?.label ?? b?.label ?? key} — ${VENDOR_FIELD_LABELS[f]}`;
+    if (f === "note") return { field, label, previous: text(b?.note), updated: text(a?.note) };
+    return { field, label, previous: yes(b?.[f]), updated: yes(a?.[f]) };
+  });
+}

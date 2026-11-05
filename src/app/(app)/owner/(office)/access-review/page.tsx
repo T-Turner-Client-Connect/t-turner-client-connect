@@ -167,7 +167,7 @@ export default async function AccessReviewPage() {
             {history.map((h) => (
               <li key={h.id} className="flex flex-wrap items-start justify-between gap-2 py-3">
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-navy-900">{fmtDateTime(h.completedAt)} · {h.reviewerName}</p>
+                  <p className="font-semibold text-navy-900">{fmtDateTime(h.completedAt)} · {h.reviewerName} {h.corrections > 0 && <span data-testid="corrected-badge"><Badge tone="gold" className="ml-1">Corrected ({h.corrections})</Badge></span>}</p>
                   <p className="line-clamp-2 text-sm text-slate-700">{h.summary}</p>
                   <p className="text-xs text-slate-600">{h.staffCount} staff account{h.staffCount === 1 ? "" : "s"} · {h.flagged ? `${h.flagged} vendor account${h.flagged === 1 ? "" : "s"} flagged` : "every vendor account confirmed"}</p>
                 </div>
