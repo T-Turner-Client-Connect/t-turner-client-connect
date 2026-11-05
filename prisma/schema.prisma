@@ -1085,6 +1085,10 @@ enum DocumentCategory {
   OWNER_K1
   // Payroll reports and filings (941, W-2/W-3, payroll registers).
   PAYROLL
+  // One business owner's own personal tax supporting document (W-2, 1099, 1098, property tax,
+  // car tag, charitable contribution…) sent on a business account. Private to that owner
+  // (Document.businessOwnerId, or the uploading login when no owner record exists), plus staff.
+  OWNER_PERSONAL
 }
 
 enum DocumentVisibility {
@@ -1328,6 +1332,10 @@ model DocumentRequest {
   // prior-year documents...): the rule that asked for it (one request per rule per tax year).
   // Null for requests staff write by hand and for Coetha's requests (those use draftKey).
   ruleKey              String?
+  // A request for one business owner's own personal documents (or identity document): visible
+  // to, and answered by, that owner's login only. Null = an ordinary request for the account.
+  businessOwnerId      String?
+  businessOwner        BusinessOwner?      @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
 
   documents Document[]
 
@@ -2897,14 +2905,17 @@ model ResourceFaq {
 
 // The client, their spouse, or a dependent on the account.
 model IdentityPerson {
-  id         String    @id @default(cuid())
-  clientId   String
-  client     Client    @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  // CLIENT | SPOUSE | DEPENDENT
-  role       String
-  name       String
-  archivedAt DateTime?
-  createdAt  DateTime  @default(now())
+  id              String         @id @default(cuid())
+  clientId        String
+  client          Client         @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  // CLIENT | SPOUSE | DEPENDENT | OWNER (a business owner, on a business account)
+  role            String
+  name            String
+  // OWNER: the business owner this person is. Their identity documents open only for that owner's login.
+  businessOwnerId String?        @unique
+  businessOwner   BusinessOwner? @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
+  archivedAt      DateTime?
+  createdAt       DateTime       @default(now())
 
   documents IdentityDocument[]
 
@@ -5141,10 +5152,13 @@ model BusinessOwner {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
-  k1Documents  Document[]
+  k1Documents      Document[]
+  // Requests for this owner's own personal (or identity) documents, and their identity record.
+  personalRequests DocumentRequest[]
+  identityPerson   IdentityPerson?
   // Other owners' K-1s Tabitha shared with this owner, and who may see this owner's.
-  k1Viewing    OwnerK1Grant[] @relation("K1Viewer")
-  k1SharedWith OwnerK1Grant[] @relation("K1Holder")
+  k1Viewing        OwnerK1Grant[]    @relation("K1Viewer")
+  k1SharedWith     OwnerK1Grant[]    @relation("K1Holder")
 
   @@index([clientId])
   @@index([portalUserId])

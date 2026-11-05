@@ -109,7 +109,7 @@ export async function booksStatus(clientId: string) {
   const [accounts, recs, openRequests, questions, toCategorize] = await Promise.all([
     prisma.ledgerAccount.findMany({ where: { clientId, active: true, subtype: { in: ["BANK", "CREDIT_CARD"] } }, orderBy: { code: "asc" }, select: { id: true, name: true, last4: true } }),
     prisma.bankReconciliation.groupBy({ by: ["accountId"], where: { clientId }, _max: { statementDate: true } }),
-    prisma.documentRequest.count({ where: { clientId, status: "OPEN" } }),
+    prisma.documentRequest.count({ where: { clientId, status: "OPEN", kind: { not: "OWNER_PERSONAL" } } }),
     prisma.conversation.findMany({ where: { clientId, questionStatus: "OPEN" }, orderBy: { createdAt: "asc" }, take: 5, select: { id: true, subject: true, responseDueAt: true } }),
     prisma.bankTransaction.count({ where: { clientId, status: "UNREVIEWED" } }),
   ]);

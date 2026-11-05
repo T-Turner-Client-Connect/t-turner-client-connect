@@ -31,6 +31,16 @@ export const UPLOAD_CHECKLIST: { key: string; label: string; note?: string; docT
   { key: "other", label: "Other / etc.", note: "Anything else for your return", docType: "CLIENT_OTHER" },
 ];
 
+/**
+ * A business owner's own personal supporting documents, sent on a business-only account: the same
+ * list plus property taxes. Each is filed privately to that owner and tax year.
+ */
+export const OWNER_UPLOAD_CHECKLIST: typeof UPLOAD_CHECKLIST = [
+  ...UPLOAD_CHECKLIST.filter((i) => i.key !== "other"),
+  { key: "property-tax", label: "Property taxes", note: "Real estate or personal property tax bills or receipts", docType: "CLIENT_OTHER" },
+  ...UPLOAD_CHECKLIST.filter((i) => i.key === "other"),
+];
+
 type Picked = { id: number; file: File; item: string };
 
 /**
@@ -38,7 +48,9 @@ type Picked = { id: number; file: File; item: string };
  * Upload Documents layout: checklist, "Selected for Upload" panel, drag & drop, Choose Files.
  * Uses the same /api/client/upload endpoint, validation, size limit and virus scan as before.
  */
-export function TaxUploadForm({ account, years, defaultYear, vaultHref }: { account: string; years: number[]; defaultYear: string; vaultHref: string }) {
+export function TaxUploadForm({ account, years, defaultYear, vaultHref, owner = false }: { account: string; years: number[]; defaultYear: string; vaultHref: string; owner?: boolean }) {
+  // `owner`: a business owner's personal documents on a business-only account (always for a tax year).
+  const CHECKLIST = owner ? OWNER_UPLOAD_CHECKLIST : UPLOAD_CHECKLIST;
   const [year, setYear] = useState(defaultYear);
   const [checked, setChecked] = useState<string[]>([]);
   const [picked, setPicked] = useState<Picked[]>([]);
@@ -59,7 +71,7 @@ export function TaxUploadForm({ account, years, defaultYear, vaultHref }: { acco
   }
 
   function send(f: Picked) {
-    const item = UPLOAD_CHECKLIST.find((i) => i.key === f.item)!;
+    const item = CHECKLIST.find((i) => i.key === f.item)!;
     return new Promise<Result>((resolve) => {
       const fd = new FormData();
       fd.set("account", account);
@@ -106,7 +118,7 @@ export function TaxUploadForm({ account, years, defaultYear, vaultHref }: { acco
   }
 
   const toggle = (key: string) => setChecked((c) => (c.includes(key) ? c.filter((k) => k !== key) : [...c, key]));
-  const options = checked.length ? UPLOAD_CHECKLIST.filter((i) => checked.includes(i.key)) : UPLOAD_CHECKLIST;
+  const options = checked.length ? CHECKLIST.filter((i) => checked.includes(i.key)) : CHECKLIST;
 
   return (
     <form onSubmit={onSubmit} className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]" data-testid="tax-upload-form" noValidate>
@@ -115,7 +127,7 @@ export function TaxUploadForm({ account, years, defaultYear, vaultHref }: { acco
           <span className="mb-1.5 block font-semibold text-navy-900">Tax Year <span className="text-red-700">*</span></span>
           <select className="input h-12" name="year" value={year} onChange={(e) => setYear(e.target.value)}>
             {years.map((y) => <option key={y} value={y}>{y}</option>)}
-            <option value="unsure">Not sure</option>
+            {!owner && <option value="unsure">Not sure</option>}
           </select>
         </label>
 
@@ -123,7 +135,7 @@ export function TaxUploadForm({ account, years, defaultYear, vaultHref }: { acco
           <legend className="px-1 font-serif text-xl font-bold text-navy-900">What are you uploading?</legend>
           <p className="mb-3 text-sm text-slate-600">Check everything you have for this tax year.</p>
           <ul className="grid gap-2 sm:grid-cols-2">
-            {UPLOAD_CHECKLIST.map((i) => (
+            {CHECKLIST.map((i) => (
               <li key={i.key}>
                 <label className={`flex h-full cursor-pointer items-start gap-3 rounded-xl border px-3 py-2.5 ${checked.includes(i.key) ? "border-gold-500 bg-gold-50 ring-1 ring-gold-400" : "border-ivory-200 hover:border-gold-300"}`}>
                   <input type="checkbox" checked={checked.includes(i.key)} onChange={() => toggle(i.key)} className="mt-1 size-5 shrink-0 accent-gold-600" data-item={i.key} />

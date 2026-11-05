@@ -28,7 +28,7 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
   const thread = selected
     ? await prisma.message.findMany({
         where: { conversationId: selected.id, channel: "PORTAL" },
-        include: { staffAuthor: { select: { name: true } }, portalAuthor: { select: { name: true } }, attachments: { where: { visibility: "PUBLISHED", deletedAt: null, category: { not: "OWNER_K1" } }, select: { id: true, title: true } } },
+        include: { staffAuthor: { select: { name: true } }, portalAuthor: { select: { name: true } }, attachments: { where: { visibility: "PUBLISHED", deletedAt: null, category: { notIn: ["OWNER_K1", "OWNER_PERSONAL"] } }, select: { id: true, title: true } } },
         orderBy: { createdAt: "asc" },
       })
     : [];
