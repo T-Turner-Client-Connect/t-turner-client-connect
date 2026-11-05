@@ -51,8 +51,8 @@ async function world() {
   const { token: t2 } = await invitePortalUser(tabitha, other.id, { email: "sam@fictional.example", name: "Sam Sample", role: "OWNER" });
   const sam = await acceptPortalInvite(t2!, "Sam-Strong-Pass-12345");
   await managed(bakery.id, other.id);
-  // Both are on the Bookkeeping Clients list (banking information is shown only for those).
-  for (const c of [bakery, other]) await prisma.bookkeepingProfile.create({ data: { clientId: c.id, accountingBasis: "CASH" } });
+  // managed() puts both on the Bookkeeping Clients list (banking information is shown only for those).
+  for (const c of [bakery, other]) await prisma.bookkeepingProfile.update({ where: { clientId: c.id }, data: { accountingBasis: "CASH" } });
   return { tabitha, daria, bea, vic, stranger, bakery, other, pat: { id: pat.id, name: pat.name, email: pat.email }, sam: { id: sam.id, name: sam.name, email: sam.email } };
 }
 

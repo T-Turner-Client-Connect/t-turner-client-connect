@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ComponentProps, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { grantPerms, makeUser, managed, prisma, resetDb } from "./db";
+import { grantPerms, makeUser, managed, managedOnly, prisma, resetDb } from "./db";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { createClient, ValidationError } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -60,8 +60,11 @@ async function world(opts: { bookkeeping?: boolean } = {}) {
   const bakery = await createClient(tabitha, { businessName: "Lakeside Pretend Bakery LLC", clientType: "BUSINESS", status: "ACTIVE", assignedToId: daria.id });
   const { token } = await invitePortalUser(tabitha, bakery.id, { email: "pat@fictional.example", name: "Pat Pretend", role: "OWNER" });
   const pat = await acceptPortalInvite(token!, "Pat-Strong-Pass-12345");
-  await managed(bakery.id);
-  if (opts.bookkeeping !== false) await prisma.bookkeepingProfile.create({ data: { clientId: bakery.id, accountingBasis: "CASH" } });
+  // managed() also puts the business on the Bookkeeping Clients list; managedOnly() doesn't.
+  if (opts.bookkeeping !== false) {
+    await managed(bakery.id);
+    await prisma.bookkeepingProfile.update({ where: { clientId: bakery.id }, data: { accountingBasis: "CASH" } });
+  } else await managedOnly(bakery.id);
   await setupLedger(tabitha, bakery.id, { basis: "CASH" });
   const gl = async (code: string) => prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: bakery.id, code } });
   return { tabitha, daria, stranger, vic, bakery, pat: { id: pat.id, name: pat.name, email: pat.email }, checking: await gl("1000"), cardGl: await gl("2100") };
@@ -162,21 +165,25 @@ describe("banking information only for Bookkeeping Clients", () => {
     expect(hasBookkeepingService({ bookkeepingProfile: null })).toBe(false);
     expect(hasBookkeepingService({ bookkeepingProfile: { active: false } })).toBe(false);
     expect(hasBookkeepingService({ bookkeepingProfile: { active: true } })).toBe(true);
-    // Managed Business only: the dashboard opens, with no banking at all.
-    const d = await portalBusinessDashboard(w.pat, w.bakery.id);
-    expect(d.feed).toBeNull();
+    // Managed Business only: no business view at all (main's Bookkeeping Clients list rule), so no banking.
+    await expect(portalBusinessDashboard(w.pat, w.bakery.id)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(portalBankFeed(w.pat, w.bakery.id)).rejects.toBeInstanceOf(ForbiddenError);
+    // The dashboard data itself carries no banking for a client not on the list.
+    const d = await businessDashboardFor(w.bakery.id, null, { canUpload: false, canMessage: false, canViewBilling: false }, null);
+    expect(d.feed).toBeNull();
     const html = renderToStaticMarkup(createElement(LiveBankProvider, { account: w.bakery.id, initial: d.feed, live: false } as ComponentProps<typeof LiveBankProvider>, createElement(LiveBankKpi, { className: "" }), createElement(LiveBankCard, { className: "", canRefresh: false }), createElement(LiveBankTicker)));
     expect(html).toBe("");
-    // View as Client: the same.
+    // View as Client: no business dashboard (and so no banking) either.
     const tree = (await PortalPreview({ params: Promise.resolve({ id: w.bakery.id }), searchParams: Promise.resolve({}) })) as ReactNode;
-    expect((find(tree, BusinessDashboardView)!.props as { d: Awaited<ReturnType<typeof businessDashboardFor>> }).d.feed).toBeNull();
+    expect(find(tree, BusinessDashboardView)).toBeFalsy();
     // On the list: shown. Paused: hidden again.
     await prisma.bookkeepingProfile.create({ data: { clientId: w.bakery.id, accountingBasis: "CASH" } });
     expect((await portalBankFeed(w.pat, w.bakery.id)).cashCents).toBe(100_000);
+    expect((await portalBusinessDashboard(w.pat, w.bakery.id)).feed).toBeTruthy();
     await prisma.bookkeepingProfile.update({ where: { clientId: w.bakery.id }, data: { active: false } });
     await expect(portalBankFeed(w.pat, w.bakery.id)).rejects.toBeInstanceOf(ForbiddenError);
-    expect((await portalBusinessDashboard(w.pat, w.bakery.id)).feed).toBeNull();
+    await expect(portalBusinessDashboard(w.pat, w.bakery.id)).rejects.toBeInstanceOf(ForbiddenError);
+    expect((await businessDashboardFor(w.bakery.id, null, { canUpload: false, canMessage: false, canViewBilling: false }, null)).feed).toBeNull();
     // Staff pages are unaffected: the morning pull still lists the business.
     expect((await morningPull(w.tabitha, NOW)).rows.some((r) => r.clientId === w.bakery.id)).toBe(true);
   });

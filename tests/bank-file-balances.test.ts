@@ -40,7 +40,7 @@ async function world() {
   const { token } = await invitePortalUser(tabitha, bakery.id, { email: "pat@fictional.example", name: "Pat Pretend", role: "OWNER" });
   const pat = await acceptPortalInvite(token!, "Pat-Strong-Pass-12345");
   await managed(bakery.id, other.id);
-  for (const c of [bakery, other]) await prisma.bookkeepingProfile.create({ data: { clientId: c.id, accountingBasis: "CASH" } });
+  for (const c of [bakery, other]) await prisma.bookkeepingProfile.update({ where: { clientId: c.id }, data: { accountingBasis: "CASH" } });
   await setupLedger(daria, bakery.id, { basis: "CASH" });
   await setupLedger(tabitha, other.id, { basis: "CASH" });
   const checking = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: bakery.id, code: "1000" } });
