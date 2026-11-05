@@ -11,10 +11,11 @@ import { isReportApprover } from "./bookkeeping-clients";
  * written to both the office audit log and the Owner's Office log.
  */
 
-export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend";
+export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend" | "clientRollout";
 
-export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically" };
+export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", clientRollout: "Client rollout authorized" };
 const LABEL = SWITCH_LABEL;
+const ACTION: Record<OwnerSwitch, string> = { liveBanking: "banking.live_connections", coetha: "coetha.enabled", coethaAutoSend: "coetha.auto_send_requests", clientRollout: "client_letters.rollout_authorized" };
 
 export async function ownerSwitches() {
   const s = await prisma.integrationSettings.findUnique({ where: { id: "default" } });
@@ -22,6 +23,7 @@ export async function ownerSwitches() {
     liveBanking: { on: s?.liveBankingEnabled ?? false, changedAt: s?.liveBankingChangedAt ?? null, changedById: s?.liveBankingChangedById ?? null },
     coetha: { on: s?.coethaEnabled ?? false, changedAt: s?.coethaChangedAt ?? null, changedById: s?.coethaChangedById ?? null },
     coethaAutoSend: { on: s?.coethaAutoSendRequests ?? true, changedAt: s?.coethaAutoSendChangedAt ?? null, changedById: s?.coethaAutoSendChangedById ?? null },
+    clientRollout: { on: s?.clientRolloutAuthorized === true, changedAt: s?.clientRolloutChangedAt ?? null, changedById: s?.clientRolloutChangedById ?? null },
   };
 }
 
@@ -32,6 +34,11 @@ export async function liveBankingOn(): Promise<boolean> {
 /** Tabitha's setting: Coetha's ROUTINE document requests go to clients without a staff click. On by default (her approval, PR #82); she can turn it off. */
 export async function coethaAutoSendOn(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoSendRequests: true } }))?.coethaAutoSendRequests ?? true;
+}
+
+/** Tabitha's safety lock on Client Letters: sending is refused until she authorizes the client rollout. Off by default. */
+export async function clientRolloutAuthorized(): Promise<boolean> {
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { clientRolloutAuthorized: true } }))?.clientRolloutAuthorized === true;
 }
 
 export async function coethaOn(): Promise<boolean> {
@@ -47,10 +54,12 @@ export async function setOwnerSwitch(actor: Actor, which: OwnerSwitch, on: boole
       ? { liveBankingEnabled: on, liveBankingChangedById: actor.id, liveBankingChangedAt: now, updatedById: actor.id }
       : which === "coetha"
         ? { coethaEnabled: on, coethaChangedById: actor.id, coethaChangedAt: now, updatedById: actor.id }
-        : { coethaAutoSendRequests: on, coethaAutoSendChangedById: actor.id, coethaAutoSendChangedAt: now, updatedById: actor.id };
+        : which === "coethaAutoSend"
+          ? { coethaAutoSendRequests: on, coethaAutoSendChangedById: actor.id, coethaAutoSendChangedAt: now, updatedById: actor.id }
+          : { clientRolloutAuthorized: on, clientRolloutChangedById: actor.id, clientRolloutChangedAt: now, updatedById: actor.id };
   const before = await ownerSwitches();
   await prisma.integrationSettings.upsert({ where: { id: "default" }, create: { id: "default", ...data }, update: data });
-  const action = `${which === "liveBanking" ? "banking.live_connections" : which === "coetha" ? "coetha.enabled" : "coetha.auto_send_requests"}_${on ? "on" : "off"}`;
+  const action = `${ACTION[which]}_${on ? "on" : "off"}`;
   const details = { switch: LABEL[which], from: before[which].on, to: on };
   await audit(prisma, { actorId: actor.id, action, entityType: "IntegrationSettings", entityId: "default", details });
   await ownerAudit(actor.id, action, "IntegrationSettings", "default", details);

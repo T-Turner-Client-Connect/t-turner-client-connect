@@ -2,9 +2,12 @@ import { verifyResendSignature } from "@/lib/resend-webhook";
 import { applyInviteEmailEvent } from "@/lib/services/staff-invitations";
 import { applyActivationEmailEvent } from "@/lib/services/client-signup";
 import { recordEmailBlock } from "@/lib/services/comm-prefs";
+import { applyLetterEmailEvent } from "@/lib/services/client-letters";
 
 // Resend delivery events, signed with the endpoint's secret (RESEND_WEBHOOK_SECRET).
-// Staff invitations move to Delivered / Delivery failed only from these events.
+// Staff invitations move to Delivered / Delivery failed only from these events, and Client Letters
+// record email delivered / bounced / complaint only from them. Without the secret nothing is
+// recorded and a letter stays "email accepted by email service" (never shown as delivered).
 export async function POST(req: Request) {
   const secret = process.env.RESEND_WEBHOOK_SECRET;
   if (!secret) return new Response("Not configured", { status: 503 });
@@ -24,8 +27,8 @@ export async function POST(req: Request) {
   const emailId = event.data?.email_id;
   if (event.type && emailId) {
     const reason = event.data?.bounce?.message ?? event.data?.failed?.reason;
-    // Staff invitations and client activation emails each match their own provider ids.
-    if (!(await applyInviteEmailEvent(event.type, emailId, reason))) await applyActivationEmailEvent(event.type, emailId, reason);
+    // Staff invitations, client letters and client activation emails each match their own provider ids.
+    if (!(await applyInviteEmailEvent(event.type, emailId, reason)) && !(await applyLetterEmailEvent(event.type, emailId, reason))) await applyActivationEmailEvent(event.type, emailId, reason);
   }
   // Hard bounces and spam complaints stop every future email to that address (essential included).
   const permanent = event.type === "email.bounced" && !/transient|temporary/i.test(event.data?.bounce?.type ?? "");
