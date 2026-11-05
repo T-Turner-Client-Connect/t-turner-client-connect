@@ -22,7 +22,7 @@
     "@anthropic-ai/sdk": "^1.4.0",
     "@netlify/blobs": "^11.1.7",
     "@netlify/database": "^2.0.1",
-    "@prisma/client": "^5.22.0",
+    "@prisma/client": "^7.10.1",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
