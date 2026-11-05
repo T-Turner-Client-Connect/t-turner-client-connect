@@ -33,7 +33,7 @@ export const LEGAL_EFFECTIVE_DATE = "October 29, 2026";
  * "December 1, 2026") in the same change that is merged. While it is null, a
  * production build refuses to publish the page; previews show "Pending publication".
  */
-export const PRIVACY_EFFECTIVE_DATE: string | null = null;
+export const PRIVACY_EFFECTIVE_DATE: string | null = "November 5, 2026";
 
 // Exact consent wording. Any change must get a new version so stored
 // consents always point at the text the person actually saw.
