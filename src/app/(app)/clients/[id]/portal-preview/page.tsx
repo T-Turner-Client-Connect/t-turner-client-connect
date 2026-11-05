@@ -9,6 +9,9 @@ import { businessHomeTiles } from "@/components/portal/business-home-view";
 import { BUSINESS_VIEW_CLIENT, hasBusinessView } from "@/lib/portal/access";
 import { can } from "@/lib/auth/permissions";
 import { businessDashboardFor } from "@/lib/services/portal-business";
+import { licensesPageFor, payrollPageFor, yearEndPageFor } from "@/lib/services/portal-business-pages";
+import { previewClientInvoicing } from "@/lib/services/portal-client-invoicing";
+import { InvoicingPageView, LicensesPageView, NotBusinessNotice, PayrollPageView, YearEndPageView } from "@/components/portal/business-pages";
 import { PortalDocumentsView } from "@/components/portal/documents-view";
 import { PortalTaxesView } from "@/components/portal/taxes-view";
 import { PortalSummaryView } from "@/components/portal/tax-summary-portal";
@@ -36,7 +39,13 @@ const VIEWS = [
   ["documents", "Document Vault"],
   ["messages", "Messages"],
   ["identity", "Identity"],
+  // Business view only (the dashboard's Payroll, Licenses, 1099 / W-2 and Client Invoicing cards).
+  ["payroll", "Payroll"],
+  ["licenses", "Business Licenses"],
+  ["year-end", "1099 / W-2"],
+  ["invoicing", "Client Invoicing"],
 ] as const;
+const BUSINESS_VIEWS: readonly string[] = ["payroll", "licenses", "year-end", "invoicing"];
 type View = (typeof VIEWS)[number][0];
 
 /** Which preview page a client-portal link opens. */
@@ -47,6 +56,11 @@ function viewFor(path: string): View {
   if (path.startsWith("/client/documents")) return "documents";
   if (path.startsWith("/client/messages")) return "messages";
   if (path.startsWith("/client/identity")) return "identity";
+  if (path.startsWith("/client/payroll-approval")) return "home";
+  if (path.startsWith("/client/payroll")) return "payroll";
+  if (path.startsWith("/client/licenses")) return "licenses";
+  if (path.startsWith("/client/year-end")) return "year-end";
+  if (path.startsWith("/client/invoicing")) return "invoicing";
   return "home";
 }
 
@@ -114,7 +128,7 @@ export default async function PortalPreview({
     body = (
       <BusinessDashboardView
         d={d}
-        tiles={businessHomeTiles(home, dashHref, dashHref("/client/documents"))}
+        tiles={businessHomeTiles(home, dashHref, dashHref("/client/documents"), dashHref("/client/payroll"))}
         q=""
         base={`${base}?view=home`}
         linkFor={linkFor}
@@ -139,6 +153,17 @@ export default async function PortalPreview({
         year={year}
       />
     );
+  } else if (BUSINESS_VIEWS.includes(view) && !businessView) {
+    body = <NotBusinessNotice />;
+  } else if (view === "payroll") {
+    // Read-only, owner-level document scope; documents open with a staff link.
+    body = <PayrollPageView d={await payrollPageFor(id, PREVIEW_PERMS, null)} linkFor={linkFor} back={`${base}?view=home`} />;
+  } else if (view === "licenses") {
+    body = <LicensesPageView d={await licensesPageFor(id, PREVIEW_PERMS, null)} linkFor={linkFor} back={`${base}?view=home`} />;
+  } else if (view === "year-end") {
+    body = <YearEndPageView d={await yearEndPageFor(id)} canUpload back={`${base}?view=home`} readOnly />;
+  } else if (view === "invoicing") {
+    body = <InvoicingPageView d={await previewClientInvoicing(id)} back={`${base}?view=home`} readOnly />;
   } else if (view === "summary") {
     body = (
       <PortalSummaryView
@@ -309,7 +334,7 @@ export default async function PortalPreview({
         className="flex gap-1.5 overflow-x-auto pb-1"
         data-testid="preview-tabs"
       >
-        {VIEWS.map(([v, label]) => (
+        {VIEWS.filter(([v]) => businessView || !BUSINESS_VIEWS.includes(v)).map(([v, label]) => (
           <Link
             key={v}
             href={`${base}?view=${v}`}

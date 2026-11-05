@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
-import { BadgeCheck, Bell, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileSearch, FileSignature, Folder, HeartHandshake, Home, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, Settings, ShieldCheck, SlidersHorizontal, Upload, Users, X } from "lucide-react";
+import { BadgeCheck, Bell, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileBadge, FileSearch, FileSignature, Folder, HeartHandshake, Home, IdCard, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, ReceiptText, Settings, ShieldCheck, SlidersHorizontal, Upload, Users, UsersRound, X } from "lucide-react";
 
 const MAIN = [
   ["/client", "Home", Home],
@@ -27,10 +27,17 @@ const MORE = [
   ["/client/referrals", "Referrals", Users],
   ["/client/contracts", "Contracts & Signatures", PenLine],
   ["/client/bookkeeping", "Bookkeeping", Landmark],
+  ["/client/payroll", "Payroll", UsersRound],
+  ["/client/licenses", "Business Licenses", IdCard],
+  ["/client/year-end", "1099 / W-2", FileBadge],
+  ["/client/invoicing", "Client Invoicing", ReceiptText],
   ["/client/payroll-approval", "Payroll Approval", BadgeCheck],
   ["/client/account#communication-preferences", "Communication Preferences", SlidersHorizontal],
   ["/client/account", "Account Settings", Settings],
 ] as const;
+
+// Business-view pages: only for a business account this login has the business view of (gated on the server too).
+const BUSINESS_ONLY: string[] = ["/client/bookkeeping", "/client/payroll", "/client/licenses", "/client/year-end", "/client/invoicing"];
 
 // Keeps ?account= ahead of a #section anchor.
 const withQuery = (href: string, q: string) => (href.includes("#") ? href.replace("#", `${q}#`) : `${href}${q}`);
@@ -57,7 +64,7 @@ function NavLinks({ q, pathname, unread, onNavigate, business, payroll, hide = [
         </Link>
       ))}
       <div className="mx-3 my-4 h-px bg-white/15" aria-hidden />
-      {MORE.filter(([href]) => (business || href !== "/client/bookkeeping") && (payroll || href !== "/client/payroll-approval") && !hide.includes(href)).map(([href, label, Icon]) => (
+      {MORE.filter(([href]) => (business || !BUSINESS_ONLY.includes(href)) && (payroll || href !== "/client/payroll-approval") && !hide.includes(href)).map(([href, label, Icon]) => (
         <Link
           key={href}
           href={withQuery(href, q)}
