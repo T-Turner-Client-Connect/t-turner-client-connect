@@ -1,0 +1,23 @@
+# Automatic dependency vulnerability alerts and update pull requests.
+# Dependabot opens a pull request for each update; nothing merges or deploys
+# without the owner's review.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Chicago"
+    open-pull-requests-limit: 5
+    groups:
+      # One pull request per week for routine minor/patch updates.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    labels: ["dependencies", "security"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels: ["dependencies"]
