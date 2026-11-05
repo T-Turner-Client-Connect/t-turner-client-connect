@@ -24,5 +24,5 @@ export async function requirePersonalTaxAccount(clientId: string) {
 
 /** The same rule for server functions (actions, API routes). */
 export async function assertPersonalTaxAccount(clientId: string) {
-  if ((await serviceProfile(clientId)).businessOnly) throw new ForbiddenError("This account is set up for business services only. Use “Request personal tax preparation” to add personal tax services.");
+  if ((await serviceProfile(clientId)).businessOnly) throw new ForbiddenError("This account is set up for business services only. To add personal tax preparation, please contact our office.");
 }

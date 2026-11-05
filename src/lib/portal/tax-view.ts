@@ -1,4 +1,5 @@
 import "server-only";
+import { notRoutineStatementRequest } from "@/lib/services/client-request-scope";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -12,7 +13,7 @@ export async function loadPortalTaxes(clientId: string) {
       include: { documents: { where: { deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN" }, orderBy: { createdAt: "desc" } } },
       orderBy: [{ taxYear: "desc" }, { filingType: "asc" }, { jurisdiction: "asc" }],
     }),
-    prisma.documentRequest.findMany({ where: { clientId, status: "OPEN", category: { in: ["TAXES", "CLIENT_UPLOADS"] } }, orderBy: { dueAt: "asc" } }),
+    prisma.documentRequest.findMany({ where: { clientId, status: "OPEN", category: { in: ["TAXES", "CLIENT_UPLOADS"] }, AND: [notRoutineStatementRequest] }, orderBy: { dueAt: "asc" } }),
     prisma.signatureRequest.findMany({ where: { clientId, status: { not: "DRAFT" } }, orderBy: { createdAt: "desc" } }),
   ]);
   const years = Array.from(new Set([...filings.map((f) => f.taxYear), ...signatures.map((s) => s.taxYear).filter((y): y is number => !!y)])).sort((a, b) => b - a);

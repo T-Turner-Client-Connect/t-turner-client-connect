@@ -146,9 +146,11 @@ describe("Bookkeeping Client list = business dashboard for OWNER logins", () => 
     expect(hasBusinessView(owner, { businessAccess: "OFF", bookkeepingProfile: { active: false } })).toBe(false);
     expect(hasBusinessView(owner, { businessAccess: "OFF", bookkeepingProfile: null })).toBe(false);
     expect(hasBusinessView(owner, { businessAccess: "REMOVED", bookkeepingProfile: bk })).toBe(false);
-    // The Managed Business route is unchanged: ACTIVE plus the per-login switch.
+    // Managed Business access alone (not enrolled) never opens it, even with the per-login switch.
     expect(hasBusinessView(owner, { businessAccess: "ACTIVE", bookkeepingProfile: null })).toBe(false);
-    expect(hasBusinessView({ ...owner, canViewBookkeeping: true }, { businessAccess: "ACTIVE", bookkeepingProfile: null })).toBe(true);
+    expect(hasBusinessView({ ...owner, canViewBookkeeping: true }, { businessAccess: "ACTIVE", bookkeepingProfile: null })).toBe(false);
+    expect(hasBusinessView({ ...owner, canViewBookkeeping: true }, { businessAccess: "ACTIVE", bookkeepingProfile: { active: false } })).toBe(false);
+    expect(hasBusinessView({ ...contact, canViewBookkeeping: true }, { businessAccess: "ACTIVE", bookkeepingProfile: bk })).toBe(true);
     expect(hasBusinessView({ ...owner, canViewBookkeeping: true }, { businessAccess: "OFF", bookkeepingProfile: null })).toBe(false);
     expect(businessViewEligible({ businessAccess: "OFF", bookkeepingProfile: bk })).toBe(true);
   });

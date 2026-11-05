@@ -28,10 +28,12 @@ export const PAYROLL_FREQUENCIES = { WEEKLY: "Weekly", BIWEEKLY: "Every two week
 export const BK_DOC_TYPES = BK_UPLOAD_TYPES;
 export const isBkDocType = isBkUploadType;
 
-type ItemDef = { key: string; label: string; kind: "CLIENT_DOCUMENT" | "STAFF_TASK"; docType?: keyof typeof BK_DOC_TYPES; payrollOnly?: boolean; reportMonthsOnly?: boolean };
+// OFFICE_DOCUMENT: a document our office retrieves and files itself (bank and card statements,
+// through the access the client authorized) — an internal item, never asked of the client.
+type ItemDef = { key: string; label: string; kind: "CLIENT_DOCUMENT" | "OFFICE_DOCUMENT" | "STAFF_TASK"; docType?: keyof typeof BK_DOC_TYPES; payrollOnly?: boolean; reportMonthsOnly?: boolean };
 export const CHECKLIST: ItemDef[] = [
-  { key: "BANK_STATEMENTS", label: "Bank statements", kind: "CLIENT_DOCUMENT", docType: "BANK_STATEMENT" },
-  { key: "CARD_STATEMENTS", label: "Credit card statements", kind: "CLIENT_DOCUMENT", docType: "CARD_STATEMENT" },
+  { key: "BANK_STATEMENTS", label: "Bank statements (retrieved by our office)", kind: "OFFICE_DOCUMENT", docType: "BANK_STATEMENT" },
+  { key: "CARD_STATEMENTS", label: "Credit card statements (retrieved by our office)", kind: "OFFICE_DOCUMENT", docType: "CARD_STATEMENT" },
   { key: "PAYROLL_REPORTS", label: "Payroll reports", kind: "CLIENT_DOCUMENT", docType: "PAYROLL_REPORT", payrollOnly: true },
   { key: "RECEIPTS", label: "Receipts and bills", kind: "CLIENT_DOCUMENT", docType: "RECEIPTS" },
   { key: "CATEGORIZE", label: "Categorize transactions", kind: "STAFF_TASK" },
@@ -503,9 +505,12 @@ export function checklistView(p: PeriodFull, auto: AutoDone = {}) {
     let state: "DONE" | "NOT_NEEDED" | "RECEIVED" | "WAITING_CLIENT" | "STAFF_TODO";
     if (i.status === "DONE" || (i.status === "OPEN" && auto[i.key])) state = "DONE";
     else if (i.status === "NOT_NEEDED") state = "NOT_NEEDED";
-    else if (i.kind === "CLIENT_DOCUMENT") state = files.length ? "RECEIVED" : "WAITING_CLIENT";
+    // The kind comes from the checklist definition, so months opened earlier (stored as CLIENT_DOCUMENT)
+    // treat statements as office work too: waiting on our office, never on the client.
+    else if ((def?.kind ?? i.kind) === "CLIENT_DOCUMENT") state = files.length ? "RECEIVED" : "WAITING_CLIENT";
+    else if (def?.kind === "OFFICE_DOCUMENT") state = files.length ? "RECEIVED" : "STAFF_TODO";
     else state = "STAFF_TODO";
-    return { ...i, files, state };
+    return { ...i, kind: def?.kind ?? i.kind, files, state };
   });
 }
 
