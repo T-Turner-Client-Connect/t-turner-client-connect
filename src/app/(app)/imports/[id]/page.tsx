@@ -99,7 +99,8 @@ export default async function ImportReviewPage({ params, searchParams }: { param
         <div className="mb-4">
           <Notice tone="success" title="Import complete">
             {batch.createdCount} created, {batch.updatedCount} updated, {batch.skippedCount} skipped on {fmtDateTime(batch.committedAt)}. Imported contacts have no messaging
-            permissions until you record them. No messages were sent. The staged contact data has been cleared.
+            permissions until you record them. No messages were sent. The staged contact data has been cleared.{" "}
+            <Link className="underline" href={`/clients/invitations?import=${batch.id}`}>Prepare portal invitations for these clients</Link> (nothing is sent until Tabitha approves).
           </Notice>
         </div>
       )}

@@ -11,6 +11,7 @@ import { ValidationError } from "./clients";
 import { normalizePermissions, OWNER_FLAGS } from "@/lib/portal/owner-areas";
 import type { Prisma } from "@prisma/client";
 import { syncPayrollApproverRow } from "./payroll-approver-sync";
+import { defaultInvitePermissions, invitePermissions } from "@/lib/portal/invite-permissions";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TTL_MS = 60 * 60 * 1000;
@@ -45,7 +46,7 @@ export async function invitePortalUser(
   const client = await prisma.client.findUnique({ where: { id: clientId } });
   if (!client || client.archivedAt) throw new ValidationError("This client is archived or missing.");
   if (input.contactId && !(await prisma.contact.count({ where: { id: input.contactId, clientId } }))) throw new ValidationError("Contact not found.");
-  const perms = { canMessage: true, canUpload: true, canViewBookkeeping: false, canViewTax: input.role === "OWNER", canViewContracts: true, canViewIdentity: input.role === "OWNER", ...input.permissions };
+  const perms = { ...defaultInvitePermissions(input.role), canViewBookkeeping: false, ...input.permissions };
 
   // The business view is never part of an invitation; the owner turns it on per login
   // for a Managed Business afterwards (see business-access.ts).
@@ -80,6 +81,8 @@ export async function invitePortalUser(
         invitedById: actor.id,
         // A business owner's login starts with exactly the permissions chosen for them.
         ...(input.businessOwnerId ? { businessOwnerId: input.businessOwnerId, permissions: perms as Prisma.InputJsonValue } : {}),
+        // Permissions chosen before inviting (a prepared invitation): the new login starts with them.
+        ...(!input.businessOwnerId && input.permissions ? { permissions: invitePermissions(perms) as Prisma.InputJsonValue } : {}),
       },
     });
     await audit(tx, { actorId: actor.id, action: "portal.invited", entityType: "PortalInvite", entityId: invite.id, clientId, details: { role: input.role, ...perms, businessOwnerId: input.businessOwnerId ?? null } });
@@ -123,8 +126,10 @@ export async function acceptPortalInvite(token: string, password: string) {
     // A business owner's invitation carries its own permissions (their own K-1s always open);
     // anything else starts from the usual defaults.
     const ownerPerms = invite.businessOwnerId ? { ...normalizePermissions(invite.permissions), canViewBookkeeping: false, canViewIdentity: false } : null;
+    // Permissions chosen when the invitation was prepared (never the business view).
+    const chosen = !invite.businessOwnerId && invite.permissions ? invitePermissions(invite.permissions) : null;
     await tx.portalAccess.create({
-      data: { portalUserId: user.id, clientId: invite.clientId, role: invite.role, canViewTax: invite.role === "OWNER", canViewIdentity: invite.role === "OWNER", ...(ownerPerms ?? {}), grantedById: invite.invitedById },
+      data: { portalUserId: user.id, clientId: invite.clientId, role: invite.role, canViewTax: invite.role === "OWNER", canViewIdentity: invite.role === "OWNER", ...(chosen ?? {}), ...(ownerPerms ?? {}), grantedById: invite.invitedById },
     });
     if (invite.businessOwnerId) await tx.businessOwner.updateMany({ where: { id: invite.businessOwnerId, clientId: invite.clientId, archivedAt: null }, data: { portalUserId: user.id } });
     if (ownerPerms?.canApprovePayroll) await syncPayrollApproverRow(tx, { clientId: invite.clientId, portalUserId: user.id, on: true, actorId: invite.invitedById });

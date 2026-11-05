@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash, randomInt, timingSafeEqual } from "node:crypto";
-import type { ClientType, OnboardingApplication } from "@prisma/client";
+import type { ClientType, OnboardingApplication, PortalRole } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
@@ -19,7 +19,7 @@ import { BUSINESS, SMS_CONSENT_TEXT } from "@/lib/business";
 import type { PortalActor } from "@/lib/portal/session";
 import { ValidationError } from "./clients";
 import { maskEmail } from "./mfa";
-import { invitePortalUser } from "./portal-accounts";
+import { invitePortalUser, type PortalPermissions } from "./portal-accounts";
 import { retentionDate } from "./documents";
 import { applySmsConsent } from "./sms-consent";
 import { queueStaffAlert } from "./staff-alerts";
@@ -518,8 +518,23 @@ export function senderWarning() {
 }
 
 async function emailActivationInvite(clientId: string, email: string, name: string, invitedBy: Actor | null) {
-  const { token, grantedExisting } = await invitePortalUser(invitedBy ?? ({ id: null } as unknown as Actor), clientId, { email, name, role: "OWNER" });
-  if (grantedExisting || !token) return { ok: true as const, grantedExisting: true };
+  return emailPortalInvitation(invitedBy, clientId, { email, name, role: "OWNER" });
+}
+
+/**
+ * The single-invite path, by email: invitePortalUser creates the invitation (or adds access to an
+ * existing login), then the activation email goes out and its status is recorded on the invitation
+ * (SENT = Resend accepted it; DELIVERED / FAILED only from Resend's signed events).
+ */
+export async function emailPortalInvitation(
+  invitedBy: Actor | null,
+  clientId: string,
+  input: { email: string; name: string; role: PortalRole; contactId?: string | null; permissions?: Partial<PortalPermissions> },
+): Promise<{ ok: true; grantedExisting: boolean; inviteId?: string; providerId?: string | null; portalUserId?: string } | { ok: false; detail: string; inviteId: string }> {
+  const email = normalizeEmail(input.email) ?? input.email;
+  const name = input.name;
+  const { token, grantedExisting, portalUserId } = await invitePortalUser(invitedBy ?? ({ id: null } as unknown as Actor), clientId, { ...input, email });
+  if (grantedExisting || !token) return { ok: true as const, grantedExisting: true, portalUserId };
   const invite = await prisma.portalInvite.findFirstOrThrow({ where: { email, clientId, acceptedAt: null, revokedAt: null }, orderBy: { createdAt: "desc" } });
   await prisma.portalInvite.update({ where: { id: invite.id }, data: { sentByEmail: true, emailTo: email } });
   const link = `${appUrl()}/client/invite/${token}`;
@@ -530,7 +545,7 @@ async function emailActivationInvite(clientId: string, email: string, name: stri
     where: { id: invite.id },
     data: res.ok ? { emailStatus: "SENT", emailProviderId: res.providerId, emailSentAt: new Date(), emailError: null } : { emailStatus: "FAILED", emailError: res.detail.slice(0, 300), emailSentAt: new Date() },
   });
-  return res.ok ? { ok: true as const, grantedExisting: false } : { ok: false as const, detail: res.detail };
+  return res.ok ? { ok: true as const, grantedExisting: false, inviteId: invite.id, providerId: res.providerId } : { ok: false as const, detail: res.detail, inviteId: invite.id };
 }
 
 /** Resend delivery events for activation emails. Returns true when the event matched one. */
