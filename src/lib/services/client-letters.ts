@@ -3,6 +3,8 @@ import type { ClientLetter } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
+import type { PortalActor } from "@/lib/portal/session";
+import { requireClientAccess } from "@/lib/portal/access";
 import { assertOwner, ownerAudit } from "@/lib/auth/owner";
 import { brandedEmailHtml, sendEmail } from "@/lib/email";
 import { appUrl } from "@/lib/integrations";
@@ -15,6 +17,7 @@ import { canSend } from "./comm-prefs";
 import { readDocumentBytes, staffUploadDocument } from "./documents";
 import { staffSendMessage } from "./messaging";
 import { ownerAndBusiness } from "./related-businesses";
+import { clientRolloutAuthorized } from "./owner-switches";
 
 /**
  * Owner's Office → Client Letters. Tabitha prepares an approved, versioned letter
@@ -31,20 +34,40 @@ import { ownerAndBusiness } from "./related-businesses";
  * Every step is audit-logged. Nothing is ever sent twice automatically: a batch sends once, a
  * client who already received this version is left out of a new batch, and a re-send is an
  * explicit owner action that makes a new row and a new filed copy.
+ *
+ * Nothing is ever sent automatically at all: no job, schedule or prompt sends a letter. Sending
+ * and re-sending are also refused while the owner's "Client rollout authorized" switch is off
+ * (the default); preparing, reviewing and previewing still work.
+ *
+ * Honest status: a letter is never shown as "delivered" because it was generated, filed or
+ * accepted by the email service. SENT means filed, posted to the portal when the client has a
+ * login, and the email ACCEPTED by the email service. "Delivered", "bounced" and "complaint"
+ * come only from the email provider's signed delivery events (Resend webhook); with no events
+ * (for example, the webhook secret isn't set yet) the letter stays "email accepted". The client's
+ * own login opening it and their optional acknowledgment are recorded separately.
  */
 
+/** What each status actually means (owner-facing). None of them claims the client received it. */
 export const LETTER_STATUS = {
   DRAFT: "Ready to send",
   SENDING: "Sending…",
-  SENT: "Sent",
-  EMAIL_FAILED: "Email failed",
-  NO_EMAIL: "No email: mail or hand deliver",
-  MAILED_MANUALLY: "Mailed / handed",
+  SENT: "Filed & posted; email accepted by email service",
+  EMAIL_FAILED: "Filed; email not sent or bounced",
+  NO_EMAIL: "Filed; no email: needs physical delivery",
+  MAILED_MANUALLY: "Mailed / handed over (recorded by you)",
   FAILED: "Not sent",
 } as const;
 export type LetterStatus = keyof typeof LETTER_STATUS;
-/** Statuses that mean the client has the letter (or it is on its way by hand). */
-const DELIVERED: LetterStatus[] = ["SENT", "EMAIL_FAILED", "NO_EMAIL", "MAILED_MANUALLY"];
+/** Statuses that mean this version already went out to the client (so a new batch leaves them out). */
+const ALREADY_SENT: LetterStatus[] = ["SENT", "EMAIL_FAILED", "NO_EMAIL", "MAILED_MANUALLY"];
+
+export const ROLLOUT_ON_HOLD = "Client letters are on hold until you authorize the client rollout.";
+/** Days after which an unopened letter is flagged. */
+export const NOT_VIEWED_DAYS = 14;
+
+async function assertRolloutAuthorized() {
+  if (!(await clientRolloutAuthorized())) throw new ValidationError(ROLLOUT_ON_HOLD);
+}
 
 export const SEND_CONFIRM_WORD = "SEND";
 
@@ -125,7 +148,7 @@ export async function prepareLetterBatch(actor: Actor, opts: { version?: string 
   const recipients = await letterRecipients();
   if (!recipients.length) throw new ValidationError("There are no active clients on the Bookkeeping list.");
   // Clients who already have this version are left out (never a duplicate by accident); Tabitha can include them.
-  const already = await prisma.clientLetter.findMany({ where: { templateVersion: t.version, status: { in: DELIVERED }, clientId: { in: recipients.map((r) => r.clientId) } }, select: { clientId: true, sentAt: true }, orderBy: { sentAt: "desc" } });
+  const already = await prisma.clientLetter.findMany({ where: { templateVersion: t.version, status: { in: ALREADY_SENT }, clientId: { in: recipients.map((r) => r.clientId) } }, select: { clientId: true, sentAt: true }, orderBy: { sentAt: "desc" } });
   const sentTo = new Map<string, Date | null>();
   for (const a of already) if (!sentTo.has(a.clientId)) sentTo.set(a.clientId, a.sentAt);
   const now = new Date();
@@ -236,6 +259,8 @@ async function deliver(actor: Actor, letterId: string, now = new Date()): Promis
   const r = await resolveRecipient(l.clientId);
   let documentId: string | null = null;
   let messageId: string | null = null;
+  let filedAt: Date | null = null;
+  let portalPostedAt: Date | null = null;
   try {
     const bytes = await buildLetterPdf(t, fieldsOf({ ...l, letterDate: day }, day), { letterId: l.id });
     const doc = await staffUploadDocument(actor, {
@@ -243,6 +268,7 @@ async function deliver(actor: Actor, letterId: string, now = new Date()): Promis
       visibility: "PUBLISHED", bytes, originalName: letterFileName(l), notify: false,
     });
     documentId = doc.id;
+    filedAt = new Date();
     await audit(prisma, { actorId: actor.id, action: "client_letter.filed", entityType: "ClientLetter", entityId: l.id, clientId: l.clientId, details: { documentId, version: t.version } });
     if (r.hasPortal) {
       const m = await staffSendMessage(actor, {
@@ -250,11 +276,12 @@ async function deliver(actor: Actor, letterId: string, now = new Date()): Promis
         body: `Dear ${l.ownerFirstName},\n\nPlease see the attached letter about your bookkeeping and your client portal. A copy is also saved in your Documents.\n\nThe T. Turner & Associates Team`,
       });
       messageId = m.id;
+      portalPostedAt = new Date();
       await audit(prisma, { actorId: actor.id, action: "client_letter.portal_posted", entityType: "ClientLetter", entityId: l.id, clientId: l.clientId, details: { messageId } });
     }
   } catch (err) {
     const detail = err instanceof ValidationError ? err.message : "Unexpected error";
-    await prisma.clientLetter.update({ where: { id: l.id }, data: { status: "FAILED", letterDate: day, sentAt: now, sentById: actor.id, documentId, messageId, emailError: `Not sent: ${detail}`.slice(0, 300) } });
+    await prisma.clientLetter.update({ where: { id: l.id }, data: { status: "FAILED", letterDate: day, sentAt: now, sentById: actor.id, documentId, messageId, filedAt, portalPostedAt, emailError: `Not sent: ${detail}`.slice(0, 300) } });
     await audit(prisma, { actorId: actor.id, action: "client_letter.failed", entityType: "ClientLetter", entityId: l.id, clientId: l.clientId, details: { detail: detail.slice(0, 200), documentId } });
     return "FAILED";
   }
@@ -285,7 +312,7 @@ async function deliver(actor: Actor, letterId: string, now = new Date()): Promis
       }
     }
   }
-  await prisma.clientLetter.update({ where: { id: l.id }, data: { status, letterDate: day, sentAt: now, sentById: actor.id, email, emailedAt, emailProviderId, emailError, documentId, messageId } });
+  await prisma.clientLetter.update({ where: { id: l.id }, data: { status, letterDate: day, sentAt: now, sentById: actor.id, email, emailedAt, emailProviderId, emailError, documentId, messageId, filedAt, portalPostedAt, ...(status === "NO_EMAIL" || status === "EMAIL_FAILED" ? { followUpFlaggedAt: new Date(), followUpReason: status === "NO_EMAIL" ? "No email on file: needs physical delivery" : "Email not sent" } : {}) } });
   await audit(prisma, { actorId: actor.id, action: "client_letter.sent", entityType: "ClientLetter", entityId: l.id, clientId: l.clientId, details: { status, version: t.version, documentId, messageId, emailed: !!emailedAt, emailError } });
   return status;
 }
@@ -294,6 +321,7 @@ async function deliver(actor: Actor, letterId: string, now = new Date()): Promis
 export async function sendLetterBatch(actor: Actor, batchId: string, confirm: string, now = new Date()) {
   await assertOwner(actor);
   if (confirm.trim().toUpperCase() !== SEND_CONFIRM_WORD) throw new ValidationError(`Type ${SEND_CONFIRM_WORD} to confirm.`);
+  await assertRolloutAuthorized();
   const claimed = await prisma.clientLetterBatch.updateMany({ where: { id: batchId, status: "DRAFT" }, data: { status: "SENDING" } });
   if (!claimed.count) throw new ValidationError("This batch was already sent.");
   const letters = await prisma.clientLetter.findMany({ where: { batchId, status: "DRAFT", excluded: false }, orderBy: { businessName: "asc" }, select: { id: true } });
@@ -312,6 +340,7 @@ export async function sendLetterBatch(actor: Actor, batchId: string, confirm: st
 export async function resendLetter(actor: Actor, letterId: string, confirm: string, now = new Date()) {
   await assertOwner(actor);
   if (confirm.trim().toUpperCase() !== SEND_CONFIRM_WORD) throw new ValidationError(`Type ${SEND_CONFIRM_WORD} to confirm.`);
+  await assertRolloutAuthorized();
   const prior = await prisma.clientLetter.findUnique({ where: { id: letterId }, include: { batch: { select: { status: true } } } });
   if (!prior) throw new ValidationError("Letter not found.");
   if (prior.batch.status !== "SENT" || prior.status === "DRAFT" || prior.status === "SENDING") throw new ValidationError("Only a letter from a sent batch can be sent again.");
@@ -320,6 +349,8 @@ export async function resendLetter(actor: Actor, letterId: string, confirm: stri
     data: { batchId: prior.batchId, clientId: prior.clientId, templateVersion: prior.templateVersion, businessName: r.businessName, ownerName: r.ownerName, ownerFirstName: r.ownerFirstName, email: r.email, portalUserId: r.portalUserId, resendOfId: prior.id },
   });
   await ownerAudit(actor.id, "client_letters.resend", "ClientLetter", row.id, { resendOf: prior.id, clientId: prior.clientId });
+  // The re-send is the follow-up for the earlier letter.
+  await prisma.clientLetter.updateMany({ where: { id: prior.id, followUpFlaggedAt: { not: null }, followUpClearedAt: null }, data: { followUpClearedAt: new Date() } });
   const status = await deliver(actor, row.id, now);
   return { letterId: row.id, status };
 }
@@ -330,10 +361,131 @@ export async function markLetterMailed(actor: Actor, letterId: string, on: strin
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(on ?? "");
   const day = m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))) : null;
   if (!day || Number.isNaN(day.getTime())) throw new ValidationError("Enter the date it was mailed or handed over.");
-  const r = await prisma.clientLetter.updateMany({ where: { id: letterId, status: { in: ["NO_EMAIL", "EMAIL_FAILED"] } }, data: { status: "MAILED_MANUALLY", mailedOn: day, mailedById: actor.id, mailedRecordedAt: new Date() } });
+  const r = await prisma.clientLetter.updateMany({ where: { id: letterId, status: { in: ["NO_EMAIL", "EMAIL_FAILED"] } }, data: { status: "MAILED_MANUALLY", mailedOn: day, mailedById: actor.id, mailedRecordedAt: new Date(), followUpClearedAt: new Date() } });
   if (!r.count) throw new ValidationError("Only a letter that wasn't emailed can be marked as mailed or handed over.");
   const l = await prisma.clientLetter.findUniqueOrThrow({ where: { id: letterId }, select: { clientId: true } });
   await audit(prisma, { actorId: actor.id, action: "client_letter.mailed", entityType: "ClientLetter", entityId: letterId, clientId: l.clientId, details: { on } });
+}
+
+// --- Email provider events (Resend webhook) ----------------------------------------------------
+
+/**
+ * Applies one signed Resend delivery event to the letter whose email it is. Returns false when no
+ * letter matches (so the webhook can try other kinds of email). "Delivered" means the recipient's
+ * mail server accepted it; a bounce or spam complaint flags the letter for the owner's follow-up,
+ * and a bounce (or provider failure) also moves it to EMAIL_FAILED so it can be mailed by hand.
+ * Repeated or out-of-order events never undo a bounce or move a letter backwards.
+ */
+export async function applyLetterEmailEvent(type: string, providerId: string, reason?: string | null, now = new Date()): Promise<boolean> {
+  const l = await prisma.clientLetter.findFirst({ where: { emailProviderId: providerId } });
+  if (!l) return false;
+  const why = reason?.trim().slice(0, 200) || null;
+  if (type === "email.delivered") {
+    const r = await prisma.clientLetter.updateMany({ where: { id: l.id, emailDeliveredAt: null, emailBouncedAt: null }, data: { emailDeliveredAt: now } });
+    if (r.count) await audit(prisma, { actorId: null, action: "client_letter.email_delivered", entityType: "ClientLetter", entityId: l.id, clientId: l.clientId });
+  } else if (type === "email.bounced" || type === "email.failed") {
+    const detail = type === "email.bounced" ? "Email bounced" : "The email service couldn't deliver the email";
+    const r = await prisma.clientLetter.updateMany({
+      where: { id: l.id, emailBouncedAt: null },
+      data: { emailBouncedAt: now, emailBounceReason: why, followUpFlaggedAt: now, followUpReason: `${detail}${why ? ` (${why})` : ""}`.slice(0, 300), followUpClearedAt: null },
+    });
+    // Accepted is not delivered: a bounced letter is no longer "email accepted"; it can now be mailed by hand.
+    await prisma.clientLetter.updateMany({ where: { id: l.id, status: "SENT" }, data: { status: "EMAIL_FAILED", emailError: `${detail}${why ? `: ${why}` : ""}`.slice(0, 300) } });
+    if (r.count) await audit(prisma, { actorId: null, action: "client_letter.email_bounced", entityType: "ClientLetter", entityId: l.id, clientId: l.clientId, details: { type, reason: why } });
+  } else if (type === "email.complained") {
+    const r = await prisma.clientLetter.updateMany({
+      where: { id: l.id, emailComplainedAt: null },
+      data: { emailComplainedAt: now, followUpFlaggedAt: now, followUpReason: "The recipient marked the email as spam", followUpClearedAt: null },
+    });
+    if (r.count) await audit(prisma, { actorId: null, action: "client_letter.email_complained", entityType: "ClientLetter", entityId: l.id, clientId: l.clientId });
+  }
+  return true;
+}
+
+// --- The client's own login: first view and optional acknowledgment ---------------------------
+
+/** Letters still waiting for a client (sent or filed, not in a draft or failed state). */
+const CLIENT_VISIBLE: LetterStatus[] = ["SENT", "EMAIL_FAILED", "NO_EMAIL", "MAILED_MANUALLY"];
+
+/**
+ * Records the first time the client's OWN portal login opened a letter (its Message Center thread
+ * or its filed PDF). Called only from the client portal (portal session) and the document route
+ * when a portal login (not staff) opened the file. Staff "View as Client" never reaches here.
+ */
+export async function recordLetterViewed(portalUserId: string, clientId: string, ref: { messageIds?: string[]; documentId?: string }, now = new Date()) {
+  const or = [
+    ...(ref.messageIds?.length ? [{ messageId: { in: ref.messageIds } }] : []),
+    ...(ref.documentId ? [{ documentId: ref.documentId }] : []),
+  ];
+  if (!or.length) return 0;
+  const letters = await prisma.clientLetter.findMany({ where: { clientId, firstViewedAt: null, status: { in: CLIENT_VISIBLE }, OR: or }, select: { id: true, messageId: true } });
+  let n = 0;
+  for (const l of letters) {
+    const via = ref.messageIds?.includes(l.messageId ?? "") ? "MESSAGE" : "DOCUMENT";
+    const r = await prisma.clientLetter.updateMany({ where: { id: l.id, firstViewedAt: null }, data: { firstViewedAt: now, firstViewedByPortalUserId: portalUserId, firstViewedVia: via } });
+    if (r.count) {
+      n++;
+      await audit(prisma, { actorId: null, action: "client_letter.first_viewed", entityType: "ClientLetter", entityId: l.id, clientId, details: { portalUserId, via } });
+    }
+  }
+  return n;
+}
+
+/** Letters carried by these portal messages, for the client's own Message Center (no staff details). */
+export async function portalLettersForMessages(user: PortalActor, clientId: string, messageIds: string[]) {
+  await requireClientAccess(user.id, clientId, "message");
+  if (!messageIds.length) return [];
+  return prisma.clientLetter.findMany({
+    where: { clientId, messageId: { in: messageIds }, status: { in: CLIENT_VISIBLE } },
+    select: { id: true, messageId: true, acknowledgedAt: true },
+  });
+}
+
+/**
+ * "I have read this notice" (optional; nothing depends on it). The client's own login only, for a
+ * letter to an account they can open. Idempotent: the first acknowledgment is kept.
+ */
+export async function acknowledgeClientLetter(user: PortalActor, letterId: string, now = new Date()) {
+  const l = await prisma.clientLetter.findUnique({ where: { id: letterId }, select: { id: true, clientId: true, status: true, messageId: true, acknowledgedAt: true } });
+  if (!l || !CLIENT_VISIBLE.includes(l.status as LetterStatus) || !l.messageId) throw new ValidationError("Letter not found.");
+  await requireClientAccess(user.id, l.clientId, "message");
+  const r = await prisma.clientLetter.updateMany({ where: { id: l.id, acknowledgedAt: null }, data: { acknowledgedAt: now, acknowledgedByPortalUserId: user.id } });
+  if (!r.count) return { already: true };
+  await audit(prisma, { actorId: null, action: "client_letter.acknowledged", entityType: "ClientLetter", entityId: l.id, clientId: l.clientId, details: { portalUserId: user.id } });
+  return { already: false };
+}
+
+// --- What happened, for the owner ---------------------------------------------------------------
+
+export type LetterFlag = "NEEDS_PHYSICAL_DELIVERY" | "EMAIL_BOUNCED" | "EMAIL_COMPLAINT" | "EMAIL_NOT_SENT" | "NOT_VIEWED";
+export const FLAG_LABEL: Record<LetterFlag, string> = {
+  NEEDS_PHYSICAL_DELIVERY: "Needs physical delivery",
+  EMAIL_BOUNCED: "Email bounced",
+  EMAIL_COMPLAINT: "Marked as spam",
+  EMAIL_NOT_SENT: "Email not sent",
+  NOT_VIEWED: `Not viewed after ${NOT_VIEWED_DAYS} days`,
+};
+
+type FactsInput = Pick<ClientLetter, "status" | "excluded" | "sentAt" | "documentId" | "messageId" | "filedAt" | "portalPostedAt" | "emailedAt" | "emailDeliveredAt" | "emailBouncedAt" | "emailComplainedAt" | "followUpFlaggedAt" | "followUpClearedAt" | "firstViewedAt" | "acknowledgedAt" | "mailedOn">;
+
+/** Each step with its date (null = hasn't happened / not reported), the email state, and the flags. */
+export function letterFacts(l: FactsInput, opts: { now?: Date; superseded?: boolean } = {}) {
+  const now = opts.now ?? new Date();
+  const filedAt = l.filedAt ?? (l.documentId ? l.sentAt : null);
+  const portalPostedAt = l.portalPostedAt ?? (l.messageId ? l.sentAt : null);
+  const email: "NONE" | "NOT_SENT" | "ACCEPTED" | "DELIVERED" | "BOUNCED" =
+    l.emailBouncedAt ? "BOUNCED" : l.emailDeliveredAt ? "DELIVERED" : l.emailedAt ? "ACCEPTED" : l.status === "NO_EMAIL" ? "NONE" : l.status === "EMAIL_FAILED" ? "NOT_SENT" : "NONE";
+  const flags: LetterFlag[] = [];
+  const live = !l.excluded && !opts.superseded && CLIENT_VISIBLE.includes(l.status as LetterStatus);
+  const open = !!l.followUpFlaggedAt && !l.followUpClearedAt;
+  if (live && l.status !== "MAILED_MANUALLY") {
+    if (l.status === "NO_EMAIL") flags.push("NEEDS_PHYSICAL_DELIVERY");
+    if (l.emailBouncedAt) flags.push("EMAIL_BOUNCED");
+    else if (l.status === "EMAIL_FAILED") flags.push("EMAIL_NOT_SENT");
+    if (l.emailComplainedAt && open) flags.push("EMAIL_COMPLAINT");
+  }
+  if (live && l.sentAt && !l.firstViewedAt && !l.acknowledgedAt && l.status !== "MAILED_MANUALLY" && now.getTime() - l.sentAt.getTime() > NOT_VIEWED_DAYS * 86_400_000) flags.push("NOT_VIEWED");
+  return { filedAt, portalPostedAt, email, emailAcceptedAt: l.emailedAt, emailDeliveredAt: l.emailDeliveredAt, emailBouncedAt: l.emailBouncedAt, emailComplainedAt: l.emailComplainedAt, firstViewedAt: l.firstViewedAt, acknowledgedAt: l.acknowledgedAt, mailedOn: l.mailedOn, flags };
 }
 
 // --- Page data ----------------------------------------------------------------------------------
@@ -353,7 +505,17 @@ export async function clientLettersView(actor: Actor, opts: { clientId?: string 
   const clientRecord = opts.clientId
     ? await prisma.clientLetter.findMany({ where: { clientId: opts.clientId }, orderBy: { createdAt: "desc" }, include: { client: { select: { displayName: true } } } })
     : null;
+  // A letter re-sent later is superseded by the newer row (its flags move to the new one).
+  const resentIds = new Set(batches.flatMap((b) => b.letters.map((l) => l.resendOfId)).filter((x): x is string => !!x));
+  const now = new Date();
+  const flagged = batches
+    .filter((b) => b.status === "SENT")
+    .flatMap((b) => b.letters.map((l) => ({ l, facts: letterFacts(l, { now, superseded: resentIds.has(l.id) }) })))
+    .filter((x) => x.facts.flags.length);
   return {
+    rolloutAuthorized: await clientRolloutAuthorized(),
+    resentIds,
+    flagged,
     current: CURRENT_LETTER,
     draft: batches.find((b) => b.status === "DRAFT" || b.status === "SENDING") ?? null,
     history: batches.filter((b) => b.status === "SENT"),
