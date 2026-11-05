@@ -118,7 +118,8 @@ describe("encryption at rest", () => {
       const src = readFileSync(f, "utf8");
       for (const m of src.matchAll(/\b(?:storage|store)\.put\(([^;]+)\);/g)) {
         // Writes that copy already-sealed bytes (restore) or encrypt inline are fine.
-        if (!/encryptBytes\(|, stored$/.test(m[1].trim())) offenders.push(`${path.relative(root, f)}: ${m[0].slice(0, 100)}`);
+        const arg = m[1].trim();
+        if (!arg.includes("encryptBytes(") && !arg.endsWith(", stored")) offenders.push(`${path.relative(root, f)}: ${m[0].slice(0, 100)}`);
       }
     }
     expect(offenders).toEqual([]);
