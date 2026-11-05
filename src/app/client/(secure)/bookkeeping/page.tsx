@@ -16,6 +16,7 @@ import { reportCaption } from "@/lib/services/bookkeeping-clients";
 import { CLIENT_STATUS_LABEL, clientInterimStatements, clientStatementStatus, ledgerStatementsReleased } from "@/lib/services/client-statements";
 import { rangeText } from "@/lib/services/client-requests";
 import { registryLabel } from "@/lib/services/bank-accounts";
+import { clientFacingRequestWhere } from "@/lib/services/client-request-scope";
 
 export const metadata = { title: "Bookkeeping & requests" };
 
@@ -33,14 +34,14 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
             // Published, scanned-clean files — plus the client's own uploads at any scan stage (listed, not opened, until clean).
             documents: { where: { deletedAt: null, OR: [{ visibility: "PUBLISHED", scanStatus: "CLEAN" }, { uploadedByPortalId: { not: null } }] }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, file: { select: { originalName: true } } } },
             // Drafts were never sent, and year-end requests have their own place: neither shows in a month.
-            requests: { where: { status: { notIn: ["CANCELLED", "DRAFT"] }, kind: { not: "YEAR_END" } }, orderBy: { createdAt: "asc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } },
+            requests: { where: { status: { notIn: ["CANCELLED", "DRAFT"] }, kind: { not: "YEAR_END" }, AND: [clientFacingRequestWhere(true)] }, orderBy: { createdAt: "asc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } },
             // Questions our office asked about this month (answered in Messages).
             conversations: { where: { questionStatus: { not: null } }, orderBy: { createdAt: "asc" }, select: { id: true, subject: true, questionStatus: true, responseDueAt: true } },
           },
           orderBy: [{ year: "desc" }, { month: "desc" }],
         })
       : [],
-    prisma.documentRequest.findMany({ where: { clientId: current.clientId, periodId: null, status: { in: ["OPEN", "SUBMITTED"] } }, orderBy: { createdAt: "desc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } }),
+    prisma.documentRequest.findMany({ where: { clientId: current.clientId, periodId: null, status: { in: ["OPEN", "SUBMITTED"] }, AND: [clientFacingRequestWhere(current.canViewBookkeeping)] }, orderBy: { createdAt: "desc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } }),
   ]);
   // Only operational status reaches the client: "in preparation" or "available for download".
   const interims = current.canViewBookkeeping ? await clientInterimStatements(current.clientId) : [];

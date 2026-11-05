@@ -42,12 +42,14 @@ function StageIcon({ status }: { status: StageStatus }) {
 }
 
 /** `links`: where each stage's link goes on this page; `everyMonth`: the bookkeeping page (null in View as Client, shown disabled). */
-export function BooksProgressCard({ progress, monthLabel, links, everyMonth }: { progress: BooksProgress; monthLabel: string; links: { "what-we-need": string; statements: string }; everyMonth: string | null }) {
+export function BooksProgressCard({ progress, links, everyMonth }: { progress: BooksProgress; links: { "what-we-need": string; statements: string }; everyMonth: string | null }) {
   const p = progress;
+  const monthLabel = p.periodLabel;
+  const allPeriods = p.periodKind === "QUARTER" ? "See all bookkeeping periods" : "See every month";
   return (
     <div className={clsx(card, "p-5")} data-testid="books-progress" data-percent={p.percent} data-current={p.current ?? "DONE"}>
       <h2 className="font-serif text-lg font-bold text-navy-900">{monthLabel} – Bookkeeping Progress</h2>
-      <p className="text-sm text-navy-800">{p.done ? "Every step for this month is complete." : `${p.completed} of ${p.applicable} steps complete`}</p>
+      <p className="text-sm text-navy-800">{p.done ? `Every step for ${p.periodKind === "QUARTER" ? "this quarter" : "this month"} is complete.` : `${p.completed} of ${p.applicable} steps complete`}</p>
       <div className="mt-3 flex flex-wrap items-start gap-5">
         <Ring percent={p.percent} />
         <ol className="min-w-0 flex-1 basis-64" aria-label={`${monthLabel} bookkeeping steps`}>
@@ -76,9 +78,9 @@ export function BooksProgressCard({ progress, monthLabel, links, everyMonth }: {
         </ol>
       </div>
       {everyMonth ? (
-        <Link href={everyMonth} className={clsx(textLink, "mt-3")}>See every month</Link>
+        <Link href={everyMonth} className={clsx(textLink, "mt-3")}>{allPeriods}</Link>
       ) : (
-        <span className={clsx(textLink, "mt-3 cursor-not-allowed opacity-60")} aria-disabled="true" title="Not available in View as Client" data-disabled="true">See every month</span>
+        <span className={clsx(textLink, "mt-3 cursor-not-allowed opacity-60")} aria-disabled="true" title="Not available in View as Client" data-disabled="true">{allPeriods}</span>
       )}
     </div>
   );

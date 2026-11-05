@@ -151,7 +151,7 @@ describe("historical records", () => {
 });
 
 describe("onboarding gaps", () => {
-  it("Coetha drafts a historical request for the months between the books' opening date and the start of the bank feed", async () => {
+  it("Coetha raises an internal office task (never a client request) for the prior statements between the books' opening date and the start of the bank feed", async () => {
     const w = await world();
     const chk = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", nickname: "Operating", last4: "0042", gl: "NEW" });
     await postOpeningBalances(w.daria, w.biz.id, { date: "2026-06-30", balances: [{ accountId: chk.ledgerAccountId!, amount: "100.00" }] });
@@ -160,9 +160,12 @@ describe("onboarding gaps", () => {
     pages = [{ added: [t("g1", "p-chk", 10, "2026-10-02", "PRETEND FEE")] }];
     await syncConnection(conn.id, "MANUAL", w.daria);
     await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
-    const h = await prisma.documentRequest.findFirstOrThrow({ where: { clientId: w.biz.id, kind: "HISTORICAL" } });
-    expect(h).toMatchObject({ status: "OPEN", routing: "ROUTINE", bookkeepingAccountId: chk.id, docType: "BANK_STATEMENT" });
-    expect([h.periodStart!.toISOString().slice(0, 10), h.periodEnd!.toISOString().slice(0, 10)]).toEqual(["2026-07-01", "2026-09-30"]);
+    // Our office retrieves statements itself: no client request, an internal task instead.
+    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "HISTORICAL" } })).toBe(0);
+    const h = await prisma.task.findFirstOrThrow({ where: { clientId: w.biz.id, title: { startsWith: "Retrieve prior bank statements" } } });
+    expect(h.title).toMatch(/^Retrieve prior bank statements — .+ — /);
+    expect(chk.id).toBeTruthy();
+    expect(h.details).toMatch(/books open on 2026-07-01/);
   });
 });
 
@@ -190,26 +193,26 @@ describe("request routing: routine requests go out on their own, the rest wait f
     for (const [input, want] of cases) expect(classifyRequest(input).routing, JSON.stringify(input)).toBe(want);
   });
 
-  it("by default a routine statement request goes out at once with the exact account, period and document; history is kept", async () => {
+  it("a missing statement becomes an internal office task, never a client request; it's never repeated", async () => {
     const w = await world();
     const chk = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", nickname: "Operating", last4: "0042" });
     const { token } = await invitePortalUser(w.tabitha, w.biz.id, { email: "pat@pretend.example", name: "Pat Pretend", role: "OWNER" });
     await acceptPortalInvite(token!, "Pretend-Strong-Pass-1");
     const before = await prisma.notification.count();
     const r1 = await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
-    expect(r1.sent).toBe(1);
-    const [req] = await prisma.documentRequest.findMany({ where: { clientId: w.biz.id, kind: "STATEMENT" } });
-    expect(req).toMatchObject({ status: "OPEN", source: "COETHA", routing: "ROUTINE", bookkeepingAccountId: chk.id, docType: "BANK_STATEMENT", title: "Bank statement — Operating ••0042 — October 2026" });
-    expect([req.periodStart!.toISOString().slice(0, 10), req.periodEnd!.toISOString().slice(0, 10)]).toEqual(["2026-10-01", "2026-10-31"]);
-    expect(req.reason).toMatch(/reconcile Operating ••0042 for October 2026/);
-    expect(await prisma.notification.count()).toBeGreaterThan(before); // through the client's notification preferences
-    expect(await prisma.auditLog.count({ where: { entityId: req.id, action: { in: ["coetha.request_drafted", "coetha.request_auto_sent"] } } })).toBe(2);
-    // Running again never sends it twice.
-    await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
-    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(1);
-    // The current month isn't due: nothing is requested for it.
+    expect([r1.sent, r1.officeTasks]).toEqual([0, 1]);
+    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(0);
+    const task = await prisma.task.findFirstOrThrow({ where: { clientId: w.biz.id } });
+    expect(task).toMatchObject({ title: "Retrieve bank statement — Operating ••0042 — October 2026", assigneeId: w.daria.id, status: "OPEN" });
+    expect(task.details).toMatch(/reconcile Operating ••0042 for October 2026/);
+    expect(await prisma.notification.count()).toBe(before); // the client is never told to send it
+    expect(chk.id).toBeTruthy();
+    // Running again never repeats it.
+    expect((await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY })).officeTasks).toBe(0);
+    expect(await prisma.task.count({ where: { clientId: w.biz.id } })).toBe(1);
+    // The current month isn't due: nothing for it.
     await runWorkflowMonitor(null, w.biz.id, 2026, 11, { today: TODAY });
-    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT", periodEnd: new Date("2026-11-30T00:00:00Z") } })).toBe(0);
+    expect(await prisma.task.count({ where: { clientId: w.biz.id } })).toBe(1);
   });
 
   it("unusual or sensitive requests wait for Tabitha; staff can't send them; with the switch off routine ones wait for staff", async () => {
@@ -233,8 +236,12 @@ describe("request routing: routine requests go out on their own, the rest wait f
     // Tabitha can turn automatic sending off; then routine requests wait for staff.
     await expect(setOwnerSwitch(w.daria, "coethaAutoSend", false)).rejects.toBeInstanceOf(ForbiddenError);
     await setOwnerSwitch(w.tabitha, "coethaAutoSend", false);
+    pages = [{ added: [t("n1", "p-chk", -1200, "2026-11-10", "STRIPE PAYOUT")] }];
+    await syncConnection(conn.id, "MANUAL", w.daria);
     await runWorkflowMonitor(null, w.biz.id, 2026, 11, { today: "2026-12-03" });
-    const nov = await prisma.documentRequest.findFirstOrThrow({ where: { clientId: w.biz.id, kind: "STATEMENT", periodEnd: new Date("2026-11-30T00:00:00Z") } });
+    // (Statements are never requested: our office retrieves them.) A routine request — the processor's statement — waits for staff.
+    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(0);
+    const nov = await prisma.documentRequest.findFirstOrThrow({ where: { clientId: w.biz.id, docType: "MERCHANT_STATEMENT", periodEnd: new Date("2026-11-30T00:00:00Z") } });
     expect(nov).toMatchObject({ status: "DRAFT", routing: "ROUTINE" });
     await sendClientRequest(w.daria, w.biz.id, nov.id); // one-click send by staff
     expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: nov.id } })).status).toBe("OPEN");
@@ -258,6 +265,12 @@ describe("staff upload the statements Coetha asks for (new clients without a fee
     const chk = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", nickname: "Operating", last4: "0042" });
     const sav = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "SAVINGS", nickname: "Reserve", last4: "0043" });
     await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: TODAY });
+    // Coetha no longer asks the client for statements: the office files them. A statement request a
+    // staff member writes by hand (a one-off) is answered the same way as before.
+    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(0);
+    const mk = (acct: typeof chk) => createClientRequest(w.daria, w.biz.id, { kind: "STATEMENT", docType: "BANK_STATEMENT", bookkeepingAccountId: acct.id, start: "2026-10-01", end: "2026-10-31", title: `Bank statement — ${acct.id} — October 2026` }, { send: false });
+    await mk(chk);
+    await mk(sav);
     const [r1, r2] = await prisma.documentRequest.findMany({ where: { clientId: w.biz.id, kind: "STATEMENT" }, orderBy: { title: "asc" } });
     await expect(staffUploadForRequest(w.eve, w.biz.id, r1.id, { bytes: PDF, originalName: "oct.pdf" })).rejects.toBeInstanceOf(ForbiddenError);
     const doc = await staffUploadForRequest(w.daria, w.biz.id, r1.id, { bytes: PDF, originalName: "oct.pdf" });
@@ -479,6 +492,6 @@ describe("isolation and permissions", () => {
     await syncConnection(conn.id, "MANUAL", w.daria);
     await runWorkflowMonitor(w.daria, w.biz.id, 2026, 10, { today: TODAY });
     const actions = new Set((await prisma.auditLog.findMany({ where: { clientId: w.biz.id } })).map((a) => a.action));
-    for (const a of ["banking.account_registered", "banking.connected", "banking.account_monitored", "banking.synced", "banking.reconciliation_prepared", "coetha.request_drafted", "coetha.workflow_checked"]) expect(actions.has(a), a).toBe(true);
+    for (const a of ["banking.account_registered", "banking.connected", "banking.account_monitored", "banking.synced", "banking.reconciliation_prepared", "coetha.office_statement_task", "coetha.workflow_checked"]) expect(actions.has(a), a).toBe(true);
   });
 });

@@ -182,7 +182,8 @@ const UPLOADS_OFF = <p className="mt-2 rounded-lg bg-gold-50 px-3 py-2 text-sm t
  * which the client never sees). Without `readOnly`, links go to the client's own portal pages.
  */
 export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, readOnly, previewHref }: { d: Dash; tiles: Tile[]; q: string; base: string; linkFor: (id: string) => string; personalQ: string | null; readOnly?: boolean; previewHref?: (path: string, extra?: string) => string | null }) {
-  const mName = monthName(d.selected);
+  // "October 2026", or "Q4 2026" for a quarterly engagement.
+  const mName = d.periodLabel;
   const short = monthName(d.selected, { month: "long" });
   const neededCount = d.checklist.filter((c) => c.status === "NEEDED" || c.status === "MORE_INFO").length;
   // Portal: the client's own page for this account. View as Client: the preview page, or null.
@@ -221,7 +222,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
                 </p>
               </div>
             </div>
-            <MonthSelect base={base} value={d.selected} choices={d.monthChoices} />
+            <MonthSelect base={base} value={d.selected} choices={d.monthChoices} labels={d.choiceLabels} />
           </div>
         </section>
 
@@ -243,7 +244,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
         {/* 3. Monthly Bookkeeping Progress Tracker + Coetha (client-facing status only, from the same stages) */}
         {d.progress && (
           <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <BooksProgressCard progress={d.progress} monthLabel={mName} links={{ "what-we-need": "#what-we-need", statements: "#statements" }} everyMonth={to("/client/bookkeeping")} />
+            <BooksProgressCard progress={d.progress} links={{ "what-we-need": "#what-we-need", statements: "#statements" }} everyMonth={to("/client/bookkeeping")} />
 
             <div className={clsx(navyCard, "flex flex-col p-5")} data-testid="coetha-card">
               <h2 className="flex items-center gap-3 font-serif text-lg font-bold text-white"><Sparkles className="size-6 text-gold-400" aria-hidden /> Coetha | Senior Accountant</h2>

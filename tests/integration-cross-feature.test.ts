@@ -12,7 +12,7 @@ import { homeKind, portalBankFeed, portalBusinessDashboard } from "@/lib/service
 import { categorizeBankTransaction, importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { approveCoethaProposal, decideCoethaProposals, rejectCoethaProposal, runCoetha } from "@/lib/services/coetha";
-import { approveReport, deliverReport, openWorkPeriod, saveProfile, submitReportForReview } from "@/lib/services/bookkeeping-clients";
+import { approveReport, deliverReport, enrollExistingClient, openWorkPeriod, saveProfile, submitReportForReview } from "@/lib/services/bookkeeping-clients";
 import { staffUploadDocument } from "@/lib/services/documents";
 import { handleInboundSms } from "@/lib/services/inbound-sms";
 import { dispatchPendingNotifications, queuePortalNotification } from "@/lib/services/notifications";
@@ -123,8 +123,11 @@ describe("business owners x client business dashboard: financial data needs the 
     // Not a Managed Business yet: banking can't be turned on, not even by Tabitha.
     await expect(setOwnerPermissions(tabitha, biz.id, rowan.owner.id, { canViewBookkeeping: true })).rejects.toThrow(/Regular Tax Client/);
 
-    // Managed Business: staff allowed to set owner permissions still can't turn banking on; Tabitha can.
+    // Managed Business alone still isn't enough: only enrollment on the bookkeeping service opens the business side.
     await prisma.client.update({ where: { id: biz.id }, data: { businessAccess: "ACTIVE" } });
+    await expect(setOwnerPermissions(tabitha, biz.id, rowan.owner.id, { canViewBookkeeping: true })).rejects.toThrow(/Bookkeeping Clients list/);
+    // Enrolled ("+ Add Bookkeeping Client"): staff allowed to set owner permissions still can't turn banking on; Tabitha can.
+    await enrollExistingClient(tabitha, biz.id, { active: true, frequency: "MONTHLY", payroll: false });
     await setupLedger(tabitha, biz.id, { basis: "CASH" });
     await setOwnerPermissionsManager(tabitha, daria.id, true);
     await expect(setOwnerPermissions(daria, biz.id, rowan.owner.id, { canViewBookkeeping: true })).rejects.toBeInstanceOf(ForbiddenError);
@@ -135,8 +138,10 @@ describe("business owners x client business dashboard: financial data needs the 
     const d = await portalBusinessDashboard(rowan.user, biz.id);
     expect(d).toBeTruthy();
     await expect(portalBankFeed(rowan.user, biz.id)).resolves.toBeTruthy();
-    // The other owner still sees none of it.
-    await expect(portalBusinessDashboard(sage.user, biz.id)).rejects.toBeInstanceOf(ForbiddenError);
+    // Once enrolled on the bookkeeping service, every OWNER login of the business has the business
+    // view (the Bookkeeping Clients list rule, hasBusinessView) — the other owner too.
+    expect((await prisma.portalAccess.findFirstOrThrow({ where: { portalUserId: sage.user.id, clientId: biz.id } })).role).toBe("OWNER");
+    await expect(portalBusinessDashboard(sage.user, biz.id)).resolves.toBeTruthy();
 
     // If the business stops being Managed, the grant stops working at once.
     await prisma.client.update({ where: { id: biz.id }, data: { businessAccess: "REMOVED" } });

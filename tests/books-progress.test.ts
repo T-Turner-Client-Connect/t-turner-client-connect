@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { makeUser, managed, prisma, resetDb } from "./db";
+import { makeUser, managed, managedOnly, prisma, resetDb } from "./db";
 import type { Actor } from "@/lib/auth/actor";
 import { ForbiddenError } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
@@ -10,11 +10,18 @@ import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-acco
 import { categorizeBankTransaction, importBankCsv, reconcileAccount, setupLedger } from "@/lib/services/ledger";
 import { completeBankLink, mapBankAccount, syncConnection } from "@/lib/services/banking";
 import { prepareReconciliation } from "@/lib/services/bank-accounts";
-import { approveReport, deliverReport, openWorkPeriod, setChecklistItem, submitReportForReview, uploadMonthlyReport } from "@/lib/services/bookkeeping-clients";
+import { approveReport, bookkeepingWorkspace, deliverReport, enrollExistingClient, openWorkPeriod, setChecklistItem, submitReportForReview, uploadMonthlyReport } from "@/lib/services/bookkeeping-clients";
 import { createDocumentRequest } from "@/lib/services/bookkeeping";
+import { staffUploadStatement } from "@/lib/services/client-requests";
 import { portalUploadDocument } from "@/lib/services/documents";
 import { businessDashboardFor, portalBusinessDashboard } from "@/lib/services/portal-business";
-import { booksProgressFromFacts, computeBooksProgress, type BooksFacts, type BooksProgress } from "@/lib/services/books-progress";
+import { booksProgressFromFacts, computeBooksProgress, engagementPeriod, type BooksFacts, type BooksProgress } from "@/lib/services/books-progress";
+import { accessibleClients, allowedCategories, requireClientAccess } from "@/lib/portal/access";
+import { homeKind, portalBankFeed } from "@/lib/services/portal-business";
+import { portalLicensesPage, portalPayrollPage, portalYearEndPage } from "@/lib/services/portal-business-pages";
+import { portalClientInvoicing } from "@/lib/services/portal-client-invoicing";
+import { runWorkflowMonitor } from "@/lib/services/monthly-workflow";
+import { PortalHomeView } from "@/components/portal/home-view";
 import { BooksProgressCard } from "@/components/portal/books-progress";
 import { BusinessDashboardView } from "@/components/portal/business-dashboard";
 import type { PlaidTxn } from "@/lib/plaid";
@@ -83,7 +90,13 @@ async function business(p: Awaited<ReturnType<typeof people>>, name: string, ema
   if (opts.books !== false) await prisma.bookkeepingProfile.create({ data: { clientId: biz.id, accountingBasis: "CASH", frequency: opts.frequency ?? "MONTHLY" } });
   const { token } = await invitePortalUser(p.tabitha, biz.id, { email, name: `Owner of ${name}`, role: "OWNER" });
   const login = portal(await acceptPortalInvite(token!, "Fictional-Pass-12345"));
-  await managed(biz.id);
+  // Not enrolled: Managed Business access and the login's switch only.
+  if (opts.books === false) await managedOnly(biz.id);
+  else await managed(biz.id);
+  if (opts.books === false) return { biz, login } as unknown as Awaited<ReturnType<typeof enrolled>>;
+  return enrolled(p, biz, login);
+}
+async function enrolled(p: Awaited<ReturnType<typeof people>>, biz: { id: string }, login: PortalActor) {
   await setupLedger(p.daria, biz.id, { basis: "CASH" });
   const code = async (c: string) => (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: biz.id, code: c } })).id;
   const checking = await code("1000");
@@ -114,7 +127,7 @@ async function bringInTransactions(p: Awaited<ReturnType<typeof people>>, b: Biz
 }
 
 const stagesOf = (pr: BooksProgress) => Object.fromEntries(pr.stages.map((s) => [s.key, s.status]));
-const render = (pr: BooksProgress) => renderToStaticMarkup(createElement(BooksProgressCard, { progress: pr, monthLabel: "October 2026", links: { "what-we-need": "#what-we-need", statements: "#statements" }, everyMonth: "/client/bookkeeping?account=X" }));
+const render = (pr: BooksProgress) => renderToStaticMarkup(createElement(BooksProgressCard, { progress: pr, links: { "what-we-need": "#what-we-need", statements: "#statements" }, everyMonth: "/client/bookkeeping?account=X" }));
 
 /** The client's own dashboard for October (the portal path, with its access check). */
 async function dash(b: Biz) {
@@ -133,16 +146,17 @@ async function walk(p: Awaited<ReturnType<typeof people>>, b: Biz, via: "CSV" | 
     return d.progress!;
   };
   const period = await openWorkPeriod(p.daria, b.biz.id, 2026, 10);
-  const loanReq = await createDocumentRequest(p.daria, { clientId: b.biz.id, title: "October loan statement (fictional)", periodId: period.id });
+  const loanReq = await createDocumentRequest(p.daria, { clientId: b.biz.id, title: "October equipment invoice (fictional)", periodId: period.id });
   await look("opened");
-  // An upload that hasn't passed the malware scan doesn't count as received.
+  // Our office files the bank statement itself (the access the client authorized); a file that
+  // hasn't passed the malware scan doesn't count.
   scanner = "down";
-  await portalUploadDocument(b.login, { clientId: b.biz.id, periodId: period.id, docType: "BANK_STATEMENT", title: "October bank statement", bytes: pdf(), originalName: "october.pdf" });
+  await staffUploadStatement(p.daria, b.biz.id, { accountId: b.registry.id, month: MONTH, bytes: pdf(), originalName: "october.pdf" });
   await look("statement-unscanned");
   scanner = "clean";
-  await portalUploadDocument(b.login, { clientId: b.biz.id, periodId: period.id, docType: "BANK_STATEMENT", title: "October bank statement", bytes: pdf(), originalName: "october.pdf" });
+  await staffUploadStatement(p.daria, b.biz.id, { accountId: b.registry.id, month: MONTH, bytes: pdf(), originalName: "october.pdf" });
   await look("statement-clean");
-  await portalUploadDocument(b.login, { clientId: b.biz.id, requestId: loanReq.id, title: "Loan statement", bytes: pdf(), originalName: "loan.pdf" });
+  await portalUploadDocument(b.login, { clientId: b.biz.id, requestId: loanReq.id, title: "Equipment invoice", bytes: pdf(), originalName: "invoice.pdf" });
   await look("documents-received");
   await bringInTransactions(p, b, via);
   await look("transactions-in");
@@ -180,12 +194,14 @@ describe("Monthly Bookkeeping Progress Tracker: stages from real records", () =>
     const seen = await walk(p, b, "CSV");
     const at = (step: string) => seen.find((s) => s.step === step)!;
     expect(stagesOf(at("opened").progress)).toEqual({ DOCUMENTS: "IN_PROGRESS", TRANSACTIONS: "NOT_STARTED", RECONCILIATION: "NOT_STARTED", REVIEW: "NOT_STARTED", COMPLETED: "NOT_STARTED" });
-    expect(at("opened").progress.stages[0].detail).toBe("0 of 3 documents received · 3 still needed from you.");
+    // The client is asked only for what they provide (receipts, the office's one-off request); never a bank statement.
+    expect(at("opened").progress.stages[0].detail).toBe("Our office is retrieving your statements · 0 of 2 documents from you received · 2 still needed from you.");
     expect(at("opened").progress.percent).toBe(0);
-    // Not yet scanned clean: still not received.
-    expect(at("statement-unscanned").progress.stages[0].detail).toBe("0 of 3 documents received · 3 still needed from you.");
-    expect(at("statement-clean").progress.stages[0].detail).toBe("1 of 3 documents received · 2 still needed from you.");
-    expect(stagesOf(at("documents-received").progress).DOCUMENTS).toBe("COMPLETE");
+    // Not yet scanned clean: not on file.
+    expect(at("statement-unscanned").progress.stages[0].detail).toBe("Our office is retrieving your statements · 0 of 2 documents from you received · 2 still needed from you.");
+    expect(at("statement-clean").progress.stages[0].detail).toBe("Statements retrieved by our office · 0 of 2 documents from you received · 2 still needed from you.");
+    expect(at("documents-received").progress.stages[0]).toMatchObject({ status: "COMPLETE", detail: "Statements retrieved by our office · All documents received. Thank you!" });
+    for (const s of seen) expect(s.html).not.toMatch(/upload your (bank|card|credit card) statement|statements? (still )?needed from you/i);
     // Transactions in the books: Transactions Updated in progress (to categorize) — and nothing later moves.
     expect(stagesOf(at("transactions-in").progress)).toEqual({ DOCUMENTS: "COMPLETE", TRANSACTIONS: "IN_PROGRESS", RECONCILIATION: "NOT_STARTED", REVIEW: "NOT_STARTED", COMPLETED: "NOT_STARTED" });
     expect(at("transactions-in").progress.stages[1].detail).toBe("0 of 1 account up to date · 3 transactions being categorized by our office.");
@@ -208,15 +224,34 @@ describe("Monthly Bookkeeping Progress Tracker: stages from real records", () =>
     expect(seen.map((s) => s.progress.percent)).toEqual([0, 0, 0, 20, 20, 40, 60, 60, 60, 80, 100]);
   });
 
-  it("the staff checklist steps count: categorize / reconcile marked done by staff complete those stages", async () => {
+  it("staff sign-off counts (categorize / reconcile steps), but reconciliation also needs the statement on file", async () => {
     const p = await people();
     const b = await business(p, "Checklist Pretend Studio LLC", "studio-owner@fictional.example");
     const period = await openWorkPeriod(p.daria, b.biz.id, 2026, 10);
     const items = await prisma.bookkeepingChecklistItem.findMany({ where: { periodId: period.id } });
     await setChecklistItem(p.daria, items.find((i) => i.key === "CATEGORIZE")!.id, "DONE");
     expect(stagesOf(await computeBooksProgress(b.biz.id, MONTH))).toMatchObject({ TRANSACTIONS: "COMPLETE", RECONCILIATION: "IN_PROGRESS" });
+    // Staff signed off the reconciliation, but no statement is on file for the account: not complete.
     await setChecklistItem(p.daria, items.find((i) => i.key === "RECONCILE")!.id, "DONE");
+    expect(stagesOf(await computeBooksProgress(b.biz.id, MONTH))).toMatchObject({ RECONCILIATION: "IN_PROGRESS" });
+    // A statement the CLIENT uploaded isn't office-filed evidence either.
+    await portalUploadDocument(b.login, { clientId: b.biz.id, periodId: period.id, docType: "BANK_STATEMENT", title: "My own copy", bytes: pdf(), originalName: "mine.pdf" });
+    expect(stagesOf(await computeBooksProgress(b.biz.id, MONTH))).toMatchObject({ RECONCILIATION: "IN_PROGRESS" });
+    // Our office files it: complete. Stages 4–5 still wait for the owner.
+    await staffUploadStatement(p.daria, b.biz.id, { accountId: b.registry.id, month: MONTH, bytes: pdf(), originalName: "october.pdf" });
     expect(stagesOf(await computeBooksProgress(b.biz.id, MONTH))).toMatchObject({ RECONCILIATION: "COMPLETE", REVIEW: "NOT_STARTED", COMPLETED: "NOT_STARTED" });
+  });
+
+  it("a completed reconciliation without the statement on file doesn't complete stage 3", async () => {
+    const p = await people();
+    const b = await business(p, "Evidence Pretend Shop LLC", "evidence-owner@fictional.example");
+    await openWorkPeriod(p.daria, b.biz.id, 2026, 10);
+    await bringInTransactions(p, b, "CSV");
+    for (const t of await prisma.bankTransaction.findMany({ where: { clientId: b.biz.id } })) await categorizeBankTransaction(p.daria, b.biz.id, t.id, { accountId: t.amountCents > 0 ? b.income : b.bankFees });
+    expect((await reconcileAccount(p.daria, b.biz.id, b.checking, { statementDate: "2026-10-31", statementBalance: (NET / 100).toFixed(2) })).reconciled).toBe(true);
+    expect(stagesOf(await computeBooksProgress(b.biz.id, MONTH))).toMatchObject({ RECONCILIATION: "IN_PROGRESS" });
+    await staffUploadStatement(p.daria, b.biz.id, { accountId: b.registry.id, month: MONTH, bytes: pdf(), originalName: "october.pdf" });
+    expect(stagesOf(await computeBooksProgress(b.biz.id, MONTH))).toMatchObject({ RECONCILIATION: "COMPLETE" });
   });
 });
 
@@ -296,7 +331,7 @@ describe("Coetha and private information never reach the tracker", () => {
     const json = JSON.stringify(d.progress);
     expect(json).not.toMatch(/COETHA-|PRIVATE-|proposal|adjust|note|reason|analysis|\$/i);
     for (const s of d.progress!.stages) expect(Object.keys(s).sort()).toEqual(["detail", "key", "label", "link", "status"]);
-    expect(Object.keys(d.progress!).sort()).toEqual(["applicable", "completed", "current", "done", "headline", "month", "percent", "stages", "started"]);
+    expect(Object.keys(d.progress!).sort()).toEqual(["applicable", "completed", "current", "done", "headline", "month", "percent", "periodKind", "periodLabel", "stages", "started"]);
   });
 });
 
@@ -316,18 +351,8 @@ describe("Isolation, engagement and View as Client", () => {
     await expect(portalBusinessDashboard(quiet.login, busy.biz.id, MONTH)).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("a business without monthly bookkeeping gets no tracker and no Bookkeeping service; stages a service doesn't include are hidden", async () => {
+  it("stages the engagement doesn't include are hidden, never shown as incomplete", async () => {
     const p = await people();
-    // An owner-approved Managed Business with no bookkeeping engagement.
-    const noBooks = await business(p, "Tax Only Pretend Garage LLC", "garage-owner@fictional.example", { books: false });
-    const d = await dash(noBooks);
-    expect(d.progress).toBeNull();
-    expect(d.services).not.toContain("Bookkeeping");
-    const html = renderToStaticMarkup(createElement(BusinessDashboardView, { d, tiles: [], q: "", base: "/client", linkFor: (id: string) => id, personalQ: null }));
-    expect(html).toContain('data-testid="business-dashboard"');
-    expect(html).not.toContain('data-testid="books-progress"');
-    expect(html).not.toContain('data-testid="coetha-card"');
-
     // No accounts in scope and staff marked categorizing / reconciling not needed: those stages don't apply.
     const b = await business(p, "Cash Only Pretend Kiosk LLC", "kiosk-owner@fictional.example");
     await prisma.bookkeepingAccount.deleteMany({ where: { clientId: b.biz.id } });
@@ -340,19 +365,13 @@ describe("Isolation, engagement and View as Client", () => {
     expect(card).not.toContain("Transactions Updated");
     expect(card).not.toContain("Reconciliation");
     expect(card).not.toMatch(/not applicable/i);
-
-    // A quarterly client: statements come at quarter end, so August shows no statement stages.
-    const q = await business(p, "Quarterly Pretend Salon LLC", "salon-owner@fictional.example", { frequency: "QUARTERLY" });
-    await openWorkPeriod(p.daria, q.biz.id, 2026, 8);
-    expect((await computeBooksProgress(q.biz.id, "2026-08")).stages.map((s) => s.key)).toEqual(["DOCUMENTS", "TRANSACTIONS", "RECONCILIATION"]);
-    expect((await computeBooksProgress(q.biz.id, "2026-09")).stages.map((s) => s.key)).toEqual(["DOCUMENTS", "TRANSACTIONS", "RECONCILIATION", "REVIEW", "COMPLETED"]);
   });
 
   it("View as Client shows exactly the tracker and Coetha status the client sees", async () => {
     const p = await people();
     const b = await business(p, "Preview Pretend Deli LLC", "deli-owner@fictional.example");
-    const period = await openWorkPeriod(p.daria, b.biz.id, 2026, 10);
-    await portalUploadDocument(b.login, { clientId: b.biz.id, periodId: period.id, docType: "BANK_STATEMENT", title: "October bank statement", bytes: pdf(), originalName: "october.pdf" });
+    await openWorkPeriod(p.daria, b.biz.id, 2026, 10);
+    await staffUploadStatement(p.daria, b.biz.id, { accountId: b.registry.id, month: MONTH, bytes: pdf(), originalName: "october.pdf" });
     await bringInTransactions(p, b, "PLAID");
     const mine = await dash(b);
     const tree = (await PortalPreview({ params: Promise.resolve({ id: b.biz.id }), searchParams: Promise.resolve({ month: MONTH }) })) as ReactNode;
@@ -364,24 +383,168 @@ describe("Isolation, engagement and View as Client", () => {
   });
 });
 
+describe("Quarterly engagements are shown by quarter", () => {
+  it("a quarterly client sees one quarter (Q3 2026), a quarter selector, and never monthly statements", async () => {
+    const p = await people();
+    const q = await business(p, "Quarterly Pretend Salon LLC", "salon-owner@fictional.example", { frequency: "QUARTERLY" });
+    for (const m of [7, 8, 9]) await openWorkPeriod(p.daria, q.biz.id, 2026, m);
+    // Any month of the quarter shows the quarter.
+    const pr = await computeBooksProgress(q.biz.id, "2026-08");
+    expect([pr.periodKind, pr.periodLabel, pr.month]).toEqual(["QUARTER", "Q3 2026", "2026-09"]);
+    expect(pr.stages.map((s) => s.label)).toEqual(["Documents Received", "Transactions Updated", "Reconciliation", "Financials Under Review", "Quarterly Books Completed"]);
+    expect(pr.headline).toMatch(/^Q3 2026 books are \d+% complete\./);
+    const d = await portalBusinessDashboard(q.login, q.biz.id, "2026-08");
+    expect([d.selected, d.periodLabel]).toEqual(["2026-09", "Q3 2026"]);
+    expect(d.monthChoices).toEqual(["2026-09"]);
+    expect(d.choiceLabels).toEqual({ "2026-09": "Q3 2026" });
+    const html = render(d.progress!);
+    expect(html).toContain("Q3 2026 – Bookkeeping Progress");
+    expect(html).not.toMatch(/monthly|October|August|this month/i);
+    expect(html).toContain("quarterly financial statements");
+    // Transactions must cover the whole quarter: July alone isn't enough.
+    await importBankCsv(p.daria, q.biz.id, q.checking, { fileName: "jul.csv", text: "Date,Description,Amount\n07/31/2026,SERVICE CHARGE,-12.00" });
+    for (const t of await prisma.bankTransaction.findMany({ where: { clientId: q.biz.id } })) await categorizeBankTransaction(p.daria, q.biz.id, t.id, { accountId: q.bankFees });
+    expect(stagesOf(await computeBooksProgress(q.biz.id, "2026-09"))).toMatchObject({ TRANSACTIONS: "IN_PROGRESS" });
+    for (const m of ["08/31/2026", "09/30/2026"]) await importBankCsv(p.daria, q.biz.id, q.checking, { fileName: `${m.slice(0, 2)}.csv`, text: `Date,Description,Amount\n${m},SERVICE CHARGE,-12.00` });
+    for (const t of await prisma.bankTransaction.findMany({ where: { clientId: q.biz.id, status: "UNREVIEWED" } })) await categorizeBankTransaction(p.daria, q.biz.id, t.id, { accountId: q.bankFees });
+    expect(stagesOf(await computeBooksProgress(q.biz.id, "2026-09"))).toMatchObject({ TRANSACTIONS: "COMPLETE", RECONCILIATION: "IN_PROGRESS" });
+    // Monthly clients are unchanged.
+    const m = await business(p, "Monthly Pretend Diner LLC", "diner-owner@fictional.example");
+    await openWorkPeriod(p.daria, m.biz.id, 2026, 10);
+    const dm = await dash(m);
+    expect([dm.progress!.periodKind, dm.periodLabel, dm.progress!.stages.at(-1)!.label]).toEqual(["MONTH", "October 2026", "Monthly Books Completed"]);
+  });
+});
+
+describe("Statements are retrieved by our office, never asked of the client", () => {
+  it("no routine bank or card statement request reaches the client; Coetha makes an internal office task instead", async () => {
+    const p = await people();
+    const b = await business(p, "Statement Pretend Bistro LLC", "stmt-owner@fictional.example");
+    await prisma.bookkeepingAccount.create({ data: { clientId: b.biz.id, institution: "Fictional Card Co", accountType: "CREDIT_CARD", last4: "1111", ledgerAccountId: (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: b.biz.id, code: "2100" } })).id } });
+    const period = await openWorkPeriod(p.daria, b.biz.id, 2026, 10);
+    // An old routine statement request (from before this change) stays in the records but is never shown.
+    const old = await prisma.documentRequest.create({ data: { clientId: b.biz.id, taxYear: 2026, ruleKey: "BANK_STATEMENTS", docType: "BANK_STATEMENT", title: "Bank statements — every business account (2026)", createdById: p.tabitha.id } });
+    const coethaOld = await prisma.documentRequest.create({ data: { clientId: b.biz.id, periodId: period.id, kind: "STATEMENT", source: "COETHA", docType: "CARD_STATEMENT", status: "OPEN", title: "Credit card statement — October 2026", createdById: p.tabitha.id } });
+    // The dashboard syncs "What we need — bookkeeping": no statement rule exists any more.
+    const d = await dash(b);
+    expect(d.checklist.map((c) => c.key)).not.toContain("BANK_STATEMENTS");
+    expect(d.checklist.map((c) => c.key)).not.toContain("CARD_STATEMENTS");
+    expect(d.checklist.map((c) => c.id)).not.toContain(old.id);
+    expect(d.checklist.map((c) => c.id)).not.toContain(coethaOld.id);
+    expect(await prisma.documentRequest.count({ where: { clientId: b.biz.id, ruleKey: { in: ["BANK_STATEMENTS", "CARD_STATEMENTS"] }, NOT: { id: old.id } } })).toBe(0);
+    // "Outstanding items" counts only what the client can see (no statement requests).
+    expect(d.books.openRequests).toBe(d.checklist.filter((c) => c.status === "NEEDED" || c.status === "MORE_INFO").length);
+    // History is kept, unchanged.
+    expect((await prisma.documentRequest.findUniqueOrThrow({ where: { id: old.id } })).status).toBe("OPEN");
+    // Coetha's monitor: the statements are missing, so it raises office tasks — no client request.
+    const r = await runWorkflowMonitor(null, b.biz.id, 2026, 10);
+    expect(r.officeTasks).toBe(2);
+    expect(await prisma.documentRequest.count({ where: { clientId: b.biz.id, kind: { in: ["STATEMENT", "HISTORICAL"] }, NOT: { id: coethaOld.id } } })).toBe(0);
+    const tasks = await prisma.task.findMany({ where: { clientId: b.biz.id }, orderBy: { title: "asc" } });
+    expect(tasks.map((t) => t.title)).toEqual(["Retrieve bank statement — Fictional Community Bank ••4094 — October 2026", "Retrieve credit card statement — Fictional Card Co ••1111 — October 2026"].sort());
+    expect((await runWorkflowMonitor(null, b.biz.id, 2026, 10)).officeTasks).toBe(0); // never repeated
+    // The month's checklist lists statements as office items, never waiting on the client.
+    const items = await prisma.bookkeepingChecklistItem.findMany({ where: { periodId: period.id, key: { in: ["BANK_STATEMENTS", "CARD_STATEMENTS"] } } });
+    const { checklistView, CHECKLIST } = await import("@/lib/services/bookkeeping-clients");
+    expect(CHECKLIST.filter((c) => c.docType === "BANK_STATEMENT" || c.docType === "CARD_STATEMENT").map((c) => c.kind)).toEqual(["OFFICE_DOCUMENT", "OFFICE_DOCUMENT"]);
+    const view = checklistView({ ...(await prisma.bookkeepingPeriod.findUniqueOrThrow({ where: { id: period.id } })), checklist: items, documents: [] } as never);
+    expect(view.map((i) => i.state)).toEqual(["STAFF_TODO", "STAFF_TODO"]);
+    // Stage 1 never asks the client for statements; once our office files both, it says so.
+    const before = await computeBooksProgress(b.biz.id, MONTH);
+    expect(before.stages[0].detail).toMatch(/^Our office is retrieving your statements/);
+    for (const a of await prisma.bookkeepingAccount.findMany({ where: { clientId: b.biz.id } })) await staffUploadStatement(p.daria, b.biz.id, { accountId: a.id, month: MONTH, bytes: pdf(), originalName: `${a.id}.pdf` });
+    const after = await computeBooksProgress(b.biz.id, MONTH);
+    expect(after.stages[0]).toMatchObject({ status: "COMPLETE", detail: "Statements retrieved by our office · All documents received. Thank you!" });
+    // Office-filed statements never show in the client's portal (staff-only bookkeeping files).
+    expect(JSON.stringify(await dash(b))).not.toMatch(/Retrieve (bank|credit card) statement/);
+  });
+});
+
+describe("How access is decided: only clients enrolled on the bookkeeping service get the business side", () => {
+  it("an owner-approved Managed Business that isn't enrolled stays on the tax portal; the server refuses every business page", async () => {
+    const p = await people();
+    const garage = await business(p, "Tax Only Pretend Garage LLC", "garage-owner@fictional.example", { books: false });
+    // businessAccess ACTIVE and the per-login switch on (managed()), but no bookkeeping profile.
+    expect((await prisma.client.findUniqueOrThrow({ where: { id: garage.biz.id } })).businessAccess).toBe("ACTIVE");
+    const g = await requireClientAccess(garage.login.id, garage.biz.id);
+    expect(g.canViewBookkeeping).toBe(false);
+    expect(homeKind(g)).toBe("PERSONAL");
+    expect(allowedCategories(g)).not.toContain("BOOKKEEPING");
+    for (const call of [
+      () => portalBusinessDashboard(garage.login, garage.biz.id, MONTH),
+      () => portalBankFeed(garage.login, garage.biz.id),
+      () => portalPayrollPage(garage.login, garage.biz.id),
+      () => portalLicensesPage(garage.login, garage.biz.id),
+      () => portalYearEndPage(garage.login, garage.biz.id),
+      () => portalClientInvoicing(garage.login, garage.biz.id),
+    ]) await expect(call()).rejects.toBeInstanceOf(ForbiddenError);
+    // View as Client shows the tax client Home, never the business dashboard.
+    const tree = (await PortalPreview({ params: Promise.resolve({ id: garage.biz.id }), searchParams: Promise.resolve({}) })) as ReactNode;
+    expect(find(tree, BusinessDashboardView)).toBeNull();
+    expect(find(tree, PortalHomeView)).not.toBeNull();
+    for (const v of ["payroll", "licenses", "year-end", "invoicing"]) {
+      const t = (await PortalPreview({ params: Promise.resolve({ id: garage.biz.id }), searchParams: Promise.resolve({ view: v }) })) as ReactNode;
+      expect(find(t, BusinessDashboardView)).toBeNull();
+      expect(renderToStaticMarkup(t as ReactElement)).not.toMatch(/data-testid="(payroll-page|licenses-page|year-end-page|invoicing-page)"/);
+    }
+
+    // A paused profile (as business onboarding approval creates) grants nothing either.
+    await prisma.bookkeepingProfile.create({ data: { clientId: garage.biz.id, active: false } });
+    expect((await requireClientAccess(garage.login.id, garage.biz.id)).canViewBookkeeping).toBe(false);
+    await expect(portalBusinessDashboard(garage.login, garage.biz.id, MONTH)).rejects.toBeInstanceOf(ForbiddenError);
+
+    // "+ Add Bookkeeping Client" (enrollExistingClient) is what moves it to the business side.
+    await enrollExistingClient(p.tabitha, garage.biz.id, { active: true, frequency: "MONTHLY", payroll: false });
+    expect((await requireClientAccess(garage.login.id, garage.biz.id)).canViewBookkeeping).toBe(true);
+    const d = await portalBusinessDashboard(garage.login, garage.biz.id, MONTH);
+    expect(d.progress).not.toBeNull();
+    expect(d.services).toContain("Bookkeeping");
+    await expect(portalPayrollPage(garage.login, garage.biz.id)).resolves.toBeTruthy();
+  });
+
+  it("services picked at sign-up never grant the business side, and the staff workspace doesn't depend on portal logins", async () => {
+    const p = await people();
+    // A business whose owner asked for "Bookkeeping" when signing up (Client.services) — not enrolled.
+    const asked = await createClient(p.tabitha, { businessName: "Asked Pretend Florist LLC", clientType: "BUSINESS", status: "ACTIVE", services: "Bookkeeping" } as never);
+    expect((await prisma.client.findUniqueOrThrow({ where: { id: asked.id } })).services).toContain("Bookkeeping");
+    const { token } = await invitePortalUser(p.tabitha, asked.id, { email: "asked@fictional.example", name: "Asked Owner", role: "OWNER" });
+    const login = portal(await acceptPortalInvite(token!, "Fictional-Pass-12345"));
+    expect((await accessibleClients(login.id))[0].canViewBookkeeping).toBe(false);
+    await expect(portalBusinessDashboard(login, asked.id, MONTH)).rejects.toBeInstanceOf(ForbiddenError);
+    // Staff keep their internal bookkeeping workspace for an enrolled client with no portal login at all.
+    const books = await createClient(p.tabitha, { businessName: "No Login Pretend Cafe LLC", clientType: "BUSINESS", status: "ACTIVE" });
+    await enrollExistingClient(p.tabitha, books.id, { active: true, frequency: "MONTHLY", payroll: false });
+    const period = await openWorkPeriod(p.daria, books.id, 2026, 10);
+    const ws = await bookkeepingWorkspace(books.id, period.id);
+    expect(ws.period?.id).toBe(period.id);
+    expect(ws.summary?.items.length).toBeGreaterThan(0);
+  });
+});
+
 describe("booksProgressFromFacts (pure)", () => {
   const facts = (over: Partial<BooksFacts> = {}): BooksFacts => ({
-    month: MONTH, today: "2026-11-05", frequency: "MONTHLY", periodOpen: true, documents: [{ received: true, pending: false }], categorizeStep: "OPEN", reconcileStep: "OPEN",
-    accounts: [{ covered: true, transactions: 4, unreviewed: 0, reconciled: true }], reports: [{ reviewStatus: "APPROVED" }], released: true, ...over,
+    period: engagementPeriod("MONTHLY", MONTH), today: "2026-11-05", periodOpen: true, documents: [{ received: true, pending: false }], officeStatements: [{ filed: true }], categorizeStep: "OPEN", reconcileStep: "OPEN",
+    accounts: [{ covered: true, transactions: 4, unreviewed: 0, reconciled: true, statementFiled: true }], reports: [{ reviewStatus: "APPROVED" }], released: true, ...over,
   });
 
   it("shows a later stage complete as recorded while an earlier one is open, but keeps the overall status honest", () => {
     const pr = booksProgressFromFacts(facts({ documents: [{ received: true, pending: false }, { received: false, pending: false }] }));
     expect(stagesOf(pr)).toEqual({ DOCUMENTS: "IN_PROGRESS", TRANSACTIONS: "COMPLETE", RECONCILIATION: "COMPLETE", REVIEW: "COMPLETE", COMPLETED: "COMPLETE" });
     expect([pr.percent, pr.done, pr.current]).toEqual([80, false, "DOCUMENTS"]);
-    expect(pr.headline).toBe("October's books are 80% complete. Current stage: Documents Received. 1 of 2 documents received · 1 still needed from you.");
+    expect(pr.headline).toBe("October's books are 80% complete. Current stage: Documents Received. Statements retrieved by our office · 1 of 2 documents from you received · 1 still needed from you.");
   });
 
   it("a month still in progress is never complete for transactions, and an upload being checked is said so", () => {
-    const pr = booksProgressFromFacts(facts({ today: "2026-10-20", accounts: [{ covered: false, transactions: 3, unreviewed: 0, reconciled: false }], reports: [], released: false, documents: [{ received: false, pending: true }] }));
+    const pr = booksProgressFromFacts(facts({ today: "2026-10-20", officeStatements: [], accounts: [{ covered: false, transactions: 3, unreviewed: 0, reconciled: false, statementFiled: false }], reports: [], released: false, documents: [{ received: false, pending: true }] }));
     expect(stagesOf(pr)).toMatchObject({ DOCUMENTS: "IN_PROGRESS", TRANSACTIONS: "IN_PROGRESS", RECONCILIATION: "NOT_STARTED" });
-    expect(pr.stages[0].detail).toBe("0 of 1 document received · 1 being checked.");
+    expect(pr.stages[0].detail).toBe("0 of 1 document from you received · 1 being checked.");
     expect(pr.stages[1].detail).toMatch(/^October is still in progress\./);
+  });
+
+  it("reconciliation needs the statement on file even when reconciled or signed off", () => {
+    expect(stagesOf(booksProgressFromFacts(facts({ accounts: [{ covered: true, transactions: 4, unreviewed: 0, reconciled: true, statementFiled: false }] })))).toMatchObject({ RECONCILIATION: "IN_PROGRESS" });
+    expect(stagesOf(booksProgressFromFacts(facts({ reconcileStep: "DONE", accounts: [{ covered: true, transactions: 4, unreviewed: 0, reconciled: false, statementFiled: false }] })))).toMatchObject({ RECONCILIATION: "IN_PROGRESS" });
+    expect(stagesOf(booksProgressFromFacts(facts({ reconcileStep: "DONE", accounts: [{ covered: true, transactions: 4, unreviewed: 0, reconciled: false, statementFiled: true }] })))).toMatchObject({ RECONCILIATION: "COMPLETE" });
   });
 
   it("approval without release completes stage 4 only; release requires the gate", () => {

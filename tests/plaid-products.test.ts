@@ -71,7 +71,9 @@ describe("off by default", () => {
     await syncConnection(w.conn.id, "MANUAL", w.daria);
     await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: "2026-11-04" });
     expect(calls.some((c) => c.path.startsWith("/statements") || c.path === "/liabilities/get")).toBe(false);
-    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(2); // requested from the client instead
+    // Never requested from the client: our office retrieves them (an internal task per account).
+    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(0);
+    expect(await prisma.task.count({ where: { clientId: w.biz.id, title: { startsWith: "Retrieve " } } })).toBe(2);
   });
 });
 
@@ -88,8 +90,9 @@ describe("when Tabitha enables them", () => {
     await runWorkflowMonitor(null, w.biz.id, 2026, 10, { today: "2026-11-04" });
     expect(calls.filter((c) => c.path === "/statements/download").map((c) => c.body.statement_id)).toEqual(["st-oct"]);
     expect(await prisma.document.count({ where: { clientId: w.biz.id, bookkeepingAccountId: w.chk.id, docType: "BANK_STATEMENT", visibility: "STAFF_ONLY" } })).toBe(1);
-    const reqs = await prisma.documentRequest.findMany({ where: { clientId: w.biz.id, kind: "STATEMENT" } });
-    expect(reqs.map((r) => r.bookkeepingAccountId)).toEqual([w.card.id]); // the card's statement isn't available from the bank: requested
+    // The card's statement isn't available from the bank: an internal office task, never a client request.
+    expect(await prisma.documentRequest.count({ where: { clientId: w.biz.id, kind: "STATEMENT" } })).toBe(0);
+    expect((await prisma.task.findMany({ where: { clientId: w.biz.id } })).map((t) => t.title)).toEqual([expect.stringMatching(/^Retrieve credit card statement — /)]);
     expect(await prisma.auditLog.count({ where: { action: "coetha.statement_retrieved" } })).toBe(1);
   });
 
