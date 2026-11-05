@@ -122,6 +122,8 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
     },
     perms: personal ? perms : { ...perms, canViewIdentity: false },
     businessOnly: profile.businessOnly,
+    // Payroll is an assigned service (hasPayrollService): the business-tax Home shows its Payroll tile only then.
+    payrollService: profile.payroll,
     k1s: k1s.map((d) => ({ id: d.id, title: d.title, year: d.year, own: d.businessOwner?.portalUserId === viewerPortalUserId, ownerName: d.businessOwner?.contact.name ?? null })),
     payrollDocs,
     // "Request personal tax preparation" already sent from this login and still waiting.
