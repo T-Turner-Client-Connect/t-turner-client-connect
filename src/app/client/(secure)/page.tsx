@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { Notice } from "@/components/ui";
-import { homeTiles, PortalHomeView } from "@/components/portal/home-view";
+import { PortalHomeView } from "@/components/portal/home-view";
+import { businessHomeTiles } from "@/components/portal/business-home-view";
 import { BusinessDashboardView } from "@/components/portal/business-dashboard";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
@@ -28,7 +29,8 @@ export default async function PortalHome({ searchParams }: { searchParams: Promi
 
   if (homeKind(current) === "BUSINESS") {
     const d = await portalBusinessDashboard(user, current.clientId, sp.month);
-    const { tiles } = homeTiles({ data, q, year: Number(sp.year) || undefined });
+    // The same quick-access tiles as the regular business Home (K-1s open from the Document Vault here).
+    const tiles = businessHomeTiles(data, (path) => `${path}${q}`, `/client/documents${q}`, `/client/payroll${q}`);
     // The owner's own (personal) account, for personal tax uploads and identity documents.
     const personal = accounts.find((a) => a.client.clientType === "INDIVIDUAL");
     return <BusinessDashboardView d={d} tiles={tiles} q={q} base={`/client${q}`} linkFor={linkFor} personalQ={personal ? `?account=${personal.clientId}` : null} />;

@@ -4,6 +4,14 @@ import { Eye } from "lucide-react";
 import clsx from "clsx";
 import { Badge, Card, EmptyState, Notice } from "@/components/ui";
 import { PortalHomeView } from "@/components/portal/home-view";
+import { BusinessDashboardView } from "@/components/portal/business-dashboard";
+import { businessHomeTiles } from "@/components/portal/business-home-view";
+import { BUSINESS_VIEW_CLIENT, hasBusinessView } from "@/lib/portal/access";
+import { can } from "@/lib/auth/permissions";
+import { businessDashboardFor } from "@/lib/services/portal-business";
+import { licensesPageFor, payrollPageFor, yearEndPageFor } from "@/lib/services/portal-business-pages";
+import { previewClientInvoicing } from "@/lib/services/portal-client-invoicing";
+import { InvoicingPageView, LicensesPageView, NotBusinessNotice, PayrollPageView, YearEndPageView } from "@/components/portal/business-pages";
 import { PortalDocumentsView } from "@/components/portal/documents-view";
 import { PortalTaxesView } from "@/components/portal/taxes-view";
 import { PortalSummaryView } from "@/components/portal/tax-summary-portal";
@@ -31,7 +39,13 @@ const VIEWS = [
   ["documents", "Document Vault"],
   ["messages", "Messages"],
   ["identity", "Identity"],
+  // Business view only (the dashboard's Payroll, Licenses, 1099 / W-2 and Client Invoicing cards).
+  ["payroll", "Payroll"],
+  ["licenses", "Business Licenses"],
+  ["year-end", "1099 / W-2"],
+  ["invoicing", "Client Invoicing"],
 ] as const;
+const BUSINESS_VIEWS: readonly string[] = ["payroll", "licenses", "year-end", "invoicing"];
 type View = (typeof VIEWS)[number][0];
 
 /** Which preview page a client-portal link opens. */
@@ -42,6 +56,11 @@ function viewFor(path: string): View {
   if (path.startsWith("/client/documents")) return "documents";
   if (path.startsWith("/client/messages")) return "messages";
   if (path.startsWith("/client/identity")) return "identity";
+  if (path.startsWith("/client/payroll-approval")) return "home";
+  if (path.startsWith("/client/payroll")) return "payroll";
+  if (path.startsWith("/client/licenses")) return "licenses";
+  if (path.startsWith("/client/year-end")) return "year-end";
+  if (path.startsWith("/client/invoicing")) return "invoicing";
   return "home";
 }
 
@@ -55,7 +74,7 @@ export default async function PortalPreview({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ view?: string; year?: string; c?: string }>;
+  searchParams: Promise<{ view?: string; year?: string; c?: string; month?: string }>;
 }) {
   const user = await requireUser();
   const { id } = await params;
@@ -64,11 +83,14 @@ export default async function PortalPreview({
     "home") as View;
   const client = await prisma.client.findUnique({
     where: { id },
-    select: { id: true, displayName: true, businessName: true, businessAccess: true },
+    select: { id: true, displayName: true, businessName: true, ...BUSINESS_VIEW_CLIENT },
   });
   if (!client) notFound();
-  // The preview shows what the owner would see — a Regular Tax Client never sees the Business side.
-  const PREVIEW_PERMS = { ...OWNER_PREVIEW_PERMS, canViewBookkeeping: client.businessAccess === "ACTIVE" };
+  // The preview shows what an OWNER login would see, by the portal's own rule: an approved Managed
+  // Business or a client on the Bookkeeping Client list gets the business view; a Regular Tax
+  // Client never sees the Business side.
+  const businessView = hasBusinessView({ role: "OWNER", canViewBookkeeping: true }, client);
+  const PREVIEW_PERMS = { ...OWNER_PREVIEW_PERMS, canViewBookkeeping: businessView };
   await audit(prisma, {
     actorId: user.id,
     action: "portal.staff_preview",
@@ -88,7 +110,34 @@ export default async function PortalPreview({
   const year = Number(sp.year) || undefined;
 
   let body: React.ReactNode;
-  if (view === "home") {
+  if (view === "home" && businessView) {
+    // The business dashboard, as an owner login of this business sees it (same rule as the portal).
+    // Billing figures only for staff who may see billing.
+    const perms = { canUpload: true, canMessage: true, canViewBilling: await can(user, "billing", "view") };
+    const [d, home] = await Promise.all([
+      businessDashboardFor(id, sp.month, perms, null),
+      loadPortalHome(id, PREVIEW_PERMS, null),
+    ]);
+    // A dashboard link opens the matching preview page; pages View as Client can't show are disabled.
+    const dashHref = (path: string, extra = "") => {
+      const v = viewFor(path);
+      if (v === "home") return null;
+      const c = v === "messages" ? /(?:^|&)c=([\w-]+)/.exec(extra)?.[1] : undefined;
+      return `${base}?view=${v}${c ? `&c=${c}` : ""}`;
+    };
+    body = (
+      <BusinessDashboardView
+        d={d}
+        tiles={businessHomeTiles(home, dashHref, dashHref("/client/documents"), dashHref("/client/payroll"))}
+        q=""
+        base={`${base}?view=home`}
+        linkFor={linkFor}
+        personalQ={null}
+        readOnly
+        previewHref={dashHref}
+      />
+    );
+  } else if (view === "home") {
     const [home, greet] = await Promise.all([
       loadPortalHome(id, PREVIEW_PERMS, null),
       loadGreetingName(id, null),
@@ -104,6 +153,17 @@ export default async function PortalPreview({
         year={year}
       />
     );
+  } else if (BUSINESS_VIEWS.includes(view) && !businessView) {
+    body = <NotBusinessNotice />;
+  } else if (view === "payroll") {
+    // Read-only, owner-level document scope; documents open with a staff link.
+    body = <PayrollPageView d={await payrollPageFor(id, PREVIEW_PERMS, null)} linkFor={linkFor} back={`${base}?view=home`} />;
+  } else if (view === "licenses") {
+    body = <LicensesPageView d={await licensesPageFor(id, PREVIEW_PERMS, null)} linkFor={linkFor} back={`${base}?view=home`} />;
+  } else if (view === "year-end") {
+    body = <YearEndPageView d={await yearEndPageFor(id)} canUpload back={`${base}?view=home`} readOnly />;
+  } else if (view === "invoicing") {
+    body = <InvoicingPageView d={await previewClientInvoicing(id)} back={`${base}?view=home`} readOnly />;
   } else if (view === "summary") {
     body = (
       <PortalSummaryView
@@ -274,7 +334,7 @@ export default async function PortalPreview({
         className="flex gap-1.5 overflow-x-auto pb-1"
         data-testid="preview-tabs"
       >
-        {VIEWS.map(([v, label]) => (
+        {VIEWS.filter(([v]) => businessView || !BUSINESS_VIEWS.includes(v)).map(([v, label]) => (
           <Link
             key={v}
             href={`${base}?view=${v}`}

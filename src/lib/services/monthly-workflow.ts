@@ -10,6 +10,7 @@ import { assertLedger, normDesc, officeBookClientIds, todayCentral, toDate, usd,
 import { cardPaymentTarget, cardRefs, monthlyAccountProgress, prepareReconciliation, registryLabel, statementWindow, type Light } from "./bank-accounts";
 import { createClientRequest, rangeText, sendClientRequest, YEAR_END_FORMS, yearEndWindow } from "./client-requests";
 import { coethaAutoSendOn } from "./owner-switches";
+import { assertCoethaAllowed, optedOutClientIds } from "./coetha-opt-out";
 import { reportsDue, workMonth } from "./bookkeeping-clients";
 import { CLASSIFICATION_RULES, classificationForEntity, TAX_CLASSIFICATIONS, taxProfile, type TaxClassification } from "./tax-classification";
 import { retentionDate, storeDocumentFile } from "./documents";
@@ -256,6 +257,8 @@ async function classificationRecommendation(clientId: string) {
  */
 export async function runWorkflowMonitor(actor: Actor | null, clientId: string, year: number, month: number, opts: { today?: string } = {}) {
   if (actor) await assertLedger(actor, clientId);
+  // "Client prefers no Coetha": no monitor, drafts, requests or recommendations for this client.
+  await assertCoethaAllowed(clientId);
   const today = opts.today ?? todayCentral();
   const ended = today > monthEnd(year, month);
   const ml = monthLabel(year, month);
@@ -388,7 +391,8 @@ async function recordRecommendations(clientId: string, y: number, m: number) {
 
 /** Hourly cron: every business the office keeps books for, its current work month, once a day. */
 export async function runDailyWorkflowMonitor(now = new Date()) {
-  const ids = await officeBookClientIds();
+  const optedOut = await optedOutClientIds();
+  const ids = (await officeBookClientIds()).filter((id) => !optedOut.has(id));
   let ran = 0, failed = 0;
   for (const clientId of ids) {
     const last = await prisma.auditLog.findFirst({ where: { clientId, action: "coetha.workflow_checked" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });

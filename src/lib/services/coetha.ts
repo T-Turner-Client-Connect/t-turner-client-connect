@@ -9,6 +9,7 @@ import { ValidationError } from "./clients";
 import { assertLedger, assertLedgerWrite, assertManagedBusiness, bookOf, categorizeBankTransactionTx, isFeedSubtype, isYmd, ledgerFlags, normDesc, officeBookClientIds, postJournalEntryTx, todayCentral, usd, ymdOf } from "./ledger";
 import { closeChecklist } from "./ledger-review";
 import { coethaOn } from "./owner-switches";
+import { assertCoethaAllowed, optedOutClientIds } from "./coetha-opt-out";
 import { CLASSIFICATION_RULES, setTaxClassification, taxProfile } from "./tax-classification";
 import { assertCanApproveCoethaWork, canApproveCoethaWork } from "@/lib/auth/permissions";
 
@@ -220,6 +221,8 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
   if (actor) await assertLedger(actor, clientId);
   await assertManagedBusiness(clientId);
   await bookOf(clientId);
+  // "Client prefers no Coetha": refused before anything is read or sent.
+  await assertCoethaAllowed(clientId);
   if (!(await coethaOn())) throw new ValidationError(COETHA_OFF);
   if (!coethaKeyPresent()) throw new ValidationError(COETHA_NO_KEY);
   if (opts.month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(opts.month)) throw new ValidationError("Choose a month.");
@@ -268,7 +271,9 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
 export async function runDailyCoetha(now = new Date()) {
   const s = await coethaStatus();
   if (!s.ready) return { ran: 0, failed: 0, skipped: s.enabled ? "no API key" : "switched off" };
-  const books = await prisma.ledgerBook.findMany({ where: { clientId: { in: await officeBookClientIds() } }, select: { clientId: true, coethaRuns: { orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } } });
+  // Clients who prefer no Coetha are never picked.
+  const optedOut = await optedOutClientIds();
+  const books = await prisma.ledgerBook.findMany({ where: { clientId: { in: (await officeBookClientIds()).filter((id) => !optedOut.has(id)) } }, select: { clientId: true, coethaRuns: { orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } } });
   const due: string[] = [];
   for (const b of books) {
     const last = b.coethaRuns[0]?.startedAt ?? null;
@@ -300,6 +305,8 @@ export type Decision = { id: string; result: "APPROVED" | "ALREADY_APPROVED" | "
 export async function approveCoethaProposal(actor: Actor, clientId: string, proposalId: string, opts: { accountId?: string | null; note?: string } = {}): Promise<Decision> {
   await assertCanApproveCoethaWork(actor);
   await assertLedgerWrite(actor, clientId);
+  // Earlier drafts can still be rejected, but none of Coetha's work reaches the books of a client who prefers no Coetha.
+  await assertCoethaAllowed(clientId);
   const p = await prisma.coethaProposal.findFirst({ where: { id: proposalId, clientId } });
   if (!p) throw new ValidationError("Proposal not found.");
   if (p.status === "APPROVED") return { id: p.id, result: "ALREADY_APPROVED", journalEntryId: p.journalEntryId };

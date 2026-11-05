@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { approveCoethaProposal, decideCoethaProposals, rejectCoethaProposal, runCoetha } from "@/lib/services/coetha";
 import { setOwnerSwitch, SWITCH_LABEL, type OwnerSwitch } from "@/lib/services/owner-switches";
+import { clearCoethaOptOut, setCoethaOptOut } from "@/lib/services/coetha-opt-out";
 
 const refresh = (clientId: string) => {
   revalidatePath(`/bookkeeping/${clientId}/coetha`);
@@ -63,5 +64,26 @@ export async function ownerSwitchAction(which: OwnerSwitch, on: boolean, _prev: 
     revalidatePath("/owner/automation");
     const label = SWITCH_LABEL[which];
     return `${label} turned ${on ? "on" : "off"}.`;
+  });
+}
+
+/** "Client prefers no Coetha": staff who can edit this client's books record it (enforced in the service). */
+export async function setCoethaOptOutAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await setCoethaOptOut(actor, clientId, { toldOn: str(fd, "toldOn"), via: str(fd, "via"), note: str(fd, "note") });
+    refresh(clientId);
+    revalidatePath("/bookkeeping");
+    return "Recorded: this client prefers no Coetha. Coetha won't run, draft or request documents for them.";
+  });
+}
+
+export async function clearCoethaOptOutAction(clientId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await clearCoethaOptOut(actor, clientId);
+    refresh(clientId);
+    revalidatePath("/bookkeeping");
+    return "Cleared. Coetha can work on this client's books again.";
   });
 }
