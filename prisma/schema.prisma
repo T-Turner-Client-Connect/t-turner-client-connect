@@ -5610,6 +5610,12 @@ model PayrollCycle {
   errorFlaggedAt         DateTime?
   errorFlaggedById       String?
   errorNote              String?
+  // Where this cycle's figures came from: REGISTER_IMPORT | MANUAL_TOTALS (today); MANUAL_ENTRY
+  // (staff-entered employee pay data) and PROVIDER_API arrive in a later stage, as PayrollRunLine rows.
+  workupSource           String?
+  // PROCESSED is only ever recorded with its verification, never inferred from SUBMITTED:
+  // CONFIRMATION_UPLOAD (ADP's confirmation / payroll summary) today; PROVIDER_OUTPUT_CHECK later.
+  processedVerification  String?
   processedAt            DateTime?
   processedById          String?
   confirmationDocumentId String?
@@ -5662,6 +5668,9 @@ model PayrollTaxSettings {
   id                        String    @id @default("default")
   // Owner only. While off, automated client reminders are recorded as HELD and never sent.
   clientRemindersAuthorized Boolean   @default(false)
+  // Placeholder, owner only, nothing turns it on yet: live pay-data submission / verification
+  // through a provider API (src/lib/payroll/providers.ts). Off = every provider call refuses.
+  providerLiveSubmission    Boolean   @default(false)
   changedAt                 DateTime?
   changedById               String?
   updatedAt                 DateTime  @updatedAt

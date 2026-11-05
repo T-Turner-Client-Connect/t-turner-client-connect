@@ -5,16 +5,17 @@ import { requireUser } from "@/lib/auth/session";
 import { logoutAction } from "@/app/actions/auth";
 import { prisma } from "@/lib/prisma";
 import { ownerNavState } from "@/lib/auth/owner";
+import { payrollTaxAccess } from "@/lib/payroll-taxes/access";
 import { readyToPublish } from "@/lib/services/social";
 import Link from "next/link";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
-  const [unread, owner, ready] = await Promise.all([prisma.conversation.count({ where: { unreadByStaff: true, closedAt: null } }), ownerNavState(user), readyToPublish()]);
+  const [unread, owner, ready, payrollTaxes] = await Promise.all([prisma.conversation.count({ where: { unreadByStaff: true, closedAt: null } }), ownerNavState(user), readyToPublish(), payrollTaxAccess(user)]);
   return (
     <div className="min-h-dvh">
       <PreviewBanner />
-      <AppNav user={{ name: user.name, role: user.role }} signOut={logoutAction} unread={unread} owner={owner} />
+      <AppNav user={{ name: user.name, role: user.role }} signOut={logoutAction} unread={unread} owner={owner} payrollTaxes={payrollTaxes.level !== "NONE"} />
       <main className="px-4 py-6 sm:px-6 lg:ml-64 lg:px-12 lg:py-10 print:ml-0! print:p-0!">
         <div className="mx-auto max-w-6xl">
           {ready.length > 0 && (

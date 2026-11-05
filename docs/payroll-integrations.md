@@ -251,6 +251,17 @@ A change creates a **new version**. Earlier approvals stop counting, old links s
 
 The business-owners work (per-owner portal permissions) is on another branch. When both are merged, it plugs in through one check, `isPayrollApprover()`.
 
+## 6. ADP Payroll & Taxes workspace (Stage 1: payroll)
+
+The sidebar link **ADP Payroll & Taxes** (`/payroll-taxes`) appears only for staff you allow in Owner's Office → Settings → Staff Access & Permissions → **ADP Payroll & Taxes** (View, Manage, All clients). Only you can grant or remove it; you always have Manage.
+
+- **Schedules**: per client, weekly / every two weeks / twice a month / monthly, a known pay date, and the deadlines before each pay date (hours request, hours due, approval due, ADP processing cutoff, in business days). Weekend and federal-holiday dates move earlier, never later. Saving a schedule fills the next 6 weeks of pay cycles; the hourly automations job keeps the horizon rolling. Generating cycles sends nothing.
+- **Work queue**: client, item, deadline countdown, status, assigned staff, next action. Overdue rows are pinned to the top.
+- **Workup**: upload ADP's preview PDF (kept in the client's file, staff only, shown to the approvers), import the register (CSV/XLSX, the existing import), or key in totals. The PDF's fingerprint is part of the version, so replacing it makes **v2** and earlier approvals stop counting.
+- **Statuses kept separate**: *Submitted in ADP* (a person recorded it), *Accepted by ADP* (reserved for a future API acknowledgement), *Processed* (recorded only with ADP's confirmation attached). Processed is never inferred from Submitted.
+- **Reminders**: hours request, a follow-up, approval reminders and an overdue alert to staff. Client reminders are **held** (recorded, never sent) until you turn on **Payroll & tax client reminders authorized** on the reminder settings page *and* the client's own switch is on. Texts only go where the client agreed to texts. Messages carry no amounts or employee names.
+- **Future API submission**: `submitPayData()` and `verifyProcessed()` on the provider (`src/lib/payroll/providers.ts`) refuse unless the provider is configured, the client authorized the connection, and your live-submission switch is on. None of these exist yet and there is no live code.
+
 ---
 
 ## Sources

@@ -15,7 +15,9 @@ import {
   saveManualTotals, saveReminderPlan, saveSchedule, sendForClientApproval, setClientRemindersAuthorized, setCycleAssignee, submitHoursByPortal, uploadPreview, workQueue, type ScheduleInput,
 } from "@/lib/services/payroll-taxes";
 import { HELD_CLIENT, HELD_SWITCH, runPayrollReminders, sendTestToOffice } from "@/lib/services/payroll-reminders";
-import { DEFAULT_PLAN } from "@/lib/payroll/queue";
+import { DEFAULT_PLAN, queueStatus } from "@/lib/payroll/queue";
+import { adpProvider, liveSubmissionGate, paychexProvider, ProviderNotConnectedError } from "@/lib/payroll/providers";
+import { factsOf, providerGate } from "@/lib/services/payroll-taxes";
 
 // Fictional businesses and people only. Email (Resend) and texts (Twilio) are simulated: nothing leaves the test.
 const NOW = new Date("2026-11-05T18:00:00Z"); // Thursday, noon Central
@@ -90,7 +92,6 @@ async function setup() {
   await setClientTexting(tabitha, true);
   return { tabitha, mom, vera, sam, bakery, auto, ava, ben, cal };
 }
-type S = Awaited<ReturnType<typeof setup>>;
 
 const cycleOn = (clientId: string, payDate: string) => prisma.payrollCycle.findUniqueOrThrow({ where: { clientId_payDate: { clientId, payDate: new Date(`${payDate}T00:00:00Z`) } } });
 const meta = { channel: "PORTAL" as const, verifiedBy: "PORTAL_SESSION" as const, ip: "203.0.113.9", userAgent: "test" };
@@ -373,6 +374,52 @@ describe("reminders", () => {
     expect(mail.map((m) => m.to)).toEqual(["info@tturnerassociates.com"]);
     expect(mail[0].subject).toMatch(/^\[TEST\]/);
     expect(sms).toHaveLength(0);
+  });
+});
+
+describe("submission and verification stay separate, recorded states", () => {
+  it("provider submit / verify refuse without configuration, client consent and the owner's live switch", async () => {
+    const s = await setup();
+    const ref = { id: "r", clientId: s.bakery.id, status: "FULLY_APPROVED", checkDate: new Date() };
+    const v = { id: "v", number: 1, contentHash: "h" };
+    for (const p of [adpProvider, paychexProvider]) {
+      await expect(p.submitPayData({ connection: null, ownerLiveSwitch: false }, ref, v)).rejects.toBeInstanceOf(ProviderNotConnectedError);
+      await expect(p.verifyProcessed({ connection: null, ownerLiveSwitch: false }, ref)).rejects.toThrow(/configured.*authorized.*live payroll submission/);
+    }
+    // Every condition is checked on its own.
+    const configured = { label: "ADP", configured: () => true };
+    expect(liveSubmissionGate(configured, { connection: { status: "CONNECTED" }, ownerLiveSwitch: false })).toEqual(["The owner hasn't turned on live payroll submission."]);
+    expect(liveSubmissionGate(configured, { connection: { status: "CONSENT_REQUESTED" }, ownerLiveSwitch: true })).toEqual(["This business hasn't authorized the provider connection."]);
+    expect(liveSubmissionGate(configured, { connection: { status: "CONNECTED" }, ownerLiveSwitch: true })).toEqual([]);
+    // …and even then nothing is sent: there is no live implementation in this stage.
+    vi.stubEnv("ADP_CLIENT_ID", "x"); vi.stubEnv("ADP_CLIENT_SECRET", "x"); vi.stubEnv("ADP_CERT", "x"); vi.stubEnv("ADP_KEY", "x");
+    await expect(adpProvider.submitPayData({ connection: { status: "CONNECTED" }, ownerLiveSwitch: true }, ref, v)).rejects.toThrow(/hasn't been built/);
+    vi.unstubAllEnvs();
+    expect((await providerGate(s.bakery.id)).reasons.length).toBe(3);
+    expect((await prisma.payrollTaxSettings.findUniqueOrThrow({ where: { id: "default" } })).providerLiveSubmission).toBe(false);
+  });
+  it("SUBMITTED and PROVIDER_ACCEPTED never become PROCESSED without a verification", async () => {
+    const s = await setup();
+    await saveSchedule(s.mom, s.auto.id, WEEKLY);
+    const c = await cycleOn(s.auto.id, "2026-11-13");
+    await saveManualTotals(s.mom, c.id, totals, pdf("auto-v1"));
+    expect((await prisma.payrollCycle.findUniqueOrThrow({ where: { id: c.id } })).workupSource).toBe("MANUAL_TOTALS");
+    await sendForClientApproval(s.mom, c.id);
+    const runId = (await prisma.payrollCycle.findUniqueOrThrow({ where: { id: c.id } })).payrollRunId!;
+    await decidePayroll(s.cal.id, s.auto.id, runId, { decision: "APPROVED", versionId: (await currentVersion(s.auto.id, runId)).id }, meta);
+    await markSubmittedInAdp(s.mom, c.id);
+    // Time passes; nothing turns SUBMITTED into PROCESSED on its own.
+    await generateCycles({ now: new Date("2026-11-20T18:00:00Z") });
+    await runPayrollReminders(new Date("2026-11-20T18:00:00Z"));
+    expect((await prisma.payrollRun.findUniqueOrThrow({ where: { id: runId } })).status).toBe("SUBMITTED");
+    // A future API acknowledgement is its own state, still not processed.
+    await prisma.payrollRun.update({ where: { id: runId }, data: { status: "PROVIDER_ACCEPTED" } });
+    const fresh = await prisma.payrollCycle.findUniqueOrThrow({ where: { id: c.id } });
+    expect(queueStatus(factsOf(fresh, { status: "PROVIDER_ACCEPTED", currentVersionId: null }), "2026-11-12")).toBe("ACCEPTED_BY_ADP");
+    await expect(markProcessed(s.mom, c.id, null)).rejects.toThrow(/Attach ADP's confirmation/);
+    await markProcessed(s.mom, c.id, pdf("auto-confirmation"));
+    expect(await prisma.payrollCycle.findUniqueOrThrow({ where: { id: c.id } })).toMatchObject({ processedVerification: "CONFIRMATION_UPLOAD" });
+    expect((await prisma.payrollRun.findUniqueOrThrow({ where: { id: runId } })).status).toBe("PROCESSED");
   });
 });
 

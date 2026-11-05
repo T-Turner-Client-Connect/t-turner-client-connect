@@ -13,6 +13,8 @@ export const QUEUE_STATUS = {
   NEEDS_CORRECTION: { label: "Needs correction", tone: "red" },
   READY_TO_PROCESS: { label: "Ready to process", tone: "green" },
   SUBMITTED_IN_ADP: { label: "Submitted in ADP", tone: "navy" },
+  // Future provider API: ADP acknowledged the pay data. Still not processed until verified.
+  ACCEPTED_BY_ADP: { label: "Accepted by ADP", tone: "navy" },
   PROCESSED: { label: "Processed", tone: "green" },
 } as const;
 export type QueueStatus = keyof typeof QUEUE_STATUS;
@@ -34,7 +36,9 @@ export type CycleFacts = {
 /** The one mapping from a cycle's facts to its queue status. */
 export function queueStatus(c: CycleFacts, today: string): QueueStatus {
   const run = c.run && c.run.status !== "DISCARDED" ? c.run : null;
+  // PROCESSED only once verified (cycle.processedAt is set with its verification); never from SUBMITTED.
   if (c.processedAt || run?.status === "PROCESSED") return "PROCESSED";
+  if (run?.status === "PROVIDER_ACCEPTED") return "ACCEPTED_BY_ADP";
   if (run?.status === "SUBMITTED") return "SUBMITTED_IN_ADP";
   if (c.errorFlaggedAt || run?.status === "DENIED") return "NEEDS_CORRECTION";
   // Ready only when the approvals are on the CURRENT version (the approval service resets the
@@ -54,6 +58,7 @@ export const ITEM_LABEL: Record<QueueStatus, string> = {
   NEEDS_CORRECTION: "Revised preview due",
   READY_TO_PROCESS: "Submit in ADP by cutoff",
   SUBMITTED_IN_ADP: "Pay date (confirm processed)",
+  ACCEPTED_BY_ADP: "Pay date (confirm processed)",
   PROCESSED: "Processed",
 };
 
@@ -65,6 +70,7 @@ export const NEXT_ACTION: Record<QueueStatus, string> = {
   NEEDS_CORRECTION: "Send revised preview",
   READY_TO_PROCESS: "Mark submitted in ADP",
   SUBMITTED_IN_ADP: "Mark processed",
+  ACCEPTED_BY_ADP: "Mark processed",
   PROCESSED: "View confirmation",
 };
 
@@ -77,7 +83,8 @@ export function deadlineFor(c: CycleFacts, s: QueueStatus): string | null {
     case "AWAITING_CLIENT_APPROVAL":
     case "NEEDS_CORRECTION": return c.approvalDueDate;
     case "READY_TO_PROCESS": return c.adpCutoffDate;
-    case "SUBMITTED_IN_ADP": return c.payDate;
+    case "SUBMITTED_IN_ADP":
+    case "ACCEPTED_BY_ADP": return c.payDate;
     case "PROCESSED": return null;
   }
 }
@@ -87,7 +94,7 @@ export function deadlineFor(c: CycleFacts, s: QueueStatus): string | null {
  * cycle is overdue once hours are past due; submitted and processed cycles never are.
  */
 export function isOverdue(c: CycleFacts, s: QueueStatus, today: string): boolean {
-  if (s === "PROCESSED" || s === "SUBMITTED_IN_ADP") return false;
+  if (s === "PROCESSED" || s === "SUBMITTED_IN_ADP" || s === "ACCEPTED_BY_ADP") return false;
   const d = s === "UPCOMING" ? c.hoursDueDate : deadlineFor(c, s);
   return !!d && today > d;
 }

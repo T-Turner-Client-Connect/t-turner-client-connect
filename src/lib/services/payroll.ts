@@ -30,7 +30,7 @@ import { AMOUNT_KEYS, differenceOf, headersOf, payrollEntryLines, readRegister, 
 
 type Tx = Prisma.TransactionClient;
 
-export const LOCKED = new Set(["SUBMITTED", "PROCESSED", "DISCARDED"]);
+export const LOCKED = new Set(["SUBMITTED", "PROVIDER_ACCEPTED", "PROCESSED", "DISCARDED"]);
 
 /** Staff functions are called only by real, active staff accounts — never a portal login. */
 export async function assertStaff(actor: Actor) {
@@ -405,7 +405,7 @@ export async function postPayrollRun(actor: Actor, clientId: string, runId: stri
   const { run, version } = await loadRun(clientId, runId);
   if (run.origin === "COETHA" && !(await canApproveCoethaWork(actor))) throw new ForbiddenError("This pay run was prepared by Coetha. Only Tabitha can approve and post Coetha's work.");
   if (run.journalEntryId) throw new ValidationError("This pay run is already posted.");
-  if (run.status !== "SUBMITTED" && run.status !== "PROCESSED") throw new ValidationError("Post payroll to the books after it's submitted for processing (or imported as already processed).");
+  if (run.status !== "SUBMITTED" && run.status !== "PROVIDER_ACCEPTED" && run.status !== "PROCESSED") throw new ValidationError("Post payroll to the books after it's submitted for processing (or imported as already processed).");
   const checkDate = ymdOf(version.checkDate);
   const entry = await prisma.$transaction(async (tx) => {
     const accounts = await ensurePayrollAccounts(tx, actor, clientId, input.cashAccountId ?? run.cashAccountId);

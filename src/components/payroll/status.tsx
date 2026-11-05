@@ -12,6 +12,7 @@ const TONE: Record<string, string> = {
   DENIED: "bg-red-600 text-white",
   FULLY_APPROVED: "bg-emerald-50 text-emerald-700",
   SUBMITTED: "bg-navy-900 text-white",
+  PROVIDER_ACCEPTED: "bg-navy-900 text-white",
   PROCESSED: "bg-navy-900 text-white",
   DISCARDED: "bg-slate-100 text-slate-500",
 };
@@ -26,7 +27,7 @@ export function RunStatus({ status, approvedBy = [], className }: { status: stri
 export function StatusSteps({ status, required, approvedIds }: { status: string; required: { id: string; name: string }[]; approvedIds: string[] }) {
   const reached = (s: string) => {
     const order = ["DRAFT", "AWAITING_APPROVAL", "FULLY_APPROVED", "SUBMITTED"];
-    const at = status === "PROCESSED" ? 3 : status === "DENIED" ? 1 : order.indexOf(status);
+    const at = status === "PROCESSED" || status === "PROVIDER_ACCEPTED" ? 3 : status === "DENIED" ? 1 : order.indexOf(status);
     return order.indexOf(s) <= at;
   };
   const steps = [

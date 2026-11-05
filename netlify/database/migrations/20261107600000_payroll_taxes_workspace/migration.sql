@@ -52,6 +52,8 @@ CREATE TABLE "PayrollCycle" (
     "errorFlaggedAt" TIMESTAMP(3),
     "errorFlaggedById" TEXT,
     "errorNote" TEXT,
+    "workupSource" TEXT,
+    "processedVerification" TEXT,
     "processedAt" TIMESTAMP(3),
     "processedById" TEXT,
     "confirmationDocumentId" TEXT,
@@ -96,6 +98,7 @@ CREATE TABLE "PayrollReminder" (
 CREATE TABLE "PayrollTaxSettings" (
     "id" TEXT NOT NULL DEFAULT 'default',
     "clientRemindersAuthorized" BOOLEAN NOT NULL DEFAULT false,
+    "providerLiveSubmission" BOOLEAN NOT NULL DEFAULT false,
     "changedAt" TIMESTAMP(3),
     "changedById" TEXT,
     "updatedAt" TIMESTAMP(3) NOT NULL,

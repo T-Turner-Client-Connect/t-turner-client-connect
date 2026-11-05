@@ -6,7 +6,7 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { assertOwner, ownerAudit } from "@/lib/auth/owner";
 import { isPrimaryOwner } from "@/lib/auth/permissions";
-import { requireClientAccess } from "@/lib/portal/access";
+import { portalDocumentScope, requireClientAccess } from "@/lib/portal/access";
 import { chicagoLocalToUtc } from "@/lib/tz";
 import { isPayrollSystem } from "@/lib/payroll/fields";
 import { differenceOf, type Amounts, type PayDateTotals } from "@/lib/payroll/register";
@@ -289,8 +289,8 @@ export async function dueDates(actor: Actor, month: string, today = todayCentral
     const c = cycles.find((x) => x.id === r.data.cycleId)!;
     const f = factsOf(c, null);
     const doneHours = !!c.hoursSubmittedAt || !!r.data.runStatus;
-    const doneApproval = ["FULLY_APPROVED", "SUBMITTED", "PROCESSED"].includes(r.data.runStatus ?? "") || !!c.processedAt;
-    const doneAdp = ["SUBMITTED", "PROCESSED"].includes(r.data.runStatus ?? "") || !!c.processedAt;
+    const doneApproval = ["FULLY_APPROVED", "SUBMITTED", "PROVIDER_ACCEPTED", "PROCESSED"].includes(r.data.runStatus ?? "") || !!c.processedAt;
+    const doneAdp = ["SUBMITTED", "PROVIDER_ACCEPTED", "PROCESSED"].includes(r.data.runStatus ?? "") || !!c.processedAt;
     const doneAll = !!c.processedAt || r.data.runStatus === "PROCESSED";
     const push = (date: string, kind: (typeof items)[number]["kind"], label: string, done: boolean) => items.push({ date, kind, label, clientName: r.data.clientName, cycleId: c.id, overdue: !done && today > date, done });
     push(f.hoursDueDate, "HOURS_DUE", "Hours due", doneHours);
@@ -531,6 +531,7 @@ export async function uploadPreview(actor: Actor, cycleId: string, file: Uploade
       throw new ValidationError(imp.unbalanced.length ? `The register's totals don't tie out (${imp.unbalanced.map((u) => `${u.checkDate}: off by ${usd(u.differenceCents)}`).join(", ")}), so nothing was linked.` : `The register has no pay date ${pay}, so nothing was linked to this cycle. Its pay runs were saved as drafts in the client's payroll.`);
     }
     await linkRun(prisma, cycle.id, match.id);
+    await prisma.payrollCycle.update({ where: { id: cycle.id }, data: { workupSource: "REGISTER_IMPORT" } });
     await audit(prisma, { actorId: actor.id, action: "payroll_taxes.register_uploaded", entityType: "PayrollCycle", entityId: cycle.id, clientId: cycle.clientId, details: { runId: match.id, importId: imp.importId, documentId: imp.documentId } });
     return { runId: match.id, kind: "REGISTER" as const };
   }
@@ -572,6 +573,7 @@ export async function saveManualTotals(actor: Actor, cycleId: string, t: ManualT
     const id = r.created[0];
     if (!id) throw new ValidationError("Those totals couldn't be saved.");
     await linkRun(tx, cycle.id, id);
+    await tx.payrollCycle.update({ where: { id: cycle.id }, data: { workupSource: "MANUAL_TOTALS" } });
     await audit(tx, { actorId: actor.id, action: "payroll_taxes.totals_keyed", entityType: "PayrollCycle", entityId: cycle.id, clientId: cycle.clientId, details: { runId: id, version: 1, documentId: doc?.id ?? null } });
     return id;
   });
@@ -607,7 +609,12 @@ export async function clearCycleError(actor: Actor, cycleId: string) {
   await audit(prisma, { actorId: actor.id, action: "payroll_taxes.error_cleared", entityType: "PayrollCycle", entityId: cycle.id, clientId: cycle.clientId });
 }
 
-/** "Mark Submitted in ADP": the existing recorded human step (never automatic). */
+/**
+ * "Mark Submitted in ADP": the existing recorded human step (never automatic). Submission and
+ * verification by API sit behind PayrollProvider.submitPayData / verifyProcessed
+ * (src/lib/payroll/providers.ts), which refuse until the provider is configured, the client
+ * authorized the connection and the owner's live-submission switch is on — see providerGate().
+ */
 export async function markSubmittedInAdp(actor: Actor, cycleId: string, note?: string | null) {
   await assertStaff(actor);
   const { cycle } = await loadCycle(actor, cycleId, "manage");
@@ -628,19 +635,34 @@ export async function markProcessed(actor: Actor, cycleId: string, file: Uploade
   const { cycle } = await loadCycle(actor, cycleId, "manage");
   if (cycle.processedAt) throw new ValidationError("This cycle is already marked processed.");
   const run = await currentRun(cycle);
-  if (!run || run.status !== "SUBMITTED") throw new ValidationError("Mark it Submitted in ADP first.");
+  // SUBMITTED (a person recorded it, or later an API upload) or PROVIDER_ACCEPTED (later: ADP
+  // acknowledged it). Either way PROCESSED needs its own verification: ADP's confirmation.
+  if (!run || (run.status !== "SUBMITTED" && run.status !== "PROVIDER_ACCEPTED")) throw new ValidationError("Mark it Submitted in ADP first.");
   if (!file || !file.bytes.length) throw new ValidationError("Attach ADP's confirmation or payroll summary (PDF).");
   const doc = await storePdf(actor, cycle, file, "PAYROLL_CONFIRMATION");
   const note = details.note?.trim().slice(0, 500) || null;
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"payroll-run:" + run.id}))`;
     const { run: fresh, version } = await loadRun(cycle.clientId, run.id, tx);
-    if (fresh.status !== "SUBMITTED") throw new ValidationError("Mark it Submitted in ADP first.");
+    if (fresh.status !== "SUBMITTED" && fresh.status !== "PROVIDER_ACCEPTED") throw new ValidationError("Mark it Submitted in ADP first.");
     await tx.payrollRun.update({ where: { id: run.id }, data: { status: "PROCESSED" } });
     await event(tx, run.id, "PROCESSED", { userId: actor.id, name: actor.name }, { versionNumber: version.number, note: `Processed by ADP — confirmation saved to the client file${note ? `. ${note}` : ""}` });
-    await tx.payrollCycle.update({ where: { id: cycle.id }, data: { processedAt: new Date(), processedById: actor.id, confirmationDocumentId: doc.id, confirmationNote: note } });
+    await tx.payrollCycle.update({ where: { id: cycle.id }, data: { processedAt: new Date(), processedById: actor.id, processedVerification: "CONFIRMATION_UPLOAD", confirmationDocumentId: doc.id, confirmationNote: note } });
     await audit(tx, { actorId: actor.id, action: "payroll_taxes.processed", entityType: "PayrollCycle", entityId: cycle.id, clientId: cycle.clientId, details: { runId: run.id, version: version.number, confirmationDocumentId: doc.id } });
   });
+}
+
+// --- Provider API (future) ------------------------------------------------------------------------
+
+/** Why a live provider submission / verification would be refused for this cycle's client today. */
+export async function providerGate(clientId: string) {
+  const { providerFor, liveSubmissionGate } = await import("@/lib/payroll/providers");
+  const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId }, select: { payrollSystem: true } });
+  const provider = providerFor(profile?.payrollSystem);
+  if (!provider) return { provider: null, reasons: ["This payroll system has no API connection."] };
+  const connection = await prisma.payrollConnection.findUnique({ where: { clientId_provider: { clientId, provider: profile!.payrollSystem! } } });
+  const settings = await payrollTaxSettings();
+  return { provider: provider.label, reasons: liveSubmissionGate(provider, { connection, ownerLiveSwitch: settings.providerLiveSubmission }), connection, ownerLiveSwitch: settings.providerLiveSubmission };
 }
 
 // --- Client portal ---------------------------------------------------------------------------------
@@ -673,7 +695,7 @@ export async function portalPayrollRequests(portalUserId: string, clientId: stri
       if (!decided) awaiting.push({ cycleId: c.id, payDate: ymdOf(c.payDate), approvalDue: ymdOf(c.approvalDueDate), version: run.versionNumber });
     }
   }
-  const documents = await prisma.document.findMany({ where: { clientId, deletedAt: null, visibility: "PUBLISHED", OR: [{ category: "PAYROLL" }, { docType: { startsWith: "PAYROLL" } }] }, orderBy: { createdAt: "desc" }, take: 20, select: { id: true, title: true, createdAt: true } });
+  const documents = await prisma.document.findMany({ where: { AND: [{ clientId, deletedAt: null, visibility: "PUBLISHED", OR: [{ category: "PAYROLL" }, { docType: { startsWith: "PAYROLL" } }] }, portalDocumentScope(access, portalUserId)] }, orderBy: { createdAt: "desc" }, take: 20, select: { id: true, title: true, createdAt: true } });
   return {
     approver,
     hours: hours.map((c) => ({ cycleId: c.id, payDate: ymdOf(c.payDate), periodStart: ymdOf(c.periodStart), periodEnd: ymdOf(c.periodEnd), hoursDue: ymdOf(c.hoursDueDate), submittedAt: c.hoursSubmittedAt, submission: (c.hoursSubmission as HoursSubmission | null) ?? null })),
