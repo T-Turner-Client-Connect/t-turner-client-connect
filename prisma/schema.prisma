@@ -97,6 +97,7 @@ model User {
   signatureReqs    SignatureRequest[]
   contracts        ContractAssignment[]
   portalInvites    PortalInvite[]
+  inviteBatches    PortalInviteBatch[]  @relation("PortalInviteBatchCreatedBy")
   ownerAccess      OwnerAccess?         @relation("OwnerAccessUser")
   staffPermissions StaffPermission[]    @relation("StaffPermissionUser")
 }
@@ -357,6 +358,7 @@ model Client {
   billingSchedules       BillingSchedule[]
   clientLetters          ClientLetter[]
   coethaOptOut           CoethaOptOut?
+  preparedInvitations    PortalInviteBatchRow[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -923,6 +925,58 @@ model PortalInvite {
   createdAt        DateTime   @default(now())
 
   @@index([email])
+}
+
+// Prepared invitations: staff gather clients into a draft batch, Tabitha reviews and approves
+// each row, and only then (with "Portal invitations authorized" on) are the invitations sent,
+// each through the ordinary single-invite path (invitePortalUser + the activation email).
+model PortalInviteBatch {
+  id            String                 @id @default(cuid())
+  title         String
+  // The import batch the clients came from, when prepared from an import.
+  importBatchId String?
+  createdById   String
+  createdBy     User                   @relation("PortalInviteBatchCreatedBy", fields: [createdById], references: [id])
+  lastSentAt    DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  rows          PortalInviteBatchRow[]
+
+  @@index([createdAt])
+}
+
+model PortalInviteBatchRow {
+  id                       String            @id @default(cuid())
+  batchId                  String
+  batch                    PortalInviteBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  clientId                 String
+  client                   Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  contactId                String?
+  inviteeName              String
+  // Normalized; null = no email on file yet.
+  email                    String?
+  role                     PortalRole        @default(OWNER)
+  // The PortalPermissions flags this login starts with (never the business view).
+  permissions              Json
+  // Someone confirmed this address really is the same person on another record / login.
+  sharedEmailConfirmedAt   DateTime?
+  sharedEmailConfirmedById String?
+  // Tabitha's approval of this row. Any edit clears it.
+  approvedAt               DateTime?
+  approvedById             String?
+  // Set when sending starts (claimed once, so a row is never invited twice), then the outcome:
+  // SENT (accepted by the email provider) | EMAIL_FAILED | SKIPPED | NO_EMAIL | ACCESS_ADDED.
+  sendStartedAt            DateTime?
+  result                   String?
+  resultDetail             String?
+  resultAt                 DateTime?
+  portalInviteId           String?
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+
+  @@unique([batchId, clientId])
+  @@index([clientId])
+  @@index([portalInviteId])
 }
 
 model PortalSession {
@@ -4402,6 +4456,11 @@ model IntegrationSettings {
   coethaAutoSendRequests    Boolean   @default(true)
   coethaAutoSendChangedById String?
   coethaAutoSendChangedAt   DateTime?
+  // Owner-only safety lock (primary owner): "Portal invitations authorized". While off, staff
+  // can prepare invitation batches and Tabitha can approve them, but nothing is sent.
+  portalInvitesAuthorized   Boolean   @default(false)
+  portalInvitesChangedById  String?
+  portalInvitesChangedAt    DateTime?
   updatedById               String?
   updatedAt                 DateTime  @updatedAt
 }
