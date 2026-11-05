@@ -99,6 +99,18 @@ export const AMENDMENT_LABELS = {
   BALANCE_DUE_NOTICE: "Balance-due notice issued",
 } as const;
 
+const STATE_FULL: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado", CT: "Connecticut", DE: "Delaware", DC: "District of Columbia", FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas", KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland", MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana", NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico", NY: "New York", NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah", VT: "Vermont", VA: "Virginia", WA: "Washington", WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming", PR: "Puerto Rico",
+};
+
+/** Client-facing: "Federal (IRS)" or the state's name ("Alabama"). */
+export function portalJurisdictionLabel(j: string) {
+  return j === "FEDERAL" ? "Federal (IRS)" : STATE_FULL[j] ?? `State — ${j}`;
+}
+
+/** Federal first, then states alphabetically. */
+export const federalFirst = <T extends { jurisdiction: string }>(a: T, b: T) => (a.jurisdiction === "FEDERAL" ? -1 : b.jurisdiction === "FEDERAL" ? 1 : a.jurisdiction.localeCompare(b.jurisdiction));
+
 export function jurisdictionLabel(j: string) {
   return j === "FEDERAL" ? "Federal (IRS)" : `State — ${j}`;
 }

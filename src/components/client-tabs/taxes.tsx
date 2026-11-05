@@ -1,7 +1,13 @@
 import Link from "next/link";
 import type { Actor } from "@/lib/auth/actor";
-import { ReturnFields } from "@/components/return-fields";
-import { fileReturnAction, returnStepAction } from "@/app/actions/tax-returns";
+import { returnStepAction } from "@/app/actions/tax-returns";
+import { deliverAcceptedReturnAction, relabelFilingDocAction, removeFilingDocAction } from "@/app/actions/accepted-returns";
+import { AcceptedReturnFields } from "@/components/accepted-return-fields";
+import { AcceptanceQueue } from "@/components/acceptance-queue";
+import { PresetReason } from "@/components/preset-reason";
+import { deliveryContext } from "@/lib/services/accepted-returns";
+import { nextFilingStatus } from "@/lib/services/tax";
+import { utcToChicagoLocal } from "@/lib/tz";
 import { filingLabel, RETURN_COPY_STATUS } from "@/lib/services/tax-returns";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ActionForm } from "@/components/action-form";
@@ -16,9 +22,11 @@ import { TaxPrepCases } from "./tax-prep-cases";
 import { TaxSummaryStaff } from "./tax-summary-staff";
 import { summaryRequirement } from "@/lib/services/tax-summary";
 
-const DOC_TYPE = { OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Agency notice", CORRESPONDENCE: "Correspondence", FIRM_SUMMARY: "Our summary" } as const;
+const DOC_TYPE = { RETURN: "Return", OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Agency notice", CORRESPONDENCE: "Correspondence", FIRM_SUMMARY: "Our summary" } as const;
 
-export async function TaxesTab({ clientId, user }: { clientId: string; user: Actor }) {
+export type DeliverPrefill = { year?: number; state?: boolean; amended?: boolean };
+
+export async function TaxesTab({ clientId, user, deliver }: { clientId: string; user: Actor; deliver?: DeliverPrefill }) {
   const [client, filings, docs] = await Promise.all([
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { taxSoftwareId: true } }),
     prisma.filingRecord.findMany({
@@ -35,6 +43,8 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
   const requirements = new Map(await Promise.all(filings.map(async (f) => [f.id, await summaryRequirement(f)] as const)));
   const staffNames = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const years = Array.from(new Set(filings.map((f) => f.taxYear)));
+  const ctx = await deliveryContext(clientId, user);
+
   const thisYear = new Date().getFullYear();
 
   return (
@@ -42,24 +52,30 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
       <TaxPrepCases clientId={clientId} user={user} />
       <TaxCenterStaff clientId={clientId} user={user} />
       <TaxSummaryStaff clientId={clientId} user={user} />
-      <Card title="Step 2 · Accepted Return Delivery (after IRS/state acceptance)">
-        <p className="mb-3 text-sm text-slate-600">Upload the return only after the IRS or state has <strong>accepted</strong> it (record the acceptance on the filing below first). Draft or unaccepted returns are never delivered as completed filings. Label each by tax year, federal/state, return type and original/amended; the acceptance confirmation is kept separately on the filing.</p>
-        <ActionForm action={fileReturnAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-6" resetOnSuccess>
-          <ReturnFields />
-          <Field label="Accepted return PDF"><input className="input" type="file" name="file" accept="application/pdf" required /></Field>
-          <Field label="Acceptance confirmation (optional)" hint="Kept separately on the filing."><input className="input" type="file" name="ackFile" accept="application/pdf,image/png,image/jpeg" /></Field>
-          <div className="sm:col-span-6"><Button type="submit" variant="secondary">Upload Accepted Return</Button> <span className="text-xs text-slate-600">For several at once, use <Link className="underline" href="/taxes/returns">Tax returns</Link>. {approver ? "Your uploads can be sent to the client right away." : "Tabitha approves each staff upload before the client sees it."}</span></div>
+      <AcceptanceQueue approver={approver} clientId={clientId} />
+      <div id="deliver-accepted">
+      <Card title="Step 2 · Deliver accepted return (federal and state together)">
+        <p className="mb-3 text-sm text-slate-600">
+          For a return TaxAct already e-filed and the IRS/state accepted. One submit adds the filing if it&apos;s missing, records it as submitted and accepted on the date you enter (both in the status history), keeps the acknowledgment on the filing and files the return PDF.{" "}
+          {approver ? "Tick “Send to the client's vault now” and it's delivered in the same step." : "Only Tabitha records a return as submitted or accepted, so your submission waits for her one-click confirmation."}
+        </p>
+        <ActionForm action={deliverAcceptedReturnAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-6" resetOnSuccess idempotent>
+          <AcceptedReturnFields ctx={ctx} defaultYear={deliver?.year} startWithState={deliver?.state} amended={deliver?.amended} />
+          <div className="sm:col-span-6"><Button type="submit">{approver ? "Deliver accepted return" : "Save for Tabitha to confirm"}</Button> <span className="text-xs text-slate-600">For many at once, use <Link className="underline" href="/taxes/returns">Tax returns</Link>.</span></div>
         </ActionForm>
         <ul className="mt-3 divide-y divide-ivory-200 text-sm" data-testid="client-returns">
           {returnDocs.map((d) => {
             const fl = filingLabel(d.filing?.filingStatus);
             const st = RETURN_COPY_STATUS[(d.reviewStatus ?? "DRAFT") as keyof typeof RETURN_COPY_STATUS];
             const waiting = d.reviewStatus === "DRAFT" || d.reviewStatus === "AWAITING_REVIEW";
+            const accepted = d.filing?.filingStatus === "ACCEPTED";
+            // Tabitha sees "ready to send", never "waiting for Tabitha's release".
+            const stLabel = approver && waiting ? (accepted ? "Ready to send" : "Waiting for your acceptance confirmation") : !accepted && waiting ? "Waiting for Tabitha to confirm acceptance" : st.label;
             return (
               <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span className="min-w-0">{d.title}{d.version && d.version > 1 ? ` · version ${d.version}` : ""}{d.supersededAt ? " · replaced by a newer version" : ""} <Badge tone={st.tone as never}>{st.label}</Badge>{fl && <Badge tone={fl.tone} className="ml-1">{fl.label}</Badge>}</span>
-                {waiting && approver && <ActionForm action={returnStepAction.bind(null, d.id, "release")}><Button type="submit" variant="gold" disabled={d.scanStatus !== "CLEAN"}>Send to client</Button></ActionForm>}
-                {d.reviewStatus === "DRAFT" && !approver && <ActionForm action={returnStepAction.bind(null, d.id, "submit")}><Button type="submit" variant="ghost" disabled={d.scanStatus !== "CLEAN"}>Ask Tabitha to release</Button></ActionForm>}
+                <span className="min-w-0">{d.title}{d.version && d.version > 1 ? ` · version ${d.version}` : ""}{d.supersededAt ? " · replaced by a newer version" : ""} <Badge tone={st.tone as never}>{stLabel}</Badge>{fl && <Badge tone={fl.tone} className="ml-1">{fl.label}</Badge>}</span>
+                {waiting && approver && accepted && <ActionForm action={returnStepAction.bind(null, d.id, "release")}><Button type="submit" variant="gold" disabled={d.scanStatus !== "CLEAN"}>Send to client</Button></ActionForm>}
+                {d.reviewStatus === "DRAFT" && !approver && accepted && <ActionForm action={returnStepAction.bind(null, d.id, "submit")}><Button type="submit" variant="ghost" disabled={d.scanStatus !== "CLEAN"}>Ask Tabitha to release</Button></ActionForm>}
                 {d.reviewStatus === "AWAITING_REVIEW" && !approver && <Badge tone="gold">Waiting for Tabitha</Badge>}
               </li>
             );
@@ -67,6 +83,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
           {returnDocs.length === 0 && <li className="py-2 text-slate-600">No accepted returns delivered yet.</li>}
         </ul>
       </Card>
+      </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Add a filing">
           <ActionForm action={createFilingAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-2" resetOnSuccess>
@@ -135,9 +152,11 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
                       <summary className="cursor-pointer text-sm font-semibold underline">Record a filing status (audited)</summary>
                       <ActionForm action={filingStatusAction.bind(null, clientId, f.id)} className="mt-2 grid gap-2 sm:grid-cols-2" resetOnSuccess>
                         <Field label="Status">
-                          <select className="input" name="filingStatus" defaultValue={f.filingStatus}>{Object.entries(FILING_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+                          <select className="input" name="filingStatus" defaultValue={nextFilingStatus(f.filingStatus)} data-testid="status-select">{Object.entries(FILING_LABELS).map(([k, v]) => <option key={k} value={k}>{v}{k === f.filingStatus ? " (current)" : ""}</option>)}</select>
                         </Field>
-                        <Field label="Status date"><input className="input" type="datetime-local" name="eventAt" /></Field>
+                        <Field label="Status date" hint={f.statusAsOf ? <span data-testid="status-date-hint">Must be after {fmtDateTime(f.statusAsOf)} ({FILING_LABELS[f.filingStatus].toLowerCase()} recorded then). Leave empty for now.</span> : "Leave empty for now."}>
+                          <input className="input" type="datetime-local" name="eventAt" min={f.statusAsOf ? utcToChicagoLocal(f.statusAsOf) : undefined} max={utcToChicagoLocal(new Date())} />
+                        </Field>
                         <Field label="Upload acknowledgment" hint="Recommended for Accepted/Rejected."><input className="input" type="file" name="ackFile" accept="application/pdf,image/png,image/jpeg" /></Field>
                         <Field label="…or existing document">
                           <select className="input" name="evidenceDocumentId" defaultValue=""><option value="">—</option>{docs.map((d) => <option key={d.id} value={d.id}>{d.title}</option>)}</select>
@@ -150,7 +169,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
                             <p className="font-semibold">Owner filing — Tabitha only</p>
                             <p className="text-xs text-slate-700">{req.approved ? `Client approved the ${f.taxYear} summary (version ${req.approved.version}) — ready for owner filing.` : `No client-approved ${f.taxYear} summary yet. Send the summary for approval first.`}</p>
                             {f.method === "ELECTRONIC" && <label className="mt-2 flex items-start gap-2"><input type="checkbox" name="form8879" className="mt-1 accent-navy-900" /> Signed IRS Form 8879 (and any state e-file authorization) is on file. The summary approval does not replace it.</label>}
-                            {!req.approved && <Field label="Filing without an approved summary? Say why" className="mt-2"><input className="input" name="overrideReason" /></Field>}
+                            {!req.approved && <PresetReason className="mt-2" />}
                             {!approver && <p className="mt-1 text-xs font-semibold text-red-800">Only Tabitha can record a return as submitted.</p>}
                           </div>
                         )}
@@ -181,6 +200,24 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
                               <a className="underline" href={`/api/documents/${downloadToken(d.id, { staffId: user.id })}`} target="_blank" rel="noopener">{d.title}</a>{" "}
                               <Badge tone="gray">{DOC_TYPE[(d.filingDocType ?? "CORRESPONDENCE") as keyof typeof DOC_TYPE]}</Badge>{" "}
                               <Badge tone={d.visibility === "PUBLISHED" ? "green" : "gray"}>{d.visibility === "PUBLISHED" ? "Published" : "Staff only"}</Badge>
+                              {(d.visibility !== "PUBLISHED" || approver) && (
+                                <details className="ml-1 inline-block align-top text-xs" data-testid="fix-filing-doc">
+                                  <summary className="cursor-pointer text-slate-600 underline">Misfiled? Fix</summary>
+                                  <div className="mt-1 space-y-1 rounded-lg border border-ivory-200 bg-white p-2">
+                                    <ActionForm action={relabelFilingDocAction.bind(null, d.id)} className="flex flex-wrap items-end gap-1">
+                                      <select className="input w-auto" name="to" defaultValue={d.filingDocType === "RETURN" ? "OFFICIAL_ACK" : "RETURN"} aria-label="Re-label as">
+                                        <option value="RETURN">The return</option><option value="OFFICIAL_ACK">Official acknowledgment</option><option value="AGENCY_NOTICE">Agency notice</option><option value="CORRESPONDENCE">Correspondence</option>
+                                      </select>
+                                      <Button type="submit" variant="secondary">Re-label</Button>
+                                    </ActionForm>
+                                    <ActionForm action={removeFilingDocAction.bind(null, d.id)} className="flex flex-wrap items-end gap-1" confirm="Remove this document from the filing? It's kept in the audit trail.">
+                                      <input className="input w-48" name="reason" placeholder="Why remove it? (e.g. wrong file)" aria-label="Why remove it?" />
+                                      <Button type="submit" variant="ghost">Remove</Button>
+                                    </ActionForm>
+                                    {d.visibility === "PUBLISHED" && <p className="text-slate-600">Published to the client — only you can change it.</p>}
+                                  </div>
+                                </details>
+                              )}
                             </li>
                           ))}
                         </ul>
@@ -218,7 +255,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
                       <ul className="mt-1 space-y-0.5 text-slate-600">
                         {f.events.map((e) => (
                           <li key={e.id}>
-                            {fmtDate(e.eventAt)} · {e.field === "PREP" ? "Preparation" : e.field === "AMENDMENT" ? "Amendment" : "Filing"}: {e.fromValue?.toLowerCase().replace(/_/g, " ") ?? "—"} → {e.toValue.toLowerCase().replace(/_/g, " ")} · {e.source === "TAXACT_IMPORT" ? "TaxAct import" : staffNames.get(e.actorId ?? "") ?? "staff"}
+                            {fmtDate(e.eventAt)} · {e.field === "PREP" ? "Preparation" : e.field === "AMENDMENT" ? "Amendment" : e.field === "OWNER_CONFIRM" ? "Tabitha's confirmation" : "Filing"}: {e.fromValue?.toLowerCase().replace(/_/g, " ") ?? "—"} → {e.toValue.toLowerCase().replace(/_/g, " ")} · {e.source === "TAXACT_IMPORT" ? "TaxAct import" : staffNames.get(e.actorId ?? "") ?? "staff"}
                             {e.verificationNote && ` · “${e.verificationNote}”`}
                           </li>
                         ))}

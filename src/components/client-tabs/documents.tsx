@@ -8,6 +8,7 @@ import { ConfirmButton } from "@/components/confirm-button";
 import { Badge, Button, Card, EmptyState, Notice } from "@/components/ui";
 import { acknowledgeDocumentsAction, deleteDocumentAction, setVisibilityAction } from "@/app/actions/workspace";
 import { UploadDocumentForm } from "@/components/upload-document-form";
+import { deliveryContext } from "@/lib/services/accepted-returns";
 import { IdentityStaff } from "./identity-staff";
 import { prisma } from "@/lib/prisma";
 import { CATEGORY_LABELS, downloadToken, REPORT_LABELS } from "@/lib/services/documents";
@@ -145,7 +146,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
         )}
       </div>
       <Card title="Upload a document">
-        <UploadDocumentForm clientId={clientId} />
+        <UploadDocumentForm clientId={clientId} delivery={await deliveryContext(clientId, user)} />
       </Card>
     </div>
   );

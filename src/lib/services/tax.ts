@@ -17,6 +17,14 @@ import {
 import { ValidationError } from "./clients";
 import { queuePortalNotification } from "./notifications";
 
+const FILING_LABEL: Record<FilingStatus, string> = { NOT_SUBMITTED: "Not submitted", SUBMITTED: "Submitted", PENDING_ACKNOWLEDGMENT: "Pending acknowledgment", ACCEPTED: "Accepted", REJECTED: "Rejected" };
+
+/** The status staff most likely want to record next (the select's default), so “Submitted” isn't re-saved by mistake. */
+export function nextFilingStatus(current: FilingStatus): FilingStatus {
+  if (current === "NOT_SUBMITTED" || current === "REJECTED") return "SUBMITTED";
+  return "ACCEPTED";
+}
+
 const ORDER: FilingStatus[] = ["NOT_SUBMITTED", "SUBMITTED", "PENDING_ACKNOWLEDGMENT", "ACCEPTED", "REJECTED"];
 
 export async function createFiling(
@@ -70,7 +78,10 @@ export async function setFilingStatusByStaff(
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
   const eventAt = input.eventAt ?? new Date();
   if (eventAt > new Date(Date.now() + 60_000)) throw new ValidationError("The status date can't be in the future.");
-  if (f.statusAsOf && eventAt < f.statusAsOf) throw new ValidationError("A newer status is already recorded for this filing.");
+  if (f.statusAsOf && eventAt < f.statusAsOf) {
+    const { fmtDateTime } = await import("@/lib/format");
+    throw new ValidationError(`A newer status is already recorded for this filing (${FILING_LABEL[f.filingStatus]}, ${fmtDateTime(f.statusAsOf)}). The status date must be after ${fmtDateTime(f.statusAsOf)}.`);
+  }
   if (input.evidenceDocumentId && !(await prisma.document.count({ where: { id: input.evidenceDocumentId, clientId: f.clientId, deletedAt: null } }))) {
     throw new ValidationError("The evidence document must belong to this client.");
   }
@@ -152,7 +163,8 @@ export async function attachFilingDocument(actor: Actor, filingId: string, docum
  */
 export async function publishFilingUpdate(actor: Actor, filingId: string, channels: ("EMAIL" | "SMS")[] | "portal_only") {
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId }, include: { documents: { where: { deletedAt: null } } } });
-  const docIds = f.documents.filter((d) => d.scanStatus === "CLEAN").map((d) => d.id);
+  // A tax return reaches the client only through Tabitha's release (never as a side effect of publishing the filing).
+  const docIds = f.documents.filter((d) => d.scanStatus === "CLEAN" && d.filingDocType !== "RETURN").map((d) => d.id);
   await prisma.$transaction([
     prisma.filingRecord.update({ where: { id: filingId }, data: { visibleToClient: true } }),
     prisma.document.updateMany({ where: { id: { in: docIds }, visibility: "STAFF_ONLY" }, data: { visibility: "PUBLISHED", publishedAt: new Date() } }),
