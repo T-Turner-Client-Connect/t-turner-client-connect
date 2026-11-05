@@ -11,6 +11,8 @@ import { AGING_BUCKETS, money } from "@/lib/billing/pricing";
 import { nameOf, paymentStatus, squareRevenueSummary } from "@/lib/services/square-billing";
 import { squareHealth } from "@/lib/services/square-health";
 import { fmtDate, fmtDateTime } from "@/lib/format";
+import { accessReviewBanner } from "@/lib/services/access-review";
+import { AccessReviewBanner } from "@/components/owner/access-review-banner";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -23,6 +25,8 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
   const maySq = access.can("square", "view");
   const [{ months, total }, r, sq, health, other, clientChoices] = await Promise.all([monthlySummary(actor, year), mayAr ? receivables(actor) : null, maySq ? squareRevenueSummary() : null, maySq ? squareHealth() : null, maySq ? nonSquareRecurring(actor) : null, prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, businessName: true }, orderBy: { displayName: "asc" } })]);
   const month = year === thisYear ? months[Number(todayYmd().slice(5, 7)) - 1] : null;
+  // Owner only: returns null for staff (even with every grant) and while the review is 14+ days away.
+  const reviewBanner = await accessReviewBanner(actor);
   return (
     <>
       <PageHeader
@@ -36,6 +40,7 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
           </>
         }
       />
+      {reviewBanner && <AccessReviewBanner banner={reviewBanner} />}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label={`Collected ${year}`} value={money(total.collectedCents - total.refundedCents)} hint={month ? `${money(month.collectedCents - month.refundedCents)} this month` : "Cash received, less refunds"} />
         <Stat label={`Invoiced ${year}`} value={money(total.invoicedCents)} hint="Accepted quotes and issued invoices" />

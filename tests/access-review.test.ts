@@ -166,7 +166,8 @@ describe("review reminder (automations cron)", () => {
     const review = await completeAccessReview(tab, { summary: "Fictional review done.", vendors: allVendors() });
     expect((await prisma.task.findUniqueOrThrow({ where: { id: tasks[0].id } })).status).toBe("DONE");
     expect(await ensureAccessReviewReminder()).toBe("not_due");
-    expect(await ensureAccessReviewReminder(new Date(review.completedAt.getTime() + 89 * DAY))).toBe("not_due");
+    // More than 14 days before the next due date: nothing yet (the upcoming window is tested in access-review-reminders.test.ts).
+    expect(await ensureAccessReviewReminder(new Date(review.completedAt.getTime() + 75 * DAY))).toBe("not_due");
 
     // 90 days later: due again, a new single task.
     const later = new Date(review.completedAt.getTime() + 91 * DAY);
