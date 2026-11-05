@@ -23,6 +23,11 @@ import {
   relabelFilingDocument,
   removeFilingDocument,
   resolveAcceptedAt,
+  convertToReturnCopy,
+  fileReturnForFiling,
+  editFilingDetails,
+  moveFilingDocument,
+  removeFiling,
   unsentDraftSummaries,
   withdrawAcceptanceRequest,
   type DeliverInput,
@@ -181,10 +186,9 @@ describe("Deliver an already-accepted return in one step", () => {
     expect([after.filingStatus, after.filingReference, after.acknowledgedAt?.toISOString()]).toEqual(["ACCEPTED", "SUB-FED-0001", chicagoLocalToUtc("2026-04-08T12:00")!.toISOString()]);
     expect((await filingEvents(fed.id)).map((e) => [e.toValue, e.actorId])).toEqual([["SUBMITTED", tabitha.id], ["ACCEPTED", tabitha.id]]);
     expect(await pendingAcceptances()).toHaveLength(0);
-    // Still staff-only until Tabitha sends it.
-    expect((await retrieveFilings(rosalindLogin, rosalind.id, 2025)).total).toBe(0);
-    await releaseReturn(tabitha, docs[0].id);
-    expect((await retrieveFilings(rosalindLogin, rosalind.id, 2025)).total).toBe(1);
+    // Her confirmation is also the release: both return copies reach the client (Daria didn't ask for a notice).
+    expect((await retrieveFilings(rosalindLogin, rosalind.id, 2025)).total).toBe(2);
+    expect(await prisma.notification.count()).toBe(0);
   });
 
   it("staff can withdraw a waiting item; the return stays a staff-only draft", async () => {
@@ -254,7 +258,7 @@ describe("Deliver an already-accepted return in one step", () => {
     const misfiled = await staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", year: 2025, visibility: "STAFF_ONLY", bytes, originalName: "return.pdf", notify: false });
     await attachFilingDocument(daria, f.id, misfiled.id, "OFFICIAL_ACK");
     const input = fedAndAl({ clientId: rosalind.id, filings: [fedAndAl().filings[0]], combinedReturn: { bytes, originalName: "return.pdf" }, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON } });
-    await expect(deliverAcceptedReturn(tabitha, input)).rejects.toThrow(/already attached to the 2025 federal 1040 filing as its acknowledgment.*Re-label it as the return/);
+    await expect(deliverAcceptedReturn(tabitha, input)).rejects.toThrow(/already saved on the 2025 federal 1040 filing as its acknowledgment.*Use this file as the return copy/);
     const r = await deliverAcceptedReturn(tabitha, { ...input, relabelAck: true });
     expect(r.results[0].documentId).toBe(misfiled.id);
     const doc = await prisma.document.findUniqueOrThrow({ where: { id: misfiled.id } });
@@ -392,12 +396,12 @@ describe("Deliver an already-accepted return in one step", () => {
     expect(n.every((x) => x.channel === "EMAIL")).toBe(true);
   });
 
-  it("Documents tab: the owner is pointed at Deliver accepted return; staff keep the review wording", async () => {
+  it("Documents tab: the owner is pointed at Finish & Send a Return; staff keep the review wording", async () => {
     const { tabitha, daria, rosalind } = await setup();
     const err = await staffUploadDocument(tabitha, { clientId: rosalind.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "x.pdf" }).catch((e) => e);
-    expect(err.message).toMatch(/Taxes tab → Deliver accepted return \(federal and state together\)/);
+    expect(err.message).toMatch(/Taxes tab → Finish & Send a Return \(federal and state together\)/);
     expect(err.message).not.toMatch(/send it for review|Tabitha releases/);
-    expect(err.next.href).toBe(`/clients/${rosalind.id}?tab=taxes&deliver=1&year=2025#deliver-accepted`);
+    expect(err.next.href).toBe(`/clients/${rosalind.id}?tab=taxes&deliver=1&year=2025#finish-send`);
     await expect(staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "STATE_RETURN", bytes: pdf(), originalName: "y.pdf" })).rejects.toThrow(/Tabitha releases it/);
     const ctx = await deliveryContext(rosalind.id, tabitha);
     expect([ctx.owner, ctx.clientType]).toEqual([true, "INDIVIDUAL"]);
@@ -439,3 +443,172 @@ describe("Deliver an already-accepted return in one step", () => {
     expect(y.steps.find((s) => !s.done)?.value ?? "Complete").toBe("Complete");
   });
 });
+
+describe("The return PDF put in the acknowledgment box (root cause)", () => {
+  const owner = { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON };
+  /** What Tabitha did: Accepted with the RETURN PDF uploaded as the acknowledgment, then "Publish status & documents". */
+  async function misfiled(actor: Actor, clientId: string, jurisdiction: string, returnType: string, bytes: Uint8Array) {
+    const f = await createFiling(actor, { clientId, taxYear: 2025, returnType, jurisdiction, filingType: "ORIGINAL" });
+    const ack = await staffUploadDocument(actor, { clientId, category: "TAXES", title: `2025 ${jurisdiction === "FEDERAL" ? "Federal" : jurisdiction} return — acknowledgment`, year: 2025, visibility: "STAFF_ONLY", bytes, originalName: "return.pdf", notify: false });
+    await attachFilingDocument(actor, f.id, ack.id, "OFFICIAL_ACK");
+    await setFilingStatusByStaff(actor, f.id, { status: "ACCEPTED", evidenceDocumentId: ack.id, verificationNote: "Accepted per TaxAct E-file Center", submission: owner });
+    await publishFilingUpdate(actor, f.id, "portal_only");
+    return { f, ack: await prisma.document.findUniqueOrThrow({ where: { id: ack.id } }) };
+  }
+
+  it("1. the Accepted status form's “Accepted return PDF (client copy)” does what fileReturn does, and goes straight to the client for Tabitha", async () => {
+    const { tabitha, daria, rosalind, other, rosalindLogin } = await setup();
+    const f = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    await expect(fileReturnForFiling(tabitha, f.id, { bytes: pdf("too-early"), originalName: "r.pdf" })).rejects.toThrow(/when you record the filing as Accepted/);
+    await setFilingStatusByStaff(tabitha, f.id, { status: "ACCEPTED", verificationNote: "Accepted per TaxAct E-file Center", submission: owner });
+    const doc = await fileReturnForFiling(tabitha, f.id, { bytes: pdf("client-copy"), originalName: "1040.pdf" });
+    expect([doc.filingId, doc.filingDocType, doc.docType, doc.reviewStatus, doc.visibility]).toEqual([f.id, "RETURN", "FEDERAL_RETURN", "APPROVED", "PUBLISHED"]);
+    expect((await retrieveFilings(rosalindLogin, rosalind.id, 2025)).total).toBe(1);
+    expect(await prisma.notification.count()).toBe(0);
+    // Staff: the same field files the return copy, and Tabitha releases it.
+    const g = await createFiling(daria, { clientId: other.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    await setFilingStatusByStaff(daria, g.id, { status: "ACCEPTED", verificationNote: "Accepted per TaxAct E-file Center" });
+    const sd = await fileReturnForFiling(daria, g.id, { bytes: pdf("staff-copy"), originalName: "1120s.pdf" });
+    expect([sd.filingDocType, sd.reviewStatus, sd.visibility]).toEqual(["RETURN", "DRAFT", "STAFF_ONLY"]);
+  });
+
+  it("2. Step 2 hitting a published acknowledgment offers “Use this file as the return copy”, which converts it in place and keeps it published", async () => {
+    const { tabitha, rosalind, rosalindLogin } = await setup();
+    const fedBytes = pdf("fed-return-as-ack");
+    const alBytes = pdf("al-return-as-ack");
+    const fed = await misfiled(tabitha, rosalind.id, "FEDERAL", "1040", fedBytes);
+    const al = await misfiled(tabitha, rosalind.id, "AL", "40", alBytes);
+    expect([fed.ack.visibility, fed.ack.title]).toEqual(["PUBLISHED", "2025 Federal return — acknowledgment"]);
+    // Step 2 no longer stops at "already saved"; it points at the one-click conversion.
+    const input = fedAndAl({ clientId: rosalind.id, combinedReturn: null, owner });
+    input.filings[0].returnFile = { bytes: fedBytes, originalName: "return.pdf" };
+    input.filings[1].returnFile = { bytes: alBytes, originalName: "return.pdf" };
+    const err = await deliverAcceptedReturn(tabitha, input).catch((e) => e);
+    expect(err.message).toMatch(/Use this file as the return copy/);
+    expect(err.message).not.toMatch(/so it wasn't added again/);
+
+    const fileCount = await prisma.storedFile.count();
+    const a = await convertToReturnCopy(tabitha, fed.ack.id);
+    const b = await convertToReturnCopy(tabitha, al.ack.id);
+    expect([a.id, a.title, a.filingDocType, a.docType, a.filingId, a.visibility, a.reviewStatus]).toEqual([fed.ack.id, "2025 Federal return", "RETURN", "FEDERAL_RETURN", fed.f.id, "PUBLISHED", "APPROVED"]);
+    expect([b.title, b.docType, b.visibility]).toEqual(["2025 AL return", "STATE_RETURN", "PUBLISHED"]);
+    expect(await prisma.storedFile.count()).toBe(fileCount); // no delete and re-upload
+    expect(await prisma.auditLog.count({ where: { action: "filing.document_converted_to_return", entityId: { in: [a.id, b.id] } } })).toBe(2);
+    const view = await loadPortalTaxes(rosalind.id);
+    expect(view.filings.flatMap((f) => f.documents.map((d) => [d.title, d.filingDocType])).sort()).toEqual([["2025 AL return", "RETURN"], ["2025 Federal return", "RETURN"]]);
+    expect((await retrieveFilings(rosalindLogin, rosalind.id, 2025)).total).toBe(2);
+    // Step 2 now recognizes them: re-running is a no-op.
+    const r = await deliverAcceptedReturn(tabitha, input);
+    expect(r.results.map((x) => x.documentId)).toEqual([a.id, b.id]);
+
+    // The "Re-label it as the return" tick in Step 2 does the same conversion, published kept.
+    const { other } = { other: await createClient(tabitha, { firstName: "Ora", lastName: "Lindqvist", clientType: "INDIVIDUAL", status: "ACTIVE" }) };
+    const ob = pdf("ora-return");
+    const o = await misfiled(tabitha, other.id, "FEDERAL", "1040", ob);
+    const r2 = await deliverAcceptedReturn(tabitha, { clientId: other.id, taxYear: 2025, filingType: "ORIGINAL", filings: [{ jurisdiction: "FEDERAL", returnType: "1040" }], combinedReturn: { bytes: ob, originalName: "r.pdf" }, relabelAck: true, owner });
+    const od = await prisma.document.findUniqueOrThrow({ where: { id: r2.results[0].documentId } });
+    expect([od.id, od.title, od.filingDocType, od.visibility]).toEqual([o.ack.id, "2025 Federal return", "RETURN", "PUBLISHED"]);
+  });
+
+  it("3. “This is the return, not the acknowledgment”: works on published documents for Tabitha; staff only on staff-only ones, which then wait for her release", async () => {
+    const { tabitha, daria, rosalind, other } = await setup();
+    const { ack } = await misfiled(tabitha, rosalind.id, "FEDERAL", "1040", pdf("pub"));
+    await expect(convertToReturnCopy(daria, ack.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(relabelFilingDocument(tabitha, ack.id, "RETURN")).resolves.toMatchObject({ filingDocType: "RETURN", visibility: "PUBLISHED", title: "2025 Federal return" });
+    // Staff, staff-only acknowledgment on an accepted filing: converted, staff-only draft until Tabitha releases.
+    const g = await createFiling(daria, { clientId: other.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    const sAck = await staffUploadDocument(daria, { clientId: other.id, category: "TAXES", year: 2025, visibility: "STAFF_ONLY", bytes: pdf("staff-ack"), originalName: "a.pdf", notify: false });
+    await attachFilingDocument(daria, g.id, sAck.id, "OFFICIAL_ACK");
+    await setFilingStatusByStaff(daria, g.id, { status: "ACCEPTED", evidenceDocumentId: sAck.id });
+    const c = await convertToReturnCopy(daria, sAck.id);
+    expect([c.filingDocType, c.reviewStatus, c.visibility]).toEqual(["RETURN", "DRAFT", "STAFF_ONLY"]);
+    // A filing not yet accepted never shows a return to the client.
+    const h = await createFiling(daria, { clientId: other.id, taxYear: 2024, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    const hAck = await staffUploadDocument(daria, { clientId: other.id, category: "TAXES", year: 2024, visibility: "STAFF_ONLY", bytes: pdf("h"), originalName: "h.pdf", notify: false });
+    await attachFilingDocument(daria, h.id, hAck.id, "OFFICIAL_ACK");
+    await setVisibility(tabitha, hAck.id, "PUBLISHED");
+    const hc = await convertToReturnCopy(tabitha, hAck.id);
+    expect([hc.filingDocType, hc.visibility, hc.reviewStatus]).toEqual(["RETURN", "STAFF_ONLY", "DRAFT"]);
+  });
+
+  it("4. a state filing entered as “1040” doesn't block delivery; it is shown as entered", async () => {
+    const { tabitha, rosalind } = await setup();
+    const al = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "1040", jurisdiction: "AL", filingType: "ORIGINAL" });
+    const r = await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner }));
+    expect(r.results.find((x) => x.jurisdiction === "AL")).toMatchObject({ filingId: al.id, returnType: "1040", outcome: "accepted" });
+    expect(await prisma.filingRecord.count({ where: { clientId: rosalind.id, jurisdiction: "AL" } })).toBe(1);
+    expect((await prisma.filingRecord.findUniqueOrThrow({ where: { id: al.id } })).filingStatus).toBe("ACCEPTED");
+  });
+});
+
+describe("Fixing a filing (owner/Admin only)", () => {
+  const owner = { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON };
+
+  it("(a) Edit filing details: AL entered as 1040 → 40, with a reason, history kept, linked documents re-titled", async () => {
+    const { tabitha, daria, otherAdmin, rosalind } = await setup();
+    const al = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "1040", jurisdiction: "AL", filingType: "ORIGINAL" });
+    await setFilingStatusByStaff(tabitha, al.id, { status: "ACCEPTED", verificationNote: "Accepted per TaxAct E-file Center", submission: owner });
+    const doc = await fileReturnForFiling(tabitha, al.id, { bytes: pdf("al-return"), originalName: "al.pdf" });
+    expect(doc.title).toBe("2025 1040 — AL");
+    const input = { taxYear: 2025, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL" as const };
+    await expect(editFilingDetails(daria, al.id, input, "wrong form")).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(editFilingDetails(tabitha, al.id, input, "")).rejects.toThrow(/Say why/);
+    const eventsBefore = await prisma.filingStatusEvent.count({ where: { filingId: al.id } });
+    const fixed = await editFilingDetails(otherAdmin, al.id, input, "Alabama return is Form 40, not 1040");
+    expect([fixed.returnType, fixed.filingStatus]).toEqual(["40", "ACCEPTED"]);
+    const events = await prisma.filingStatusEvent.findMany({ where: { filingId: al.id }, orderBy: { createdAt: "asc" } });
+    expect(events).toHaveLength(eventsBefore + 1);
+    expect(events.at(-1)).toMatchObject({ field: "DETAILS", fromValue: "2025 AL 1040 original", toValue: "2025 AL 40 original", verificationNote: "Alabama return is Form 40, not 1040" });
+    expect((await prisma.document.findUniqueOrThrow({ where: { id: doc.id } })).title).toBe("2025 40 — AL");
+    expect(await prisma.auditLog.count({ where: { action: "filing.details_corrected", entityId: al.id } })).toBe(1);
+    // Can't collide with another filing.
+    const other = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    await expect(editFilingDetails(tabitha, other.id, input, "test")).rejects.toThrow(/already has a 2025 AL 40 original filing/);
+  });
+
+  it("(b) Remove filing (created by mistake): reason required, full history kept in the audit log; blocked while a sent return copy is on it until moved", async () => {
+    const { tabitha, daria, otherAdmin, rosalind } = await setup();
+    const wrong = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "1040", jurisdiction: "AL", filingType: "AMENDED" });
+    const right = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL" });
+    for (const f of [wrong, right]) await setFilingStatusByStaff(tabitha, f.id, { status: "ACCEPTED", verificationNote: "Accepted per TaxAct E-file Center", submission: owner });
+    const sent = await fileReturnForFiling(tabitha, wrong.id, { bytes: pdf("sent-on-wrong"), originalName: "al.pdf" });
+    expect(sent.visibility).toBe("PUBLISHED");
+    await expect(removeFiling(daria, wrong.id, "mistake")).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(removeFiling(tabitha, wrong.id, "")).rejects.toThrow(/Say why/);
+    await expect(removeFiling(tabitha, wrong.id, "Created by mistake")).rejects.toThrow(/already sent to the client\. Move it to the right filing first/);
+    const moved = await moveFilingDocument(tabitha, sent.id, right.id);
+    expect([moved.filingId, moved.visibility]).toEqual([right.id, "PUBLISHED"]);
+    await removeFiling(tabitha, wrong.id, "Created by mistake — AL is an original return");
+    expect(await prisma.filingRecord.count({ where: { id: wrong.id } })).toBe(0);
+    const log = await prisma.auditLog.findFirstOrThrow({ where: { action: "filing.removed", entityId: wrong.id } });
+    const details = log.details as { reason: string; filing: { returnType: string; filingStatus: string }; statusHistory: { toValue: string }[] };
+    expect(details.reason).toBe("Created by mistake — AL is an original return");
+    expect([details.filing.returnType, details.filing.filingStatus]).toEqual(["1040", "ACCEPTED"]);
+    expect(details.statusHistory.map((e) => e.toValue)).toEqual(["ACCEPTED"]);
+    // The moved return is still the client's, under the right filing.
+    expect((await loadPortalTaxes(rosalind.id)).filings.flatMap((f) => f.documents.map((d) => d.id))).toEqual([sent.id]);
+    // A staff-only draft on a removed filing stays in the client's file (unlinked).
+    const g = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2024, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    const ack = await staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", year: 2024, visibility: "STAFF_ONLY", bytes: pdf("g-ack"), originalName: "g.pdf", notify: false });
+    await attachFilingDocument(daria, g.id, ack.id, "OFFICIAL_ACK");
+    await removeFiling(otherAdmin, g.id, "Duplicate");
+    const kept = await prisma.document.findUniqueOrThrow({ where: { id: ack.id } });
+    expect([kept.deletedAt, kept.filingId]).toEqual([null, null]);
+  });
+
+  it("(c) Step 2 and fileReturn use the one filing for year + jurisdiction + original/amended when the type differs or is left empty", async () => {
+    const { tabitha, daria, rosalind } = await setup();
+    const al = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "1040", jurisdiction: "AL", filingType: "ORIGINAL" });
+    await setFilingStatusByStaff(tabitha, al.id, { status: "ACCEPTED", verificationNote: "Accepted per TaxAct E-file Center", submission: owner });
+    // fileReturn: typed 40, the filing says 1040 → that filing.
+    const d1 = await fileReturn(daria, { clientId: rosalind.id, taxYear: 2025, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL", bytes: pdf("typed-40"), originalName: "al.pdf" });
+    expect(d1.filingId).toBe(al.id);
+    // Step 2 with the state form left empty.
+    const r = await deliverAcceptedReturn(daria, { clientId: rosalind.id, taxYear: 2025, filingType: "ORIGINAL", filings: [{ jurisdiction: "AL", returnType: "" }], combinedReturn: { bytes: pdf("empty-type"), originalName: "al2.pdf" } });
+    expect(r.results[0]).toMatchObject({ filingId: al.id, returnType: "1040", outcome: "already_accepted" });
+    // Two filings for the same state and year: never a guess.
+    await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "40NR", jurisdiction: "AL", filingType: "ORIGINAL" });
+    await expect(fileReturn(daria, { clientId: rosalind.id, taxYear: 2025, returnType: "", jurisdiction: "AL", filingType: "ORIGINAL", bytes: pdf("ambiguous"), originalName: "x.pdf" })).rejects.toThrow(/Enter the return type/);
+  });
+});
+

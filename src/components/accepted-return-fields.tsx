@@ -1,31 +1,34 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { BUSINESS_RETURN, CLOSE_DRAFT_LABEL, DEFAULT_VERIFICATION, PRESET_OVERRIDE_REASON } from "@/lib/tax/accepted";
+import { BUSINESS_RETURN, CLOSE_DRAFT_LABEL, DEFAULT_VERIFICATION, federalFormFor, PRESET_OVERRIDE_REASON, stateFormFor } from "@/lib/tax/accepted";
 
 const STATES = "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split(" ");
-const STATE_NAMES: Record<string, string> = { AL: "Alabama", GA: "Georgia", FL: "Florida", MS: "Mississippi", TN: "Tennessee", IL: "Illinois", TX: "Texas", CA: "California", NY: "New York" };
-/** Common individual state forms (a suggestion only; always editable). */
-const STATE_FORM: Record<string, string> = { AL: "40", GA: "500", MS: "80-105", IL: "IL-1040", CA: "540", NY: "IT-201" };
-
-type Row = { code: string; on: boolean; returnType: string; acceptedOn: string | null; submissionId: string | null };
 
 export type DeliveryContext = {
   owner: boolean;
   clientType: string;
+  entityType: string | null;
+  /** The client's state (two letters), when on file. */
+  clientState: string | null;
   /** `${year}:${ORIGINAL|AMENDED}` with a client-approved summary on file. */
   approvedKeys: string[];
   /** `${year}:${ORIGINAL|AMENDED}` with a never-sent draft summary. */
   draftKeys: string[];
+  /** `${year}:${jurisdiction}:${ORIGINAL|AMENDED}` → the form numbers of existing filings. */
+  existing: Record<string, string[]>;
 };
 
+type Row = { code: string; on: boolean; form: string | null; acceptedOn: string | null; ref: string | null };
+
 const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+const label = "mb-1 block text-sm font-semibold text-navy-900";
 
 /**
- * The fields of "Deliver accepted return": federal plus any states in one
- * submission, each with its own accepted date and submission ID (copied from
- * federal until edited), one combined PDF or one per return, and — for
- * Tabitha — the owner confirmation inline.
+ * The fields of "Finish & Send a Return": which returns (Federal, the
+ * client's state, more states), the accepted date and reference (shared, or
+ * per return), one combined PDF or one per return, the optional acceptance
+ * confirmation (not the return), the notice, and Tabitha's confirmation.
  */
 export function AcceptedReturnFields({
   ctx,
@@ -34,7 +37,6 @@ export function AcceptedReturnFields({
   defaultYear,
   startWithState = false,
   amended = false,
-  ownerSendsNow = true,
 }: {
   ctx: DeliveryContext;
   showYear?: boolean;
@@ -42,21 +44,24 @@ export function AcceptedReturnFields({
   defaultYear?: number;
   startWithState?: boolean;
   amended?: boolean;
-  ownerSendsNow?: boolean;
 }) {
   const individual = ctx.clientType === "INDIVIDUAL";
   const thisYear = new Date().getFullYear();
   const [year, setYear] = useState<number>(defaultYear ?? thisYear - 1);
   const [filingType, setFilingType] = useState<"ORIGINAL" | "AMENDED">(amended ? "AMENDED" : "ORIGINAL");
-  const [fed, setFed] = useState({ on: !startWithState, returnType: individual ? (amended ? "1040-X" : "1040") : "", acceptedOn: "", submissionId: "" });
-  const [rows, setRows] = useState<Row[]>([{ code: "AL", on: startWithState, returnType: individual ? "40" : "", acceptedOn: null, submissionId: null }]);
+  const [date, setDate] = useState(today());
+  const [ref, setRef] = useState("");
+  const [fed, setFed] = useState<{ on: boolean; form: string | null; acceptedOn: string | null; ref: string | null }>({ on: !startWithState, form: null, acceptedOn: null, ref: null });
+  const home = ctx.clientState && STATES.includes(ctx.clientState) ? ctx.clientState : "AL";
+  const [rows, setRows] = useState<Row[]>([{ code: home, on: startWithState || !!ctx.clientState, form: null, acceptedOn: null, ref: null }]);
+  const [oneFile, setOneFile] = useState(true);
   const [reason, setReason] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
+  const ref0 = useRef<HTMLDivElement>(null);
 
   // On the Documents tab the year comes from that form's own "Tax year" field.
   useEffect(() => {
     if (showYear) return;
-    const input = ref.current?.closest("form")?.querySelector<HTMLInputElement>('input[name="year"]');
+    const input = ref0.current?.closest("form")?.querySelector<HTMLInputElement>('input[name="year"]');
     if (!input) return;
     const read = () => Number(input.value) && setYear(Number(input.value));
     read();
@@ -64,110 +69,149 @@ export function AcceptedReturnFields({
     return () => input.removeEventListener("input", read);
   }, [showYear]);
 
+  // Form number: what's already on file (one filing), else a mapping we know for sure, else blank.
+  const onFile = (j: string) => {
+    const list = ctx.existing[`${year}:${j}:${filingType}`] ?? [];
+    return list.length === 1 ? list[0] : null;
+  };
+  const fedForm = fed.form ?? onFile("FEDERAL") ?? (filingType === "AMENDED" && individual ? "1040-X" : federalFormFor(ctx.clientType, ctx.entityType)) ?? "";
+  const stForm = (r: Row) => r.form ?? onFile(r.code) ?? stateFormFor(r.code, ctx.clientType, ctx.entityType) ?? "";
+  const ticked = [...(fed.on ? ["FEDERAL"] : []), ...rows.filter((r) => r.on).map((r) => r.code)];
+
   const key = `${year}:${filingType}`;
-  const anyGated = (fed.on && !BUSINESS_RETURN.test(fed.returnType)) || (individual && rows.some((r) => r.on));
+  const anyGated = (fed.on && !BUSINESS_RETURN.test(fedForm)) || (individual && rows.some((r) => r.on));
   const needsReason = ctx.owner && anyGated && !ctx.approvedKeys.includes(key);
   const hasDraft = ctx.draftKeys.includes(key);
   const set = (i: number, patch: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
   return (
-    <div ref={ref} className="space-y-3 sm:col-span-6" data-testid="accepted-return-fields">
-      {showYear && (
-        <div className="grid gap-2 sm:grid-cols-3">
+    <div ref={ref0} className="space-y-4 sm:col-span-6" data-testid="accepted-return-fields">
+      <div className="grid gap-3 sm:grid-cols-4">
+        {showYear && (
           <label className="block">
-            <span className="mb-1 block text-sm font-semibold text-navy-900">Tax year</span>
+            <span className={label}>Tax year</span>
             <select className="input" name="taxYear" value={year} onChange={(e) => setYear(Number(e.target.value))} required>
               {Array.from({ length: 8 }, (_, i) => thisYear - i).map((y) => <option key={y} value={y}>{y}</option>)}
             </select>
           </label>
-          <label className="block">
-            <span className="mb-1 block text-sm font-semibold text-navy-900">Original or amended</span>
-            <select className="input" name="filingType" value={filingType} onChange={(e) => setFilingType(e.target.value === "AMENDED" ? "AMENDED" : "ORIGINAL")}>
-              <option value="ORIGINAL">Original</option>
-              <option value="AMENDED">Amended</option>
-            </select>
-          </label>
-        </div>
-      )}
-      {!showYear && <input type="hidden" name="filingType" value={filingType} />}
-
-      <div className="overflow-x-auto rounded-lg border border-ivory-200">
-        <table className="w-full min-w-[640px] text-sm">
-          <thead className="bg-ivory-50 text-left text-xs uppercase tracking-wide text-slate-500">
-            <tr><th className="p-2">Deliver</th><th className="p-2">Return</th><th className="p-2">Form</th><th className="p-2">Accepted on</th><th className="p-2">Submission ID (optional)</th>{showFiles && <th className="p-2">Own PDF (optional)</th>}<th className="p-2">Acknowledgment (optional)</th></tr>
-          </thead>
-          <tbody>
-            <tr className="border-t border-ivory-200" data-testid="row-federal">
-              <td className="p-2"><input type="checkbox" name="fed.on" checked={fed.on} onChange={(e) => setFed({ ...fed, on: e.target.checked })} className="accent-navy-900" aria-label="Deliver the federal return" /></td>
-              <td className="p-2 font-semibold">Federal (IRS)</td>
-              <td className="p-2"><input className="input w-28" name="fed.returnType" value={fed.returnType} onChange={(e) => setFed({ ...fed, returnType: e.target.value })} placeholder="1040, 1120-S…" required={fed.on} aria-label="Federal form" /></td>
-              <td className="p-2"><input className="input" type="date" name="fed.acceptedOn" value={fed.acceptedOn} max={today()} onChange={(e) => setFed({ ...fed, acceptedOn: e.target.value })} required={fed.on} aria-label="Federal accepted on" /></td>
-              <td className="p-2"><input className="input w-44" name="fed.submissionId" value={fed.submissionId} onChange={(e) => setFed({ ...fed, submissionId: e.target.value })} aria-label="Federal submission ID" /></td>
-              {showFiles && <td className="p-2"><input className="input w-48" type="file" name="fed.file" accept="application/pdf" aria-label="Separate federal return PDF" /></td>}
-              <td className="p-2"><input className="input w-48" type="file" name="fed.ack" accept="application/pdf,image/png,image/jpeg" aria-label="Federal acknowledgment" /></td>
-            </tr>
-            {rows.map((r, i) => (
-              <tr key={i} className="border-t border-ivory-200" data-testid={`row-state-${i}`}>
-                <td className="p-2"><input type="checkbox" name={`st.${i}.on`} checked={r.on} onChange={(e) => set(i, { on: e.target.checked })} className="accent-navy-900" aria-label={`Deliver the ${r.code} return`} /></td>
-                <td className="p-2">
-                  <select className="input w-36" name={`st.${i}.code`} value={r.code} onChange={(e) => set(i, { code: e.target.value, returnType: individual && STATE_FORM[e.target.value] ? STATE_FORM[e.target.value] : r.returnType })} aria-label="State">
-                    {STATES.map((s) => <option key={s} value={s}>{STATE_NAMES[s] ? `${STATE_NAMES[s]} (${s})` : s}</option>)}
-                  </select>
-                </td>
-                <td className="p-2"><input className="input w-28" name={`st.${i}.returnType`} value={r.returnType} onChange={(e) => set(i, { returnType: e.target.value })} placeholder="State form" required={r.on} aria-label={`${r.code} form`} /></td>
-                <td className="p-2"><input className="input" type="date" name={`st.${i}.acceptedOn`} value={r.acceptedOn ?? fed.acceptedOn} max={today()} onChange={(e) => set(i, { acceptedOn: e.target.value })} required={r.on} aria-label={`${r.code} accepted on`} /></td>
-                <td className="p-2"><input className="input w-44" name={`st.${i}.submissionId`} value={r.submissionId ?? fed.submissionId} onChange={(e) => set(i, { submissionId: e.target.value })} aria-label={`${r.code} submission ID`} /></td>
-                {showFiles && <td className="p-2"><input className="input w-48" type="file" name={`st.${i}.file`} accept="application/pdf" aria-label={`Separate ${r.code} return PDF`} /></td>}
-                <td className="p-2"><input className="input w-48" type="file" name={`st.${i}.ack`} accept="application/pdf,image/png,image/jpeg" aria-label={`${r.code} acknowledgment`} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        )}
+        <label className="block">
+          <span className={label}>Original or amended</span>
+          <select className="input" name="filingType" value={filingType} onChange={(e) => setFilingType(e.target.value === "AMENDED" ? "AMENDED" : "ORIGINAL")}>
+            <option value="ORIGINAL">Original</option>
+            <option value="AMENDED">Amended</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className={label}>Accepted on</span>
+          <input className="input" type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} required data-testid="accepted-date" />
+        </label>
+        <label className="block">
+          <span className={label}>Submission ID / reference</span>
+          <input className="input" value={ref} onChange={(e) => setRef(e.target.value)} placeholder="Optional" />
+        </label>
       </div>
-      <p className="text-xs text-slate-600">
-        State dates and submission IDs copy the federal ones until you change them.{" "}
-        <button type="button" className="underline" onClick={() => setRows((rs) => [...rs, { code: "GA", on: true, returnType: individual ? STATE_FORM.GA : "", acceptedOn: null, submissionId: null }])}>Add another state</button>
-      </p>
+
+      <fieldset className="rounded-lg border border-ivory-200 p-3">
+        <legend className="px-1 text-sm font-semibold text-navy-900">Which returns</legend>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2" data-testid="row-federal">
+            <label className="flex w-40 items-center gap-2 font-semibold"><input type="checkbox" name="fed.on" checked={fed.on} onChange={(e) => setFed({ ...fed, on: e.target.checked })} className="accent-navy-900" /> Federal</label>
+            <span className="text-sm text-slate-600">Form</span>
+            <input className="input w-28" name="fed.returnType" value={fedForm} onChange={(e) => setFed({ ...fed, form: e.target.value })} placeholder="e.g. 1120-S" required={fed.on} aria-label="Federal form" />
+          </div>
+          {rows.map((r, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2" data-testid={`row-state-${i}`}>
+              <label className="flex w-40 items-center gap-2 font-semibold">
+                <input type="checkbox" name={`st.${i}.on`} checked={r.on} onChange={(e) => set(i, { on: e.target.checked })} className="accent-navy-900" aria-label="State return" />
+                State
+                <select className="input w-20 py-1" name={`st.${i}.code`} value={r.code} onChange={(e) => set(i, { code: e.target.value, form: null })} aria-label="State">
+                  {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <span className="text-sm text-slate-600">Form</span>
+              <input className="input w-28" name={`st.${i}.returnType`} value={stForm(r)} onChange={(e) => set(i, { form: e.target.value })} placeholder="Type it" required={r.on && !onFile(r.code)} aria-label={`${r.code} form`} />
+            </div>
+          ))}
+          <button type="button" className="text-xs underline" onClick={() => setRows((rs) => [...rs, { code: "GA", on: true, form: null, acceptedOn: null, ref: null }])}>+ Another state</button>
+        </div>
+        <details className="mt-2 text-sm">
+          <summary className="cursor-pointer text-slate-600 underline">Different date or reference for one return?</summary>
+          <div className="mt-2 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="w-24">Federal</span>
+              <input className="input w-44" type="date" name="fed.acceptedOn" value={fed.acceptedOn ?? date} max={today()} onChange={(e) => setFed({ ...fed, acceptedOn: e.target.value })} aria-label="Federal accepted on" />
+              <input className="input w-56" name="fed.submissionId" value={fed.ref ?? ref} onChange={(e) => setFed({ ...fed, ref: e.target.value })} placeholder="Reference" aria-label="Federal reference" />
+            </div>
+            {rows.map((r, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2">
+                <span className="w-24">{r.code}</span>
+                <input className="input w-44" type="date" name={`st.${i}.acceptedOn`} value={r.acceptedOn ?? date} max={today()} onChange={(e) => set(i, { acceptedOn: e.target.value })} aria-label={`${r.code} accepted on`} />
+                <input className="input w-56" name={`st.${i}.submissionId`} value={r.ref ?? ref} onChange={(e) => set(i, { ref: e.target.value })} placeholder="Reference" aria-label={`${r.code} reference`} />
+              </div>
+            ))}
+          </div>
+        </details>
+      </fieldset>
 
       {showFiles && (
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold text-navy-900">Return PDF (one combined federal + state file is fine)</span>
-          <input className="input" type="file" name="file" accept="application/pdf" />
-          <span className="mt-1 block text-xs text-slate-600">Used for every ticked return that has no PDF of its own. The client sees it under each return.</span>
-        </label>
+        <fieldset className="rounded-lg border border-ivory-200 p-3" data-testid="return-pdf">
+          <legend className="px-1 text-sm font-semibold text-navy-900">Return PDF</legend>
+          <div className="mb-2 flex flex-wrap gap-4 text-sm">
+            <label className="flex items-center gap-2"><input type="radio" checked={oneFile} onChange={() => setOneFile(true)} className="accent-navy-900" /> One file for {ticked.length > 1 ? "both" : "it"}</label>
+            <label className="flex items-center gap-2"><input type="radio" checked={!oneFile} onChange={() => setOneFile(false)} className="accent-navy-900" /> One file per return</label>
+          </div>
+          {oneFile ? (
+            <input className="input" type="file" name="file" accept="application/pdf" required aria-label="Return PDF" />
+          ) : (
+            <div className="space-y-1">
+              {fed.on && <label className="flex flex-wrap items-center gap-2 text-sm"><span className="w-24">Federal</span><input className="input flex-1" type="file" name="fed.file" accept="application/pdf" required /></label>}
+              {rows.map((r, i) => r.on && <label key={i} className="flex flex-wrap items-center gap-2 text-sm"><span className="w-24">{r.code}</span><input className="input flex-1" type="file" name={`st.${i}.file`} accept="application/pdf" required /></label>)}
+            </div>
+          )}
+        </fieldset>
       )}
-      <label className="block">
-        <span className="mb-1 block text-sm font-semibold text-navy-900">How you verified the acceptance</span>
-        <input className="input" name="verificationNote" defaultValue={DEFAULT_VERIFICATION} />
-      </label>
-      <label className="flex items-start gap-2 text-sm"><input type="checkbox" name="relabelAck" className="mt-1 accent-navy-900" /> If this PDF was saved earlier as the acknowledgment on this filing, re-label it as the return</label>
+
+      <details className="rounded-lg border border-dashed border-ivory-200 p-2 text-sm">
+        <summary className="cursor-pointer text-slate-600">IRS/state acceptance confirmation — <strong>not the return</strong> (optional)</summary>
+        <div className="mt-2 space-y-1">
+          {fed.on && <label className="flex flex-wrap items-center gap-2"><span className="w-24">Federal</span><input className="input flex-1" type="file" name="fed.ack" accept="application/pdf,image/png,image/jpeg" /></label>}
+          {rows.map((r, i) => r.on && <label key={i} className="flex flex-wrap items-center gap-2"><span className="w-24">{r.code}</span><input className="input flex-1" type="file" name={`st.${i}.ack`} accept="application/pdf,image/png,image/jpeg" /></label>)}
+        </div>
+      </details>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="block">
+          <span className={label}>How verified</span>
+          <input className="input" name="verificationNote" defaultValue={DEFAULT_VERIFICATION} />
+        </label>
+        <div className="text-sm">
+          <span className={label}>Notify the client</span>
+          <label className="mr-4 inline-flex items-center gap-2"><input type="checkbox" name="notifyClient" defaultChecked className="accent-navy-900" /> Email</label>
+          <label className="inline-flex items-center gap-2"><input type="checkbox" name="notifyText" className="accent-navy-900" /> Text</label>
+          <span className="block text-xs text-slate-600">A sign-in link only — never the return.{ctx.owner ? "" : " Sent when Tabitha releases it."}</span>
+        </div>
+      </div>
       {hasDraft && (
         <label className="flex items-start gap-2 text-sm" data-testid="close-draft-summary"><input type="checkbox" name="closeDraftSummary" defaultChecked className="mt-1 accent-navy-900" /> {CLOSE_DRAFT_LABEL}</label>
       )}
 
       {ctx.owner ? (
         <div className="rounded-lg border border-gold-500/50 bg-gold-50 p-3 text-sm" data-testid="owner-confirmation">
-          <p className="font-semibold">Owner filing — your confirmation</p>
-          <label className="mt-1 flex items-start gap-2"><input type="checkbox" name="form8879" className="mt-1 accent-navy-900" /> Signed IRS Form 8879 (and any state e-file authorization) is on file.</label>
+          <label className="flex items-start gap-2"><input type="checkbox" name="form8879" className="mt-1 accent-navy-900" /> Signed Form 8879 (and any state e-file authorization) is on file.</label>
           {needsReason && (
             <div className="mt-2">
               <label className="block">
-                <span className="mb-1 block text-sm font-semibold text-navy-900">No client-approved {year} summary — reason</span>
-                <input className="input" name="overrideReason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why you're filing without an approved summary" />
+                <span className={label}>No client-approved {year} summary — why?</span>
+                <input className="input" name="overrideReason" value={reason} onChange={(e) => setReason(e.target.value)} />
               </label>
               <button type="button" className="mt-1 text-xs font-semibold underline" onClick={() => setReason(PRESET_OVERRIDE_REASON)}>Use: “{PRESET_OVERRIDE_REASON}”</button>
             </div>
           )}
-          {ownerSendsNow && (
-            <>
-              <label className="mt-2 flex items-start gap-2"><input type="checkbox" name="sendToClient" defaultChecked className="mt-1 accent-navy-900" /> Send to the client&apos;s vault now (shown once the malware scan passes)</label>
-              <label className="ml-6 flex items-start gap-2"><input type="checkbox" name="notifyClient" className="mt-1 accent-navy-900" /> Notify the client by email (optional — a sign-in link only, never the return)</label>
-            </>
-          )}
         </div>
       ) : (
         <p className="rounded-lg border border-ivory-200 bg-ivory-50 p-3 text-sm" data-testid="staff-path-note">
-          Only Tabitha records a return as submitted or accepted. This saves the return (staff only) and the filing as <strong>Ready for Tabitha to confirm acceptance</strong> — nothing is marked submitted and the client sees nothing yet.
+          Tabitha marks returns Accepted and releases them. This saves everything for her — the client sees nothing until she does.
         </p>
       )}
     </div>
@@ -176,8 +220,8 @@ export function AcceptedReturnFields({
 
 /**
  * On the Documents tab, for Tabitha: picking Federal, State or Amended return
- * (category Taxes) shows the delivery fields inline, so one upload records the
- * acceptance and delivers the return.
+ * (category Taxes) shows the same fields inline, so one upload marks it
+ * Accepted and sends it.
  */
 export function OwnerReturnInline({ ctx }: { ctx: DeliveryContext }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -199,9 +243,9 @@ export function OwnerReturnInline({ ctx }: { ctx: DeliveryContext }) {
     <div ref={ref} className="sm:col-span-2">
       {type && (
         <div className="space-y-2 rounded-xl border border-navy-100 bg-navy-50 p-3" data-testid="owner-return-inline">
-          <label className="flex items-start gap-2 text-sm font-semibold"><input type="checkbox" name="deliverAccepted" checked={deliver} onChange={(e) => setDeliver(e.target.checked)} className="mt-1 accent-navy-900" /> Deliver as an accepted return (records the acceptance and sends it to the client in one step)</label>
-          {deliver && <AcceptedReturnFields key={type} ctx={ctx} showYear={false} showFiles={false} startWithState={type === "STATE_RETURN"} amended={type === "AMENDED_RETURN"} ownerSendsNow={false} />}
-          {deliver && <p className="text-xs text-slate-600">Sent to the client&apos;s vault once the malware scan passes. “Who can see it” below is ignored for a delivered return. <label className="inline-flex items-center gap-1"><input type="checkbox" name="notifyClient" className="accent-navy-900" /> Notify the client by email</label></p>}
+          <label className="flex items-start gap-2 text-sm font-semibold"><input type="checkbox" name="deliverAccepted" checked={deliver} onChange={(e) => setDeliver(e.target.checked)} className="mt-1 accent-navy-900" /> Mark Accepted &amp; send to the client (one step)</label>
+          {deliver && <AcceptedReturnFields key={type} ctx={ctx} showYear={false} showFiles={false} startWithState={type === "STATE_RETURN"} amended={type === "AMENDED_RETURN"} />}
+          {deliver && <p className="text-xs text-slate-600">“Who can see it” below is ignored for a return sent this way; the client sees it once the malware scan passes.</p>}
         </div>
       )}
     </div>

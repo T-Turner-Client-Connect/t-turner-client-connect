@@ -72,8 +72,8 @@ describe("Tax Return Delivery", () => {
     expect((await retrieveFilings(steven, energy.id, 2025)).total).toBe(0);
     // The same file can't be filed twice; the generic paths can't publish a return.
     await expect(fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes, originalName: "again.pdf" })).rejects.toThrow(/already saved/);
-    await expect(setVisibility(tabitha, v1.id, "PUBLISHED")).rejects.toThrow(/Taxes tab → Deliver accepted return/);
-    await expect(staffUploadDocument(tabitha, { clientId: energy.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/Taxes tab → Deliver accepted return/);
+    await expect(setVisibility(tabitha, v1.id, "PUBLISHED")).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
+    await expect(staffUploadDocument(tabitha, { clientId: energy.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
     await expect(setVisibility(daria, v1.id, "PUBLISHED")).rejects.toThrow(/Tabitha releases/);
     // Release: only Tabitha (staff ask her; she can also send a draft directly).
     await expect(releaseReturn(daria, v1.id)).rejects.toBeInstanceOf(ForbiddenError);

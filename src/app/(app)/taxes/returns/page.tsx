@@ -127,7 +127,7 @@ export default async function TaxReturnsPage() {
                   <label className="ml-6 flex items-start gap-2"><input type="checkbox" name="notifyClient" className="mt-1 accent-navy-900" /> Notify each client by email (optional, never a text)</label>
                 </div>
               ) : (
-                <p className="text-xs text-slate-600">Only Tabitha records a return as submitted or accepted: rows you deliver are saved as “Ready for Tabitha to confirm acceptance”. Nothing is marked submitted.</p>
+                <p className="text-xs text-slate-600">Only Tabitha records a return as submitted or accepted: rows you deliver wait for Tabitha to release. Nothing is marked submitted until she does.</p>
               )}
               <Button type="submit">Deliver all rows with an accepted date</Button>
             </div>

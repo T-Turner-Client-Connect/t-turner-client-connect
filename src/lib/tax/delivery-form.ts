@@ -2,7 +2,7 @@ import "server-only";
 import type { AcceptedFilingInput, DeliverInput, DeliveryResult } from "@/lib/services/accepted-returns";
 import { str } from "@/lib/action";
 
-// Reads the "Deliver accepted return" form (Taxes tab, Documents tab inline, bulk rows).
+// Reads the "Finish & Send a Return" form (Taxes tab, Documents tab inline, bulk rows).
 
 export async function fileIn(fd: FormData, key: string) {
   const f = fd.get(key);
@@ -29,14 +29,15 @@ export async function filingsFrom(fd: FormData, p = ""): Promise<AcceptedFilingI
 
 export const ownerFrom = (fd: FormData) => ({ form8879Confirmed: fd.get("form8879") === "on", overrideReason: str(fd, "overrideReason") || null });
 
-export function summarize(r: { results: DeliveryResult[]; owner: boolean }) {
-  const name = (x: DeliveryResult) => `${x.jurisdiction === "FEDERAL" ? "Federal" : x.jurisdiction} ${x.returnType}`;
-  const accepted = r.results.filter((x) => x.outcome !== "awaiting_owner");
-  const waiting = r.results.filter((x) => x.outcome === "awaiting_owner");
-  const parts: string[] = [];
-  if (accepted.length) parts.push(`${accepted.map(name).join(" and ")}: accepted${accepted.some((x) => x.sent) ? " and sent to the client's vault (shown once the malware scan passes)" : r.owner ? " — use “Send to client” when you're ready" : " — Tabitha releases it to the client"}`);
-  if (waiting.length) parts.push(`${waiting.map(name).join(" and ")}: saved as “Ready for Tabitha to confirm acceptance”. Nothing was marked submitted.`);
-  return parts.join(". ") + ".";
+/** The inline result: "Sent to client: 2025 1040 Federal + 2025 40 AL". */
+export function summarize(r: { results: DeliveryResult[]; owner: boolean }, taxYear: number) {
+  const name = (x: DeliveryResult) => `${taxYear} ${x.returnType} ${x.jurisdiction === "FEDERAL" ? "Federal" : x.jurisdiction}`;
+  if (r.owner) {
+    const sent = r.results.filter((x) => x.sent);
+    const kept = r.results.filter((x) => !x.sent);
+    return [sent.length ? `Sent to client: ${sent.map(name).join(" + ")}.` : "", kept.length ? `Marked Accepted, not sent yet: ${kept.map(name).join(" + ")} (use “Send to client” on the return).` : ""].filter(Boolean).join(" ");
+  }
+  return `Sent to Tabitha for release: ${r.results.map(name).join(" + ")}. Nothing reaches the client until she confirms.`;
 }
 
 /** Fields shared by the Taxes-tab form and the Documents-tab inline version. */
@@ -53,6 +54,7 @@ export async function deliveryFrom(fd: FormData, clientId: string, combined: Del
     closeDraftSummary: fd.get("closeDraftSummary") === "on",
     sendToClient: fd.get("sendToClient") === "on",
     notifyClient: fd.get("notifyClient") === "on",
+    notifyText: fd.get("notifyText") === "on",
   };
 }
 

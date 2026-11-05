@@ -13,6 +13,7 @@ import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { retentionDate, sha256Of, storeDocumentFile } from "./documents";
 import { queuePortalNotification } from "./notifications";
+import { findFilingFor } from "./tax";
 
 /**
  * Deliver an already-accepted return — one step.
@@ -41,7 +42,7 @@ import { queuePortalNotification } from "./notifications";
  * re-recorded.
  */
 
-import { DEFAULT_VERIFICATION, DRAFT_SUMMARY_REASON } from "@/lib/tax/accepted";
+import { coverLabel, DEFAULT_VERIFICATION, DRAFT_SUMMARY_REASON } from "@/lib/tax/accepted";
 export { CLOSE_DRAFT_LABEL, DEFAULT_VERIFICATION, DRAFT_SUMMARY_REASON, PRESET_OVERRIDE_REASON } from "@/lib/tax/accepted";
 /** FilingStatusEvent.field for the "Ready for Tabitha to confirm acceptance" item (REQUESTED → CONFIRMED | WITHDRAWN). */
 export const OWNER_CONFIRM = "OWNER_CONFIRM";
@@ -73,6 +74,8 @@ export type DeliverInput = {
   sendToClient?: boolean;
   /** Owner only, with sendToClient: email the client that an update is in their portal (opt-in, never text). */
   notifyClient?: boolean;
+  /** Also a text message (off by default; the client's own text settings still apply). */
+  notifyText?: boolean;
   /** Close a never-sent draft summary for this year (filed before Client Connect approvals). */
   closeDraftSummary?: boolean;
 };
@@ -208,15 +211,42 @@ async function createDocRow(tx: Prisma.TransactionClient, actor: Actor, clientId
   return doc;
 }
 
-/** Makes `doc` the filing's current return: a later copy becomes a new version of the previous one. */
-async function asReturn(tx: Prisma.TransactionClient, filing: FilingRecord, doc: Document) {
+/** Title of a document converted from an acknowledgment: "2025 Federal return" / "2025 AL return". */
+export const convertedTitle = (f: { taxYear: number; jurisdiction: string; filingType: string }) => `${f.taxYear} ${f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction} return${f.filingType === "AMENDED" ? " (amended)" : ""}`;
+
+/**
+ * Makes `doc` the filing's current return copy (a later copy becomes a new
+ * version). A document the client can already see stays published only when
+ * Tabitha does it and the filing is recorded Accepted (it becomes her released
+ * return); otherwise it's a staff-only draft — never a return shown before acceptance.
+ */
+async function asReturn(tx: Prisma.TransactionClient, filing: FilingRecord, doc: Document, opts: { actor?: Actor; owner?: boolean; title?: string } = {}) {
   const previous = await tx.document.findFirst({ where: { filingId: filing.id, filingDocType: "RETURN", deletedAt: null, supersededAt: null, id: { not: doc.id }, replacedBy: null }, orderBy: { createdAt: "desc" } });
   const version = (previous?.version ?? (previous ? 1 : 0)) + 1;
-  return tx.document.update({
+  const keep = doc.visibility === "PUBLISHED" && !!opts.owner && filing.filingStatus === "ACCEPTED";
+  const updated = await tx.document.update({
     where: { id: doc.id },
-    data: { filingId: filing.id, filingDocType: "RETURN", docType: returnDocType(filing), title: returnTitle(filing), year: filing.taxYear, category: "TAXES", reviewStatus: "DRAFT", visibility: "STAFF_ONLY", publishedAt: null, version, replacesId: previous?.id ?? null },
+    data: {
+      filingId: filing.id,
+      filingDocType: "RETURN",
+      docType: returnDocType(filing),
+      title: opts.title ?? returnTitle(filing),
+      year: filing.taxYear,
+      category: "TAXES",
+      version,
+      replacesId: previous?.id ?? null,
+      ...(keep
+        ? { reviewStatus: "APPROVED", approvedAt: new Date(), approvedById: opts.actor!.id }
+        : { reviewStatus: "DRAFT", visibility: "STAFF_ONLY", publishedAt: null, approvedAt: null, approvedById: null }),
+    },
   });
+  if (keep) {
+    // Like a release: the newest delivered version replaces older ones in the portal.
+    await tx.document.updateMany({ where: { filingId: filing.id, filingDocType: "RETURN", id: { not: doc.id }, visibility: "PUBLISHED" }, data: { visibility: "STAFF_ONLY", supersededAt: new Date() } });
+  }
+  return updated;
 }
+
 
 export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): Promise<{ results: DeliveryResult[]; owner: boolean }> {
   const thisYear = new Date().getFullYear();
@@ -234,13 +264,17 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
   for (const e of input.filings) {
     const jurisdiction = normalizeJurisdiction(e.jurisdiction);
     if (!jurisdiction) throw new ValidationError("Choose Federal or the state for each return.");
-    const returnType = normalizeReturnType(e.returnType);
+    // The form type may be left empty when exactly one filing exists for that year and jurisdiction.
+    const typed = normalizeReturnType(e.returnType);
+    const only = typed ? null : await findFilingFor({ clientId: input.clientId, taxYear: input.taxYear, returnType: "", jurisdiction, filingType: input.filingType });
+    const returnType = typed ?? only?.returnType ?? null;
     if (!returnType) throw new ValidationError(`Enter the return type for the ${jurisdiction === "FEDERAL" ? "federal" : jurisdiction} return (for example 1040, or 40 for Alabama).`);
     if (seen.has(jurisdiction)) throw new ValidationError(`${jurisdiction === "FEDERAL" ? "Federal" : jurisdiction} is listed twice.`);
     seen.add(jurisdiction);
     const key = { clientId: input.clientId, taxYear: input.taxYear, returnType, jurisdiction, filingType: input.filingType };
     const what = label(key);
-    const filing = await prisma.filingRecord.findUnique({ where: { clientId_taxYear_returnType_jurisdiction_filingType: key } });
+    // Shown as entered: a state filing saved earlier as "1040" is the same filing as "40" here.
+    const filing = await findFilingFor(key);
     const alreadyAccepted = filing?.filingStatus === "ACCEPTED";
     const returnFile = e.returnFile?.bytes.length ? e.returnFile : input.combinedReturn?.bytes.length ? input.combinedReturn : null;
     if (!returnFile) throw new ValidationError(`Choose the return PDF for the ${what} return (or one combined PDF).`);
@@ -265,10 +299,11 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
     const here = p.filing ? same.filter((d) => d.filingId === p.filing!.id) : [];
     const sameReturn = here.find((d) => d.filingDocType === "RETURN" && !d.supersededAt);
     const asAck = here.find((d) => d.filingDocType && d.filingDocType !== "RETURN");
+    const ackElsewhere = same.find((d) => d.filingDocType === "OFFICIAL_ACK" && d.year === input.taxYear && !plans.some((q) => q.filing?.id && q.filing.id === d.filingId));
     if (sameReturn) p.reuseReturn = sameReturn;
     else if (asAck) {
       if (!input.relabelAck) {
-        throw new ValidationError(`This return PDF is already attached to the ${p.what} filing as its acknowledgment (“${asAck.title}”). Tick “Re-label it as the return” and submit again — nothing is uploaded twice.`);
+        throw new ValidationError(`This return PDF is already saved on the ${p.what} filing as its acknowledgment (“${asAck.title}”). Click “Use this file as the return copy” next to it, or tick “Re-label it as the return” and submit again — nothing is uploaded twice.`);
       }
       if (asAck.visibility === "PUBLISHED" && !owner) throw new ForbiddenError("That document is already published to the client. Only Tabitha can re-label it.");
       p.relabel = asAck;
@@ -276,7 +311,12 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
       // A combined federal + state PDF already delivered for another filing of this client and year is fine,
       // and so is the prepared return PDF kept (staff only) on this year's summary.
       const prepared = new Set((await prisma.taxReturnSummary.findMany({ where: { clientId: input.clientId, taxYear: input.taxYear, returnDocumentId: { in: same.map((d) => d.id) } }, select: { returnDocumentId: true } })).map((x) => x.returnDocumentId));
-      const blocking = same.find((d) => !(d.filingDocType === "RETURN" && d.year === input.taxYear) && !(prepared.has(d.id) && d.visibility === "STAFF_ONLY" && !d.filingDocType));
+      // An acknowledgment that another return in this same submission re-labels is the combined PDF too.
+      const relabeledHere = (d: Document) => !!input.relabelAck && d.filingDocType === "OFFICIAL_ACK" && d.year === input.taxYear && plans.some((q) => q.filing?.id && q.filing.id === d.filingId);
+      if (ackElsewhere && !relabeledHere(ackElsewhere)) {
+        throw new ValidationError(`This return PDF is already saved as an acknowledgment (“${ackElsewhere.title}”). Click “Use this file as the return copy” next to it — it's converted in place, nothing is uploaded twice.`);
+      }
+      const blocking = same.find((d) => !(d.filingDocType === "RETURN" && d.year === input.taxYear) && !(prepared.has(d.id) && d.visibility === "STAFF_ONLY" && !d.filingDocType) && !relabeledHere(d));
       if (blocking) throw new ValidationError(dupMessage(blocking));
     }
     if (p.ackFile) {
@@ -308,7 +348,7 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
         const out: DeliveryResult[] = [];
         for (const p of plans) {
           const key = { clientId: input.clientId, taxYear: input.taxYear, returnType: p.returnType, jurisdiction: p.jurisdiction, filingType: input.filingType };
-          let filing = await tx.filingRecord.findUnique({ where: { clientId_taxYear_returnType_jurisdiction_filingType: key } });
+          let filing = p.filing ? await tx.filingRecord.findUnique({ where: { id: p.filing.id } }) : await tx.filingRecord.findUnique({ where: { clientId_taxYear_returnType_jurisdiction_filingType: key } });
           if ((filing?.filingStatus ?? null) !== (p.filing?.filingStatus ?? null) || (filing?.statusAsOf?.getTime() ?? 0) !== (p.filing?.statusAsOf?.getTime() ?? 0)) {
             throw new ValidationError(`The ${p.what} filing changed while you were saving. Nothing was saved — please submit again.`);
           }
@@ -324,18 +364,8 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
             await audit(tx, { actorId: actor.id, action: "filing.document_attached", entityType: "FilingRecord", entityId: filing.id, clientId: input.clientId, details: { documentId: a.id, docType: "OFFICIAL_ACK" } });
             ackId = a.id;
           }
-          // The return.
-          let doc: Document;
-          if (p.reuseReturn) doc = p.reuseReturn;
-          else if (p.relabel) {
-            doc = await asReturn(tx, filing, p.relabel);
-            await audit(tx, { actorId: actor.id, action: "filing.document_relabeled", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { from: p.relabel.filingDocType, to: "RETURN", filingId: filing.id, wasPublished: p.relabel.visibility === "PUBLISHED" } });
-          } else {
-            const created = await createDocRow(tx, actor, input.clientId, p.storedReturn!, { title: returnTitle(filing), year: input.taxYear, retainUntil, docType: returnDocType(filing) });
-            doc = await asReturn(tx, filing, created);
-            await audit(tx, { actorId: actor.id, action: "tax.return_filed", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { ...key, version: doc.version, replaces: doc.replacesId, oneStep: true } });
-          }
           let outcome: DeliveryResult["outcome"] = "already_accepted";
+          let requestId: string | null = null;
           if (!p.alreadyAccepted && owner) {
             await recordAcceptance(tx, actor, filing, { acceptedAt: p.acceptedAt!, submissionId: p.submissionId, evidenceDocumentId: ackId, note, gate: p.gate });
             await closeRequest(tx, actor, filing.id, "CONFIRMED");
@@ -348,18 +378,40 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
               const ev = await tx.filingStatusEvent.create({
                 data: { filingId: filing.id, field: OWNER_CONFIRM, fromValue: filing.filingStatus, toValue: "REQUESTED", source: "STAFF", actorId: actor.id, evidenceDocumentId: ackId, verificationNote: note, eventAt: p.acceptedAt! },
               });
-              await audit(tx, {
-                actorId: actor.id,
-                action: "tax.acceptance_confirmation_requested",
-                entityType: "FilingStatusEvent",
-                entityId: ev.id,
-                clientId: input.clientId,
-                details: { filingId: filing.id, acceptedAt: p.acceptedAt!.toISOString(), submissionId: p.submissionId, returnDocumentId: doc.id, ackDocumentId: ackId },
-              });
+              requestId = ev.id;
             }
             outcome = "awaiting_owner";
           }
-          out.push({ filingId: filing.id, jurisdiction: p.jurisdiction, returnType: p.returnType, documentId: doc.id, outcome, sent: false });
+          // The return (after the status, so an acknowledgment converted by Tabitha can stay published once accepted).
+          filing = await tx.filingRecord.findUniqueOrThrow({ where: { id: filing.id } });
+          let doc: Document;
+          if (p.reuseReturn) doc = p.reuseReturn;
+          else if (p.relabel) {
+            doc = await asReturn(tx, filing, p.relabel, { actor, owner, title: convertedTitle(filing) });
+            await audit(tx, { actorId: actor.id, action: "filing.document_relabeled", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { from: p.relabel.filingDocType, to: "RETURN", filingId: filing.id, wasPublished: p.relabel.visibility === "PUBLISHED" } });
+          } else {
+            // One combined PDF for several returns is titled for all of them ("2025 Federal + AL Returns").
+            const covers = plans.filter((q) => q.returnFile === p.returnFile).map((q) => q.jurisdiction);
+            const title = covers.length > 1 ? `${input.taxYear} ${coverLabel(covers)} ${input.filingType === "AMENDED" ? "Amended Returns" : "Returns"}` : returnTitle(filing);
+            const created = await createDocRow(tx, actor, input.clientId, p.storedReturn!, { title, year: input.taxYear, retainUntil, docType: returnDocType(filing) });
+            doc = await asReturn(tx, filing, created, { title });
+            await audit(tx, { actorId: actor.id, action: "tax.return_filed", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { ...key, version: doc.version, replaces: doc.replacesId, oneStep: true } });
+          }
+          // Staff, filing already accepted: the return goes straight to Tabitha's release list.
+          if (!owner && p.alreadyAccepted && doc.reviewStatus === "DRAFT") {
+            doc = await tx.document.update({ where: { id: doc.id }, data: { reviewStatus: "AWAITING_REVIEW", submittedForReviewAt: new Date(), submittedForReviewById: actor.id } });
+          }
+          if (requestId) {
+            await audit(tx, {
+              actorId: actor.id,
+              action: "tax.acceptance_confirmation_requested",
+              entityType: "FilingStatusEvent",
+              entityId: requestId,
+              clientId: input.clientId,
+              details: { filingId: filing.id, acceptedAt: p.acceptedAt!.toISOString(), submissionId: p.submissionId, returnDocumentId: doc.id, ackDocumentId: ackId, notifyEmail: !!input.notifyClient, notifyText: !!input.notifyText },
+            });
+          }
+          out.push({ filingId: filing.id, jurisdiction: p.jurisdiction, returnType: p.filing?.returnType ?? p.returnType, documentId: doc.id, outcome, sent: doc.visibility === "PUBLISHED" });
         }
         for (const s of drafts) {
           const r = await tx.taxReturnSummary.updateMany({ where: { id: s.id, status: "DRAFT", sentAt: null }, data: { status: "WITHDRAWN", invalidatedAt: new Date(), invalidatedReason: DRAFT_SUMMARY_REASON } });
@@ -371,7 +423,7 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
       { timeout: 60_000 },
     );
     keys.length = 0; // stored files now belong to their documents
-    if (owner && input.sendToClient) await sendNow(actor, input.clientId, results, !!input.notifyClient);
+    if (owner && input.sendToClient) await sendNow(actor, input.clientId, results, channelsOf(input));
     return { results, owner };
   } finally {
     for (const k of keys) await storage.remove(k).catch(() => {});
@@ -379,7 +431,18 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
 }
 
 /** Tabitha's optional "send to client now": releases each clean draft; an email notice only when she ticks "notify". Never a text. */
-async function sendNow(actor: Actor, clientId: string, results: DeliveryResult[], notify: boolean) {
+const channelsOf = (x: { notifyClient?: boolean | null; notifyText?: boolean | null }) => [...(x.notifyClient ? (["EMAIL"] as const) : []), ...(x.notifyText ? (["SMS"] as const) : [])];
+
+/** Queues the "your filing update is ready" notice (a sign-in link only, never the return), per the client's own settings. */
+async function notifyFilingUpdate(clientId: string, refKey: string, channels: ("EMAIL" | "SMS")[]) {
+  if (!channels.length) return;
+  for (const g of await effectiveGrantsFor(clientId)) {
+    if (!allowedCategories(g).includes("TAXES" as never)) continue;
+    await queuePortalNotification(g.portalUserId, "FILING_UPDATE", refKey, channels);
+  }
+}
+
+async function sendNow(actor: Actor, clientId: string, results: DeliveryResult[], channels: ("EMAIL" | "SMS")[]) {
   const { releaseReturn } = await import("./tax-returns");
   let any = false;
   for (const r of results) {
@@ -391,13 +454,8 @@ async function sendNow(actor: Actor, clientId: string, results: DeliveryResult[]
     r.sent = true;
     if (d.scanStatus === "CLEAN") any = true;
   }
-  // The optional email goes only for returns the client can open right now; never a text.
-  if (any && notify) {
-    for (const g of await effectiveGrantsFor(clientId)) {
-      if (!allowedCategories(g).includes("TAXES" as never)) continue;
-      await queuePortalNotification(g.portalUserId, "FILING_UPDATE", `delivered:${results.map((r) => r.documentId).join(",")}`, ["EMAIL"]);
-    }
-  }
+  // The notice (only what was ticked) goes only for returns the client can open right now.
+  if (any) await notifyFilingUpdate(clientId, `delivered:${results.map((r) => r.documentId).join(",")}`, channels);
 }
 
 // --- "Ready for Tabitha to confirm acceptance" --------------------------------------
@@ -414,7 +472,7 @@ async function closeRequest(tx: Prisma.TransactionClient, actor: Actor, filingId
 
 async function requestDetails(eventId: string) {
   const a = await prisma.auditLog.findFirst({ where: { action: "tax.acceptance_confirmation_requested", entityType: "FilingStatusEvent", entityId: eventId } });
-  return (a?.details ?? {}) as { submissionId?: string | null; returnDocumentId?: string | null; ackDocumentId?: string | null };
+  return (a?.details ?? {}) as { submissionId?: string | null; returnDocumentId?: string | null; ackDocumentId?: string | null; notifyEmail?: boolean; notifyText?: boolean };
 }
 
 /** Every filing waiting for Tabitha to confirm acceptance (optionally for one client), oldest first. */
@@ -460,6 +518,7 @@ export async function confirmAcceptance(actor: Actor, filingId: string, ownerInp
   const d = await requestDetails(req.id);
   if (f.filingStatus === "ACCEPTED") {
     await prisma.$transaction(async (tx) => closeRequest(tx, actor, filingId, "CONFIRMED", "Already accepted"));
+    await releaseFilingReturns(actor, filingId, d);
     return f;
   }
   const what = label(f);
@@ -474,7 +533,20 @@ export async function confirmAcceptance(actor: Actor, filingId: string, ownerInp
     await closeRequest(tx, actor, filingId, "CONFIRMED");
     await audit(tx, { actorId: actor.id, action: "tax.acceptance_confirmed", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { requestId: req.id, requestedById: req.actorId } });
   });
+  await releaseFilingReturns(actor, filingId, d);
   return prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
+}
+
+/** After Tabitha confirms: the waiting return copy goes to the client, with the notice staff chose (if any). */
+async function releaseFilingReturns(actor: Actor, filingId: string, d: { notifyEmail?: boolean; notifyText?: boolean }) {
+  const { releaseReturn } = await import("./tax-returns");
+  const docs = await prisma.document.findMany({ where: { filingId, filingDocType: "RETURN", deletedAt: null, reviewStatus: { in: ["DRAFT", "AWAITING_REVIEW"] }, scanStatus: { not: "INFECTED" } } });
+  let clean = false;
+  for (const doc of docs) {
+    await releaseReturn(actor, doc.id, { notify: false, allowPendingScan: true });
+    if (doc.scanStatus === "CLEAN") clean = true;
+  }
+  if (clean && docs.length) await notifyFilingUpdate(docs[0].clientId, `delivered:${docs.map((x) => x.id).join(",")}`, channelsOf({ notifyClient: d.notifyEmail, notifyText: d.notifyText }));
 }
 
 /** Several at once (each checked like a single confirmation). */
@@ -521,18 +593,69 @@ async function loadFilingDoc(actor: Actor, documentId: string) {
 /** Re-labels a document on a filing (e.g. a return saved as the acknowledgment). Audited; a re-labeled return starts again as a staff-only draft. */
 export async function relabelFilingDocument(actor: Actor, documentId: string, to: FilingDocType) {
   if (!FILING_DOC_TYPES.includes(to)) throw new ValidationError("Choose what this document is.");
+  if (to === "RETURN") return convertToReturnCopy(actor, documentId);
   const d = await loadFilingDoc(actor, documentId);
   if (d.filingDocType === to) return d;
   await prisma.$transaction(async (tx) => {
-    if (to === "RETURN") await asReturn(tx, d.filing, d);
-    else
-      await tx.document.update({
-        where: { id: d.id },
-        data: { filingDocType: to, docType: to === "OFFICIAL_ACK" ? "ACCEPTANCE_NOTICE" : null, reviewStatus: null, version: null, replacesId: null, ...(d.filingDocType === "RETURN" ? { visibility: "STAFF_ONLY", publishedAt: null } : {}) },
-      });
+    await tx.document.update({
+      where: { id: d.id },
+      data: { filingDocType: to, docType: to === "OFFICIAL_ACK" ? "ACCEPTANCE_NOTICE" : null, reviewStatus: null, version: null, replacesId: null, ...(d.filingDocType === "RETURN" ? { visibility: "STAFF_ONLY", publishedAt: null } : {}) },
+    });
     await audit(tx, { actorId: actor.id, action: "filing.document_relabeled", entityType: "Document", entityId: d.id, clientId: d.clientId, details: { from: d.filingDocType, to, filingId: d.filingId, wasPublished: d.visibility === "PUBLISHED" } });
   });
   return prisma.document.findUniqueOrThrow({ where: { id: d.id } });
+}
+
+/**
+ * "This is the return, not the acknowledgment" / "Use this file as the return
+ * copy": converts the document in place — re-labeled and re-titled ("2025
+ * Federal return"), linked to its filing as the return copy, audited. No
+ * delete and re-upload. A published document (Tabitha only) stays published
+ * when the filing is recorded Accepted; for Tabitha a staff-only one is sent
+ * to the client in the same step (shown once the malware scan passes).
+ * Staff conversions wait for her release as usual.
+ */
+export async function convertToReturnCopy(actor: Actor, documentId: string) {
+  const d = await loadFilingDoc(actor, documentId);
+  if (d.filingDocType === "RETURN") return d;
+  const owner = await isReportApprover(actor);
+  const doc = await prisma.$transaction(async (tx) => {
+    const filing = await tx.filingRecord.findUniqueOrThrow({ where: { id: d.filing.id } });
+    const out = await asReturn(tx, filing, d, { actor, owner, title: convertedTitle(filing) });
+    await audit(tx, {
+      actorId: actor.id,
+      action: "filing.document_converted_to_return",
+      entityType: "Document",
+      entityId: d.id,
+      clientId: d.clientId,
+      details: { from: d.filingDocType, fromTitle: d.title, to: "RETURN", title: out.title, filingId: filing.id, wasPublished: d.visibility === "PUBLISHED", stillPublished: out.visibility === "PUBLISHED" },
+    });
+    return out;
+  });
+  if (owner && d.filing.filingStatus === "ACCEPTED" && doc.reviewStatus === "DRAFT" && doc.scanStatus !== "INFECTED") {
+    const { releaseReturn } = await import("./tax-returns");
+    await releaseReturn(actor, doc.id, { notify: false, allowPendingScan: true });
+  }
+  return prisma.document.findUniqueOrThrow({ where: { id: doc.id } });
+}
+
+/**
+ * "Accepted return PDF (client copy)" on the Record-a-filing-status form:
+ * exactly fileReturn for this filing; for Tabitha it then goes straight to
+ * the client (shown once the scan passes, no automatic message).
+ */
+export async function fileReturnForFiling(actor: Actor, filingId: string, file: FileIn) {
+  const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
+  if (f.filingStatus !== "ACCEPTED") throw new ValidationError("Upload the return copy when you record the filing as Accepted.");
+  if (f.filingType === "EXTENSION") throw new ValidationError("An extension has no return copy. Attach its acceptance as the acknowledgment.");
+  // The same file already saved as this filing's acknowledgment is converted, not refused.
+  const same = await docsWithSha(f.clientId, sha256Of(file.bytes));
+  const misfiled = same.find((d) => d.filingId === f.id && d.filingDocType && d.filingDocType !== "RETURN");
+  if (misfiled) return convertToReturnCopy(actor, misfiled.id);
+  const { fileReturn, releaseReturn } = await import("./tax-returns");
+  const doc = await fileReturn(actor, { clientId: f.clientId, taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType as "ORIGINAL" | "AMENDED", bytes: file.bytes, originalName: file.originalName });
+  if ((await isReportApprover(actor)) && doc.scanStatus !== "INFECTED") await releaseReturn(actor, doc.id, { notify: false, allowPendingScan: true });
+  return prisma.document.findUniqueOrThrow({ where: { id: doc.id } });
 }
 
 /** Removes a misfiled document from a filing: soft delete with a reason (the file is kept for the audit trail). */
@@ -568,9 +691,10 @@ export async function deliverIntake(actor: Actor, intakeId: string, input: Omit<
 /** What the delivery form needs to know: owner or not, client type, years with an approved summary or an unsent draft. */
 export async function deliveryContext(clientId: string, actor: Actor) {
   const { summaryRequirement } = await import("./tax-summary");
-  const [client, summaries, owner] = await Promise.all([
-    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { clientType: true } }),
+  const [client, summaries, filings, owner] = await Promise.all([
+    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { clientType: true, entityType: true, state: true } }),
     prisma.taxReturnSummary.findMany({ where: { clientId }, select: { taxYear: true, filingType: true } }),
+    prisma.filingRecord.findMany({ where: { clientId, filingType: { in: ["ORIGINAL", "AMENDED"] } }, select: { taxYear: true, jurisdiction: true, filingType: true, returnType: true } }),
     isReportApprover(actor),
   ]);
   const keys = Array.from(new Set(summaries.map((x) => `${x.taxYear}:${x.filingType}`)));
@@ -581,5 +705,107 @@ export async function deliveryContext(clientId: string, actor: Actor) {
     if ((await summaryRequirement({ clientId, taxYear: Number(y), returnType: "1040", jurisdiction: "FEDERAL", filingType: ft })).approved) approvedKeys.push(k);
     if ((await unsentDraftSummaries(clientId, Number(y), ft)).length) draftKeys.push(k);
   }
-  return { owner, clientType: client.clientType as string, approvedKeys, draftKeys };
+  const existing: Record<string, string[]> = {};
+  for (const f of filings) (existing[`${f.taxYear}:${f.jurisdiction}:${f.filingType}`] ??= []).push(f.returnType);
+  const st = normalizeJurisdiction(client.state ?? "");
+  return { owner, clientType: client.clientType as string, entityType: client.entityType, clientState: st && st !== "FEDERAL" ? st : null, approvedKeys, draftKeys, existing };
+}
+
+// --- Fixing a filing (owner/Admin only) -------------------------------------------
+
+const describeFiling = (f: { taxYear: number; returnType: string; jurisdiction: string; filingType: string }) => `${f.taxYear} ${f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction} ${f.returnType} ${f.filingType.toLowerCase()}`;
+
+async function assertOwnerOrAdmin(actor: Actor) {
+  if (actor.role !== "ADMIN" && !(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha or an Admin can change or remove a filing.");
+}
+
+/** A linked document's title after the filing's details change (only titles this app generated are rewritten). */
+function retitle(title: string, from: FilingRecord, to: { taxYear: number; returnType: string; jurisdiction: string; filingType: string }) {
+  for (const [a, b] of [[returnTitle(from), returnTitle(to)], [convertedTitle(from), convertedTitle(to)]] as const) if (title.startsWith(a)) return b + title.slice(a.length);
+  return title;
+}
+
+/**
+ * "Edit filing details": corrects the return type (a state filing created as
+ * 1040 → 40), jurisdiction, tax year or original/amended/extension. A reason is
+ * required; the change is recorded in the status history and audit log, every
+ * status event is kept, and linked documents are re-titled and re-labeled.
+ */
+export async function editFilingDetails(actor: Actor, filingId: string, input: { taxYear: number; returnType: string; jurisdiction: string; filingType: "ORIGINAL" | "AMENDED" | "EXTENSION" }, reason: string) {
+  await assertOwnerOrAdmin(actor);
+  if (reason.trim().length < 3) throw new ValidationError("Say why the filing details are being corrected.");
+  const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
+  const returnType = normalizeReturnType(input.returnType);
+  const jurisdiction = normalizeJurisdiction(input.jurisdiction);
+  if (!returnType) throw new ValidationError("Enter the return type.");
+  if (!jurisdiction) throw new ValidationError("Choose Federal or the state.");
+  if (!Number.isInteger(input.taxYear) || input.taxYear < 2000 || input.taxYear > new Date().getFullYear()) throw new ValidationError("Choose the tax year.");
+  if (!["ORIGINAL", "AMENDED", "EXTENSION"].includes(input.filingType)) throw new ValidationError("Choose original, amended or extension.");
+  const next = { taxYear: input.taxYear, returnType, jurisdiction, filingType: input.filingType };
+  if (describeFiling(next) === describeFiling(f)) return f;
+  const clash = await prisma.filingRecord.findUnique({ where: { clientId_taxYear_returnType_jurisdiction_filingType: { clientId: f.clientId, ...next } } });
+  if (clash) throw new ValidationError(`This client already has a ${describeFiling(next)} filing. Remove one of them first (move any documents across), then correct the other.`);
+  const docs = await prisma.document.findMany({ where: { filingId, deletedAt: null } });
+  await prisma.$transaction(async (tx) => {
+    await tx.filingRecord.update({ where: { id: filingId }, data: next });
+    for (const d of docs) {
+      await tx.document.update({ where: { id: d.id }, data: { title: retitle(d.title, f, next), year: next.taxYear, ...(d.filingDocType === "RETURN" ? { docType: returnDocType(next) } : {}) } });
+    }
+    await tx.filingStatusEvent.create({ data: { filingId, field: "DETAILS", fromValue: describeFiling(f), toValue: describeFiling(next), source: "STAFF", actorId: actor.id, verificationNote: reason.trim().slice(0, 300), eventAt: new Date() } });
+    await audit(tx, { actorId: actor.id, action: "filing.details_corrected", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { from: { taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType }, to: next, reason: reason.trim().slice(0, 300), documents: docs.map((d) => d.id) } });
+  });
+  return prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
+}
+
+/** Moves a document to another filing of the same client (e.g. before removing a filing created by mistake). */
+export async function moveFilingDocument(actor: Actor, documentId: string, targetFilingId: string) {
+  await assertOwnerOrAdmin(actor);
+  const d = await prisma.document.findUnique({ where: { id: documentId }, include: { filing: true } });
+  if (!d || d.deletedAt || !d.filing) throw new ValidationError("Document not found on a filing.");
+  const t = await prisma.filingRecord.findUnique({ where: { id: targetFilingId } });
+  if (!t || t.clientId !== d.clientId) throw new ValidationError("Choose another filing of this client.");
+  if (t.id === d.filing.id) return d;
+  // A return the client can see may only sit on a filing recorded as Accepted.
+  if (d.filingDocType === "RETURN" && d.visibility === "PUBLISHED" && t.filingStatus !== "ACCEPTED") throw new ValidationError("That return is in the client's vault, so it can only move to a filing recorded as Accepted.");
+  await prisma.$transaction(async (tx) => {
+    if (d.filingDocType === "RETURN") {
+      const previous = await tx.document.findFirst({ where: { filingId: t.id, filingDocType: "RETURN", deletedAt: null, supersededAt: null, replacedBy: null }, orderBy: { createdAt: "desc" } });
+      await tx.document.update({ where: { id: d.id }, data: { filingId: t.id, title: retitle(d.title, d.filing!, t), year: t.taxYear, docType: returnDocType(t), replacesId: previous && previous.id !== d.id ? previous.id : null, version: (previous?.version ?? (previous ? 1 : 0)) + 1 } });
+    } else {
+      await tx.document.update({ where: { id: d.id }, data: { filingId: t.id, title: retitle(d.title, d.filing!, t), year: t.taxYear } });
+    }
+    await audit(tx, { actorId: actor.id, action: "filing.document_moved", entityType: "Document", entityId: d.id, clientId: d.clientId, details: { from: d.filingId, to: t.id, filingDocType: d.filingDocType } });
+  });
+  return prisma.document.findUniqueOrThrow({ where: { id: d.id } });
+}
+
+/**
+ * "Remove filing (created by mistake)": the filing and its status history are
+ * written in full to the audit log first, so nothing is lost from the audit
+ * trail; then the record is removed (documents stay in the client's file,
+ * unlinked). Refused while a return copy on it is in the client's vault —
+ * move that copy to the right filing first.
+ */
+export async function removeFiling(actor: Actor, filingId: string, reason: string) {
+  await assertOwnerOrAdmin(actor);
+  if (reason.trim().length < 3) throw new ValidationError("Say why the filing is being removed (e.g. “created by mistake — duplicate of the AL 40 filing”).");
+  const f = await prisma.filingRecord.findUnique({ where: { id: filingId }, include: { events: { orderBy: { createdAt: "asc" } }, documents: { where: { deletedAt: null } } } });
+  if (!f) throw new ValidationError("Filing not found.");
+  const sent = f.documents.filter((d) => d.filingDocType === "RETURN" && (d.visibility === "PUBLISHED" || d.reviewStatus === "APPROVED"));
+  if (sent.length) throw new ValidationError(`A return copy on this filing (“${sent[0].title}”) was already sent to the client. Move it to the right filing first (Misfiled? Fix → Move), then remove this one.`);
+  const { events, documents, ...record } = f;
+  await prisma.$transaction(async (tx) => {
+    await audit(tx, {
+      actorId: actor.id,
+      action: "filing.removed",
+      entityType: "FilingRecord",
+      entityId: filingId,
+      clientId: f.clientId,
+      details: JSON.parse(JSON.stringify({ reason: reason.trim().slice(0, 300), filing: record, statusHistory: events, unlinkedDocuments: documents.map((d) => ({ id: d.id, title: d.title, filingDocType: d.filingDocType })) })),
+    });
+    // Documents stay in the client's file (staff-only drafts stay drafts); only the link goes.
+    await tx.document.updateMany({ where: { filingId }, data: { filingId: null } });
+    await tx.taxImportRow.updateMany({ where: { filingId }, data: { filingId: null } });
+    await tx.filingRecord.delete({ where: { id: filingId } });
+  });
 }

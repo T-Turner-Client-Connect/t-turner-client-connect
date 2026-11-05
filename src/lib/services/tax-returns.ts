@@ -50,8 +50,8 @@ function checkFields(f: Partial<ReturnFields>) {
   const thisYear = new Date().getFullYear();
   if (!f.clientId) throw new ValidationError("Choose the client or business.");
   if (!Number.isInteger(f.taxYear) || f.taxYear! < 2000 || f.taxYear! > thisYear) throw new ValidationError("Choose the tax year of the return.");
-  const returnType = normalizeReturnType(f.returnType);
-  if (!returnType) throw new ValidationError("Enter the return type (for example 1040, 1120-S, 1065, 990, or the state form).");
+  // May be empty: then the only filing for that year and jurisdiction is used (see fileReturn).
+  const returnType = normalizeReturnType(f.returnType) ?? "";
   const jurisdiction = normalizeJurisdiction(f.jurisdiction ?? "");
   if (!jurisdiction) throw new ValidationError("Choose Federal or the state.");
   if (f.filingType !== "ORIGINAL" && f.filingType !== "AMENDED") throw new ValidationError("Choose original or amended.");
@@ -65,7 +65,11 @@ export async function fileReturn(actor: Actor, input: ReturnFields & { bytes: Ui
   const f = checkFields(input);
   const client = await prisma.client.findUnique({ where: { id: f.clientId } });
   if (!client || client.archivedAt) throw new ValidationError("Client not found.");
-  const filing = await prisma.filingRecord.findFirst({ where: { clientId: f.clientId, taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType } });
+  // A return type that differs from the filing's (40 vs 1040), or left empty, still finds the one filing for that year and jurisdiction.
+  const { findFilingFor } = await import("./tax");
+  const filing = await findFilingFor(f);
+  if (!filing && !f.returnType) throw new ValidationError("Enter the return type (for example 1040, 1120-S, 1065, 990, or the state form).");
+  if (filing) f.returnType = filing.returnType;
   // Only accepted returns are delivered as completed filings.
   if (!filing || filing.filingStatus !== "ACCEPTED") {
     const where = `${f.taxYear} ${f.returnType} ${f.jurisdiction === "FEDERAL" ? "federal" : f.jurisdiction}${f.filingType === "AMENDED" ? " amended" : ""} return`;

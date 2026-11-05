@@ -11,6 +11,10 @@ import {
   deliverIntake,
   relabelFilingDocument,
   removeFilingDocument,
+  convertToReturnCopy,
+  editFilingDetails,
+  moveFilingDocument,
+  removeFiling,
   withdrawAcceptanceRequest,
   type AcceptedFilingInput,
   type FilingDocType,
@@ -27,9 +31,10 @@ const refresh = () => {
 export async function deliverAcceptedReturnAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    const r = await deliverAcceptedReturn(actor, await deliveryFrom(fd, clientId, await fileIn(fd, "file")));
+    // "Finish & Send": for Tabitha, marking Accepted and sending to the client are one step.
+    const r = await deliverAcceptedReturn(actor, { ...(await deliveryFrom(fd, clientId, await fileIn(fd, "file"))), sendToClient: true });
     refresh();
-    return summarize(r);
+    return summarize(r, Number(str(fd, "taxYear")));
   });
 }
 
@@ -138,5 +143,44 @@ export async function bulkDeliverAction(_prev: ActionState, fd: FormData): Promi
     refresh();
     if (!done.length) throw new ValidationError(`Nothing was delivered. ${failed.join(" · ")}`);
     return `${done.length} delivered${waiting ? ` (${waiting} return${waiting === 1 ? "" : "s"} waiting for Tabitha to confirm acceptance)` : ""}${failed.length ? `. Not delivered: ${failed.join(" · ")}` : ""}.`;
+  });
+}
+
+/** "This is the return, not the acknowledgment" / "Use this file as the return copy". */
+export async function convertToReturnCopyAction(documentId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const d = await convertToReturnCopy(actor, documentId);
+    refresh();
+    revalidatePath("/documents");
+    return d.visibility === "PUBLISHED" ? `Now the return copy “${d.title}” — in the client's vault (shown once the malware scan passes).` : `Now the return copy “${d.title}” (staff only until released).`;
+  });
+}
+
+export async function editFilingDetailsAction(filingId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const t = str(fd, "filingType");
+    await editFilingDetails(actor, filingId, { taxYear: Number(str(fd, "taxYear")), returnType: str(fd, "returnType"), jurisdiction: str(fd, "jurisdiction"), filingType: t === "AMENDED" || t === "EXTENSION" ? t : "ORIGINAL" }, str(fd, "reason"));
+    refresh();
+    return "Filing details corrected (recorded in the status history).";
+  });
+}
+
+export async function removeFilingAction(filingId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await removeFiling(actor, filingId, str(fd, "reason"));
+    refresh();
+    return "Filing removed. Its full history is kept in the audit log; its documents stay in the client's file.";
+  });
+}
+
+export async function moveFilingDocAction(documentId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await moveFilingDocument(actor, documentId, str(fd, "filingId"));
+    refresh();
+    return "Moved to the other filing (audited).";
   });
 }

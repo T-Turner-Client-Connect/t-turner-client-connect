@@ -45,6 +45,21 @@ export async function createFiling(
   return f;
 }
 
+/**
+ * The filing a return belongs to: the exact match, or — when the return type
+ * differs or was left empty (a state filing created as "1040" instead of
+ * "40") — the only filing for that client, year, jurisdiction and
+ * original/amended. Never a guess between two.
+ */
+export async function findFilingFor(key: { clientId: string; taxYear: number; returnType: string; jurisdiction: string; filingType: FilingType }) {
+  if (key.returnType) {
+    const exact = await prisma.filingRecord.findUnique({ where: { clientId_taxYear_returnType_jurisdiction_filingType: key } });
+    if (exact) return exact;
+  }
+  const near = await prisma.filingRecord.findMany({ where: { clientId: key.clientId, taxYear: key.taxYear, jurisdiction: key.jurisdiction, filingType: key.filingType } });
+  return near.length === 1 ? near[0] : null;
+}
+
 /** Internal preparation status — staff-managed, separate from e-file status. */
 export async function setPrepStatus(actor: Actor, filingId: string, status: PrepStatus) {
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });

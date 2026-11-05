@@ -9,6 +9,7 @@ import { Badge, Button, Card, EmptyState, Notice } from "@/components/ui";
 import { acknowledgeDocumentsAction, deleteDocumentAction, setVisibilityAction } from "@/app/actions/workspace";
 import { UploadDocumentForm } from "@/components/upload-document-form";
 import { deliveryContext } from "@/lib/services/accepted-returns";
+import { convertToReturnCopyAction } from "@/app/actions/accepted-returns";
 import { IdentityStaff } from "./identity-staff";
 import { prisma } from "@/lib/prisma";
 import { CATEGORY_LABELS, downloadToken, REPORT_LABELS } from "@/lib/services/documents";
@@ -20,7 +21,7 @@ import { fmtDate, fmtDateTime } from "@/lib/format";
 
 
 export async function DocumentsTab({ clientId, user }: { clientId: string; user: Actor }) {
-  const health = await scanHealth();
+  const [health, delivery] = await Promise.all([scanHealth(), deliveryContext(clientId, user)]);
   const docs = await prisma.document.findMany({
     // Identity documents have their own section with stricter access.
     where: { clientId, category: { not: "IDENTITY" } },
@@ -103,6 +104,9 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
                             </div>
                           </div>
                           <div className="flex flex-wrap gap-1">
+                            {d.filingId && d.filingDocType === "OFFICIAL_ACK" && (d.visibility !== "PUBLISHED" || delivery.owner) && (
+                              <ActionForm action={convertToReturnCopyAction.bind(null, d.id)} confirm={`Use “${d.title}” as the return copy? It's re-labeled in place (audited).`}><Button type="submit" variant="secondary">This is the return, not the acknowledgment</Button></ActionForm>
+                            )}
                             {d.scanStatus === "CLEAN" ? (
                               <a className="rounded-lg px-3 py-2 text-sm font-semibold text-navy-900 hover:bg-navy-100" href={`${link}?download=1`}>Download</a>
                             ) : (
@@ -146,7 +150,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
         )}
       </div>
       <Card title="Upload a document">
-        <UploadDocumentForm clientId={clientId} delivery={await deliveryContext(clientId, user)} />
+        <UploadDocumentForm clientId={clientId} delivery={delivery} />
       </Card>
     </div>
   );
