@@ -1,7 +1,7 @@
 import { ActionForm } from "@/components/action-form";
 import { Button, Field } from "@/components/ui";
 import { uploadDocumentAction } from "@/app/actions/workspace";
-import { CATEGORY_LABELS, REPORT_LABELS } from "@/lib/services/documents";
+import { REPORT_LABELS, STAFF_CATEGORY_LABELS } from "@/lib/services/documents";
 import { MONTHS } from "@/lib/services/bookkeeping";
 import { TAX_DOC_TYPES } from "@/lib/document-types";
 import { OwnerReturnInline, type DeliveryContext } from "@/components/accepted-return-fields";
@@ -27,7 +27,7 @@ export function UploadDocumentForm({ clientId, clients, delivery }: { clientId?:
       <Field label="Title"><input className="input" name="title" placeholder="e.g. 2025 Form 1040" /></Field>
       <Field label="Category">
         <select className="input" name="category" defaultValue="TAXES">
-          {Object.entries(CATEGORY_LABELS).filter(([k]) => k !== "IDENTITY" && k !== "OWNER_K1").map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          {Object.entries(STAFF_CATEGORY_LABELS).filter(([k]) => k !== "IDENTITY" && k !== "OWNER_K1").map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
       </Field>
       <Field label="Tax year" hint="Required for tax records."><input className="input" name="year" inputMode="numeric" defaultValue={year - 1} /></Field>

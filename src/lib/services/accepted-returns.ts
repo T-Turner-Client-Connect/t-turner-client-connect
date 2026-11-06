@@ -708,7 +708,11 @@ export async function deliveryContext(clientId: string, actor: Actor) {
   const existing: Record<string, string[]> = {};
   for (const f of filings) (existing[`${f.taxYear}:${f.jurisdiction}:${f.filingType}`] ??= []).push(f.returnType);
   const st = normalizeJurisdiction(client.state ?? "");
-  return { owner, clientType: client.clientType as string, entityType: client.entityType, clientState: st && st !== "FEDERAL" ? st : null, approvedKeys, draftKeys, existing };
+  // Enter once: the confirmed Tax Preparation case for a year fills in its forms.
+  const { prepDefaults } = await import("./tax-prep");
+  const prepForms: Record<string, { federal: string | null; state: string | null }> = {};
+  for (const p of await prepDefaults(clientId)) prepForms[String(p.taxYear)] = { federal: p.federalForm, state: p.stateForm };
+  return { owner, clientType: client.clientType as string, entityType: client.entityType, clientState: st && st !== "FEDERAL" ? st : null, approvedKeys, draftKeys, existing, prepForms };
 }
 
 // --- Fixing a filing (Tabitha only) ------------------------------------------------

@@ -11,21 +11,37 @@ import { utcToChicagoLocal } from "@/lib/tz";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Field, Notice } from "@/components/ui";
-import { amendmentOutcomeAction, attachFilingDocAction, createFilingAction, filingStatusAction, prepStatusAction, publishFilingAction, setTaxSoftwareIdAction } from "@/app/actions/tax";
+import { amendmentOutcomeAction, attachFilingDocAction, createFilingAction, filingStatusAction, prepStatusAction, publishFilingAction } from "@/app/actions/tax";
 import { prisma } from "@/lib/prisma";
 import { downloadToken } from "@/lib/services/documents";
 import { AMENDMENT_LABELS, FILING_LABELS, filingStatusLabel, filingTitle, PREP_LABELS } from "@/lib/tax/normalize";
 import { fmtDate, fmtDateTime } from "@/lib/format";
-import { TaxCenterStaff } from "./tax-center-staff";
+import { ClientProgressNote, TaxCenterStaff } from "./tax-center-staff";
 import { TaxPrepCases } from "./tax-prep-cases";
 import { TaxSummaryStaff } from "./tax-summary-staff";
 import { summaryRequirement } from "@/lib/services/tax-summary";
+import { taxSeasonProgress, yearStrip } from "@/lib/services/tax-season";
+import type { ReactNode } from "react";
 
 const DOC_TYPE = { RETURN: "Return", OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Agency notice", CORRESPONDENCE: "Correspondence", FIRM_SUMMARY: "Our summary" } as const;
 
 export type DeliverPrefill = { year?: number; state?: boolean; amended?: boolean };
 
-export async function TaxesTab({ clientId, user, deliver }: { clientId: string; user: Actor; deliver?: DeliverPrefill }) {
+/** One step of the season: open while there's work to do, a one-line "✓ Done" header (expandable) once it's done. */
+function Step({ n, title, done, open, next, id, children }: { n?: number; title: string; done: boolean; open: boolean; next?: boolean; id?: string; children: ReactNode }) {
+  return (
+    <details id={id} open={open} className={`rounded-xl border p-3 ${done ? "border-emerald-200 bg-emerald-50/40" : "border-ivory-200 bg-white"}`} data-testid={`step-${n ?? "history"}`} data-done={done ? "1" : "0"}>
+      <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-lg font-semibold text-navy-900">
+        {n ? <span>Step {n} · {title}</span> : <span>{title}</span>}
+        {done && <span className="text-sm font-semibold text-emerald-800">✓ Done</span>}
+        {next && <Badge tone="gold">Next</Badge>}
+      </summary>
+      <div className="mt-3 space-y-4">{children}</div>
+    </details>
+  );
+}
+
+export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId: string; user: Actor; deliver?: DeliverPrefill; taxYear?: number }) {
   const [client, filings, docs] = await Promise.all([
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { taxSoftwareId: true } }),
     prisma.filingRecord.findMany({
@@ -44,17 +60,29 @@ export async function TaxesTab({ clientId, user, deliver }: { clientId: string; 
   const savedAsAck = filings.filter((f) => f.filingType !== "EXTENSION").flatMap((f) => f.documents.filter((d) => d.filingDocType === "OFFICIAL_ACK"));
 
   const thisYear = new Date().getFullYear();
+  // The tax year the steps are for: the one asked for, else the latest confirmed Tax Preparation case, else last year.
+  const latestCase = Object.keys(ctx.prepForms ?? {}).map(Number).filter((y) => y <= thisYear).sort((a, b) => b - a)[0];
+  const selectedYear = deliver?.year ?? taxYear ?? latestCase ?? thisYear - 1;
+  const [season, strip] = await Promise.all([taxSeasonProgress(clientId, selectedYear), yearStrip(clientId, selectedYear)]);
+  const yearChoices = Array.from(new Set([thisYear, thisYear - 1, thisYear - 2, selectedYear, ...years])).sort((a, b) => b - a);
 
-  return (
-    <div className="space-y-4">
-      <div id="finish-send" className="space-y-4">
+  const steps = (
+    <>
+      <Step n={1} title="Client info & documents" done={season.done.info} open={!season.done.info} next={season.next === "info"}>
+        <TaxCenterStaff clientId={clientId} user={user} year={selectedYear} />
+      </Step>
+      <Step n={2} title="Prepare & client approval" done={season.done.prep} open={!season.done.prep} next={season.next === "prep"}>
+        <TaxPrepCases clientId={clientId} user={user} />
+        <TaxSummaryStaff clientId={clientId} user={user} />
+      </Step>
+      <Step n={3} id="finish-send" title="Finish & Send" done={season.done.send} open={!season.done.send || !!deliver} next={season.next === "send"}>
         <AcceptanceQueue approver={approver} clientId={clientId} />
         <Card title="Finish & Send a Return">
           <p className="mb-3 text-sm text-slate-600">
             Already e-filed and accepted? Do it all here: mark it Accepted, attach the return and {approver ? "send it to the client" : "send it to Tabitha for release"}.
           </p>
           <ActionForm action={deliverAcceptedReturnAction.bind(null, clientId)} className="space-y-3" resetOnSuccess idempotent>
-            <AcceptedReturnFields ctx={ctx} defaultYear={deliver?.year} startWithState={deliver?.state} amended={deliver?.amended} />
+            <AcceptedReturnFields ctx={ctx} defaultYear={selectedYear} startWithState={deliver?.state} amended={deliver?.amended} />
             <div>
               <Button type="submit" variant={approver ? "gold" : "primary"} data-testid="finish-send-button">{approver ? "Mark Accepted & Send to Client" : "Mark Accepted & Send to Tabitha for release"}</Button>{" "}
               <span className="text-xs text-slate-600">Several clients at once? Use <Link className="underline" href="/taxes/returns">Tax returns</Link>.</span>
@@ -77,12 +105,45 @@ export async function TaxesTab({ clientId, user, deliver }: { clientId: string; 
           </div>
           )}
         </Card>
-      </div>
-      <TaxPrepCases clientId={clientId} user={user} />
-      <TaxCenterStaff clientId={clientId} user={user} />
-      <TaxSummaryStaff clientId={clientId} user={user} />
+      </Step>
+    </>
+  );
 
-      {years.length === 0 && <EmptyState title="No filings yet">Use Finish &amp; Send a Return above, or import e-file statuses from TaxAct.</EmptyState>}
+  return (
+    <div className="space-y-4">
+      <header className="space-y-2 rounded-xl border border-ivory-200 bg-white p-3" data-testid="year-header">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <nav className="flex flex-wrap items-center gap-2 text-sm" aria-label="Tax year" data-testid="season-year">
+            <span className="font-semibold text-slate-700">Tax year:</span>
+            {yearChoices.map((y) => (
+              <Link key={y} href={`/clients/${clientId}?tab=taxes&taxYear=${y}`} className={`rounded-full px-3 py-1 ${y === selectedYear ? "bg-navy-900 text-white" : "bg-ivory-100 text-navy-900 underline"}`} aria-current={y === selectedYear ? "true" : undefined}>{y}</Link>
+            ))}
+          </nav>
+          <span className="text-sm text-slate-600" data-testid="taxact-id">
+            {client.taxSoftwareId ? `TaxAct ID ${client.taxSoftwareId}` : <>No TaxAct ID: <Link className="underline" href={`/clients/${clientId}?tab=overview#tax-details`}>add on Overview</Link></>}
+          </span>
+        </div>
+        <ol className="flex flex-wrap gap-1 text-xs" data-testid="year-strip" aria-label={`${selectedYear} progress`}>
+          {strip.map((st, i) => (
+            <li key={st.key} className={`rounded-full px-2 py-1 ${st.done ? "bg-emerald-50 text-emerald-900" : "bg-ivory-50 text-slate-700"}`}>
+              {i > 0 && <span className="sr-only"> · </span>}
+              <span className="font-semibold">{st.label}:</span> {st.value}
+            </li>
+          ))}
+        </ol>
+      </header>
+
+      {season.allDone && season.doneLine ? (
+        <details className="rounded-xl border border-emerald-200 bg-emerald-50 p-3" data-testid="season-done" open={!!deliver}>
+          <summary className="cursor-pointer text-lg font-semibold text-emerald-900">✓ {season.doneLine}</summary>
+          <div className="mt-3 space-y-4">{steps}</div>
+        </details>
+      ) : (
+        steps
+      )}
+
+      <Step title="Filing history" done={false} open={!season.allDone}>
+      {years.length === 0 && <EmptyState title="No filings yet">Use Step 3 · Finish &amp; Send above, or import e-file statuses from TaxAct.</EmptyState>}
 
       {years.map((year) => (
         <section key={year} className="space-y-3">
@@ -277,35 +338,31 @@ export async function TaxesTab({ clientId, user, deliver }: { clientId: string; 
         </section>
       ))}
 
-      <details className="rounded-xl border border-ivory-200 bg-white p-3">
-        <summary className="cursor-pointer text-sm font-semibold text-slate-700">Add a filing by hand · TaxAct client ID</summary>
-        <div className="mt-3 grid gap-4 lg:grid-cols-2">
-        <Card title="Add a filing">
-          <ActionForm action={createFilingAction.bind(null, clientId)} className="grid gap-2 sm:grid-cols-2" resetOnSuccess>
-            <Field label="Tax year"><input className="input" name="taxYear" defaultValue={thisYear - 1} inputMode="numeric" required /></Field>
-            <Field label="Return type"><input className="input" name="returnType" placeholder="1040, 1120-S, 4868, 1040-X…" required /></Field>
-            <Field label="Jurisdiction" hint="Federal, or a two-letter state. Each state is its own filing.">
-              <input className="input" name="jurisdiction" defaultValue="Federal" required />
-            </Field>
-            <Field label="Filing type">
-              <select className="input" name="filingType" defaultValue="ORIGINAL"><option value="ORIGINAL">Original return</option><option value="EXTENSION">Extension</option><option value="AMENDED">Amended return</option></select>
-            </Field>
-            <Field label="Method">
-              <select className="input" name="method" defaultValue="ELECTRONIC"><option value="ELECTRONIC">E-file</option><option value="PAPER">Paper (mailed)</option></select>
-            </Field>
-            <div className="flex items-end"><Button type="submit">Add filing</Button></div>
-          </ActionForm>
-        </Card>
-        <Card title="TaxAct link">
-          <ActionForm action={setTaxSoftwareIdAction.bind(null, clientId)} className="flex flex-wrap items-end gap-2">
-            <Field label="TaxAct client ID" hint="Used to match e-file status imports. Records are never matched by name alone.">
-              <input className="input" name="taxSoftwareId" defaultValue={client.taxSoftwareId ?? ""} />
-            </Field>
-            <Button type="submit" variant="secondary">Save</Button>
-          </ActionForm>
-        </Card>
+      <details className="rounded-xl border border-ivory-200 bg-white p-3" data-testid="history-more-options">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-700">More options</summary>
+        <div className="mt-3 space-y-3">
+          <details className="rounded-lg border border-ivory-200 bg-white p-3" data-testid="add-another-filing">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-700">Add another filing (extension, amended, extra state)</summary>
+            <p className="mt-1 text-xs text-slate-600">The year&apos;s Federal and home-state filings are created automatically when the Tax Preparation return type is confirmed.</p>
+            <ActionForm action={createFilingAction.bind(null, clientId)} className="mt-2 grid gap-2 sm:grid-cols-2" resetOnSuccess>
+              <Field label="Tax year"><input className="input" name="taxYear" defaultValue={selectedYear} inputMode="numeric" required /></Field>
+              <Field label="Return type"><input className="input" name="returnType" placeholder="1040, 1120-S, 4868, 1040-X…" required /></Field>
+              <Field label="Jurisdiction" hint="Federal, or a two-letter state. Each state is its own filing.">
+                <input className="input" name="jurisdiction" defaultValue="Federal" required />
+              </Field>
+              <Field label="Filing type">
+                <select className="input" name="filingType" defaultValue="EXTENSION"><option value="EXTENSION">Extension</option><option value="AMENDED">Amended return</option><option value="ORIGINAL">Original return</option></select>
+              </Field>
+              <Field label="Method">
+                <select className="input" name="method" defaultValue="ELECTRONIC"><option value="ELECTRONIC">E-file</option><option value="PAPER">Paper (mailed)</option></select>
+              </Field>
+              <div className="flex items-end"><Button type="submit">Add filing</Button></div>
+            </ActionForm>
+          </details>
+          <ClientProgressNote clientId={clientId} year={selectedYear} />
         </div>
       </details>
+      </Step>
     </div>
   );
 }

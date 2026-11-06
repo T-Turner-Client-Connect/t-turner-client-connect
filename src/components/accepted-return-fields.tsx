@@ -17,6 +17,8 @@ export type DeliveryContext = {
   draftKeys: string[];
   /** `${year}:${jurisdiction}:${ORIGINAL|AMENDED}` → the form numbers of existing filings. */
   existing: Record<string, string[]>;
+  /** year → the forms from that year's confirmed Tax Preparation case (null where the mapping isn't known for sure). */
+  prepForms?: Record<string, { federal: string | null; state: string | null }>;
 };
 
 type Row = { code: string; on: boolean; form: string | null; acceptedOn: string | null; ref: string | null };
@@ -74,8 +76,10 @@ export function AcceptedReturnFields({
     const list = ctx.existing[`${year}:${j}:${filingType}`] ?? [];
     return list.length === 1 ? list[0] : null;
   };
-  const fedForm = fed.form ?? onFile("FEDERAL") ?? (filingType === "AMENDED" && individual ? "1040-X" : federalFormFor(ctx.clientType, ctx.entityType)) ?? "";
-  const stForm = (r: Row) => r.form ?? onFile(r.code) ?? stateFormFor(r.code, ctx.clientType, ctx.entityType) ?? "";
+  // Then the confirmed Tax Preparation case for the year (original returns; its state form is for the client's own state).
+  const prep = filingType === "ORIGINAL" ? ctx.prepForms?.[String(year)] : undefined;
+  const fedForm = fed.form ?? onFile("FEDERAL") ?? (filingType === "AMENDED" && individual ? "1040-X" : prep?.federal ?? federalFormFor(ctx.clientType, ctx.entityType)) ?? "";
+  const stForm = (r: Row) => r.form ?? onFile(r.code) ?? (r.code === ctx.clientState ? prep?.state : null) ?? stateFormFor(r.code, ctx.clientType, ctx.entityType) ?? "";
   const ticked = [...(fed.on ? ["FEDERAL"] : []), ...rows.filter((r) => r.on).map((r) => r.code)];
 
   const key = `${year}:${filingType}`;

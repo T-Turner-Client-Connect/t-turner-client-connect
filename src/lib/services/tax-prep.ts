@@ -5,7 +5,9 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { ValidationError } from "@/lib/services/clients";
 import { buildDisplayName, householdName, normalizePhone } from "@/lib/normalize";
-import { isJointReturn, isReturnType, looksCombined, SPOUSE_RETURN_TYPES, type PersonName, type ReturnTypeCode } from "@/lib/tax/return-types";
+import { isJointReturn, isReturnType, joinName, looksCombined, SPOUSE_RETURN_TYPES, type PersonName, type ReturnTypeCode } from "@/lib/tax/return-types";
+import { formsForPrepCase } from "@/lib/tax/accepted";
+import { normalizeJurisdiction } from "@/lib/tax/normalize";
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
@@ -159,6 +161,7 @@ export async function saveTaxPrepCase(actor: Actor, clientId: string, input: Cas
       clientId,
       details: { taxYear, returnType: v.returnType, from: before?.returnType ?? null, fields: changed, clientNameUpdated: !!renamed },
     });
+    await filingsFromCase(tx, actor.id, row);
     return row;
   });
 }
@@ -173,8 +176,58 @@ export async function confirmReturnType(actor: Actor, caseId: string) {
     throw new ValidationError("Add the spouse's name before confirming Married Filing Jointly.");
   }
   await prisma.$transaction(async (tx) => {
-    await tx.taxPrepCase.update({ where: { id: caseId }, data: { returnTypeConfirmedAt: new Date(), returnTypeConfirmedById: actor.id } });
+    const row = await tx.taxPrepCase.update({ where: { id: caseId }, data: { returnTypeConfirmedAt: new Date(), returnTypeConfirmedById: actor.id } });
     await audit(tx, { actorId: actor.id, action: "tax_prep.confirmed", entityType: "TaxPrepCase", entityId: caseId, clientId: c.clientId, details: { taxYear: c.taxYear, returnType: c.returnType } });
+    await filingsFromCase(tx, actor.id, row);
+  });
+}
+
+/**
+ * Enter once: a confirmed case creates the year's filing records that don't
+ * exist yet — the Federal return with the case's form and, when the client's
+ * address state has a known form (AL 40), the state return. A filing that
+ * already exists for the year + jurisdiction + original is left exactly as it
+ * is (form and status untouched). No state on file → no state filing. Audited.
+ */
+export async function filingsFromCase(tx: Prisma.TransactionClient, actorId: string, c: TaxPrepCase) {
+  if (!c.returnTypeConfirmedAt) return [];
+  const client = await tx.client.findUniqueOrThrow({ where: { id: c.clientId }, select: { state: true } });
+  const st = normalizeJurisdiction(client.state ?? "");
+  const state = st && st !== "FEDERAL" ? st : null;
+  const forms = formsForPrepCase(c.returnType, state);
+  if (!forms.federal) return [];
+  const wanted = [{ jurisdiction: "FEDERAL", returnType: forms.federal }, ...(state && forms.state ? [{ jurisdiction: state, returnType: forms.state }] : [])];
+  const created: { id: string; jurisdiction: string; returnType: string }[] = [];
+  for (const w of wanted) {
+    if (await tx.filingRecord.findFirst({ where: { clientId: c.clientId, taxYear: c.taxYear, jurisdiction: w.jurisdiction, filingType: "ORIGINAL" }, select: { id: true } })) continue;
+    const f = await tx.filingRecord.create({ data: { clientId: c.clientId, taxYear: c.taxYear, returnType: w.returnType, jurisdiction: w.jurisdiction, filingType: "ORIGINAL", method: "ELECTRONIC" } });
+    await audit(tx, { actorId, action: "filing.created", entityType: "FilingRecord", entityId: f.id, clientId: c.clientId, details: { taxYear: c.taxYear, returnType: w.returnType, jurisdiction: w.jurisdiction, filingType: "ORIGINAL", fromTaxPrepCase: c.id } });
+    created.push({ id: f.id, jurisdiction: w.jurisdiction, returnType: w.returnType });
+  }
+  if (created.length) await audit(tx, { actorId, action: "tax_prep.filings_created", entityType: "TaxPrepCase", entityId: c.id, clientId: c.clientId, details: { taxYear: c.taxYear, returnType: c.returnType, filings: created } });
+  return created;
+}
+
+export type PrepDefaults = { taxYear: number; returnType: string; federalForm: string | null; stateForm: string | null; filingStatus: string | null; taxpayerName: string; spouseName: string };
+
+/**
+ * What a confirmed case fills in elsewhere (Finish & Send, the summary form):
+ * forms, filing status and the taxpayer and spouse names (from the case, else
+ * the client record). Confirmed cases only, newest year first.
+ */
+export async function prepDefaults(clientId: string): Promise<PrepDefaults[]> {
+  const [client, cases] = await Promise.all([
+    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { state: true, firstName: true, middleName: true, lastName: true, displayName: true, spouseFirstName: true, spouseMiddleName: true, spouseLastName: true } }),
+    prisma.taxPrepCase.findMany({ where: { clientId, returnTypeConfirmedAt: { not: null }, returnType: { not: null } }, orderBy: { taxYear: "desc" } }),
+  ]);
+  const st = normalizeJurisdiction(client.state ?? "");
+  const clientName = joinName({ first: client.firstName, middle: client.middleName, last: client.lastName }) || client.displayName;
+  const clientSpouse = joinName({ first: client.spouseFirstName, middle: client.spouseMiddleName, last: client.spouseLastName });
+  return cases.map((c) => {
+    const forms = formsForPrepCase(c.returnType, st && st !== "FEDERAL" ? st : null);
+    const primary = joinName({ first: c.primaryFirstName, middle: c.primaryMiddleName, last: c.primaryLastName });
+    const spouse = joinName({ first: c.spouseFirstName, middle: c.spouseMiddleName, last: c.spouseLastName });
+    return { taxYear: c.taxYear, returnType: c.returnType!, federalForm: forms.federal, stateForm: forms.state, filingStatus: forms.filingStatus, taxpayerName: primary || clientName, spouseName: SPOUSE_RETURN_TYPES.includes(c.returnType as ReturnTypeCode) ? spouse || clientSpouse : "" };
   });
 }
 

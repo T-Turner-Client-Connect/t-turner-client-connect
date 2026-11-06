@@ -85,6 +85,9 @@ export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   PAYROLL: "Payroll",
 };
 
+/** Staff-side folder names: the Taxes folder also holds the return copies and acceptance confirmations sent from the Taxes tab (one stored copy, shown in both places). */
+export const STAFF_CATEGORY_LABELS: Record<DocumentCategory, string> = { ...CATEGORY_LABELS, TAXES: "Taxes (returns & tax documents)" };
+
 export const REPORT_LABELS: Record<ReportType, string> = {
   FINANCIAL_PACKET: "Complete financial packet",
   PROFIT_AND_LOSS: "Profit & Loss Statement",
