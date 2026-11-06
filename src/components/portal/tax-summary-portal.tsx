@@ -4,6 +4,8 @@ import { SummaryFigures, SummaryItems } from "@/components/tax-summary-view";
 import { approveSummaryAction, requestSummaryChangesAction } from "@/app/actions/tax-summary";
 import { consentText, NOT_8879, requiredRoles, type SummaryWithSigs } from "@/lib/services/tax-summary";
 import { fmtDateTime } from "@/lib/format";
+import { isAutoSummary } from "@/lib/services/auto-tax-summary";
+import { AutoTaxSummaryView } from "./auto-tax-summary-view";
 
 const CLIENT_STATUS = {
   SENT: { label: "Waiting for your approval", tone: "gold" },
@@ -21,6 +23,8 @@ export function PortalSummaryView({ summaries, clientId, readOnly }: { summaries
   return (
     <div className="space-y-4" data-testid="portal-summaries">
       {summaries.map((s) => {
+        // Read automatically from the prepared return: the plain-language page.
+        if (isAutoSummary(s)) return <AutoTaxSummaryView key={s.id} s={s} clientId={clientId} readOnly={readOnly} />;
         const st = CLIENT_STATUS[s.status as keyof typeof CLIENT_STATUS];
         const signed = new Map(s.signatures.filter((g) => !g.invalidatedAt).map((g) => [g.role, g]));
         const roles = requiredRoles(s);

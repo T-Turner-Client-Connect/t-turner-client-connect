@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import clsx from "clsx";
-import { Building2, CheckCircle2, CircleSlash, Sparkles } from "lucide-react";
+import { Building2, CheckCircle2, CircleSlash, FileText, Sparkles } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { PageHeader } from "@/components/ui";
 import { requireOffice } from "@/lib/auth/owner";
@@ -46,7 +46,7 @@ export default async function OwnerAutomationPage() {
     isReportApprover(actor),
     prisma.bankConnection.groupBy({ by: ["environment", "status"], _count: true, where: { status: { not: "DISCONNECTED" } } }),
   ]);
-  const ids = [sw.liveBanking.changedById, sw.coetha.changedById, sw.coethaAutoSend.changedById].filter((x): x is string => !!x);
+  const ids = [sw.liveBanking.changedById, sw.coetha.changedById, sw.coethaAutoSend.changedById, sw.taxSummaryAutoSend.changedById].filter((x): x is string => !!x);
   const names = new Map((await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const env = (process.env.PLAID_ENV ?? "sandbox").trim().toLowerCase();
   const keys = !!process.env.PLAID_CLIENT_ID?.trim() && !!process.env.PLAID_SECRET?.trim();
@@ -111,6 +111,20 @@ export default async function OwnerAutomationPage() {
             {primary && (
               <ActionForm action={ownerSwitchAction.bind(null, "coethaAutoSend", !sw.coethaAutoSend.on)} confirm={sw.coethaAutoSend.on ? "Turn off automatic sending? Coetha's drafts will wait for staff to send them." : "Let Coetha send her drafted document requests to clients automatically?"}>
                 <button type="submit" className={clsx("inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold shadow", sw.coethaAutoSend.on ? "border-[1.5px] border-navy-900 bg-white text-navy-900" : "bg-navy-900 text-white hover:bg-navy-800")} data-testid="toggle-coetha-auto-send">{sw.coethaAutoSend.on ? "Turn off" : "Turn on"}</button>
+              </ActionForm>
+            )}
+          </div>
+        </section>
+
+        <section className={card} data-testid="switch-tax-summary-auto-send">
+          <h2 className="flex items-center gap-3 font-serif text-xl font-bold text-navy-900"><FileText className="size-7 text-gold-600" aria-hidden /> Send tax summaries automatically</h2>
+          <p className="mt-1 text-sm text-navy-800">When you upload a prepared return from TaxAct, Client Connect reads the figures from the forms and checks them. <strong>Off</strong>: every summary waits for your one-click “Send for approval”. <strong>On</strong>: a summary goes to the client by itself only when every check passed, <strong>you</strong> uploaded it, and the client has an active portal login. Staff uploads, and anything that couldn&apos;t be read or didn&apos;t add up, always wait for you. No AI is used and no client tax data leaves Client Connect.</p>
+          <p className="mt-2 text-xs text-slate-600">{sw.taxSummaryAutoSend.changedAt ? changed(sw.taxSummaryAutoSend) : "Never changed (off by default)."} Each automatic send and each hold is recorded in the audit log.</p>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-ivory-200 pt-4">
+            <Switch on={sw.taxSummaryAutoSend.on} label="Send automatically" testId="tax-summary-auto-send-state" />
+            {primary && (
+              <ActionForm action={ownerSwitchAction.bind(null, "taxSummaryAutoSend", !sw.taxSummaryAutoSend.on)} confirm={sw.taxSummaryAutoSend.on ? "Turn off automatic sending? Every tax summary will wait for your “Send for approval”." : "Send tax summaries automatically? Only summaries you upload, that pass every check, for clients with an active portal login."}>
+                <button type="submit" className={clsx("inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold shadow", sw.taxSummaryAutoSend.on ? "border-[1.5px] border-navy-900 bg-white text-navy-900" : "bg-navy-900 text-white hover:bg-navy-800")} data-testid="toggle-tax-summary-auto-send">{sw.taxSummaryAutoSend.on ? "Turn off" : "Turn on"}</button>
               </ActionForm>
             )}
           </div>

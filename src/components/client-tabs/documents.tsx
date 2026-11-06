@@ -73,7 +73,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
         {(Object.keys(CATEGORY_LABELS) as DocumentCategory[]).filter((c) => tree.has(c)).map((cat) => (
           <Card key={cat} title={CATEGORY_LABELS[cat]}>
             {[...tree.get(cat)!.entries()].map(([folder, items]) => (
-              <details key={folder} open className="mb-3">
+              <details key={folder} id={`docs-${cat}-${folder}`} open className="mb-3">
                 <summary className="cursor-pointer font-semibold text-navy-800">📁 {folder} <span className="font-normal text-slate-500">({items.length})</span></summary>
                 <ul className="mt-2 divide-y divide-navy-100">
                   {items.map((d) => {

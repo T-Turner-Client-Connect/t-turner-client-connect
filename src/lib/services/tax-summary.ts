@@ -379,7 +379,8 @@ export async function assertOwnerMaySubmit(
 ) {
   if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can authorize and submit a tax return. Record Submitted after she files it in TaxAct.");
   if (filing.filingType === "EXTENSION") return { summaryId: null, override: null };
-  if (filing.method === "ELECTRONIC" && !input.form8879Confirmed) {
+  // A signed 8879 on file that matches the approved summary satisfies this; the checkbox is the fallback.
+  if (filing.method === "ELECTRONIC" && !input.form8879Confirmed && !(await (await import("./auto-tax-summary")).signed8879OnFile(filing))) {
     throw new ValidationError("Confirm the signed IRS Form 8879 (or the state e-file authorization) is on file. The client's summary approval does not replace it.");
   }
   const req = await summaryRequirement(filing);
