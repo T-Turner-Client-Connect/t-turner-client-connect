@@ -20,6 +20,11 @@ const nextConfig: NextConfig = {
     BUILD_CONTEXT: process.env.CONTEXT ?? "",
     BUILD_DEPLOY_URL: process.env.DEPLOY_PRIME_URL ?? "",
   },
+  // Backup manifests record the newest migration name: the backup routes read the migrations folder.
+  outputFileTracingIncludes: {
+    "/api/cron/backup": ["./netlify/database/migrations/**/*"],
+    "/owner/*": ["./netlify/database/migrations/**/*"],
+  },
   experimental: {
     // Mapped import rows and uploads go through Server Actions (Netlify caps bodies at ~6 MB).
     serverActions: { bodySizeLimit: "6mb" },
