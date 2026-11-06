@@ -4485,6 +4485,11 @@ model IntegrationSettings {
   keyEscrowConfirmedAt      DateTime?
   keyEscrowConfirmedById    String?
   keyEscrowNote             String?
+  // Owner-only safety lock on Client Letters: while not true, letters can be prepared and
+  // previewed but never sent or re-sent. Off (null) by default.
+  clientRolloutAuthorized   Boolean?
+  clientRolloutChangedById  String?
+  clientRolloutChangedAt    DateTime?
   updatedById               String?
   updatedAt                 DateTime  @updatedAt
 }
@@ -5570,46 +5575,70 @@ model ClientLetterBatch {
 
 /// One client's letter in a batch. A re-send is a new row (resendOfId) with its own filed copy.
 model ClientLetter {
-  id               String            @id @default(cuid())
-  batchId          String
-  batch            ClientLetterBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
-  clientId         String
-  client           Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  templateVersion  String
+  id                         String            @id @default(cuid())
+  batchId                    String
+  batch                      ClientLetterBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  clientId                   String
+  client                     Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  templateVersion            String
   // Recipient details as resolved when the letter was prepared.
-  businessName     String
-  ownerName        String
-  ownerFirstName   String
-  email            String?
-  portalUserId     String?
+  businessName               String
+  ownerName                  String
+  ownerFirstName             String
+  email                      String?
+  portalUserId               String?
   // Left out of this batch by the owner (or because this version was already sent to them).
-  excluded         Boolean           @default(false)
-  excludedReason   String?
-  excludedById     String?
-  excludedAt       DateTime?
+  excluded                   Boolean           @default(false)
+  excludedReason             String?
+  excludedById               String?
+  excludedAt                 DateTime?
   // DRAFT | SENDING | SENT | EMAIL_FAILED | NO_EMAIL | MAILED_MANUALLY
-  status           String            @default("DRAFT")
+  status                     String            @default("DRAFT")
   // The date printed on the letter (the send date).
-  letterDate       DateTime?         @db.Date
-  sentAt           DateTime?
-  sentById         String?
-  emailedAt        DateTime?
-  emailProviderId  String?
-  emailError       String?
+  letterDate                 DateTime?         @db.Date
+  sentAt                     DateTime?
+  sentById                   String?
+  emailedAt                  DateTime?
+  emailProviderId            String?
+  emailError                 String?
   // The filed copy in the client's Document Vault and the portal message that carried it.
-  documentId       String?
-  messageId        String?
+  documentId                 String?
+  messageId                  String?
   // NO_EMAIL letters the owner mailed or handed over herself.
-  mailedOn         DateTime?         @db.Date
-  mailedById       String?
-  mailedRecordedAt DateTime?
+  mailedOn                   DateTime?         @db.Date
+  mailedById                 String?
+  mailedRecordedAt           DateTime?
   // A re-send points at the letter it repeats.
-  resendOfId       String?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  resendOfId                 String?
+  // What actually happened, step by step (all optional; older rows fall back to sentAt).
+  // Filed in the Document Vault, and posted to the portal Message Center.
+  filedAt                    DateTime?
+  portalPostedAt             DateTime?
+  // Email provider delivery events (Resend webhook). Accepted by the email service is
+  // emailedAt; these are set only when the provider reports them.
+  emailDeliveredAt           DateTime?
+  emailBouncedAt             DateTime?
+  emailBounceReason          String?
+  emailComplainedAt          DateTime?
+  // Needs the owner's follow-up (a bounce or complaint); cleared when she mails it or re-sends.
+  followUpFlaggedAt          DateTime?
+  followUpReason             String?
+  followUpClearedAt          DateTime?
+  // The client's own login first opened the letter (MESSAGE or DOCUMENT); staff previews never count.
+  firstViewedAt              DateTime?
+  firstViewedByPortalUserId  String?
+  firstViewedVia             String?
+  // Optional "I have read this notice" from the client's own login.
+  acknowledgedAt             DateTime?
+  acknowledgedByPortalUserId String?
+  createdAt                  DateTime          @default(now())
+  updatedAt                  DateTime          @updatedAt
 
   @@index([batchId])
   @@index([clientId, createdAt])
+  @@index([emailProviderId])
+  @@index([messageId])
+  @@index([documentId])
 }
 
 /// "Client prefers no Coetha": while a row exists, every Coetha run, draft and request for this

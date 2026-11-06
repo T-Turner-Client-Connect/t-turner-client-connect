@@ -83,7 +83,7 @@ export default async function OwnerAutomationPage() {
 
         <section className={card} data-testid="switch-coetha">
           <h2 className="flex items-center gap-3 font-serif text-xl font-bold text-navy-900"><Sparkles className="size-7 text-gold-600" aria-hidden /> Coetha AI</h2>
-          <p className="mt-1 text-sm text-navy-800">Coetha prepares draft bookkeeping work from each business&apos;s connected bank data: category recommendations, discrepancies, adjusting entries and a month summary. She never posts or finalizes anything; only you approve her work.</p>
+          <p className="mt-1 text-sm text-navy-800">Coetha prepares draft bookkeeping work from the bank transactions the office imports (daily CSV statement imports) or, if bank connections are ever turned on, syncs, and from the ledger data staff enter: category recommendations, discrepancies, adjusting entries and a month summary. She never posts or finalizes anything; only you approve her work. She doesn&apos;t need live bank connections: CSV imports work the same way.</p>
           <ul className="mt-4 space-y-1.5">
             <Check ok={keyOk}>Anthropic API key in Netlify (ANTHROPIC_API_KEY)</Check>
             <Check ok>Model: {coethaModel()} <span className="text-slate-600">(COETHA_MODEL to change)</span></Check>

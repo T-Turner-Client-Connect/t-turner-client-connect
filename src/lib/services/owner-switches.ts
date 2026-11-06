@@ -11,11 +11,11 @@ import { isReportApprover } from "./bookkeeping-clients";
  * written to both the office audit log and the Owner's Office log.
  */
 
-export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend" | "portalInvites";
+export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend" | "portalInvites" | "clientRollout";
 
-export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", portalInvites: "Portal invitations authorized" };
+export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", portalInvites: "Portal invitations authorized", clientRollout: "Client rollout authorized" };
 const LABEL = SWITCH_LABEL;
-const ACTION: Record<OwnerSwitch, string> = { liveBanking: "banking.live_connections", coetha: "coetha.enabled", coethaAutoSend: "coetha.auto_send_requests", portalInvites: "portal_invites.authorized" };
+const ACTION: Record<OwnerSwitch, string> = { liveBanking: "banking.live_connections", coetha: "coetha.enabled", coethaAutoSend: "coetha.auto_send_requests", portalInvites: "portal_invites.authorized", clientRollout: "client_letters.rollout_authorized" };
 
 export async function ownerSwitches() {
   const s = await prisma.integrationSettings.findUnique({ where: { id: "default" } });
@@ -24,6 +24,7 @@ export async function ownerSwitches() {
     coetha: { on: s?.coethaEnabled ?? false, changedAt: s?.coethaChangedAt ?? null, changedById: s?.coethaChangedById ?? null },
     coethaAutoSend: { on: s?.coethaAutoSendRequests ?? true, changedAt: s?.coethaAutoSendChangedAt ?? null, changedById: s?.coethaAutoSendChangedById ?? null },
     portalInvites: { on: s?.portalInvitesAuthorized === true, changedAt: s?.portalInvitesChangedAt ?? null, changedById: s?.portalInvitesChangedById ?? null },
+    clientRollout: { on: s?.clientRolloutAuthorized === true, changedAt: s?.clientRolloutChangedAt ?? null, changedById: s?.clientRolloutChangedById ?? null },
   };
 }
 
@@ -41,6 +42,11 @@ export async function portalInvitesAuthorized(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { portalInvitesAuthorized: true } }))?.portalInvitesAuthorized === true;
 }
 
+/** Tabitha's safety lock on Client Letters: sending is refused until she authorizes the client rollout. Off by default. */
+export async function clientRolloutAuthorized(): Promise<boolean> {
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { clientRolloutAuthorized: true } }))?.clientRolloutAuthorized === true;
+}
+
 export async function coethaOn(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaEnabled: true } }))?.coethaEnabled ?? false;
 }
@@ -56,7 +62,9 @@ export async function setOwnerSwitch(actor: Actor, which: OwnerSwitch, on: boole
         ? { coethaEnabled: on, coethaChangedById: actor.id, coethaChangedAt: now, updatedById: actor.id }
         : which === "coethaAutoSend"
           ? { coethaAutoSendRequests: on, coethaAutoSendChangedById: actor.id, coethaAutoSendChangedAt: now, updatedById: actor.id }
-          : { portalInvitesAuthorized: on, portalInvitesChangedById: actor.id, portalInvitesChangedAt: now, updatedById: actor.id };
+          : which === "portalInvites"
+            ? { portalInvitesAuthorized: on, portalInvitesChangedById: actor.id, portalInvitesChangedAt: now, updatedById: actor.id }
+            : { clientRolloutAuthorized: on, clientRolloutChangedById: actor.id, clientRolloutChangedAt: now, updatedById: actor.id };
   const before = await ownerSwitches();
   await prisma.integrationSettings.upsert({ where: { id: "default" }, create: { id: "default", ...data }, update: data });
   const action = `${ACTION[which]}_${on ? "on" : "off"}`;
