@@ -8,7 +8,8 @@ import { QuestionnaireStart } from "@/components/portal/tax-pages";
 import { requirePortalUser } from "@/lib/portal/session";
 import { requirePersonalTaxAccount, resolveAccount } from "@/lib/portal/account";
 import { loadPortalHome } from "@/lib/portal/views";
-import { identityChecklist } from "@/lib/services/identity";
+import { identityChecklistFor, identityOverviewForViewer } from "@/lib/services/identity";
+import { serviceProfile } from "@/lib/services/service-profile";
 
 export const metadata = { title: "My Tax Center" };
 
@@ -46,14 +47,16 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
 
   const q = `?account=${current.clientId}`;
   const yq = sp.year ? `&year=${sp.year}` : "";
-  const idList = current.canViewIdentity ? await identityChecklist(current.clientId) : [];
+  // Business accounts: only this login's own owner record (needs no access to the business's files).
+  const { business } = await serviceProfile(current.clientId);
+  const idList = current.canViewIdentity || business ? identityChecklistFor(await identityOverviewForViewer(current.clientId, user.id)) : [];
   const group = (roles: string[]) => {
     const people = idList.filter((p) => roles.includes(p.person.role));
     const items = people.flatMap((p) => p.items);
     return { people: people.length, onFile: items.filter((i) => i.state === "ON_FILE").length, total: items.length };
   };
   const idRows = [
-    { label: "You (Taxpayer)", icon: User, ...group(["CLIENT"]) },
+    { label: "You (Taxpayer)", icon: User, ...group(["CLIENT", "OWNER"]) },
     { label: "Spouse", icon: UsersRound, ...group(["SPOUSE"]) },
     { label: "Dependents (Children)", icon: Users, ...group(["DEPENDENT"]) },
   ];

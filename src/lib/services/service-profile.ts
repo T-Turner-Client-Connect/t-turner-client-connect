@@ -33,5 +33,5 @@ export async function serviceProfile(clientId: string) {
   });
   const types = c.clientServices.map((s) => s.type);
   const businessOnly = isBusinessOnly(c, types);
-  return { businessOnly, personalTax: !businessOnly, services: c.services, types, payroll: hasPayrollService(c, types) };
+  return { businessOnly, personalTax: !businessOnly, business: c.clientType === "BUSINESS", services: c.services, types, payroll: hasPayrollService(c, types) };
 }

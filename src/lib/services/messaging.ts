@@ -91,6 +91,8 @@ export async function staffSendMessage(
     if (docs.length !== attachmentIds.length) throw new ValidationError("Attachments must be documents belonging to this client.");
     // An owner's K-1 opens only from their own K-1 section, never from a (possibly shared) message thread.
     if (docs.some((d) => d.category === "OWNER_K1")) throw new ValidationError("K-1s reach owners through their own K-1 section (Owners card → Upload K-1), not as message attachments.");
+    // An owner's personal documents are private to that owner: never attached to a shared thread.
+    if (docs.some((d) => d.category === "OWNER_PERSONAL")) throw new ValidationError("An owner's personal tax documents stay private to that owner and aren't sent as message attachments.");
     // A message can't carry a financial statement Tabitha hasn't approved (or an unscanned file) to the client.
     if (docs.some((d) => !clientMayReceive(d))) throw new ValidationError("Financial statements are sent only through Upload Monthly Financials → Tabitha's approval → Deliver, not as message attachments.");
     // Identity documents never go out in messages; financial reports only after Tabitha approves them.

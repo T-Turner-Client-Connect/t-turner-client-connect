@@ -2,7 +2,9 @@ import type { Actor } from "@/lib/auth/actor";
 import { ActionForm } from "@/components/action-form";
 import { ConfirmButton } from "@/components/confirm-button";
 import { Badge, Button, Card, Field, Notice } from "@/components/ui";
-import { archiveOwnerAction, decidePersonalTaxAction, inviteOwnerAction, ownerPermissionsAction, saveOwnerAction, uploadK1Action } from "@/app/actions/business-owners";
+import { archiveOwnerAction, decidePersonalTaxAction, inviteOwnerAction, ownerPermissionsAction, requestOwnerDocumentAction, saveOwnerAction, uploadK1Action } from "@/app/actions/business-owners";
+import { CLIENT_DOC_TYPES } from "@/lib/document-types";
+import { ID_TYPES } from "@/lib/services/identity";
 import { prisma } from "@/lib/prisma";
 import { formatPhone } from "@/lib/normalize";
 import { fmtDate, fmtDateTime } from "@/lib/format";
@@ -41,12 +43,15 @@ function OwnerFields({ o }: { o?: Owner }) {
  * authorized). Ownership % and portal permissions are kept apart.
  */
 export async function OwnersCard({ clientId, actor, managedBusiness }: { clientId: string; actor: Actor; managedBusiness: boolean }) {
-  const [{ owners, total, warning }, manager, isTabitha, requests, k1Docs] = await Promise.all([
+  const [{ owners, total, warning }, manager, isTabitha, requests, k1Docs, personalDocs, ownerRequests] = await Promise.all([
     listBusinessOwners(clientId, { includeArchived: true }),
     canManageOwnerPermissions(actor),
     isPrimaryOwner(actor.id),
     pendingPersonalTaxRequests(clientId),
     prisma.document.findMany({ where: { clientId, category: "OWNER_K1", deletedAt: null }, select: { id: true, title: true, year: true, visibility: true, businessOwnerId: true, scanStatus: true }, orderBy: [{ year: "desc" }, { createdAt: "desc" }] }),
+    // Each owner's own personal tax documents (private to that owner and staff), and what we asked them for.
+    prisma.document.findMany({ where: { clientId, category: "OWNER_PERSONAL", deletedAt: null }, select: { id: true, title: true, year: true, businessOwnerId: true, docType: true }, orderBy: [{ year: "desc" }, { createdAt: "desc" }] }),
+    prisma.documentRequest.findMany({ where: { clientId, kind: "OWNER_PERSONAL", status: { in: ["OPEN", "SUBMITTED"] } }, select: { id: true, title: true, taxYear: true, status: true, businessOwnerId: true }, orderBy: { createdAt: "desc" } }),
   ]);
   const active = owners.filter((o) => !o.archivedAt);
   const archived = owners.filter((o) => o.archivedAt);
@@ -191,6 +196,35 @@ export async function OwnersCard({ clientId, actor, managedBusiness }: { clientI
                           </ActionForm>
                         </section>
                       )}
+                      <section className="mt-3 border-t border-navy-100 pt-3" data-testid="owner-personal-docs">
+                        <h4 className="text-sm font-semibold text-navy-900">Personal tax documents (private to this owner)</h4>
+                        <p className="mb-2 text-xs text-slate-600">Only this owner&apos;s login and our office see these. Asking for them doesn&apos;t add personal tax preparation.</p>
+                        {personalDocs.filter((d) => d.businessOwnerId === o.id).length > 0 && (
+                          <ul className="mb-2 space-y-1 text-sm">
+                            {personalDocs.filter((d) => d.businessOwnerId === o.id).map((d) => (
+                              <li key={d.id}><a className="underline" href={`/api/documents/${downloadToken(d.id, { staffId: actor.id })}`}>{d.title}</a>{d.year && <span className="text-slate-600"> · {d.year}</span>}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {ownerRequests.filter((r) => r.businessOwnerId === o.id).map((r) => (
+                          <p key={r.id} className="text-xs text-slate-700">Requested: {r.title} <Badge tone={r.status === "SUBMITTED" ? "green" : "amber"}>{r.status === "SUBMITTED" ? "Received" : "Waiting"}</Badge></p>
+                        ))}
+                        {o.portalUserId ? (
+                          <ActionForm action={requestOwnerDocumentAction.bind(null, clientId, o.id)} className="mt-2 grid gap-2 sm:grid-cols-4" resetOnSuccess>
+                            <Field label="Document">
+                              <select className="input" name="docType" defaultValue="FORM_1098">
+                                <optgroup label="Personal tax documents">{Object.entries(CLIENT_DOC_TYPES).filter(([k]) => k !== "ID_DOCUMENT" && k !== "BUSINESS_RECORDS").map(([k, v]) => <option key={k} value={k}>{v}</option>)}</optgroup>
+                                <optgroup label="Identity documents">{Object.entries(ID_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</optgroup>
+                              </select>
+                            </Field>
+                            <Field label="Tax year (personal documents)"><select className="input" name="taxYear" defaultValue={thisYear - 1}>{Array.from({ length: 6 }, (_, i) => thisYear - i).map((y) => <option key={y} value={y}>{y}</option>)}</select></Field>
+                            <Field label="What exactly (optional)" className="sm:col-span-2"><input className="input" name="title" maxLength={200} placeholder="e.g. 2025 property tax bill — home" /></Field>
+                            <div className="sm:col-span-4"><Button type="submit" variant="secondary">Request from this owner</Button></div>
+                          </ActionForm>
+                        ) : (
+                          <p className="text-xs text-slate-600">Invite this owner to the portal to request their documents.</p>
+                        )}
+                      </section>
                     </div>
                   </details>
                 </li>

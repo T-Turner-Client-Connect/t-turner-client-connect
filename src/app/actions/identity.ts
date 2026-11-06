@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth/session";
 import { requirePortalUser } from "@/lib/portal/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
-import { addPerson, confirmIdentityReminderReceived, removePerson, rejectIdentityDocument, sendIdentityReminderTest, setIdentityAccessAll, uploadIdentityDocument, verifyIdentityDocument } from "@/lib/services/identity";
+import { addPerson, assignIdentityToOwner, confirmIdentityReminderReceived, removePerson, rejectIdentityDocument, sendIdentityReminderTest, setIdentityAccessAll, uploadIdentityDocument, verifyIdentityDocument } from "@/lib/services/identity";
 
 async function fileFrom(fd: FormData) {
   const f = fd.get("file");
@@ -61,6 +61,17 @@ export async function staffIdentityUploadAction(clientId: string, _prev: ActionS
     await uploadIdentityDocument({ staff: actor }, { ...uploadInput(clientId, fd), ...(await fileFrom(fd)) });
     revalidatePath(`/clients/${clientId}`);
     return "Uploaded. It stays Pending Verification until a staff member verifies it.";
+  });
+}
+
+/** Staff: tie a business account's unassigned identity document to the owner it belongs to (audited). */
+export async function assignIdentityToOwnerAction(clientId: string, id: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    if (str(fd, "confirm") !== "1") throw new ValidationError("Confirm the document belongs to this owner.");
+    await assignIdentityToOwner(actor, id, str(fd, "businessOwnerId"));
+    revalidatePath(`/clients/${clientId}`);
+    return "Assigned. Only that owner sees it in the portal.";
   });
 }
 

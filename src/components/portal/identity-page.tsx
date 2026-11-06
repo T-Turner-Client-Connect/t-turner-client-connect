@@ -51,7 +51,7 @@ const hasSubmitted = (e: Entry) => e.slots.some((s) => s.history.length > 0);
  * them; after that only our office can remove them (the server enforces this too).
  */
 function RemovePerson({ entry, clientId }: { entry: Entry; clientId: string }) {
-  if (entry.person.role === "CLIENT") return null;
+  if (entry.person.role === "CLIENT" || entry.person.role === "OWNER") return null;
   if (hasSubmitted(entry)) return <p className="px-4 pb-3 text-xs text-slate-500 sm:px-6">Documents were submitted for {entry.person.name}. To remove them, please send our office a message.</p>;
   return (
     <ActionForm action={portalRemovePersonAction.bind(null, clientId, entry.person.id)} className="px-4 pb-3 sm:px-6">
@@ -95,7 +95,7 @@ function PersonRow({ entry, clientId, linkFor }: { entry: Entry; clientId: strin
           {entry.person.role === "CLIENT" ? <IdCard className="size-8 shrink-0 text-gold-400" aria-hidden /> : <UserRound className="size-8 shrink-0 text-gold-400" aria-hidden />}
           <span className="min-w-0">
             <span className="block font-serif text-lg font-bold leading-tight text-white [overflow-wrap:anywhere]">{entry.person.name}</span>
-            <span className="block text-sm text-gold-300">{entry.person.role === "CLIENT" ? "You" : ID_ROLES[entry.person.role as IdRole]}</span>
+            <span className="block text-sm text-gold-300">{entry.person.role === "CLIENT" || entry.person.role === "OWNER" ? "You" : ID_ROLES[entry.person.role as IdRole]}</span>
           </span>
         </span>
         <span className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -128,7 +128,8 @@ function AddPerson({ clientId, role, label }: { clientId: string; role: "SPOUSE"
  * verification rule is the same as before (the per-document rows come from the shared
  * Identity section); Social Security cards and birth certificates stay status-only here.
  */
-export function IdentityPageView({ overview, clientId, linkFor }: { overview: Overview; clientId: string; linkFor: (id: string) => string }) {
+/** `ownerOnly`: a business owner's own record on a business-only account (no spouse or dependents). */
+export function IdentityPageView({ overview, clientId, linkFor, ownerOnly = false }: { overview: Overview; clientId: string; linkFor: (id: string) => string; ownerOnly?: boolean }) {
   const client = overview.find((o) => o.person.role === "CLIENT");
   const spouse = overview.find((o) => o.person.role === "SPOUSE");
   const dependents = overview.filter((o) => o.person.role === "DEPENDENT");
@@ -143,8 +144,9 @@ export function IdentityPageView({ overview, clientId, linkFor }: { overview: Ov
         </div>
       </section>
 
-      {client && <PersonRow entry={client} clientId={clientId} linkFor={linkFor} />}
-      {spouse ? (
+      {ownerOnly && overview.map((o) => <PersonRow key={o.person.id} entry={o} clientId={clientId} linkFor={linkFor} />)}
+      {!ownerOnly && client && <PersonRow entry={client} clientId={clientId} linkFor={linkFor} />}
+      {ownerOnly ? null : spouse ? (
         <PersonRow entry={spouse} clientId={clientId} linkFor={linkFor} />
       ) : (
         <div className="grid gap-4 rounded-2xl border border-dashed border-gold-400 bg-white p-3 sm:p-4 md:grid-cols-[15rem_1fr] md:items-center" data-person="SPOUSE" data-empty>
@@ -156,6 +158,7 @@ export function IdentityPageView({ overview, clientId, linkFor }: { overview: Ov
         </div>
       )}
 
+      {!ownerOnly && (
       <NavyCard icon={Users} title="Dependents">
         <div role="table" aria-label="Dependents" className="text-sm">
           <div role="row" className={`hidden gap-4 border-b border-ivory-200 px-3 pb-2 font-semibold text-navy-900 md:grid ${cols}`}>
@@ -181,6 +184,7 @@ export function IdentityPageView({ overview, clientId, linkFor }: { overview: Ov
           <AddPerson clientId={clientId} role="DEPENDENT" label="Add a Dependent" />
         </div>
       </NavyCard>
+      )}
 
       <NavyCard icon={Lightbulb} title="Helpful Reminders">
         <ul className="list-disc space-y-1.5 pl-5 text-[15px] text-navy-800" data-testid="identity-reminders">

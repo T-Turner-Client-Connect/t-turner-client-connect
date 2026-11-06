@@ -50,9 +50,11 @@ describe("client upload receipts and the virus check", () => {
     expect(r.clean).toBeGreaterThanOrEqual(1);
     expect(await authorizeDownload(downloadToken(doc.id, { portalUserId: login.id }), { portalUserId: login.id })).not.toBeNull();
 
-    // A Social Security card the client uploads: receipt only, even after a clean scan.
+    // A business account's own record no longer takes portal identity uploads (they're per owner).
+    // A Social Security card filed there: never opens in the portal, even after a clean scan.
     const person = await ensureClientPerson(c.id);
-    const id = await uploadIdentityDocument({ portal: user }, { clientId: c.id, personId: person.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf(), originalName: "ss-card.pdf" });
+    await expect(uploadIdentityDocument({ portal: user }, { clientId: c.id, personId: person.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf(), originalName: "ss-card.pdf" })).rejects.toThrow(/each owner separately/);
+    const id = await uploadIdentityDocument({ staff: tabitha }, { clientId: c.id, personId: person.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf(), originalName: "ss-card.pdf" });
     const idDoc = await prisma.document.findFirstOrThrow({ where: { clientId: c.id, category: "IDENTITY" } });
     expect(idDoc.scanStatus).toBe("CLEAN");
     expect(await authorizeDownload(downloadToken(idDoc.id, { portalUserId: login.id }), { portalUserId: login.id })).toBeNull();
