@@ -19,6 +19,14 @@ import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { queuePortalNotification } from "./notifications";
 
+const FILING_LABEL: Record<FilingStatus, string> = { NOT_SUBMITTED: "Not submitted", SUBMITTED: "Submitted", PENDING_ACKNOWLEDGMENT: "Pending acknowledgment", ACCEPTED: "Accepted", REJECTED: "Rejected" };
+
+/** The status staff most likely want to record next (the select's default), so “Submitted” isn't re-saved by mistake. */
+export function nextFilingStatus(current: FilingStatus): FilingStatus {
+  if (current === "NOT_SUBMITTED" || current === "REJECTED") return "SUBMITTED";
+  return "ACCEPTED";
+}
+
 const ORDER: FilingStatus[] = ["NOT_SUBMITTED", "SUBMITTED", "PENDING_ACKNOWLEDGMENT", "ACCEPTED", "REJECTED"];
 
 export async function createFiling(
@@ -40,6 +48,21 @@ export async function createFiling(
 }
 
 /**
+ * The filing a return belongs to: the exact match, or — when the return type
+ * differs or was left empty (a state filing created as "1040" instead of
+ * "40") — the only filing for that client, year, jurisdiction and
+ * original/amended. Never a guess between two.
+ */
+export async function findFilingFor(key: { clientId: string; taxYear: number; returnType: string; jurisdiction: string; filingType: FilingType }) {
+  if (key.returnType) {
+    const exact = await prisma.filingRecord.findUnique({ where: { clientId_taxYear_returnType_jurisdiction_filingType: key } });
+    if (exact) return exact;
+  }
+  const near = await prisma.filingRecord.findMany({ where: { clientId: key.clientId, taxYear: key.taxYear, jurisdiction: key.jurisdiction, filingType: key.filingType } });
+  return near.length === 1 ? near[0] : null;
+}
+
+/**
  * Owner-only correction of a filing's form number (e.g. a state return entered
  * as "1040" that is really Alabama Form 40). Keeps every status and document,
  * renames the linked documents that carry the old number, and records the
@@ -58,16 +81,38 @@ export async function correctFilingForm(actor: Actor, filingId: string, newRetur
   });
   if (clash) throw new ValidationError(`This client already has a ${f.taxYear} form ${returnType} filing for ${f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction}.`);
   const old = f.returnType;
-  const escaped = old.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`);
-  const renames = f.documents.filter((d) => pattern.test(d.title)).map((d) => ({ id: d.id, from: d.title, to: d.title.replace(pattern, `$1${returnType}`) }));
+  const renames = formNumberRenames(f.documents, old, returnType);
   await prisma.$transaction([
     prisma.filingRecord.update({ where: { id: filingId }, data: { returnType } }),
     ...renames.map((r) => prisma.document.update({ where: { id: r.id }, data: { title: r.to } })),
-    prisma.filingStatusEvent.create({ data: { filingId, field: "FORM", fromValue: old, toValue: returnType, source: "STAFF", actorId: actor.id, verificationNote: why, eventAt: new Date() } }),
-    prisma.auditLog.create({ data: { actorId: actor.id, action: "filing.form_corrected", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { from: old, to: returnType, reason: why, renamedDocuments: renames } } }),
+    ...formCorrectionRecords(prisma, actor, { id: filingId, clientId: f.clientId }, { from: old, to: returnType, reason: why, renames }),
   ]);
   return { from: old, to: returnType, renamed: renames.length };
+}
+
+export type FormRename = { id: string; from: string; to: string };
+
+/**
+ * The document titles a form-number change rewrites: the old number as a whole
+ * word ("2025 1040 — AL" → "2025 40 — AL"), never digits inside another
+ * number ("Notice 10401 follow-up" is left alone).
+ */
+export function formNumberRenames(docs: { id: string; title: string }[], from: string, to: string): FormRename[] {
+  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`);
+  return docs.filter((d) => pattern.test(d.title)).map((d) => ({ id: d.id, from: d.title, to: d.title.replace(pattern, `$1${to}`) }));
+}
+
+/**
+ * The audit record of a form-number change, shared by correctFilingForm and
+ * "Edit filing details": a FORM status event carrying the reason, and a
+ * `filing.form_corrected` audit entry listing the renamed documents.
+ */
+export function formCorrectionRecords(db: Prisma.TransactionClient, actor: Actor, filing: { id: string; clientId: string }, c: { from: string; to: string; reason: string; renames: FormRename[] }) {
+  return [
+    db.filingStatusEvent.create({ data: { filingId: filing.id, field: "FORM", fromValue: c.from, toValue: c.to, source: "STAFF", actorId: actor.id, verificationNote: c.reason, eventAt: new Date() } }),
+    db.auditLog.create({ data: { actorId: actor.id, action: "filing.form_corrected", entityType: "FilingRecord", entityId: filing.id, clientId: filing.clientId, details: { from: c.from, to: c.to, reason: c.reason, renamedDocuments: c.renames } } }),
+  ] as const;
 }
 
 /** Internal preparation status — staff-managed, separate from e-file status. */
@@ -103,7 +148,10 @@ export async function setFilingStatusByStaff(
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
   const eventAt = input.eventAt ?? new Date();
   if (eventAt > new Date(Date.now() + 60_000)) throw new ValidationError("The status date can't be in the future.");
-  if (f.statusAsOf && eventAt < f.statusAsOf) throw new ValidationError("A newer status is already recorded for this filing.");
+  if (f.statusAsOf && eventAt < f.statusAsOf) {
+    const { fmtDateTime } = await import("@/lib/format");
+    throw new ValidationError(`A newer status is already recorded for this filing (${FILING_LABEL[f.filingStatus]}, ${fmtDateTime(f.statusAsOf)}). The status date must be after ${fmtDateTime(f.statusAsOf)}.`);
+  }
   if (input.evidenceDocumentId && !(await prisma.document.count({ where: { id: input.evidenceDocumentId, clientId: f.clientId, deletedAt: null } }))) {
     throw new ValidationError("The evidence document must belong to this client.");
   }
@@ -185,7 +233,8 @@ export async function attachFilingDocument(actor: Actor, filingId: string, docum
  */
 export async function publishFilingUpdate(actor: Actor, filingId: string, channels: ("EMAIL" | "SMS")[] | "portal_only") {
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId }, include: { documents: { where: { deletedAt: null } } } });
-  const docIds = f.documents.filter((d) => d.scanStatus === "CLEAN").map((d) => d.id);
+  // A tax return reaches the client only through Tabitha's release (never as a side effect of publishing the filing).
+  const docIds = f.documents.filter((d) => d.scanStatus === "CLEAN" && d.filingDocType !== "RETURN").map((d) => d.id);
   await prisma.$transaction([
     prisma.filingRecord.update({ where: { id: filingId }, data: { visibleToClient: true } }),
     prisma.document.updateMany({ where: { id: { in: docIds }, visibility: "STAFF_ONLY" }, data: { visibility: "PUBLISHED", publishedAt: new Date() } }),

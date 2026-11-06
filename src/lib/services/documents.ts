@@ -63,6 +63,16 @@ export const clientReceivableWhere = {
 /** Return copies are released by Tabitha (Tax returns), never published directly. */
 export const RETURN_DOC_TYPES = ["FEDERAL_RETURN", "STATE_RETURN", "AMENDED_RETURN", "TAX_RETURN"];
 const RETURN_GATE = "Completed tax returns go through Tax returns: file the return, send it for review, and Tabitha releases it to the client.";
+/** Tabitha files every return: for her the way through is the one-step delivery, never "send it for review". */
+const OWNER_RETURN_GATE = "Returns are sent from this client's Taxes tab → Finish & Send a Return (federal and state together). It marks them Accepted and sends them to the client in one step.";
+
+/** The refusal for publishing a return outside the delivery path, worded for who is asking. */
+async function returnGate(actor: Actor, clientId: string, f: { year?: number | null; docType?: string | null } = {}) {
+  const { isReportApprover } = await import("./bookkeeping-clients");
+  if (!(await isReportApprover(actor))) return new ValidationError(RETURN_GATE);
+  const q = new URLSearchParams({ tab: "taxes", deliver: "1", ...(f.year ? { year: String(f.year) } : {}), ...(f.docType === "STATE_RETURN" ? { jur: "state" } : f.docType === "AMENDED_RETURN" ? { amended: "1" } : {}) });
+  return Object.assign(new ValidationError(OWNER_RETURN_GATE), { next: { href: `/clients/${clientId}?${q.toString()}#finish-send`, label: "Open Finish & Send a Return" } });
+}
 
 export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   BOOKKEEPING: "Bookkeeping",
@@ -75,6 +85,9 @@ export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   PAYROLL: "Payroll",
   OWNER_PERSONAL: "Personal tax document (owner)",
 };
+
+/** Staff-side folder names: the Taxes folder also holds the return copies and acceptance confirmations sent from the Taxes tab (one stored copy, shown in both places). */
+export const STAFF_CATEGORY_LABELS: Record<DocumentCategory, string> = { ...CATEGORY_LABELS, TAXES: "Taxes (returns & tax documents)" };
 
 export const REPORT_LABELS: Record<ReportType, string> = {
   FINANCIAL_PACKET: "Complete financial packet",
@@ -187,6 +200,8 @@ export type StaffUploadInput = {
   allowSpreadsheet?: boolean;
   // The business owner the document belongs to: required for OWNER_K1 and OWNER_PERSONAL, not allowed otherwise.
   businessOwnerId?: string | null;
+  // The caller already checked duplicates (a combined federal + state return PDF filed once per filing).
+  duplicateChecked?: boolean;
 };
 
 /** Categories that belong to one business owner (Document.businessOwnerId) and open only for them (plus staff). */
@@ -203,7 +218,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   // Any bookkeeping file — with or without a report type — reaches the client only through the
   // Tabitha-approved delivery path, so a financial statement can't be published by accident.
   if (input.category === "BOOKKEEPING" && input.visibility === "PUBLISHED") throw new ValidationError(FINANCIAL_GATE);
-  if (input.visibility === "PUBLISHED" && input.docType && RETURN_DOC_TYPES.includes(input.docType)) throw new ValidationError(RETURN_GATE);
+  if (input.visibility === "PUBLISHED" && input.docType && RETURN_DOC_TYPES.includes(input.docType)) throw await returnGate(actor, input.clientId, { year: input.year, docType: input.docType });
   if (input.visibility === "PUBLISHED" && input.docType === "NONPROFIT_ITEM") throw new ValidationError(NONPROFIT_GATE);
   const client = await prisma.client.findUnique({ where: { id: input.clientId } });
   if (!client) throw new ValidationError("Client not found.");
@@ -215,7 +230,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   } else if (input.businessOwnerId) {
     throw new ValidationError("Only a K-1 (owner) or an owner's personal document is linked to an owner.");
   }
-  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT" });
+  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.duplicateChecked ? undefined : input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT" });
   try {
     const doc = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });
@@ -264,7 +279,7 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
   if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && !doc.reportType) throw new ValidationError(FINANCIAL_GATE);
   // Financial statements by category label, wherever they were filed, also need the report workflow.
   if (visibility === "PUBLISHED" && !doc.reportType && doc.docType && STATEMENT_TYPES.includes(doc.docType)) throw new ValidationError(FINANCIAL_GATE);
-  if (visibility === "PUBLISHED" && (doc.filingDocType === "RETURN" || (doc.docType && RETURN_DOC_TYPES.includes(doc.docType) && !doc.publishedAt))) throw new ValidationError(RETURN_GATE);
+  if (visibility === "PUBLISHED" && (doc.filingDocType === "RETURN" || (doc.docType && RETURN_DOC_TYPES.includes(doc.docType) && !doc.publishedAt))) throw await returnGate(actor, doc.clientId, { year: doc.year, docType: doc.docType });
   if (visibility === "PUBLISHED" && doc.category === "IDENTITY") throw new ValidationError("Identity documents aren't published.");
   if (visibility === "PUBLISHED" && doc.docType === "NONPROFIT_ITEM") throw new ValidationError(NONPROFIT_GATE);
   if (visibility === "PUBLISHED" && doc.supersededAt) throw new ValidationError("A newer version of this report exists. Deliver the newest version instead.");
@@ -560,7 +575,8 @@ export async function scanQuarantined(limit = 25, source: "scheduled" | "manual"
       if (res.count === 1) {
         clean++;
         await prisma.auditLog.create({ data: { action: "document.scan_clean", entityType: "Document", entityId: d.id, clientId: d.clientId } });
-        if (d.visibility === "PUBLISHED" && d.uploadedByStaffId) await notifyClientUsers(d.clientId, "NEW_DOCUMENT", d.id, d.category);
+        // A delivered tax return never triggers a notice by itself: Tabitha's "notify the client" is opt-in.
+        if (d.visibility === "PUBLISHED" && d.uploadedByStaffId && d.filingDocType !== "RETURN") await notifyClientUsers(d.clientId, "NEW_DOCUMENT", d.id, d.category);
       }
     } else if (result === "INFECTED") {
       await storage.remove(d.file.storageKey).catch(() => {});
