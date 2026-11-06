@@ -263,7 +263,7 @@ export async function TaxesTab({ clientId, user, deliver }: { clientId: string; 
                       <ul className="mt-1 space-y-0.5 text-slate-600">
                         {f.events.map((e) => (
                           <li key={e.id}>
-                            {fmtDate(e.eventAt)} · {e.field === "PREP" ? "Preparation" : e.field === "AMENDMENT" ? "Amendment" : e.field === "OWNER_CONFIRM" ? "Tabitha's confirmation" : e.field === "DETAILS" ? "Details corrected" : "Filing"}: {e.fromValue?.toLowerCase().replace(/_/g, " ") ?? "—"} → {e.toValue.toLowerCase().replace(/_/g, " ")} · {e.source === "TAXACT_IMPORT" ? "TaxAct import" : staffNames.get(e.actorId ?? "") ?? "staff"}
+                            {fmtDate(e.eventAt)} · {e.field === "PREP" ? "Preparation" : e.field === "AMENDMENT" ? "Amendment" : e.field === "OWNER_CONFIRM" ? "Tabitha's confirmation" : e.field === "DETAILS" ? "Details corrected" : e.field === "FORM" ? "Form number" : "Filing"}: {e.fromValue?.toLowerCase().replace(/_/g, " ") ?? "—"} → {e.toValue.toLowerCase().replace(/_/g, " ")} · {e.source === "TAXACT_IMPORT" ? "TaxAct import" : staffNames.get(e.actorId ?? "") ?? "staff"}
                             {e.verificationNote && ` · “${e.verificationNote}”`}
                           </li>
                         ))}

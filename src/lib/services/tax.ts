@@ -14,7 +14,9 @@ import {
   TAX_IMPORT_FIELDS,
   type TaxImportField,
 } from "@/lib/tax/normalize";
+import { ForbiddenError } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
+import { isReportApprover } from "./bookkeeping-clients";
 import { queuePortalNotification } from "./notifications";
 
 const FILING_LABEL: Record<FilingStatus, string> = { NOT_SUBMITTED: "Not submitted", SUBMITTED: "Submitted", PENDING_ACKNOWLEDGMENT: "Pending acknowledgment", ACCEPTED: "Accepted", REJECTED: "Rejected" };
@@ -58,6 +60,37 @@ export async function findFilingFor(key: { clientId: string; taxYear: number; re
   }
   const near = await prisma.filingRecord.findMany({ where: { clientId: key.clientId, taxYear: key.taxYear, jurisdiction: key.jurisdiction, filingType: key.filingType } });
   return near.length === 1 ? near[0] : null;
+}
+
+/**
+ * Owner-only correction of a filing's form number (e.g. a state return entered
+ * as "1040" that is really Alabama Form 40). Keeps every status and document,
+ * renames the linked documents that carry the old number, and records the
+ * change with a reason in the status history and audit log.
+ */
+export async function correctFilingForm(actor: Actor, filingId: string, newReturnType: string, reason: string) {
+  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can correct a filing's form number.");
+  const why = reason.trim();
+  if (!why) throw new ValidationError("Say why the form number is being corrected.");
+  const returnType = normalizeReturnType(newReturnType);
+  if (!returnType) throw new ValidationError("Enter the correct form number (for example 40 for Alabama).");
+  const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId }, include: { documents: { where: { deletedAt: null }, select: { id: true, title: true } } } });
+  if (f.returnType === returnType) throw new ValidationError(`This filing is already form ${returnType}.`);
+  const clash = await prisma.filingRecord.findUnique({
+    where: { clientId_taxYear_returnType_jurisdiction_filingType: { clientId: f.clientId, taxYear: f.taxYear, returnType, jurisdiction: f.jurisdiction, filingType: f.filingType } },
+  });
+  if (clash) throw new ValidationError(`This client already has a ${f.taxYear} form ${returnType} filing for ${f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction}.`);
+  const old = f.returnType;
+  const escaped = old.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`);
+  const renames = f.documents.filter((d) => pattern.test(d.title)).map((d) => ({ id: d.id, from: d.title, to: d.title.replace(pattern, `$1${returnType}`) }));
+  await prisma.$transaction([
+    prisma.filingRecord.update({ where: { id: filingId }, data: { returnType } }),
+    ...renames.map((r) => prisma.document.update({ where: { id: r.id }, data: { title: r.to } })),
+    prisma.filingStatusEvent.create({ data: { filingId, field: "FORM", fromValue: old, toValue: returnType, source: "STAFF", actorId: actor.id, verificationNote: why, eventAt: new Date() } }),
+    prisma.auditLog.create({ data: { actorId: actor.id, action: "filing.form_corrected", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { from: old, to: returnType, reason: why, renamedDocuments: renames } } }),
+  ]);
+  return { from: old, to: returnType, renamed: renames.length };
 }
 
 /** Internal preparation status — staff-managed, separate from e-file status. */
