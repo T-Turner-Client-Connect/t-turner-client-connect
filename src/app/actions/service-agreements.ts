@@ -6,9 +6,10 @@ import { requireUser, clientIp } from "@/lib/auth/session";
 import { requirePortalUser } from "@/lib/portal/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
-import {
-  createService, ownerOverride, prepareAgreement, recordPaymentAuthorization, requestMethodChange, saveFeeSetting, sendAgreement, setServiceStatus, signAgreement, voidAgreement,
-} from "@/lib/services/service-agreements";
+import { isReportApprover } from "@/lib/services/bookkeeping-clients";
+// Services, pricing drafts, work status and the owner override were removed from the client page
+// (replaced by the Agreements center); earlier pricing agreements stay readable and signable.
+import { requestMethodChange, saveFeeSetting, sendAgreement, signAgreement } from "@/lib/services/service-agreements";
 
 const cents = (v: string) => {
   const n = Number(v.replace(/[$,\s]/g, ""));
@@ -17,80 +18,15 @@ const cents = (v: string) => {
 };
 const refreshClient = (clientId: string) => revalidatePath(`/clients/${clientId}`);
 
-export async function createServiceAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
-  const actor = await requireUser();
-  return run(async () => {
-    const year = str(fd, "taxYear");
-    const s = await createService(actor, { clientId, type: str(fd, "type"), taxYear: year ? Number(year) : null, periodLabel: str(fd, "periodLabel"), title: str(fd, "title"), description: str(fd, "description"), assignedToId: str(fd, "assignedToId") || null, requiresPaymentAuth: fd.get("requiresPaymentAuth") === "on" });
-    refreshClient(clientId);
-    return `Added “${s.title}”. Next: prepare its pricing agreement.`;
-  });
-}
-
-export async function prepareAgreementAction(clientId: string, serviceId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
-  const actor = await requireUser();
-  return run(async () => {
-    const lines = [0, 1, 2, 3]
-      .map((i) => ({ label: str(fd, `label${i}`), raw: str(fd, `amount${i}`) }))
-      .filter((l) => l.label || l.raw)
-      .map((l) => {
-        const c = cents(l.raw);
-        if (!l.label || Number.isNaN(c)) throw new ValidationError("Give each charge a description and an amount.");
-        return { label: l.label, cents: c };
-      });
-    const rtFee = str(fd, "refundTransferFee");
-    const a = await prepareAgreement(actor, serviceId, {
-      lines,
-      paymentTerms: str(fd, "paymentTerms"),
-      refundTransfer: fd.get("refundTransferEligible") === "on" ? { eligible: true, feeCents: rtFee ? cents(rtFee) || 0 : 0 } : null,
-    });
-    refreshClient(clientId);
-    return `Draft agreement version ${a.version} saved. Review it, then send it to the client.`;
-  });
-}
-
 export async function sendAgreementAction(clientId: string, agreementId: string, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
+    // Agreements are sent by Tabitha only (the nonprofit package agreement is sent from its portfolio page).
+    if (!(await isReportApprover(actor))) throw new ValidationError("Only Tabitha can send agreements.");
     const r = await sendAgreement(actor, agreementId);
     refreshClient(clientId);
+    revalidatePath(`/nonprofits/${clientId}`);
     return r.recipients ? `Sent. ${r.recipients} portal login${r.recipients === 1 ? "" : "s"} notified (a sign-in link only).` : "Sent to the portal. No one with billing access has a portal login yet — invite the client so they can sign.";
-  });
-}
-
-export async function voidAgreementAction(clientId: string, agreementId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
-  const actor = await requireUser();
-  return run(async () => {
-    await voidAgreement(actor, agreementId, str(fd, "reason"));
-    refreshClient(clientId);
-    return "Voided.";
-  });
-}
-
-export async function serviceStatusAction(clientId: string, serviceId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
-  const actor = await requireUser();
-  return run(async () => {
-    await setServiceStatus(actor, serviceId, str(fd, "status"));
-    refreshClient(clientId);
-    return "Status updated.";
-  });
-}
-
-export async function paymentAuthAction(clientId: string, serviceId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
-  const actor = await requireUser();
-  return run(async () => {
-    await recordPaymentAuthorization(actor, serviceId, str(fd, "note"));
-    refreshClient(clientId);
-    return "Payment authorization recorded.";
-  });
-}
-
-export async function ownerOverrideAction(clientId: string, serviceId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
-  const actor = await requireUser();
-  return run(async () => {
-    await ownerOverride(actor, serviceId, str(fd, "reason"));
-    refreshClient(clientId);
-    return "Override recorded. Work may begin.";
   });
 }
 

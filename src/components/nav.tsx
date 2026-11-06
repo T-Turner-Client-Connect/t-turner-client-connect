@@ -43,6 +43,7 @@ import {
   History,
   ChevronRight,
   Banknote,
+  FileSignature,
 } from "lucide-react";
 
 const LINKS = [
@@ -54,6 +55,7 @@ const LINKS = [
   { href: "/social", label: "Social media", icon: Share2, also: [] },
   { href: "/workflows", label: "Workflows", icon: GitBranch, also: [] },
   { href: "/documents", label: "Documents", icon: FolderLock, also: [] },
+  { href: "/agreements", label: "Agreements", icon: FileSignature, also: [] },
   { href: "/notices", label: "Audits & Notices", icon: MailWarning, also: [] },
   { href: "/taxes/returns", label: "Tax returns", icon: FileCheck2, also: ["/taxes/questionnaires"] },
   { href: "/nonprofits", label: "Nonprofit filings", icon: HeartHandshake, also: [] },

@@ -9,6 +9,7 @@ import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { downloadToken } from "@/lib/services/documents";
 import { portalAgreements, signingHash, viewAgreement } from "@/lib/services/service-agreements";
+import { portalAgreementList } from "@/lib/services/agreements";
 import { CONSENT_TEXT, type AgreementTerms } from "@/lib/billing/agreement-terms";
 import { usd } from "@/lib/billing/payment-fees";
 import { fmtDate } from "@/lib/format";
@@ -36,11 +37,15 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
   const { current } = await resolveAccount(user.id, sp.account);
   if (!current) return null;
   const banner = <PageBanner icon={FileSignature} title="Pricing & Agreements" subtitle="Review our tax preparation pricing and access your agreements in one place." />;
+  // Agreements & contracts from the Agreements center (Contracts access): to sign, and signed copies.
+  const mine = current.canViewContracts ? await portalAgreementList(user, current.clientId) : [];
+  const section = current.canViewContracts ? <ClientAgreementsSection list={mine} account={current.clientId} portalUserId={user.id} /> : null;
   if (!current.canViewBilling) {
     return (
       <>
         {banner}
-        <Notice>Billing isn&apos;t included in your access to this account.</Notice>
+        {section}
+        <Notice>Pricing and billing aren&apos;t included in your access to this account.</Notice>
       </>
     );
   }
@@ -54,6 +59,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
   return (
     <div className="space-y-6" data-testid="pricing-agreements">
       {banner}
+      {section}
 
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_1.2fr]">
         <section className={`${luxPanel} overflow-hidden`} data-testid="tax-pricing-card">
@@ -170,5 +176,48 @@ function SignCard({ a }: { a: Awaited<ReturnType<typeof portalAgreements>>[numbe
         <SignAgreementForm action={signAgreementAction.bind(null, a.id)} baseCents={t.baseCents} options={options} hashes={hashes} consentText={CONSENT_TEXT} />
       </Card>
     </div>
+  );
+}
+
+const NEW_STATUS: Record<string, [string, Tone]> = {
+  SENT: ["Waiting for your signature", "pending"],
+  SIGNED: ["Signed", "paid"],
+  DECLINED: ["Declined", "muted"],
+  EXPIRED: ["Expired", "muted"],
+};
+
+/** Agreements & contracts: open ones to sign, signed copies to view or download. */
+function ClientAgreementsSection({ list, account, portalUserId }: { list: Awaited<ReturnType<typeof portalAgreementList>>; account: string; portalUserId: string }) {
+  const open = list.filter((a) => a.status === "SENT");
+  return (
+    <section className={`${luxPanel} p-4 sm:p-5`} data-testid="client-agreements">
+      <PanelTitle icon={FileSignature} title="Agreements & Contracts" sub="Agreements waiting for your signature, and copies of the ones you've signed." />
+      {list.length === 0 ? (
+        <p className="mt-4 rounded-xl bg-white px-4 py-5 text-base text-slate-700 ring-1 ring-ivory-200">When we send you an agreement to sign, it will appear here.</p>
+      ) : (
+        <ul className="mt-4 space-y-3">
+          {list.map((a) => {
+            const [label, tone] = NEW_STATUS[a.status] ?? ["—", "muted" as Tone];
+            return (
+              <li key={a.id} className="flex flex-col gap-3 rounded-xl bg-white p-4 ring-1 ring-ivory-200 sm:flex-row sm:items-center sm:justify-between" data-testid={a.status === "SENT" ? "agreement-to-sign" : "agreement-signed"}>
+                <span className="min-w-0">
+                  <span className="flex items-center gap-2 text-base font-semibold text-navy-900"><FileText className="size-5 shrink-0 text-gold-600" aria-hidden />{a.title}</span>
+                  <span className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-700"><StatusPill tone={tone}>{label}</StatusPill>{a.signedAt ? `Signed ${fmtDate(a.signedAt)}` : a.sentAt ? `Sent ${fmtDate(a.sentAt)}` : ""}</span>
+                </span>
+                {a.status === "SENT" ? (
+                  <Link href={`/client/agreements/${a.id}?account=${account}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-navy-900 px-5 text-base font-semibold text-white hover:bg-navy-950"><PenLine className="size-5" aria-hidden /> Review &amp; Sign</Link>
+                ) : a.pdfDocumentId ? (
+                  <span className="flex gap-2">
+                    <Link href={`/client/agreements/${a.id}?account=${account}`} className={`${pillButton} min-h-11`}>View</Link>
+                    <a className={`${pillButton} min-h-11`} href={`/api/documents/${downloadToken(a.pdfDocumentId, { portalUserId })}`} target="_blank" rel="noopener"><Download className="size-4" aria-hidden /> Download</a>
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {open.length > 0 && <p className="mt-3 text-sm text-slate-700">{open.length} agreement{open.length === 1 ? " is" : "s are"} waiting for your signature.</p>}
+    </section>
   );
 }
