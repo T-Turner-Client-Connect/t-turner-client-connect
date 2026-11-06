@@ -541,6 +541,12 @@ model Task {
   // Set when the task is one line of a staff offboarding checklist.
   offboardingItem StaffOffboardingItem?
 
+  // Owner-only tasks (the quarterly access-review reminder) appear only in the primary owner's
+  // Tasks, Calendar and Dashboard; other staff never see or change them.
+  ownerOnly   Boolean @default(false)
+  // Dedupe key for automated reminders: one task per review cycle ("access-review:<review id|none>").
+  reminderKey String? @unique
+
   @@index([status, dueAt])
   @@index([clientId])
 }
@@ -6100,4 +6106,15 @@ model RestoreTest {
   error       String?
 
   @@index([status, startedAt])
+}
+
+// One row per owner reminder already handled (e.g. the access-review due email), keyed by
+// reminder kind + review cycle, so a repeated or overlapping cron run never sends it twice.
+model OwnerReminderLog {
+  id         String    @id @default(cuid())
+  key        String    @unique
+  kind       String
+  sentAt     DateTime?
+  providerId String?
+  createdAt  DateTime  @default(now())
 }
