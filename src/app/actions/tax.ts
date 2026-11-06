@@ -10,7 +10,6 @@ import { staffUploadDocument } from "@/lib/services/documents";
 import {
   attachFilingDocument,
   commitTaxImport,
-  correctFilingForm,
   createFiling,
   decideTaxRow,
   publishFilingUpdate,
@@ -190,16 +189,5 @@ export async function commitTaxImportAction(batchId: string, _prev: ActionState,
     revalidatePath(`/imports/tax/${batchId}`);
     revalidatePath("/workflows");
     return `Applied ${r.applied}, skipped ${r.skipped}. Nothing was published to clients — publish acknowledgments from each filing.`;
-  });
-}
-
-/** Owner-only: fix a filing's form number (e.g. AL 1040 → 40). */
-export async function correctFilingFormAction(clientId: string, filingId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
-  const actor = await requireUser();
-  return run(async () => {
-    const r = await correctFilingForm(actor, filingId, str(fd, "returnType"), str(fd, "reason"));
-    refresh(clientId);
-    revalidatePath("/portal");
-    return `Form number corrected: ${r.from} → ${r.to}.${r.renamed ? ` ${r.renamed} document name${r.renamed === 1 ? "" : "s"} updated.` : ""}`;
   });
 }

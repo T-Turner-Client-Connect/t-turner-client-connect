@@ -541,10 +541,10 @@ describe("The return PDF put in the acknowledgment box (root cause)", () => {
   });
 });
 
-describe("Fixing a filing (owner/Admin only)", () => {
+describe("Fixing a filing (Tabitha only)", () => {
   const owner = { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON };
 
-  it("(a) Edit filing details: AL entered as 1040 → 40, with a reason, history kept, linked documents re-titled", async () => {
+  it("(a) Edit filing details: AL entered as 1040 → 40 goes through #124's audited form correction; history kept, linked documents re-titled", async () => {
     const { tabitha, daria, otherAdmin, rosalind } = await setup();
     const al = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "1040", jurisdiction: "AL", filingType: "ORIGINAL" });
     await setFilingStatusByStaff(tabitha, al.id, { status: "ACCEPTED", verificationNote: "Accepted per TaxAct E-file Center", submission: owner });
@@ -552,15 +552,19 @@ describe("Fixing a filing (owner/Admin only)", () => {
     expect(doc.title).toBe("2025 1040 — AL");
     const input = { taxYear: 2025, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL" as const };
     await expect(editFilingDetails(daria, al.id, input, "wrong form")).rejects.toBeInstanceOf(ForbiddenError);
+    // Other Admins can't either (Tabitha only, as in #124).
+    await expect(editFilingDetails(otherAdmin, al.id, input, "wrong form")).rejects.toBeInstanceOf(ForbiddenError);
     await expect(editFilingDetails(tabitha, al.id, input, "")).rejects.toThrow(/Say why/);
     const eventsBefore = await prisma.filingStatusEvent.count({ where: { filingId: al.id } });
-    const fixed = await editFilingDetails(otherAdmin, al.id, input, "Alabama return is Form 40, not 1040");
+    const fixed = await editFilingDetails(tabitha, al.id, input, "Alabama return is Form 40, not 1040");
     expect([fixed.returnType, fixed.filingStatus]).toEqual(["40", "ACCEPTED"]);
+    expect(fixed.formCorrection).toEqual({ from: "1040", to: "40", renamed: 1 });
     const events = await prisma.filingStatusEvent.findMany({ where: { filingId: al.id }, orderBy: { createdAt: "asc" } });
     expect(events).toHaveLength(eventsBefore + 1);
-    expect(events.at(-1)).toMatchObject({ field: "DETAILS", fromValue: "2025 AL 1040 original", toValue: "2025 AL 40 original", verificationNote: "Alabama return is Form 40, not 1040" });
+    expect(events.at(-1)).toMatchObject({ field: "FORM", fromValue: "1040", toValue: "40", verificationNote: "Alabama return is Form 40, not 1040" });
     expect((await prisma.document.findUniqueOrThrow({ where: { id: doc.id } })).title).toBe("2025 40 — AL");
-    expect(await prisma.auditLog.count({ where: { action: "filing.details_corrected", entityId: al.id } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "filing.form_corrected", entityId: al.id } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "filing.details_corrected", entityId: al.id } })).toBe(0);
     // Can't collide with another filing.
     const other = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
     await expect(editFilingDetails(tabitha, other.id, input, "test")).rejects.toThrow(/already has a 2025 AL 40 original filing/);
@@ -574,6 +578,9 @@ describe("Fixing a filing (owner/Admin only)", () => {
     const sent = await fileReturnForFiling(tabitha, wrong.id, { bytes: pdf("sent-on-wrong"), originalName: "al.pdf" });
     expect(sent.visibility).toBe("PUBLISHED");
     await expect(removeFiling(daria, wrong.id, "mistake")).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(removeFiling(otherAdmin, wrong.id, "mistake")).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(moveFilingDocument(otherAdmin, sent.id, right.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(moveFilingDocument(daria, sent.id, right.id)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(removeFiling(tabitha, wrong.id, "")).rejects.toThrow(/Say why/);
     await expect(removeFiling(tabitha, wrong.id, "Created by mistake")).rejects.toThrow(/already sent to the client\. Move it to the right filing first/);
     const moved = await moveFilingDocument(tabitha, sent.id, right.id);
@@ -591,7 +598,8 @@ describe("Fixing a filing (owner/Admin only)", () => {
     const g = await createFiling(tabitha, { clientId: rosalind.id, taxYear: 2024, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
     const ack = await staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", year: 2024, visibility: "STAFF_ONLY", bytes: pdf("g-ack"), originalName: "g.pdf", notify: false });
     await attachFilingDocument(daria, g.id, ack.id, "OFFICIAL_ACK");
-    await removeFiling(otherAdmin, g.id, "Duplicate");
+    await expect(removeFiling(otherAdmin, g.id, "Duplicate")).rejects.toBeInstanceOf(ForbiddenError);
+    await removeFiling(tabitha, g.id, "Duplicate");
     const kept = await prisma.document.findUniqueOrThrow({ where: { id: ack.id } });
     expect([kept.deletedAt, kept.filingId]).toEqual([null, null]);
   });

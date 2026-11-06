@@ -40,7 +40,6 @@ export async function TaxesTab({ clientId, user, deliver }: { clientId: string; 
   const staffNames = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const years = Array.from(new Set(filings.map((f) => f.taxYear)));
   const ctx = await deliveryContext(clientId, user);
-  const canFix = approver || user.role === "ADMIN";
   // Acknowledgments on return filings — the usual home of a misfiled return PDF.
   const savedAsAck = filings.filter((f) => f.filingType !== "EXTENSION").flatMap((f) => f.documents.filter((d) => d.filingDocType === "OFFICIAL_ACK"));
 
@@ -133,7 +132,7 @@ export async function TaxesTab({ clientId, user, deliver }: { clientId: string; 
                                       <input className="input w-48" name="reason" placeholder="Why remove it? (e.g. wrong file)" aria-label="Why remove it?" />
                                       <Button type="submit" variant="ghost">Remove</Button>
                                     </ActionForm>
-                                    {canFix && filings.length > 1 && (
+                                    {approver && filings.length > 1 && (
                                       <ActionForm action={moveFilingDocAction.bind(null, d.id)} className="flex flex-wrap items-end gap-1">
                                         <select className="input w-auto" name="filingId" defaultValue="" aria-label="Move to filing" required>
                                           <option value="">Move to another filing…</option>
@@ -237,24 +236,24 @@ export async function TaxesTab({ clientId, user, deliver }: { clientId: string; 
                       <Button type="submit" variant="secondary">Publish status & documents</Button>
                     </ActionForm>
 
-                    {canFix && (
+                    {approver && (
                       <details className="text-sm" data-testid="fix-filing">
-                        <summary className="cursor-pointer font-semibold underline">Edit filing details or remove this filing</summary>
-                        <ActionForm action={editFilingDetailsAction.bind(null, f.id)} className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <summary className="cursor-pointer font-semibold underline">Edit filing details (form number, year, state) or remove this filing — Tabitha only</summary>
+                        <ActionForm action={editFilingDetailsAction.bind(null, f.id)} className="mt-2 grid gap-2 sm:grid-cols-2" confirm="Save the corrected filing details? The client's portal and document names will show the new details.">
                           <Field label="Tax year"><input className="input" name="taxYear" defaultValue={f.taxYear} inputMode="numeric" required /></Field>
-                          <Field label="Return type" hint="e.g. 40 for an Alabama return entered as 1040"><input className="input" name="returnType" defaultValue={f.returnType} required /></Field>
+                          <Field label="Form number" hint={f.jurisdiction === "AL" ? "Alabama individual return: 40" : "e.g. 40 for an Alabama return entered as 1040"}><input className="input" name="returnType" defaultValue={f.returnType} required /></Field>
                           <Field label="Jurisdiction"><input className="input" name="jurisdiction" defaultValue={f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction} required /></Field>
                           <Field label="Filing type">
                             <select className="input" name="filingType" defaultValue={f.filingType}><option value="ORIGINAL">Original return</option><option value="AMENDED">Amended return</option><option value="EXTENSION">Extension</option></select>
                           </Field>
-                          <Field label="Why the correction? (required)" className="sm:col-span-2"><input className="input" name="reason" required /></Field>
+                          <Field label="Why the correction? (required)" className="sm:col-span-2"><input className="input" name="reason" placeholder="Entered as 1040 by mistake" required /></Field>
                           <div><Button type="submit" variant="secondary">Save corrected details</Button></div>
                         </ActionForm>
                         <ActionForm action={removeFilingAction.bind(null, f.id)} className="mt-3 flex flex-wrap items-end gap-2 border-t border-ivory-200 pt-3" confirm="Remove this filing? Its full history is kept in the audit log and its documents stay in the client's file.">
                           <Field label="Remove filing (created by mistake) — why?"><input className="input w-72" name="reason" required /></Field>
                           <Button type="submit" variant="danger">Remove filing</Button>
                         </ActionForm>
-                        <p className="mt-1 text-xs text-slate-600">Only you or an Admin can do this. A filing whose return copy is already in the client&apos;s vault can&apos;t be removed until that copy is moved to the right filing.</p>
+                        <p className="mt-1 text-xs text-slate-600">Only you can do this; other Admins and staff don&apos;t see it. A form-number change is recorded as &ldquo;Form number&rdquo; in the status history with your reason, and document names carrying the old number are updated. A filing whose return copy is already in the client&apos;s vault can&apos;t be removed until that copy is moved to the right filing.</p>
                       </details>
                     )}
 

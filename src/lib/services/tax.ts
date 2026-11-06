@@ -81,16 +81,38 @@ export async function correctFilingForm(actor: Actor, filingId: string, newRetur
   });
   if (clash) throw new ValidationError(`This client already has a ${f.taxYear} form ${returnType} filing for ${f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction}.`);
   const old = f.returnType;
-  const escaped = old.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`);
-  const renames = f.documents.filter((d) => pattern.test(d.title)).map((d) => ({ id: d.id, from: d.title, to: d.title.replace(pattern, `$1${returnType}`) }));
+  const renames = formNumberRenames(f.documents, old, returnType);
   await prisma.$transaction([
     prisma.filingRecord.update({ where: { id: filingId }, data: { returnType } }),
     ...renames.map((r) => prisma.document.update({ where: { id: r.id }, data: { title: r.to } })),
-    prisma.filingStatusEvent.create({ data: { filingId, field: "FORM", fromValue: old, toValue: returnType, source: "STAFF", actorId: actor.id, verificationNote: why, eventAt: new Date() } }),
-    prisma.auditLog.create({ data: { actorId: actor.id, action: "filing.form_corrected", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { from: old, to: returnType, reason: why, renamedDocuments: renames } } }),
+    ...formCorrectionRecords(prisma, actor, { id: filingId, clientId: f.clientId }, { from: old, to: returnType, reason: why, renames }),
   ]);
   return { from: old, to: returnType, renamed: renames.length };
+}
+
+export type FormRename = { id: string; from: string; to: string };
+
+/**
+ * The document titles a form-number change rewrites: the old number as a whole
+ * word ("2025 1040 — AL" → "2025 40 — AL"), never digits inside another
+ * number ("Notice 10401 follow-up" is left alone).
+ */
+export function formNumberRenames(docs: { id: string; title: string }[], from: string, to: string): FormRename[] {
+  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`);
+  return docs.filter((d) => pattern.test(d.title)).map((d) => ({ id: d.id, from: d.title, to: d.title.replace(pattern, `$1${to}`) }));
+}
+
+/**
+ * The audit record of a form-number change, shared by correctFilingForm and
+ * "Edit filing details": a FORM status event carrying the reason, and a
+ * `filing.form_corrected` audit entry listing the renamed documents.
+ */
+export function formCorrectionRecords(db: Prisma.TransactionClient, actor: Actor, filing: { id: string; clientId: string }, c: { from: string; to: string; reason: string; renames: FormRename[] }) {
+  return [
+    db.filingStatusEvent.create({ data: { filingId: filing.id, field: "FORM", fromValue: c.from, toValue: c.to, source: "STAFF", actorId: actor.id, verificationNote: c.reason, eventAt: new Date() } }),
+    db.auditLog.create({ data: { actorId: actor.id, action: "filing.form_corrected", entityType: "FilingRecord", entityId: filing.id, clientId: filing.clientId, details: { from: c.from, to: c.to, reason: c.reason, renamedDocuments: c.renames } } }),
+  ] as const;
 }
 
 /** Internal preparation status — staff-managed, separate from e-file status. */

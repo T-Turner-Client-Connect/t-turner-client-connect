@@ -161,9 +161,12 @@ export async function editFilingDetailsAction(filingId: string, _prev: ActionSta
   const actor = await requireUser();
   return run(async () => {
     const t = str(fd, "filingType");
-    await editFilingDetails(actor, filingId, { taxYear: Number(str(fd, "taxYear")), returnType: str(fd, "returnType"), jurisdiction: str(fd, "jurisdiction"), filingType: t === "AMENDED" || t === "EXTENSION" ? t : "ORIGINAL" }, str(fd, "reason"));
+    const r = await editFilingDetails(actor, filingId, { taxYear: Number(str(fd, "taxYear")), returnType: str(fd, "returnType"), jurisdiction: str(fd, "jurisdiction"), filingType: t === "AMENDED" || t === "EXTENSION" ? t : "ORIGINAL" }, str(fd, "reason"));
     refresh();
-    return "Filing details corrected (recorded in the status history).";
+    revalidatePath("/portal");
+    const c = r.formCorrection;
+    const form = c ? `Form number corrected: ${c.from} → ${c.to}.${c.renamed ? ` ${c.renamed} document name${c.renamed === 1 ? "" : "s"} updated.` : ""}` : "";
+    return [form, r.detailsCorrected ? "Filing details corrected (recorded in the status history)." : ""].filter(Boolean).join(" ");
   });
 }
 

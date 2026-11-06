@@ -13,7 +13,7 @@ import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { retentionDate, sha256Of, storeDocumentFile } from "./documents";
 import { queuePortalNotification } from "./notifications";
-import { findFilingFor } from "./tax";
+import { correctFilingForm, findFilingFor, formCorrectionRecords, formNumberRenames } from "./tax";
 
 /**
  * Deliver an already-accepted return — one step.
@@ -711,12 +711,13 @@ export async function deliveryContext(clientId: string, actor: Actor) {
   return { owner, clientType: client.clientType as string, entityType: client.entityType, clientState: st && st !== "FEDERAL" ? st : null, approvedKeys, draftKeys, existing };
 }
 
-// --- Fixing a filing (owner/Admin only) -------------------------------------------
+// --- Fixing a filing (Tabitha only) ------------------------------------------------
 
 const describeFiling = (f: { taxYear: number; returnType: string; jurisdiction: string; filingType: string }) => `${f.taxYear} ${f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction} ${f.returnType} ${f.filingType.toLowerCase()}`;
 
-async function assertOwnerOrAdmin(actor: Actor) {
-  if (actor.role !== "ADMIN" && !(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha or an Admin can change or remove a filing.");
+/** Editing, moving onto and removing filings is Tabitha's alone (the same rule as correcting a form number). */
+async function assertOwner(actor: Actor) {
+  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can change, move or remove a filing.");
 }
 
 /** A linked document's title after the filing's details change (only titles this app generated are rewritten). */
@@ -726,14 +727,20 @@ function retitle(title: string, from: FilingRecord, to: { taxYear: number; retur
 }
 
 /**
- * "Edit filing details": corrects the return type (a state filing created as
- * 1040 → 40), jurisdiction, tax year or original/amended/extension. A reason is
- * required; the change is recorded in the status history and audit log, every
- * status event is kept, and linked documents are re-titled and re-labeled.
+ * "Edit filing details" — the one correction control on a filing card
+ * (Tabitha only): the return type (a state filing created as 1040 → 40),
+ * jurisdiction, tax year or original/amended/extension.
+ *
+ * A change of form number alone is exactly correctFilingForm (#124): its
+ * refusals, a FORM status event with the reason, a `filing.form_corrected`
+ * audit entry and whole-word renaming of linked document titles. When other
+ * details change too, the form-number part is recorded the same way and the
+ * rest as a DETAILS event and `filing.details_corrected`, in one transaction.
+ * A reason is always required, every status event is kept, and linked
+ * documents are re-titled and re-labeled.
  */
 export async function editFilingDetails(actor: Actor, filingId: string, input: { taxYear: number; returnType: string; jurisdiction: string; filingType: "ORIGINAL" | "AMENDED" | "EXTENSION" }, reason: string) {
-  await assertOwnerOrAdmin(actor);
-  if (reason.trim().length < 3) throw new ValidationError("Say why the filing details are being corrected.");
+  await assertOwner(actor);
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
   const returnType = normalizeReturnType(input.returnType);
   const jurisdiction = normalizeJurisdiction(input.jurisdiction);
@@ -742,24 +749,41 @@ export async function editFilingDetails(actor: Actor, filingId: string, input: {
   if (!Number.isInteger(input.taxYear) || input.taxYear < 2000 || input.taxYear > new Date().getFullYear()) throw new ValidationError("Choose the tax year.");
   if (!["ORIGINAL", "AMENDED", "EXTENSION"].includes(input.filingType)) throw new ValidationError("Choose original, amended or extension.");
   const next = { taxYear: input.taxYear, returnType, jurisdiction, filingType: input.filingType };
-  if (describeFiling(next) === describeFiling(f)) return f;
+  const formChanged = returnType !== f.returnType;
+  const otherChanged = next.taxYear !== f.taxYear || next.jurisdiction !== f.jurisdiction || next.filingType !== f.filingType;
+  if (!formChanged && !otherChanged) throw new ValidationError(`This filing is already the ${describeFiling(f)}. Change the form number, year, jurisdiction or filing type, then save.`);
+
+  // Form number only: #124's audited correction, unchanged.
+  if (!otherChanged) {
+    const formCorrection = await correctFilingForm(actor, filingId, returnType, reason);
+    return { ...(await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } })), formCorrection, detailsCorrected: false };
+  }
+
+  const why = reason.trim().slice(0, 300);
+  if (why.length < 3) throw new ValidationError("Say why the filing details are being corrected.");
   const clash = await prisma.filingRecord.findUnique({ where: { clientId_taxYear_returnType_jurisdiction_filingType: { clientId: f.clientId, ...next } } });
   if (clash) throw new ValidationError(`This client already has a ${describeFiling(next)} filing. Remove one of them first (move any documents across), then correct the other.`);
   const docs = await prisma.document.findMany({ where: { filingId, deletedAt: null } });
+  // The form-number part first, exactly as correctFilingForm does it; then the other details from there.
+  const renames = formChanged ? formNumberRenames(docs, f.returnType, returnType) : [];
+  const afterForm = { ...f, returnType };
   await prisma.$transaction(async (tx) => {
     await tx.filingRecord.update({ where: { id: filingId }, data: next });
     for (const d of docs) {
-      await tx.document.update({ where: { id: d.id }, data: { title: retitle(d.title, f, next), year: next.taxYear, ...(d.filingDocType === "RETURN" ? { docType: returnDocType(next) } : {}) } });
+      const title = renames.find((r) => r.id === d.id)?.to ?? d.title;
+      await tx.document.update({ where: { id: d.id }, data: { title: retitle(title, afterForm, next), year: next.taxYear, ...(d.filingDocType === "RETURN" ? { docType: returnDocType(next) } : {}) } });
     }
-    await tx.filingStatusEvent.create({ data: { filingId, field: "DETAILS", fromValue: describeFiling(f), toValue: describeFiling(next), source: "STAFF", actorId: actor.id, verificationNote: reason.trim().slice(0, 300), eventAt: new Date() } });
-    await audit(tx, { actorId: actor.id, action: "filing.details_corrected", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { from: { taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType }, to: next, reason: reason.trim().slice(0, 300), documents: docs.map((d) => d.id) } });
+    if (formChanged) for (const write of formCorrectionRecords(tx, actor, f, { from: f.returnType, to: returnType, reason: why, renames })) await write;
+    await tx.filingStatusEvent.create({ data: { filingId, field: "DETAILS", fromValue: describeFiling(afterForm), toValue: describeFiling(next), source: "STAFF", actorId: actor.id, verificationNote: why, eventAt: new Date() } });
+    await audit(tx, { actorId: actor.id, action: "filing.details_corrected", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { from: { taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType }, to: next, reason: why, documents: docs.map((d) => d.id), formCorrected: formChanged } });
   });
-  return prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
+  const formCorrection = formChanged ? { from: f.returnType, to: returnType, renamed: renames.length } : undefined;
+  return { ...(await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } })), formCorrection, detailsCorrected: true };
 }
 
 /** Moves a document to another filing of the same client (e.g. before removing a filing created by mistake). */
 export async function moveFilingDocument(actor: Actor, documentId: string, targetFilingId: string) {
-  await assertOwnerOrAdmin(actor);
+  await assertOwner(actor);
   const d = await prisma.document.findUnique({ where: { id: documentId }, include: { filing: true } });
   if (!d || d.deletedAt || !d.filing) throw new ValidationError("Document not found on a filing.");
   const t = await prisma.filingRecord.findUnique({ where: { id: targetFilingId } });
@@ -787,7 +811,7 @@ export async function moveFilingDocument(actor: Actor, documentId: string, targe
  * move that copy to the right filing first.
  */
 export async function removeFiling(actor: Actor, filingId: string, reason: string) {
-  await assertOwnerOrAdmin(actor);
+  await assertOwner(actor);
   if (reason.trim().length < 3) throw new ValidationError("Say why the filing is being removed (e.g. “created by mistake — duplicate of the AL 40 filing”).");
   const f = await prisma.filingRecord.findUnique({ where: { id: filingId }, include: { events: { orderBy: { createdAt: "asc" } }, documents: { where: { deletedAt: null } } } });
   if (!f) throw new ValidationError("Filing not found.");
