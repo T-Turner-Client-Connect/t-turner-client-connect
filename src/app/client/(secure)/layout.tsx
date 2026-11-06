@@ -10,6 +10,7 @@ import { prisma } from "@/lib/prisma";
 import { ownerAndBusiness } from "@/lib/services/related-businesses";
 import { isPayrollApprover } from "@/lib/services/payroll-approval";
 import { serviceProfile } from "@/lib/services/service-profile";
+import { openIdentityRequest } from "@/lib/services/owner-personal-docs";
 import { conversationScope } from "@/lib/portal/access";
 
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
@@ -19,13 +20,16 @@ export default async function PortalLayout({ children }: { children: React.React
       (await accessibleClients(user.id)).map(async (a) => {
         const names = a.client.clientType === "INDIVIDUAL" ? null : await ownerAndBusiness(a.clientId);
         const { businessOnly } = await serviceProfile(a.clientId);
-        // A business-only account (no personal tax preparation) drops the personal tax pages, and
+        // A business-only account (no personal tax preparation) drops the personal tax pages (except
+        // the owner's own personal documents upload, and identity on request), and
         // each area this login wasn't granted. Regular accounts keep the full menu.
+        // Personal tax documents: a business owner may still send their own (Upload Documents), and
+        // identity documents only while our office has asked that owner for one.
+        const idRequest = businessOnly ? await openIdentityRequest(user.id, a.clientId) : null;
         const hide = businessOnly
           ? [
               "/client/tax-center",
-              "/client/tax-center/upload",
-              "/client/identity",
+              ...(idRequest ? [] : ["/client/identity"]),
               "/client/taxes/summary",
               "/client/nonprofit",
               ...(a.canMessage ? [] : ["/client/messages"]),
