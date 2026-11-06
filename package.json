@@ -15,6 +15,7 @@
     "db:diff": "prisma migrate diff --from-url \"$DATABASE_URL\" --to-schema-datamodel prisma/schema.prisma --script",
     "db:seed": "tsx prisma/seed.ts",
     "db:sample": "tsx prisma/sample-data.ts",
+    "db:seed:adp-demo": "tsx prisma/adp-demo-seed.ts",
     "postinstall": "prisma generate",
     "db:migrate:local": "node scripts/migrate-local.mjs",
     "backup": "tsx --require ./scripts/lib/cli-preload.cjs scripts/backup-restore.ts",
