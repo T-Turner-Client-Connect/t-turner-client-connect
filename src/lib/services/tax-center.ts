@@ -371,11 +371,13 @@ export async function taxYearStatuses(clientId: string, years: number[]) {
     const fed = filings.find((f) => f.taxYear === year && f.jurisdiction === "FEDERAL") ?? filings.find((f) => f.taxYear === year);
     const uploaded = uploads.find((u) => u.year === year)?._count ?? 0;
     const docs = (p?.documentsStatus ?? "NOT_STARTED") as keyof typeof DOCUMENTS_STATUS;
+    // An accepted return means the earlier steps are behind the client (e.g. filed before Client Connect).
+    const accepted = fed?.filingStatus === "ACCEPTED";
     return {
       year,
       steps: [
-        { key: "questionnaire", label: "Questionnaire", value: sub ? "Completed" : "Not completed", done: !!sub },
-        { key: "documents", label: "Documents", value: docs === "NOT_STARTED" && uploaded ? `${uploaded} uploaded — our team will confirm` : DOCUMENTS_STATUS[docs], done: docs === "ALL_RECEIVED" },
+        { key: "questionnaire", label: "Questionnaire", value: sub || accepted ? "Completed" : "Not completed", done: !!sub || accepted },
+        { key: "documents", label: "Documents", value: accepted ? DOCUMENTS_STATUS.ALL_RECEIVED : docs === "NOT_STARTED" && uploaded ? `${uploaded} uploaded — our team will confirm` : DOCUMENTS_STATUS[docs], done: docs === "ALL_RECEIVED" || accepted },
         { key: "preparation", label: "Return preparation", value: fed ? PREP_STEP[fed.prepStatus] : "Not started", done: fed?.prepStatus === "READY_TO_FILE" || (!!fed && fed.filingStatus !== "NOT_SUBMITTED") },
         { key: "filing", label: "Filing", value: fed ? FILE_STEP[fed.filingStatus] : "Not filed yet", done: !!fed && ["SUBMITTED", "PENDING_ACKNOWLEDGMENT", "ACCEPTED"].includes(fed.filingStatus) },
         { key: "acceptance", label: "Agency acceptance", value: fed?.filingStatus === "ACCEPTED" ? "Accepted" : fed?.filingStatus === "REJECTED" ? "Rejected — we're correcting it" : "Not yet", done: fed?.filingStatus === "ACCEPTED" },

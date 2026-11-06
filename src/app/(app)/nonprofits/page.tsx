@@ -80,7 +80,7 @@ export default async function NonprofitsPage({ searchParams }: { searchParams: P
                 <div><dt className="text-xs uppercase text-slate-500">Assigned</dt><dd>{r.client.assignedTo?.name ?? "Unassigned"}</dd></div>
                 <div><dt className="text-xs uppercase text-slate-500">Due</dt><dd data-testid="np-due">{r.due && r.days !== null ? <>{fmtIso(r.due, { month: "short", day: "numeric", year: "numeric" })}{r.extended ? " (extended — Form 8868 accepted)" : ""} · {r.days < 0 ? `${-r.days} days late` : `${r.days} days`}</> : "Unknown until the fiscal year-end is recorded"}</dd></div>
               </dl>
-              {r.missing.length > 0 && <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="np-missing">Needs review: {r.missing.join(" · ")}{!r.client.fiscalYearEnd && <> — set it on the client&apos;s <Link className="underline" href={`/clients/${r.client.id}?tab=taxes`}>Taxes tab</Link></>}</p>}
+              {r.missing.length > 0 && <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="np-missing">Needs review: {r.missing.join(" · ")}{!r.client.fiscalYearEnd && <> — set it on the client&apos;s <Link className="underline" href={`/clients/${r.client.id}?tab=overview#tax-details`}>Overview › Details</Link></>}</p>}
               {r.review.length > 0 && <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="np-review">Review: {r.review.join(" · ")}</p>}
               {r.filing && (
                 <p className="mb-2 text-sm" data-testid="np-status">

@@ -75,7 +75,10 @@ describe("encryption at rest", () => {
     const tax = await staffUploadDocument(o.tabitha, { clientId: o.client.id, category: "TAXES", visibility: "STAFF_ONLY", bytes: pdf("w2"), originalName: "w2.pdf" });
     const mine = await portalUploadDocument(o.portal, { clientId: o.client.id, bytes: pdf("client"), originalName: "receipt.pdf" });
     const me = await ensureClientPerson(o.client.id);
-    const id = await uploadIdentityDocument({ portal: o.portal }, { clientId: o.client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf("ss"), originalName: "ss.pdf" });
+    // A business account's own record takes identity documents from our office only (owner logins
+    // file their own per owner), so the identity upload path is exercised through staff.
+    await expect(uploadIdentityDocument({ portal: o.portal }, { clientId: o.client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf("ss"), originalName: "ss.pdf" })).rejects.toThrow(/each owner separately/);
+    const id = await uploadIdentityDocument({ staff: o.tabitha }, { clientId: o.client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf("ss"), originalName: "ss.pdf" });
     const [ret] = await bulkUploadReturns(o.tabitha, [{ bytes: pdf("return"), originalName: "1120s.pdf" }]);
     const evidence = await saveUpload(o.tabitha, { kind: "CONSENT_EVIDENCE", bytes: PNG(), originalName: "signed.png" });
     const original = pdf("receipt");

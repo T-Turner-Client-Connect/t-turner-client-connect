@@ -13,7 +13,7 @@ import { squareHealth } from "@/lib/services/square-health";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ownerQueue } from "@/lib/services/agreements";
-
+import { pendingAcceptances } from "@/lib/services/accepted-returns";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export default async function OwnerOverview({ searchParams }: { searchParams: Promise<{ year?: string }> }) {
@@ -27,8 +27,17 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
   // Agreements staff asked Tabitha to send, and recent signatures/declines (Tabitha only).
   const queue = (await isReportApprover(actor)) ? await ownerQueue() : null;
   const month = year === thisYear ? months[Number(todayYmd().slice(5, 7)) - 1] : null;
+  // Returns staff delivered that wait for Tabitha's one-click acceptance confirmation.
+  const toConfirm = (await isReportApprover(actor)) ? (await pendingAcceptances()).length : 0;
   return (
     <>
+      {toConfirm > 0 && (
+        <div className="mb-4" data-testid="owner-acceptance-notice">
+          <Notice tone="warn" title={`${toConfirm} return${toConfirm === 1 ? "" : "s"} ready for you to confirm acceptance`}>
+            Staff delivered {toConfirm === 1 ? "an accepted return" : "accepted returns"} that only you can record as submitted and accepted. <Link className="font-semibold underline" href="/taxes/returns#confirm-acceptance">Confirm them on Tax returns</Link>.
+          </Notice>
+        </div>
+      )}
       <PageHeader
         title="Overview"
         subtitle="Invoiced revenue and cash collected are tracked separately. Unpaid invoices never count as cash."

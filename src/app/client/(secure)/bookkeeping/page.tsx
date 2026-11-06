@@ -41,7 +41,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
           orderBy: [{ year: "desc" }, { month: "desc" }],
         })
       : [],
-    prisma.documentRequest.findMany({ where: { clientId: current.clientId, periodId: null, status: { in: ["OPEN", "SUBMITTED"] }, AND: [clientFacingRequestWhere(current.canViewBookkeeping)] }, orderBy: { createdAt: "desc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } }),
+    prisma.documentRequest.findMany({ where: { clientId: current.clientId, periodId: null, status: { in: ["OPEN", "SUBMITTED"] }, kind: { not: "OWNER_PERSONAL" }, AND: [clientFacingRequestWhere(current.canViewBookkeeping)] }, orderBy: { createdAt: "desc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } }),
   ]);
   // Only operational status reaches the client: "in preparation" or "available for download".
   const interims = current.canViewBookkeeping ? await clientInterimStatements(current.clientId) : [];

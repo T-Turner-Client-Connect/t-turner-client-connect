@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
+import { BUSINESS_RETURN } from "@/lib/tax/accepted";
 import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { queuePortalNotification } from "./notifications";
@@ -345,7 +346,6 @@ export async function requestSummaryChanges(user: PortalActor, clientId: string,
 
 // --- Owner filing gate ----------------------------------------------------------------
 
-const BUSINESS_RETURN = /^(1120|1065|990|1041|706|709|940|941|943|944|945|W-?2|1099)/i;
 
 /**
  * Whether a filing needs an approved summary before Tabitha records it as

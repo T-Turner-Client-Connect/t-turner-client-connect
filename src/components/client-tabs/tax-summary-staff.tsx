@@ -115,7 +115,8 @@ export async function TaxSummaryStaff({ clientId, user: _user }: { clientId: str
   const blockers = new Map(await Promise.all(active.filter((s) => s.status === "DRAFT").map(async (s) => [s.id, await sendBlockers(s.id)] as const)));
 
   return (
-    <Card title="Step 1 · Tax Return Summary & Approval (before filing)">
+    <Card title="Client summary & approval (before filing)">
+      <p className="mb-2 rounded-lg bg-navy-50 px-3 py-2 text-sm font-semibold text-navy-900" data-testid="skip-step-1-hint">Already filed and accepted? Skip this step and use <a className="underline" href="#finish-send">Finish &amp; Send a Return</a> in Step 3 below.</p>
       <p className="mb-3 text-sm text-slate-600">
         Enter the key figures from the return prepared in TaxAct and send the summary to the client&apos;s portal. The client approves it for filing (electronic signature) or requests changes. Once approved, only Tabitha files it in TaxAct. {NOT_8879}
       </p>

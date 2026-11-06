@@ -3,7 +3,7 @@ import { clientReceivableWhere } from "@/lib/services/documents";
 import { startOfDay } from "date-fns";
 import type { PortalAccess } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { conversationScope, k1VisibleWhere, portalDocumentScope } from "./access";
+import { conversationScope, k1VisibleWhere, portalDocumentScope, requestVisibleWhere } from "./access";
 import { serviceProfile } from "@/lib/services/service-profile";
 import { clientFacingRequestWhere } from "@/lib/services/client-request-scope";
 import { announcementsForClient, countdownsFor } from "@/lib/services/news";
@@ -11,7 +11,7 @@ import { isPortalVerified, questionnaireUrl, questionnaireYears, taxYearStatuses
 import { isStateCode } from "@/lib/resources/catalog";
 import { isHistorical } from "@/lib/services/documents";
 import { portalBilling } from "@/lib/services/owner-billing";
-import { identityAlerts, identityOverview } from "@/lib/services/identity";
+import { identityAlerts, identityOverviewForViewer } from "@/lib/services/identity";
 import type { PortalActor } from "./session";
 
 type Perms = Pick<
@@ -51,7 +51,8 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
       orderBy: { publishedAt: "desc" },
       take: 10,
     }),
-    prisma.documentRequest.findMany({ where: { clientId, status: "OPEN", AND: [clientFacingRequestWhere(perms.canViewBookkeeping)] }, orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }] }),
+    // A request for one business owner's own documents shows only to that owner's login.
+    prisma.documentRequest.findMany({ where: { clientId, status: "OPEN", AND: [clientFacingRequestWhere(perms.canViewBookkeeping), requestVisibleWhere(viewerPortalUserId)] }, orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }] }),
     prisma.clientDeadline.findMany({ where: { clientId, visibleToClient: true, dueAt: { gte: today } }, orderBy: { dueAt: "asc" }, take: 10 }),
     perms.canViewContracts ? prisma.contractAssignment.findMany({ where: { clientId, status: "ASSIGNED" }, orderBy: { createdAt: "asc" } }) : [],
     perms.canViewTax ? prisma.signatureRequest.findMany({ where: { clientId, status: { in: ["SENT", "VIEWED", "PARTIALLY_SIGNED"] } } }) : [],
@@ -106,7 +107,8 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
     countdowns,
     progress: progress.length ? progress : statuses.filter((s) => s.year === thisYear - 1),
     statuses,
-    identityAlerts: perms.canViewIdentity && personal ? identityAlerts(await identityOverview(clientId)) : [],
+    // Business accounts: only the viewer's own owner record (never the business's own record).
+    identityAlerts: personal && (perms.canViewIdentity || profile.business) ? identityAlerts(await identityOverviewForViewer(clientId, viewerPortalUserId)) : [],
     // Tax return summaries waiting for the client's approval (before filing).
     summariesWaiting: perms.canViewTax && personal ? await prisma.taxReturnSummary.findMany({ where: { clientId, status: "SENT" }, select: { id: true, taxYear: true }, orderBy: { taxYear: "desc" } }) : [],
     vault,

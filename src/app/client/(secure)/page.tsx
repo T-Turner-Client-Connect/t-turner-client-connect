@@ -9,6 +9,7 @@ import { loadPortalHome } from "@/lib/portal/views";
 import { downloadToken } from "@/lib/services/documents";
 import { loadGreetingName } from "@/lib/portal/greeting";
 import { homeKind, portalBusinessDashboard } from "@/lib/services/portal-business";
+import { splitFlyer } from "@/lib/news/flyers";
 
 export const metadata = { title: "Client portal" };
 
@@ -33,7 +34,8 @@ export default async function PortalHome({ searchParams }: { searchParams: Promi
     const tiles = businessHomeTiles(data, (path) => `${path}${q}`, `/client/documents${q}`, `/client/payroll${q}`);
     // The owner's own (personal) account, for personal tax uploads and identity documents.
     const personal = accounts.find((a) => a.client.clientType === "INDIVIDUAL");
-    return <BusinessDashboardView d={d} tiles={tiles} q={q} base={`/client${q}`} linkFor={linkFor} personalQ={personal ? `?account=${personal.clientId}` : null} />;
+    const news = data.updates.map((a) => { const f = splitFlyer(a.body); return { id: a.id, title: a.title, body: f.text, flyer: f.flyer, topic: a.topic, clientId: a.clientId, pinned: a.pinned, at: a.publishedAt ?? a.createdAt }; });
+    return <BusinessDashboardView d={d} tiles={tiles} q={q} base={`/client${q}`} linkFor={linkFor} personalQ={personal ? `?account=${personal.clientId}` : null} news={news} />;
   }
 
   const name = await loadGreetingName(current.clientId, user.id);
