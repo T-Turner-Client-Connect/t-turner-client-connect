@@ -7,9 +7,9 @@
  */
 export const FLYERS = {
   "welcome-client-connect": {
-    label: "Welcome to TTurner Client Connect",
+    label: "Welcome Back, Clients! (TTurner Client Connect)",
     src: "/brand/flyers/welcome-client-connect.webp",
-    alt: "Welcome to TTurner Client Connect, your secure client portal: access your tax information anytime, upload documents securely, retrieve current and prior year returns, schedule appointments, receive updates and reminders, and use the Resource Center.",
+    alt: "Welcome Back, Clients! TTurner Client Connect, your secure client portal: access your tax information anytime, upload documents securely, retrieve current and prior year returns, schedule appointments, receive updates and reminders, and use the Resource Center.",
   },
 } as const;
 
