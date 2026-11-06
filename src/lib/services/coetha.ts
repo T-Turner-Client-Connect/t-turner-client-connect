@@ -265,8 +265,10 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
 }
 
 /**
- * Optional daily run after bank retrieval (same switch and key): each Managed Business with
- * bank rows retrieved since its last Coetha run, at most once a day and 2 businesses an hour (each run must finish within the hosting time limit).
+ * Optional daily run (same switch and key): each Managed Business with bank transactions waiting
+ * for review that arrived since its last Coetha run, from ANY source (the office's daily CSV
+ * statement imports, or a bank connection if one is ever turned on), at most once a day and 2
+ * businesses an hour (each run must finish within the hosting time limit). Plaid is not needed.
  */
 export async function runDailyCoetha(now = new Date()) {
   const s = await coethaStatus();
@@ -278,7 +280,7 @@ export async function runDailyCoetha(now = new Date()) {
   for (const b of books) {
     const last = b.coethaRuns[0]?.startedAt ?? null;
     if (last && now.getTime() - last.getTime() < 20 * 3600_000) continue;
-    const fresh = await prisma.bankTransaction.count({ where: { clientId: b.clientId, status: "UNREVIEWED", source: "PLAID", ...(last ? { createdAt: { gt: last } } : {}) } });
+    const fresh = await prisma.bankTransaction.count({ where: { clientId: b.clientId, status: "UNREVIEWED", ...(last ? { createdAt: { gt: last } } : {}) } });
     if (fresh) due.push(b.clientId);
     if (due.length >= 2) break;
   }
