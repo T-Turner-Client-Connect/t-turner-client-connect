@@ -12,7 +12,7 @@ import { INVOICE_STATUS } from "@/lib/billing/invoice-status";
 import type { Deadline } from "@/lib/services/business-overview";
 import type { portalBusinessDashboard } from "@/lib/services/portal-business";
 import { portalUploadAction } from "@/app/actions/portal";
-import { ActionTiles, type Tile } from "./luxury";
+import { ActionTiles, NewsList, type NewsItem, type Tile } from "./luxury";
 import { BooksProgressCard } from "./books-progress";
 import { LiveBankCard, LiveBankKpi, LiveBankProvider, LiveBankTicker } from "./business-live";
 
@@ -181,7 +181,7 @@ const UPLOADS_OFF = <p className="mt-2 rounded-lg bg-gold-50 px-3 py-2 text-sm t
  * disabled when there's none), and the packet download is hidden (staff packets include drafts,
  * which the client never sees). Without `readOnly`, links go to the client's own portal pages.
  */
-export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, readOnly, previewHref }: { d: Dash; tiles: Tile[]; q: string; base: string; linkFor: (id: string) => string; personalQ: string | null; readOnly?: boolean; previewHref?: (path: string, extra?: string) => string | null }) {
+export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, readOnly, previewHref, news }: { d: Dash; tiles: Tile[]; q: string; base: string; linkFor: (id: string) => string; personalQ: string | null; readOnly?: boolean; previewHref?: (path: string, extra?: string) => string | null; news?: NewsItem[] }) {
   // "October 2026", or "Q4 2026" for a quarterly engagement.
   const mName = d.periodLabel;
   const short = monthName(d.selected, { month: "long" });
@@ -225,6 +225,17 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
             <MonthSelect base={base} value={d.selected} choices={d.monthChoices} labels={d.choiceLabels} />
           </div>
         </section>
+
+        {/* News from our office: the newest pinned or recent announcements (flyers show as the picture). */}
+        {news && news.length > 0 && (
+          <section className="rounded-2xl border border-gold-200 bg-white px-5 py-2 shadow-sm" aria-labelledby="biz-news-heading" data-testid="business-news">
+            <div className="flex items-center justify-between pt-3">
+              <h2 id="biz-news-heading" className="font-serif text-lg font-bold text-navy-900">News from our office</h2>
+              {to("/client/news") && <Link href={to("/client/news")!} className="text-sm font-semibold text-gold-700 underline">View all</Link>}
+            </div>
+            <NewsList items={news} href={to("/client/news") ?? "#"} limit={2} />
+          </section>
+        )}
 
         {/* 2. Year to date at a glance (released statements only) and the bank balance */}
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Year to date at a glance" data-testid="kpis">
