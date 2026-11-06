@@ -243,7 +243,8 @@ describe("the 90-day schedule", () => {
     expect(board.status.dueAt?.getTime()).toBe(due);
     expect(board.history.map((h) => h.id)).toEqual([review.id]);
     expect(board.history[0].corrections).toBe(1);
-    expect(await ensureAccessReviewReminder(new Date(COMPLETED.getTime() + 85 * DAY))).toBe("not_due");
+    // More than 14 days before the due date, so no reminder yet (it appears 14 days before).
+    expect(await ensureAccessReviewReminder(new Date(COMPLETED.getTime() + 70 * DAY))).toBe("not_due");
     expect(await ensureAccessReviewReminder(new Date(COMPLETED.getTime() + 91 * DAY))).toBe("created");
     const task = await prisma.task.findFirstOrThrow({ where: { title: REVIEW_TASK_TITLE } });
     expect(task.dueAt?.getTime()).toBe(due);

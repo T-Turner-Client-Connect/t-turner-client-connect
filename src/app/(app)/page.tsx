@@ -15,6 +15,7 @@ import { receivables } from "@/lib/services/owner-billing";
 import { money } from "@/lib/billing/pricing";
 import { pendingRequests } from "@/lib/services/appointments";
 import { DashboardAppointmentRequests } from "@/components/appointments/dashboard-requests";
+import { visibleTasksWhere } from "@/lib/services/tasks";
 
 export const metadata = { title: "Dashboard" };
 
@@ -25,10 +26,12 @@ function Empty({ children }: { children: React.ReactNode }) {
 export default async function Dashboard() {
   const user = await requireUser();
   const now = new Date();
+  // Owner-only tasks (the access-review reminder) are counted and listed for the owner alone.
+  const visible = await visibleTasksWhere(user.id);
   const [q, dueToday, appointmentsToday, owing, totals, rejected] = await Promise.all([
     workQueue(),
     prisma.task.findMany({
-      where: { status: "OPEN", dueAt: { lte: endOfDay(now) } },
+      where: { ...visible, status: "OPEN", dueAt: { lte: endOfDay(now) } },
       include: { client: { select: { id: true, displayName: true } }, assignee: { select: { name: true } } },
       orderBy: { dueAt: "asc" },
       take: 12,
@@ -38,7 +41,7 @@ export default async function Dashboard() {
     Promise.all([
       prisma.client.count({ where: { archivedAt: null } }),
       prisma.client.count({ where: { archivedAt: null, status: "ACTIVE" } }),
-      prisma.task.count({ where: { status: "OPEN" } }),
+      prisma.task.count({ where: { ...visible, status: "OPEN" } }),
       prisma.conversation.count({ where: { unreadByStaff: true, closedAt: null } }),
     ]),
     prisma.filingRecord.findMany({ where: { filingStatus: "REJECTED" }, include: { client: { select: { id: true, displayName: true } } }, take: 10 }),
