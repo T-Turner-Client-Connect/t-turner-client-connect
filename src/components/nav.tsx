@@ -100,7 +100,7 @@ function OwnerLink({ owner, onNavigate }: { owner: OwnerNav; onNavigate?: () => 
 /** The bookkeeping client's own menu, shown in place of the main menu inside /bookkeeping/<client>. */
 export function workspaceClientId(pathname: string) {
   const m = /^\/bookkeeping\/([^/]+)/.exec(pathname);
-  return m && !["new", "square-billing", "plaid-oauth"].includes(m[1]) ? m[1] : null;
+  return m && !["new", "square-billing", "plaid-oauth", "balances", "morning-pull"].includes(m[1]) ? m[1] : null;
 }
 
 function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => void }) {

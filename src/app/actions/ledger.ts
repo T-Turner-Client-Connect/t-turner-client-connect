@@ -9,6 +9,9 @@ import {
   reconcileAccount, reopenBooks, reverseEntry, setupLedger, updateAccount, usd, type Basis,
 } from "@/lib/services/ledger";
 import { addRule } from "@/lib/services/ledger-review";
+import type { FileBalanceResult } from "@/lib/services/manual-bank";
+import { RepeatedSubmission } from "@/lib/services/office-actions";
+import { fmtDateTime } from "@/lib/format";
 import { clearBankFlag } from "@/lib/services/ledger";
 import { completeBankLink, completeBankReauth, disconnectBank, mapBankAccount, retrieveNow, startBankLink, startBankReauth } from "@/lib/services/banking";
 import { addCustomer, addRecurringInvoice, createInvoice, generateRecurringDrafts, issueInvoice, recordInvoicePayment, voidInvoice } from "@/lib/services/client-invoicing";
@@ -73,15 +76,31 @@ export async function reverseEntryAction(clientId: string, entryId: string, _pre
   });
 }
 
+/** What happened to the file's running balance (if it had one), for the import message. */
+function fileBalanceText(b: FileBalanceResult | null) {
+  if (!b) return "";
+  if (b.status === "RECORDED") return ` Balance ${usd(b.balanceCents)} as of ${fmtDateTime(b.asOf)} recorded for the client's dashboard.`;
+  if (b.status === "DUPLICATE") return " The file's balance was already recorded.";
+  return "reason" in b ? ` ${b.reason}` : "";
+}
+
 export async function importBankAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
     const f = fd.get("file");
     if (!(f instanceof File) || f.size === 0) throw new ValidationError("Choose the statement CSV file.");
     if (f.size > 5_000_000) throw new ValidationError("That file is too large. Import one statement at a time.");
-    const r = await importBankCsv(actor, clientId, str(fd, "accountId"), { fileName: f.name, text: await f.text() });
+    let r;
+    try {
+      r = await importBankCsv(actor, clientId, str(fd, "accountId"), { fileName: f.name, text: await f.text() }, { idempotencyKey: str(fd, "idempotencyKey") || null });
+    } catch (err) {
+      // The same form sent twice (double-click): already imported once.
+      if (err instanceof RepeatedSubmission) return err.message;
+      throw err;
+    }
     refresh(clientId);
-    return `Imported ${r.added} new transaction${r.added === 1 ? "" : "s"}${r.duplicates ? `; ${r.duplicates} already imported (skipped)` : ""}${r.problems.length ? `; ${r.problems.length} row(s) couldn't be read` : ""}.`;
+    if (r.balance) revalidatePath(`/bookkeeping/${clientId}/banking`);
+    return `Imported ${r.added} new transaction${r.added === 1 ? "" : "s"}${r.duplicates ? `; ${r.duplicates} already imported (skipped)` : ""}${r.problems.length ? `; ${r.problems.length} row(s) couldn't be read` : ""}.${fileBalanceText(r.balance)}`;
   });
 }
 
