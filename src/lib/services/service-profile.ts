@@ -17,12 +17,21 @@ export function isBusinessOnly(client: { clientType: ClientType; services: strin
   return !personal;
 }
 
+/**
+ * Payroll is one of the client's assigned services, from the same records staff use to assign it:
+ * the client record's Services list ("Payroll", any case), an open Payroll service on Services &
+ * Agreements (ServiceType PAYROLL), or the bookkeeping profile's payroll switch.
+ */
+export function hasPayrollService(client: { services: string[]; bookkeepingProfile?: { payroll: boolean } | null }, serviceTypes: ServiceType[] = []) {
+  return client.services.some((s) => s.trim().toLowerCase() === "payroll") || serviceTypes.includes("PAYROLL") || !!client.bookkeepingProfile?.payroll;
+}
+
 export async function serviceProfile(clientId: string) {
   const c = await prisma.client.findUniqueOrThrow({
     where: { id: clientId },
-    select: { clientType: true, services: true, clientServices: { where: { status: { not: "CLOSED" } }, select: { type: true } } },
+    select: { clientType: true, services: true, clientServices: { where: { status: { not: "CLOSED" } }, select: { type: true } }, bookkeepingProfile: { select: { payroll: true } } },
   });
   const types = c.clientServices.map((s) => s.type);
   const businessOnly = isBusinessOnly(c, types);
-  return { businessOnly, personalTax: !businessOnly, services: c.services, types };
+  return { businessOnly, personalTax: !businessOnly, services: c.services, types, payroll: hasPayrollService(c, types) };
 }

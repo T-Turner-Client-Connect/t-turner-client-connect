@@ -140,7 +140,7 @@ export async function assertLoginBusinessViewChange(tx: Tx, actor: Actor, access
   if (next) {
     if (!(await can(actor, "business_access", "manage"))) throw new ForbiddenError("Only Tabitha (or staff she allows to manage business access) can give a login access to a Managed Business.");
     // Same eligibility the portal gate uses: an approved Managed Business or an active Bookkeeping Client.
-    if (!businessViewEligible(a.client)) throw new ValidationError("This client is a Regular Tax Client. Approve Managed Business access first.");
+    if (!businessViewEligible(a.client)) throw new ValidationError("This client is a Regular Tax Client: it isn’t on the Bookkeeping Clients list. Add it with “+ Add Bookkeeping Client” first.");
   }
   await log(tx, { clientId: a.clientId, actorId: actor.id, action: next ? "LOGIN_VIEW_ON" : "LOGIN_VIEW_OFF", targetUserId: a.portalUserId });
 }

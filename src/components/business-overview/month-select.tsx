@@ -8,7 +8,8 @@ const label = (ym: string) => {
 };
 
 /** The gold month picker in the overview banner: changing it reloads the overview for that month. */
-export function MonthSelect({ base, value, choices }: { base: string; value: string; choices: string[] }) {
+/** `labels`: how to name a choice (e.g. "Q4 2026" for a quarterly engagement); a month name otherwise. */
+export function MonthSelect({ base, value, choices, labels }: { base: string; value: string; choices: string[]; labels?: Record<string, string> }) {
   const router = useRouter();
   return (
     <label className="relative inline-flex items-center gap-2 rounded-xl border-2 border-gold-500 bg-navy-950/70 px-4 py-2.5 text-white shadow-[0_0_20px_-8px_var(--color-gold-500)]">
@@ -21,7 +22,7 @@ export function MonthSelect({ base, value, choices }: { base: string; value: str
         data-testid="overview-month"
       >
         {choices.map((m) => (
-          <option key={m} value={m} className="text-navy-900">{label(m)}</option>
+          <option key={m} value={m} className="text-navy-900">{labels?.[m] ?? label(m)}</option>
         ))}
       </select>
       <span className="pointer-events-none absolute right-4 text-gold-300" aria-hidden>▾</span>

@@ -10,8 +10,10 @@ import { businessRequestChecklist, syncBusinessTaxRequests, yearEndWindow, type 
 import { ValidationError } from "./clients";
 import { bankFeed, CLIENT_REFRESH_MINUTES } from "./bank-feed";
 import { syncConnection } from "./banking";
-import { deadlineStatus, monthlyCloseSteps, nextPayDate, YEAR_END_STAGES, type Deadline, type YearEndStage } from "./business-overview";
+import { deadlineStatus, nextPayDate, YEAR_END_STAGES, type Deadline, type YearEndStage } from "./business-overview";
 import { PAYROLL_FREQUENCIES } from "./bookkeeping-clients";
+import { computeBooksProgress, engagementPeriod } from "./books-progress";
+import { clientFacingRequestWhere } from "./client-request-scope";
 import { clientReceivableWhere, REPORT_LABELS } from "./documents";
 import { profitAndLossFor } from "./ledger";
 import { publishedBillingFor } from "./owner-billing";
@@ -109,7 +111,7 @@ export async function booksStatus(clientId: string) {
   const [accounts, recs, openRequests, questions, toCategorize] = await Promise.all([
     prisma.ledgerAccount.findMany({ where: { clientId, active: true, subtype: { in: ["BANK", "CREDIT_CARD"] } }, orderBy: { code: "asc" }, select: { id: true, name: true, last4: true } }),
     prisma.bankReconciliation.groupBy({ by: ["accountId"], where: { clientId }, _max: { statementDate: true } }),
-    prisma.documentRequest.count({ where: { clientId, status: "OPEN" } }),
+    prisma.documentRequest.count({ where: { clientId, status: "OPEN", AND: [clientFacingRequestWhere(true)] } }),
     prisma.conversation.findMany({ where: { clientId, questionStatus: "OPEN" }, orderBy: { createdAt: "asc" }, take: 5, select: { id: true, subject: true, responseDueAt: true } }),
     prisma.bankTransaction.count({ where: { clientId, status: "UNREVIEWED" } }),
   ]);
@@ -162,12 +164,24 @@ export async function businessDashboardFor(clientId: string, month: string | nul
     prisma.document.findMany({ where: releasedWhere(clientId), select: { id: true, reportType: true, reportPeriodType: true, title: true, publishedAt: true, period: { select: { id: true, year: true, month: true } } }, orderBy: { publishedAt: "desc" } }),
   ]);
   // A month counts as released once its monthly P&L (or full packet) is delivered.
-  const releasedMonths = [...new Set(released.filter((d) => (d.reportType === "PROFIT_AND_LOSS" || d.reportType === "FINANCIAL_PACKET") && (d.reportPeriodType ?? "MONTH") === "MONTH" && d.period).map((d) => ym(d.period!.year, d.period!.month)))].sort().reverse();
+  // Quarterly engagements (BookkeepingProfile.frequency = QUARTERLY) are shown by quarter: the
+  // selection is the quarter's last month, and a released quarter covers its three months.
+  const quarterly = profile?.frequency === "QUARTERLY";
+  const qEnd = (s: string) => (quarterly ? engagementPeriod("QUARTERLY", s).end : s);
+  const releasedMonths = [...new Set(released.flatMap((d) => {
+    if (!d.period || (d.reportType !== "PROFIT_AND_LOSS" && d.reportType !== "FINANCIAL_PACKET")) return [];
+    const type = d.reportPeriodType ?? "MONTH";
+    const m = ym(d.period.year, d.period.month);
+    if (type === "MONTH") return [m];
+    return quarterly && type === "QUARTER" ? engagementPeriod("QUARTERLY", m).months : [];
+  }))].sort().reverse();
   const valid = month && /^\d{4}-(0[1-9]|1[0-2])$/.test(month) ? month : null;
-  const selected = valid ?? releasedMonths[0] ?? (periods[0] ? ym(periods[0].year, periods[0].month) : shiftMonth(today.slice(0, 7), -1));
+  // Default: the latest released period, else the latest month opened, else the last finished month (or quarter).
+  const lastDone = quarterly ? shiftMonth(engagementPeriod("QUARTERLY", today.slice(0, 7)).months[0], -1) : shiftMonth(today.slice(0, 7), -1);
+  const selected = qEnd(valid ?? releasedMonths[0] ?? (periods[0] ? ym(periods[0].year, periods[0].month) : lastDone));
   const [sy, sm] = selected.split("-").map(Number);
-  const period = periods.find((p) => p.year === sy && p.month === sm) ?? null;
-  const monthChoices = [...new Set([selected, ...releasedMonths, ...periods.slice(0, 18).map((p) => ym(p.year, p.month))])].sort().reverse();
+  const monthChoices = [...new Set([selected, ...releasedMonths, ...periods.slice(0, 18).map((p) => ym(p.year, p.month))].map(qEnd))].sort().reverse();
+  const choiceLabels = Object.fromEntries(monthChoices.map((c) => [c, engagementPeriod(profile?.frequency, c).label]));
   const isReleased = releasedMonths.includes(selected);
 
   // Figures: released months only, from the books (which are closed once Tabitha approves).
@@ -211,7 +225,10 @@ export async function businessDashboardFor(clientId: string, month: string | nul
     };
   }
 
-  const close = period ? await monthlyCloseSteps(clientId, period.id, profile) : null;
+  // The Monthly Bookkeeping Progress Tracker: only for a business we keep the books for (an active
+  // bookkeeping profile). Without one, the dashboard shows only the services that apply.
+  const bookkeeping = !!profile?.active;
+  const progress = bookkeeping ? await computeBooksProgress(clientId, selected, { today }) : null;
 
   // Payroll, filings, licenses, year-end — client-visible facts only (no staff notes).
   const knownPay = profile?.payrollPayDate ? ymd(profile.payrollPayDate) : null;
@@ -292,14 +309,17 @@ export async function businessDashboardFor(clientId: string, month: string | nul
   return {
     // Only the last four digits of the EIN ever leave the server.
     client: { id: client.id, name: client.businessName || client.displayName, active: client.status === "ACTIVE", einLast4: profile?.einLast4 ?? null },
-    services: ["Bookkeeping", ...(profile?.payroll ? ["Payroll"] : []), "Taxes", ...(lic.length ? ["Compliance"] : [])],
+    services: [...(bookkeeping ? ["Bookkeeping"] : []), ...(profile?.payroll ? ["Payroll"] : []), "Taxes", ...(lic.length ? ["Compliance"] : [])],
     basis: profile?.accountingBasis ?? null,
     selected,
     monthChoices,
+    // "October 2026", or "Q4 2026" for a quarterly engagement: how the selector and headings name the period.
+    periodLabel: engagementPeriod(profile?.frequency, selected).label,
+    choiceLabels,
     isReleased,
     figures,
     hasBooks: !!book,
-    close,
+    progress,
     payroll,
     filings: { next: filings[0] ?? null, dueSoon: filings.filter((d) => days(today, d.date) <= 30).length },
     licenses: { count: lic.length, expired: lic.filter((l) => l.expired).length, next: lic.find((l) => l.renewal && !l.expired) ?? null },

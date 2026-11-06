@@ -268,6 +268,7 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
     const r = await createClientRequest(null, clientId, input, { send: false, source: "COETHA" });
     if (r.created && r.request) drafted.push(r.request.id);
   };
+  let officeTasks = 0;
   const accounts = await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null, monitored: true } });
   // 1–2. Reconciliations and statements.
   for (const a of accounts) {
@@ -290,12 +291,9 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
         continue;
       }
     }
+    // Our office retrieves statements itself (authorized access): never a client request, an internal task.
     const isCard = a.accountType !== "CHECKING" && a.accountType !== "SAVINGS";
-    await draft({
-      kind: "STATEMENT", docType: isCard ? "CARD_STATEMENT" : "BANK_STATEMENT", bookkeepingAccountId: a.id, start: w.start, end: w.end, draftKey: `stmt:${a.id}:${ym}`,
-      title: `${isCard ? "Credit card" : "Bank"} statement — ${registryLabel(a)} — ${ml}`,
-      reason: `Needed to reconcile ${registryLabel(a)} for ${ml}: ${feed ? "the bank feed has the transactions, but not the statement's ending balance" : "this account isn't connected, so the statement is the only record"}.`,
-    });
+    if (await officeStatementTask(clientId, `Retrieve ${isCard ? "credit card" : "bank"} statement — ${registryLabel(a)} — ${ml}`, `Needed to reconcile ${registryLabel(a)} for ${ml}: ${feed ? "the bank feed has the transactions, but not the statement's ending balance" : "this account isn't connected, so the statement is the only record"}. File it for the account and month (Banking & Reconciliation → upload statement).`)) officeTasks++;
   }
   if (ended) {
     const from = toDate(`${ym}-01`), to = toDate(monthEnd(year, month));
@@ -335,7 +333,7 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
         const endPrev = ymdOf(new Date(toDate(`${firstMonth}-01`).getTime() - 86_400_000));
         const isCard = a.accountType !== "CHECKING" && a.accountType !== "SAVINGS";
         const range = rangeText({ periodStart: toDate(start), periodEnd: toDate(endPrev) });
-        await draft({ kind: "HISTORICAL", docType: isCard ? "CARD_STATEMENT" : "BANK_STATEMENT", bookkeepingAccountId: a.id, start, end: endPrev, draftKey: `hist:${a.id}:${start}`, title: `Prior statements — ${registryLabel(a)} — ${range}`, reason: `The bank feed starts in ${MONTH_NAMES[Number(firstMonth.slice(5)) - 1]} ${firstMonth.slice(0, 4)}, but the books open on ${start}. These statements fill the gap.` });
+        if (await officeStatementTask(clientId, `Retrieve prior ${isCard ? "credit card" : "bank"} statements — ${registryLabel(a)} — ${range}`, `The bank feed starts in ${MONTH_NAMES[Number(firstMonth.slice(5)) - 1]} ${firstMonth.slice(0, 4)}, but the books open on ${start}. These statements fill the gap.`)) officeTasks++;
       }
     }
     // Year-end tax documents: drafted in January only, in their own section.
@@ -364,8 +362,23 @@ export async function runWorkflowMonitor(actor: Actor | null, clientId: string, 
   }
   // 4. Recommendations for Tabitha.
   const recs = await recordRecommendations(clientId, year, month);
-  await audit(prisma, { actorId: actor?.id ?? null, action: "coetha.workflow_checked", entityType: "Client", entityId: clientId, clientId, details: { month: ym, drafted: drafted.length, sent, recommendations: recs } });
-  return { drafted: drafted.length, sent, recommendations: recs };
+  await audit(prisma, { actorId: actor?.id ?? null, action: "coetha.workflow_checked", entityType: "Client", entityId: clientId, clientId, details: { month: ym, drafted: drafted.length, sent, recommendations: recs, officeTasks } });
+  return { drafted: drafted.length, sent, recommendations: recs, officeTasks };
+}
+
+/**
+ * A statement our office still has to retrieve: an internal task for the assigned staff member (or
+ * Tabitha), one per title, never repeated, never visible to the client. Returns true when created.
+ */
+async function officeStatementTask(clientId: string, title: string, details: string) {
+  if (await prisma.task.count({ where: { clientId, title } })) return false;
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { assignedToId: true } });
+  const owner = await prisma.ownerAccess.findFirst({ where: { isPrimary: true, revokedAt: null }, select: { userId: true } });
+  const assignee = client?.assignedToId ?? owner?.userId ?? (await prisma.user.findFirst({ where: { role: "ADMIN", active: true }, select: { id: true } }))?.id;
+  if (!assignee) return false;
+  const task = await prisma.task.create({ data: { title, details, clientId, assigneeId: assignee, createdById: assignee, dueAt: new Date() } });
+  await audit(prisma, { actorId: null, action: "coetha.office_statement_task", entityType: "Task", entityId: task.id, clientId, details: { title } });
+  return true;
 }
 
 /** Writes new recommendations as proposals (kind RECOMMENDATION / CLASSIFICATION). Never repeats one already decided. */

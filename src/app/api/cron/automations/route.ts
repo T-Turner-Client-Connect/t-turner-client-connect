@@ -8,6 +8,8 @@ import { runDailyCoetha } from "@/lib/services/coetha";
 import { runDailyWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { runBillingSchedules } from "@/lib/services/billing-schedules";
 import { ensureAccessReviewReminder } from "@/lib/services/access-review";
+import { generateCycles } from "@/lib/services/payroll-taxes";
+import { runPayrollReminders } from "@/lib/services/payroll-reminders";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {
@@ -38,5 +40,10 @@ export async function POST(req: Request) {
   const schedules = await runBillingSchedules().catch(() => ({ error: "failed" }));
   // Quarterly access review: one high-priority task for the owner when a review is due (never two open).
   const accessReview = await ensureAccessReviewReminder().catch(() => "failed");
-  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview });
+  // ADP Payroll & Taxes: a rolling 6-week horizon of pay cycles (idempotent; sends nothing), then the
+  // payroll reminders. Client reminders are HELD unless the owner's master switch and the client's
+  // own switch are on; nothing here submits payroll, files taxes or moves money.
+  const payrollCycles = await generateCycles().catch(() => ({ error: "failed" }));
+  const payrollReminders = await runPayrollReminders().catch(() => ({ error: "failed" }));
+  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders });
 }

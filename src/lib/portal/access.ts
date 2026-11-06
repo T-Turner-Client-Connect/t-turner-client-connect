@@ -23,13 +23,26 @@ export type BusinessViewClient = { businessAccess: BusinessAccess | null | undef
 export const BUSINESS_VIEW_CLIENT = { businessAccess: true, bookkeepingProfile: { select: { active: true } } } as const;
 
 /**
- * Can this business have a business view at all? An owner-approved Managed Business (ACTIVE),
- * or a client on the Bookkeeping Client list (an active bookkeeping profile — the list the staff
- * /bookkeeping page shows). Removing Managed Business access (REMOVED) always takes it away.
+ * Can this business have a business view at all? Only a client an administrator enrolled on the
+ * bookkeeping service ("+ Add Bookkeeping Client" → enrollExistingClient / enrollNewClient, which
+ * make an ACTIVE bookkeeping profile — the staff Bookkeeping Clients list). An owner-approved
+ * Managed Business that isn't enrolled, a paused profile, services picked at sign-up, client type,
+ * registration answers and tax return type never grant it: those clients stay on the tax client
+ * portal. Removing Managed Business access (REMOVED) always takes it away.
  */
 export function businessViewEligible(client: BusinessViewClient): boolean {
   if (client.businessAccess === "REMOVED") return false;
-  return client.businessAccess === "ACTIVE" || !!client.bookkeepingProfile?.active;
+  return hasBookkeepingService(client);
+}
+
+/**
+ * Bookkeeping is part of this client's engagement: an administrator added the client to the
+ * bookkeeping service (an ACTIVE bookkeeping profile — the staff Bookkeeping Clients list). A paused
+ * profile (as business onboarding approval creates), services picked at sign-up (Client.services),
+ * Managed Business access, client type, registration answers and tax return type never count.
+ */
+export function hasBookkeepingService(client: { bookkeepingProfile?: { active: boolean } | null }): boolean {
+  return client.bookkeepingProfile?.active === true;
 }
 
 /**

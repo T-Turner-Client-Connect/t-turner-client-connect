@@ -1,11 +1,8 @@
 import Link from "next/link";
-import { Briefcase, CalendarDays, ChevronRight, CloudUpload, CreditCard, FileBadge, Folder, MessageCircle, MessageSquareText, Receipt } from "lucide-react";
+import { CalendarDays, ChevronRight, CloudUpload, CreditCard, FileBadge, Folder, MessageCircle, MessageSquareText, Receipt } from "lucide-react";
 import type { loadPortalHome } from "@/lib/portal/views";
 import { money } from "@/lib/billing/pricing";
 import { fmtChicago } from "@/lib/tz";
-import { ActionForm } from "@/components/action-form";
-import { Button, Field } from "@/components/ui";
-import { portalRequestPersonalTaxAction } from "@/app/actions/business-owners";
 import { ActionTiles, luxCard, PanelHead, type Tile } from "./luxury";
 import { Mountains } from "./mountains";
 
@@ -14,9 +11,9 @@ type Home = Awaited<ReturnType<typeof loadPortalHome>>;
 const viewAll = "mt-4 inline-flex items-center gap-1 text-sm font-medium text-navy-900 hover:text-gold-700";
 
 /**
- * Home for a business-only account (business tax return, K-1s, payroll — no
+ * Home for a business-only account (business tax return, K-1s, payroll when assigned — no
  * personal tax preparation). Shows only what this login was granted, plus the
- * owner's own K-1s, and a way to ask for personal tax preparation later.
+ * owner's own K-1s.
  */
 /**
  * The business quick-access tiles (Business Documents, Upload Documents, My K-1s, Payroll,
@@ -40,9 +37,11 @@ export function businessHomeTiles(data: Pick<Home, "perms" | "k1s" | "payrollDoc
   ];
 }
 
-export function BusinessHomeView({ data, href, name, accountName, clientId, linkFor, readOnly }: { data: Home; href: (path: string, extra?: string) => string; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; readOnly?: boolean }) {
+export function BusinessHomeView({ data, href, name, accountName, linkFor, readOnly }: { data: Home; href: (path: string, extra?: string) => string; name?: string; accountName?: string; clientId?: string; linkFor?: (id: string) => string; readOnly?: boolean }) {
   const p = data.perms;
-  const tiles = businessHomeTiles(data, (path) => href(path));
+  // Payroll only when it's an assigned service for this business (hasPayrollService). The bookkeeping
+  // dashboard's tiles are unchanged.
+  const tiles = businessHomeTiles(data, (path) => href(path)).filter((t) => t.testId !== "biz-payroll" || data.payrollService);
   return (
     <div className="space-y-6" data-testid="business-home">
       <section className="relative overflow-hidden rounded-[2rem] border border-gold-300/70 bg-gradient-to-br from-white via-ivory-50 to-gold-50 shadow-[0_20px_45px_-28px_rgb(10_26_68/0.45)]" data-testid="hero">
@@ -60,8 +59,8 @@ export function BusinessHomeView({ data, href, name, accountName, clientId, link
 
       <ActionTiles tiles={tiles} />
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <section id="k1s" className={`${luxCard} scroll-mt-6 lg:col-span-2`} data-testid="k1-panel">
+      <div className="grid gap-6">
+        <section id="k1s" className={`${luxCard} scroll-mt-6`} data-testid="k1-panel">
           <PanelHead icon={FileBadge} title="My K-1s" />
           {data.k1s.length === 0 ? (
             <p className="pt-3 text-sm text-slate-600">When our office finishes your Schedule K-1, it will be here. Only you can see your K-1.</p>
@@ -81,20 +80,6 @@ export function BusinessHomeView({ data, href, name, accountName, clientId, link
           )}
         </section>
 
-        <section className={luxCard} data-testid="personal-tax-panel">
-          <PanelHead icon={Briefcase} title="Personal taxes" />
-          <p className="pt-3 text-sm text-slate-700">We handle this business&apos;s tax return{data.k1s.length ? ", K-1s" : ""} and payroll. Want us to prepare your personal tax return too?</p>
-          {data.personalTaxRequest ? (
-            <p className="mt-3 rounded-lg bg-gold-50 px-3 py-2 text-sm text-navy-900" data-testid="personal-tax-pending">Requested {fmtChicago(data.personalTaxRequest.createdAt, { month: "short", day: "numeric", year: "numeric" })}. Our office will be in touch.</p>
-          ) : readOnly || !clientId ? (
-            <p className="mt-3 text-xs text-slate-500">“Request personal tax preparation” appears here for the client.</p>
-          ) : (
-            <ActionForm action={portalRequestPersonalTaxAction.bind(null, clientId)} className="mt-3 space-y-2">
-              <Field label="Anything we should know? (optional)"><textarea className="input" name="note" rows={2} maxLength={1000} /></Field>
-              <Button type="submit" data-testid="request-personal-tax">Request personal tax preparation</Button>
-            </ActionForm>
-          )}
-        </section>
       </div>
 
       {(p.canMessage || p.canViewBilling) && (

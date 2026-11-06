@@ -26,6 +26,9 @@ const TEXT: Record<string, string> = {
   NEW_INVOICE: "A new invoice is available",
   AGREEMENT_READY: "A pricing agreement is ready for your review and signature",
   DEADLINE_REMINDER: "A filing deadline is coming up",
+  // ADP Payroll & Taxes reminders: no amounts, no employee names.
+  PAYROLL_HOURS_REQUEST: "We need your payroll hours",
+  PAYROLL_APPROVAL_REMINDER: "Payroll is waiting for your approval",
   // Identity documents: deliberately generic (no document type or details).
   ID_EXPIRING: "A document on file needs to be updated soon",
   ID_EXPIRED: "A document on file needs to be updated",

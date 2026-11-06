@@ -107,10 +107,11 @@ describe("Personal / Business Home", () => {
     expect(d.figures).toBeNull(); // nothing released yet
     expect(d.isReleased).toBe(false);
     expect(d.feed.connected).toBe(false);
-    // A plain business with no payroll, cards, mortgage or contractors: only the basics are asked for.
-    expect(d.checklist.map((c) => c.key)).toEqual(["BANK_STATEMENTS", "RECEIPTS"]);
+    // A plain business with no payroll, cards, mortgage or contractors: only the basics are asked for
+    // (never bank statements: our office retrieves those itself).
+    expect(d.checklist.map((c) => c.key)).toEqual(["RECEIPTS"]);
     expect(d.checklist.every((c) => c.status === "NEEDED")).toBe(true);
-    expect(d.books).toMatchObject({ openRequests: 2, questions: [], toCategorize: 0 });
+    expect(d.books).toMatchObject({ openRequests: 1, questions: [], toCategorize: 0 });
   });
 
   it("a business not yet approved does NOT get the dashboard, even with the per-login flag on", async () => {
@@ -248,7 +249,7 @@ describe("What we need from you (conditional requests)", () => {
     await managed(bakery.id);
     const year = checklistTaxYear();
     const keys = async (kind: "BOOKKEEPING" | "YEAR_END" = "BOOKKEEPING", y = year) => (await businessChecklist(bakery.id, y, kind)).map((c) => c.key);
-    expect(await keys()).toEqual(["BANK_STATEMENTS", "RECEIPTS"]);
+    expect(await keys()).toEqual(["RECEIPTS"]);
     expect(await keys("YEAR_END", year - 1)).toEqual([]);
 
     // A 1098 on the owner's PERSONAL account never makes the business ask for one.
@@ -256,22 +257,22 @@ describe("What we need from you (conditional requests)", () => {
     expect(await keys("YEAR_END", year - 1)).toEqual([]);
 
     // Facts about the business turn on the matching requests.
-    await prisma.bookkeepingProfile.create({ data: { clientId: bakery.id, payroll: true } });
+    await prisma.bookkeepingProfile.update({ where: { clientId: bakery.id }, data: { payroll: true } });
     await setupLedger({ id: tabitha.id, role: "ADMIN", name: "Tabitha", email: "t@example.com" }, bakery.id, { basis: "CASH" });
     await prisma.businessLicense.create({ data: { clientId: bakery.id, name: "City license (fictional)", createdById: tabitha.id } });
     await prisma.yearEndFiling.create({ data: { clientId: bakery.id, taxYear: year - 1, stage: "CONTRACTOR_REVIEW" } });
     await portalUploadDocument(login, { clientId: bakery.id, docType: "FORM_1098_MORTGAGE", coverage: yearCoverage("FORM_1098_MORTGAGE", year - 2), asOf: null, bytes: PDF(), originalName: "biz-1098.pdf" });
     const bk = await keys();
-    expect(bk).toEqual(["BANK_STATEMENTS", "RECEIPTS", "PAYROLL_REPORTS", "LICENSES"]);
+    expect(bk).toEqual(["RECEIPTS", "PAYROLL_REPORTS", "LICENSES"]);
     // Annual forms are never bookkeeping items.
     const ye = await keys("YEAR_END", year - 1);
     expect(ye).toEqual(["W2_ISSUED", "NEC_ISSUED", "MORTGAGE_1098"]);
     expect(ye).not.toContain("K1");
-    // The default chart's (unused) card account doesn't count; a card in use does.
+    // Card statements are never asked of the client, even for a card in use (our office retrieves them).
     expect(bk).not.toContain("CARD_STATEMENTS");
     const card = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: bakery.id, subtype: "CREDIT_CARD" } });
     await prisma.bankTransaction.create({ data: { clientId: bakery.id, accountId: card.id, date: new Date(`${year}-03-02T00:00:00Z`), amountCents: -1299, description: "Fictional supplies", fingerprint: "fp-card" } });
-    expect(await keys()).toContain("CARD_STATEMENTS");
+    expect(await keys()).not.toContain("CARD_STATEMENTS");
     // Running again never duplicates.
     const count = await prisma.documentRequest.count({ where: { clientId: bakery.id } });
     await businessChecklist(bakery.id, year, "BOOKKEEPING");
@@ -289,7 +290,7 @@ describe("What we need from you (conditional requests)", () => {
   it("Year-End Tax Documents open in January for the prior tax year, never before", async () => {
     const { bakery } = await world();
     await managed(bakery.id);
-    await prisma.bookkeepingProfile.create({ data: { clientId: bakery.id, payroll: true } });
+    await prisma.bookkeepingProfile.update({ where: { clientId: bakery.id }, data: { payroll: true } });
     const nov = await yearEndChecklist(bakery.id, "2026-11-04");
     expect(nov).toMatchObject({ active: false, taxYear: 2026, startsIn: "January 2027", items: [] });
     expect(await prisma.documentRequest.count({ where: { clientId: bakery.id, ruleKey: "W2_ISSUED" } })).toBe(0);
@@ -305,13 +306,13 @@ describe("What we need from you (conditional requests)", () => {
     const { tabitha, bakery, login } = await world();
     await managed(bakery.id);
     const year = checklistTaxYear();
-    const status = async () => (await businessChecklist(bakery.id, year)).find((c) => c.key === "BANK_STATEMENTS")!;
+    const status = async () => (await businessChecklist(bakery.id, year)).find((c) => c.key === "RECEIPTS")!;
     const item = await status();
     expect(item.status).toBe("NEEDED");
 
     const f = uploadFieldsFromForm(form({ docType: item.docType!, periodKind: "MONTH", periodYear: String(year), periodMonth: "3" }));
     const doc = await portalUploadDocument(login, { clientId: bakery.id, requestId: item.id, docType: f.type, coverage: f.coverage, asOf: null, bytes: PDF(), originalName: "march.pdf" });
-    expect(doc).toMatchObject({ clientId: bakery.id, requestId: item.id, year, month: 3, docType: "BANK_STATEMENT" });
+    expect(doc).toMatchObject({ clientId: bakery.id, requestId: item.id, year, month: 3, docType: "RECEIPTS" });
     expect(await status()).toMatchObject({ status: "UPLOADED", files: 1, months: 1 });
 
     await prisma.document.update({ where: { id: doc.id }, data: { needsReview: false, reviewedAt: new Date(), reviewedById: tabitha.id } });
@@ -343,6 +344,6 @@ describe("What we need from you (conditional requests)", () => {
     const office = d.checklist.find((c) => c.fromOffice)!;
     expect(office).toMatchObject({ title: "Loan statement for the fictional oven", status: "NEEDED", docType: null });
     expect(d.books.questions.map((q) => q.subject)).toEqual(["What was the fictional $84.50 charge?"]);
-    expect(d.books.openRequests).toBe(3);
+    expect(d.books.openRequests).toBe(2);
   });
 });

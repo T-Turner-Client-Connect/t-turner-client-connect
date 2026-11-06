@@ -117,7 +117,7 @@ export async function setStaffPermissions(actor: Actor, userId: string, desired:
     const remove = [...have].filter((k) => !want.has(k as PermKey));
     if (!me.isOwner) {
       for (const k of [...add, ...remove]) {
-        if (OWNER_GRANTS_ONLY.includes(k as PermKey)) throw new ForbiddenError("Only the owner can give or remove Staff management.");
+        if (OWNER_GRANTS_ONLY.includes(k as PermKey)) throw new ForbiddenError(k.startsWith("payroll_taxes.") ? "Only the owner can give or remove ADP Payroll & Taxes access." : "Only the owner can give or remove Staff management.");
         if (!me.keys.has(k as PermKey)) throw new ForbiddenError("You can only give or remove permissions you hold yourself.");
       }
     }

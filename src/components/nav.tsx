@@ -42,6 +42,7 @@ import {
   MessageSquareText,
   History,
   ChevronRight,
+  Banknote,
 } from "lucide-react";
 
 const LINKS = [
@@ -63,6 +64,9 @@ const LINKS = [
   { href: "/reports", label: "Reports", icon: BarChart3, also: [] },
   { href: "/settings", label: "Settings", icon: Settings, also: [] },
 ];
+
+/** Shown only to staff the owner granted ADP Payroll & Taxes (the server decides; pages re-check). */
+const PAYROLL_TAXES_LINK = { href: "/payroll-taxes", label: "ADP Payroll & Taxes", icon: Banknote, also: [] as string[] };
 
 /** "none", "claim", or the first Owner's Office page this account may open. */
 export type OwnerNav = "none" | "claim" | `/owner${string}`;
@@ -154,14 +158,15 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
   );
 }
 
-function NavLinks({ onNavigate, unread, owner }: { onNavigate?: () => void; unread: number; owner: OwnerNav }) {
+function NavLinks({ onNavigate, unread, owner, payrollTaxes }: { onNavigate?: () => void; unread: number; owner: OwnerNav; payrollTaxes: boolean }) {
   const pathname = usePathname();
   const ws = workspaceClientId(pathname);
   if (ws) return <WorkspaceLinks id={ws} onNavigate={onNavigate} />;
+  const links = payrollTaxes ? [...LINKS.slice(0, 3), PAYROLL_TAXES_LINK, ...LINKS.slice(3)] : LINKS;
   return (
     <>
     <ul className="space-y-0.5">
-      {LINKS.map(({ href, label, icon: Icon, also }) => {
+      {links.map(({ href, label, icon: Icon, also }) => {
         const active = href === "/" ? pathname === "/" : [href, ...also].some((p) => pathname.startsWith(p));
         return (
           <li key={href}>
@@ -228,7 +233,7 @@ function GlobalSearch({ onDone }: { onDone?: () => void }) {
   );
 }
 
-export function AppNav({ user, signOut, unread, owner }: { user: { name: string; role: string }; signOut: () => Promise<void>; unread: number; owner: OwnerNav }) {
+export function AppNav({ user, signOut, unread, owner, payrollTaxes = false }: { user: { name: string; role: string }; signOut: () => Promise<void>; unread: number; owner: OwnerNav; payrollTaxes?: boolean }) {
   const [open, setOpen] = useState(false);
   const footer = (
     <div className="border-t border-white/10 pt-4 text-sm">
@@ -245,7 +250,7 @@ export function AppNav({ user, signOut, unread, owner }: { user: { name: string;
         <div className="space-y-6">
           <Brand />
           <GlobalSearch />
-          <nav aria-label="Main"><NavLinks unread={unread} owner={owner} /></nav>
+          <nav aria-label="Main"><NavLinks unread={unread} owner={owner} payrollTaxes={payrollTaxes} /></nav>
         </div>
         {footer}
       </aside>
@@ -265,7 +270,7 @@ export function AppNav({ user, signOut, unread, owner }: { user: { name: string;
                 <button onClick={() => setOpen(false)} aria-label="Close menu" className="rounded-md p-2 text-white hover:bg-white/10"><X className="size-6" /></button>
               </div>
               <GlobalSearch onDone={() => setOpen(false)} />
-              <nav aria-label="Main"><NavLinks onNavigate={() => setOpen(false)} unread={unread} owner={owner} /></nav>
+              <nav aria-label="Main"><NavLinks onNavigate={() => setOpen(false)} unread={unread} owner={owner} payrollTaxes={payrollTaxes} /></nav>
             </div>
             {footer}
           </div>

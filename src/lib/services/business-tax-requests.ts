@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { BK_UPLOAD_TYPES, type BkUploadType } from "@/lib/bk-uploads";
+import { notRoutineStatementRequest } from "./client-request-scope";
 
 /**
  * Business tax-document requests, made only from what we already know about this business:
@@ -44,8 +45,9 @@ export function yearEndWindow(today: string) {
 const named = (f: Facts, re: RegExp) => f.ledgerNames.some((n) => re.test(n));
 
 export const BUSINESS_TAX_RULES: Rule[] = [
-  { key: "BANK_STATEMENTS", docType: "BANK_STATEMENT", period: "MONTH", title: "Bank statements — every business account", why: "We reconcile your books to your bank each month.", applies: () => true },
-  { key: "CARD_STATEMENTS", docType: "CARD_STATEMENT", period: "MONTH", title: "Credit card statements", why: "Your business has a credit card.", applies: (f) => f.hasCard || f.priorTypes.has("CARD_STATEMENT") },
+  // Bank and credit card statements are never asked of the client: our office retrieves them with the
+  // access the client authorized and files them itself (see client-request-scope.ts). The retired
+  // BANK_STATEMENTS / CARD_STATEMENTS requests stay as history and are hidden from the client.
   { key: "RECEIPTS", docType: "RECEIPTS", period: "MONTH", title: "Receipts and bills", why: "Support for business purchases and vendor bills.", applies: () => true },
   { key: "PAYROLL_REPORTS", docType: "PAYROLL_REPORT", period: "QUARTER", title: "Payroll reports (quarterly)", why: "Your business runs payroll.", applies: (f) => f.payroll },
   { key: "W2_ISSUED", docType: "FORM_W2_ISSUED", period: "YEAR", title: "W-2s issued to employees", why: "Your business runs payroll.", applies: (f) => f.payroll || f.priorTypes.has("FORM_W2_ISSUED") },
@@ -145,6 +147,7 @@ export async function businessRequestChecklist(clientId: string, taxYear: number
       clientId,
       // Never a cancelled request, and never a draft: Coetha's drafts (#82) wait for Tabitha and the client never sees them.
       status: { notIn: ["CANCELLED", "DRAFT"] },
+      AND: [notRoutineStatementRequest],
       OR: [
         { taxYear, ruleKey: { in: keys } },
         ...(kind === "BOOKKEEPING" ? [{ ruleKey: null, OR: [{ status: { in: ["OPEN" as const, "SUBMITTED" as const] } }, { updatedAt: { gte: since } }] }] : []),
