@@ -25,6 +25,7 @@ export async function TaxCenterStaff({ clientId, user, year }: { clientId: strin
         </p>
       )}
       <QuestionnaireStatusCard clientId={clientId} years={[year]} />
+      <p className="text-sm text-slate-600">Need a document from the client? <Link className="font-semibold underline" href={`/clients/${clientId}?tab=documents#requests`}>Request it on the Documents tab</Link>.</p>
     </div>
   );
 }
