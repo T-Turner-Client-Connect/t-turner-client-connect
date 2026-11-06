@@ -148,6 +148,8 @@ export async function businessRequestChecklist(clientId: string, taxYear: number
       // Never a cancelled request, and never a draft: Coetha's drafts (#82) wait for Tabitha and the client never sees them.
       status: { notIn: ["CANCELLED", "DRAFT"] },
       AND: [notRoutineStatementRequest],
+      // One owner's own personal / identity requests never appear in the business's list.
+      kind: { not: "OWNER_PERSONAL" },
       OR: [
         { taxYear, ruleKey: { in: keys } },
         ...(kind === "BOOKKEEPING" ? [{ ruleKey: null, OR: [{ status: { in: ["OPEN" as const, "SUBMITTED" as const] } }, { updatedAt: { gte: since } }] }] : []),

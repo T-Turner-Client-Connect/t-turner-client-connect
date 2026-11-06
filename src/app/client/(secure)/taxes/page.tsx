@@ -12,7 +12,7 @@ export default async function PortalTaxes({ searchParams }: { searchParams: Prom
   const { current } = await resolveAccount(user.id, (await searchParams).account);
   if (!current) return null;
   if (!current.canViewTax) return <Notice>Tax information isn&apos;t included in your access to this account.</Notice>;
-  const data = await loadPortalTaxes(current.clientId);
+  const data = await loadPortalTaxes(current.clientId, user.id);
   return (
     <>
       <PageHeader title="Taxes" subtitle="Each filing is listed separately — federal and state, extensions and amendments." />

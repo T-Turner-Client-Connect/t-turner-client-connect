@@ -311,7 +311,8 @@ describe("restore", () => {
     await legacy(o.client.id, o.tabitha.id, "PAYROLL", null, 2026);
     // …and new uploads (encrypted on arrival): identity, a portal upload, a correspondence attachment.
     const me = await ensureClientPerson(o.client.id);
-    await uploadIdentityDocument({ portal }, { clientId: o.client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf("ss"), originalName: "ss.pdf" });
+    // Identity documents on a business account's own record are filed by our office.
+    await uploadIdentityDocument({ staff: o.tabitha }, { clientId: o.client.id, personId: me.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf("ss"), originalName: "ss.pdf" });
     await portalUploadDocument(portal, { clientId: o.client.id, year: 2025, bytes: pdf("upload"), originalName: "1099.pdf" });
     const letter = await staffUploadDocument(o.tabitha, { clientId: o.client.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, bytes: pdf("letter"), originalName: "irs-letter.pdf" });
     const convo = await prisma.conversation.create({ data: { clientId: o.client.id, subject: "IRS letter" } });

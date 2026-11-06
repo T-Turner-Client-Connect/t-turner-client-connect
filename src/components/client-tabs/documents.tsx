@@ -11,6 +11,7 @@ import { UploadDocumentForm } from "@/components/upload-document-form";
 import { deliveryContext } from "@/lib/services/accepted-returns";
 import { convertToReturnCopyAction } from "@/app/actions/accepted-returns";
 import { IdentityStaff } from "./identity-staff";
+import { DocumentRequestsCard } from "./document-requests";
 import { prisma } from "@/lib/prisma";
 import { downloadToken, REPORT_LABELS, STAFF_CATEGORY_LABELS } from "@/lib/services/documents";
 import Link from "next/link";
@@ -51,6 +52,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <div className="space-y-4 lg:col-span-2">
+        <DocumentRequestsCard clientId={clientId} />
         <IdentityStaff clientId={clientId} user={user} />
         {!scanConfigured() && (
           <Notice tone="warn" title="Malware scanning: setup required">

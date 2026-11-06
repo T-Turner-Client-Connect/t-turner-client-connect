@@ -1,3 +1,4 @@
+import { splitFlyer } from "@/lib/news/flyers";
 import Link from "next/link";
 import { CalendarDays, ChevronRight, Clock, ClipboardList, CloudUpload, CreditCard, FileText, Folder, Mail, Megaphone, MessageCircle, MessageSquareText, FolderOpen } from "lucide-react";
 import type { loadPortalHome } from "@/lib/portal/views";
@@ -88,7 +89,7 @@ export function PortalHomeView({ data, q, readOnly, name, year, previewHref, acc
   const next = nextDeadline(data);
   const req = data.requests[0];
   const countdownLines = data.countdowns.cards.flatMap((c) => c.lines);
-  const news = data.updates.map((a) => ({ id: a.id, title: a.title, body: a.body, topic: a.topic, clientId: a.clientId, pinned: a.pinned, at: a.publishedAt ?? a.createdAt }));
+  const news = data.updates.map((a) => { const f = splitFlyer(a.body); return { id: a.id, title: a.title, body: f.text, flyer: f.flyer, topic: a.topic, clientId: a.clientId, pinned: a.pinned, at: a.publishedAt ?? a.createdAt }; });
 
   return (
     <div className="space-y-6">
