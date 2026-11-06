@@ -52,7 +52,9 @@ describe("Correct a filing's form number (owner only)", () => {
 
   it("lets the state return be delivered under the corrected form 40 afterwards", async () => {
     const { tabitha, client, al } = await setup();
-    await expect(fileReturn(tabitha, { clientId: client.id, taxYear: 2025, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL", bytes: pdf("b"), originalName: "state.pdf" })).rejects.toThrow(/no filing record/);
+    // With #122 a return typed as 40 already finds the only AL filing (still recorded as 1040) instead of being refused.
+    const before = await fileReturn(tabitha, { clientId: client.id, taxYear: 2025, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL", bytes: pdf("a"), originalName: "state.pdf" });
+    expect([before.filingId, before.title]).toEqual([al.id, "2025 1040 — AL"]);
     await correctFilingForm(tabitha, al.id, "40", "Typo");
     const doc = await fileReturn(tabitha, { clientId: client.id, taxYear: 2025, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL", bytes: pdf("b"), originalName: "state.pdf" });
     expect(doc.title).toBe("2025 40 — AL");
