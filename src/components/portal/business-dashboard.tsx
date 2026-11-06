@@ -274,6 +274,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
             </h3>
             <p className="mt-3 flex-1 text-sm text-navy-900">{d.filings.next ? <><span className="font-semibold">{d.filings.next.title}</span><br />Due: {dayLabel(d.filings.next.date)}</> : "No filing deadlines right now."}</p>
             <MaybeLink href={to("/client/tax-center")} className={clsx(navyBtn, "mt-3 w-full")}>View Tax Center</MaybeLink>
+            <MaybeLink href={to("/client/compliance")} className={clsx(textLink, "mt-2")} testId="view-compliance">Tax &amp; Compliance calendar</MaybeLink>
           </div>
           <div className={clsx(card, "flex flex-col p-4")} data-testid="licenses-card">
             <h3 className={h3}>
