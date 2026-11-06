@@ -51,6 +51,8 @@ async function draft(summaryId: string) {
   const s = await prisma.taxReturnSummary.findUnique({ where: { id: summaryId } });
   if (!s) throw new ValidationError("Summary not found.");
   if (s.status !== "DRAFT") throw new ValidationError("This summary was already sent, so its items are locked. Use “Revise figures” to make a new version.");
+  // An automatic summary holds exactly what was read from the return: rebuild it by uploading the return again.
+  if ((s.returnTotals as { autoSummary?: unknown } | null)?.autoSummary) throw new ValidationError("This is an automatic summary read from the uploaded return. Its items can't be edited by hand; upload the corrected return to rebuild it.");
   return s;
 }
 async function itemInDraft(itemId: string) {
@@ -315,6 +317,8 @@ export async function excludeItem(actor: Actor, itemId: string, reason: string) 
 export async function resolveCheck(actor: Actor, checkId: string, note: string) {
   const c = await prisma.taxSummaryCheck.findUnique({ where: { id: checkId } });
   if (!c) throw new ValidationError("Check not found.");
+  // Automatic-summary checks clear only by Tabitha's "Send for approval" or a corrected upload.
+  if (c.code.startsWith("AUTO_")) throw new ValidationError("This check belongs to the automatic summary and can't be resolved by hand.");
   const s = await draft(c.summaryId);
   if (note.trim().length < 3) throw new ValidationError("Write how it was resolved.");
   await prisma.taxSummaryCheck.update({ where: { id: checkId }, data: { resolvedAt: new Date(), resolvedById: actor.id, resolutionNote: note.trim().slice(0, 500) } });

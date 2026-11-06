@@ -4501,6 +4501,12 @@ model IntegrationSettings {
   keyEscrowConfirmedAt      DateTime?
   keyEscrowConfirmedById    String?
   keyEscrowNote             String?
+  // Owner-only (primary owner): "Send tax summaries automatically". Off unless true (null = never
+  // set = off). Even when on, a summary goes out by itself only if every check passed, Tabitha
+  // uploaded the return and the client has an active portal login.
+  taxSummaryAutoSend        Boolean?
+  taxSummaryAutoSendById    String?
+  taxSummaryAutoSendAt      DateTime?
   updatedById               String?
   updatedAt                 DateTime  @updatedAt
 }

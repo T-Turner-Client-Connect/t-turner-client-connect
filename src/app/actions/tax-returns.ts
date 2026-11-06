@@ -68,11 +68,25 @@ export async function discardIntakeAction(intakeId: string, _prev: ActionState, 
   });
 }
 
+/** Delivering a year's return also delivers that year's signed Form 8879 (see publishSigned8879ForYear). */
+async function deliverSigned8879(actorId: string, documentIds: string[]) {
+  const { prisma } = await import("@/lib/prisma");
+  const { publishSigned8879ForYear } = await import("@/lib/services/auto-tax-summary");
+  const docs = await prisma.document.findMany({ where: { id: { in: documentIds }, visibility: "PUBLISHED", filingDocType: "RETURN" }, select: { clientId: true, year: true } });
+  for (const key of new Set(docs.filter((d) => d.year).map((d) => `${d.clientId}:${d.year}`))) {
+    const [clientId, year] = key.split(":");
+    await publishSigned8879ForYear(clientId, Number(year), actorId);
+  }
+}
+
 export async function returnStepAction(documentId: string, step: "submit" | "release", _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
     if (step === "submit") await submitReturnForRelease(actor, documentId);
-    else await releaseReturn(actor, documentId);
+    else {
+      await releaseReturn(actor, documentId);
+      await deliverSigned8879(actor.id, [documentId]);
+    }
     refresh();
     return step === "submit" ? "Sent to Tabitha for approval." : "Sent to the client's document vault.";
   });
@@ -84,6 +98,7 @@ export async function bulkReleaseAction(_prev: ActionState, fd: FormData): Promi
     const ids = fd.getAll("documentId").filter((v): v is string => typeof v === "string");
     if (!ids.length) throw new ValidationError("Choose the returns to send.");
     const r = await releaseReturns(actor, ids);
+    await deliverSigned8879(actor.id, r.done);
     refresh();
     return `${r.done.length} sent to clients${r.skipped.length ? `; ${r.skipped.length} not sent (${r.skipped.map((x) => x.reason).join("; ")})` : ""}.`;
   });

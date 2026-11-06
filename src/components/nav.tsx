@@ -58,6 +58,7 @@ const LINKS = [
   { href: "/agreements", label: "Agreements", icon: FileSignature, also: [] },
   { href: "/notices", label: "Audits & Notices", icon: MailWarning, also: [] },
   { href: "/taxes/returns", label: "Tax returns", icon: FileCheck2, also: ["/taxes/questionnaires"] },
+  { href: "/taxes/8879", label: "8879 Signatures", icon: FileSignature, also: [] },
   { href: "/nonprofits", label: "Nonprofit filings", icon: HeartHandshake, also: [] },
   { href: "/resources", label: "Resource Center", icon: Landmark, also: [] },
   { href: "/news", label: "News & Countdowns", icon: Newspaper, also: [] },
