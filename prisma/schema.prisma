@@ -361,6 +361,7 @@ model Client {
   clientLetters          ClientLetter[]
   coethaOptOut           CoethaOptOut?
   preparedInvitations    PortalInviteBatchRow[]
+  agreements             ClientAgreement[]
 
   @@index([emailNormalized])
   @@index([phoneNormalized])
@@ -2523,8 +2524,12 @@ model Invoice {
   // "Pay with an Invoice" request this invoice answers, and the schedule cycle that made it.
   invoiceRequest InvoiceRequest?
   scheduleItem   BillingScheduleItem?
+  // "Add invoice to this agreement": the agreement whose fees this draft was made from.
+  agreementId    String?
+  agreement      ClientAgreement?     @relation(fields: [agreementId], references: [id], onDelete: SetNull)
 
   @@index([clientId, state])
+  @@index([agreementId])
   @@index([issueDate])
 }
 
@@ -5769,6 +5774,171 @@ model PayrollTaxSettings {
   changedAt                 DateTime?
   changedById               String?
   updatedAt                 DateTime  @updatedAt
+}
+
+// ===========================================================================
+// AGREEMENTS & CONTRACTS CENTER
+// ===========================================================================
+// Clauses and templates are Tabitha's to edit; every edit is a new version.
+// A clause version Claude drafted starts as DRAFT and can't be sent until she
+// approves it. A sent agreement freezes the exact text and versions it used.
+
+enum ClauseStatus {
+  DRAFT
+  APPROVED
+}
+
+model AgreementClause {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  title     String
+  // ACK = a numbered acknowledgment the client ticks; TERM = a paragraph of terms.
+  kind      String   @default("TERM")
+  sortOrder Int      @default(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  versions AgreementClauseVersion[]
+}
+
+model AgreementClauseVersion {
+  id           String          @id @default(cuid())
+  clauseId     String
+  clause       AgreementClause @relation(fields: [clauseId], references: [id], onDelete: Cascade)
+  version      Int
+  body         String
+  status       ClauseStatus    @default(DRAFT)
+  // Where the wording came from: JOTFORM (her form, verbatim), DRAFTED (needs her approval), EDITED.
+  source       String          @default("DRAFTED")
+  approvedAt   DateTime?
+  approvedById String?
+  createdById  String?
+  createdAt    DateTime        @default(now())
+
+  @@unique([clauseId, version])
+}
+
+model AgreementTemplate {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  description String
+  sortOrder   Int      @default(100)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  versions   AgreementTemplateVersion[]
+  agreements ClientAgreement[]
+}
+
+model AgreementTemplateVersion {
+  id          String            @id @default(cuid())
+  templateId  String
+  template    AgreementTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  version     Int
+  title       String
+  intro       String
+  // Clause keys always included (scope etc.), in order.
+  clauseKeys  String[]
+  // Default options (fee structure, term, toggles, questions).
+  defaults    Json
+  createdById String?
+  createdAt   DateTime          @default(now())
+
+  @@unique([templateId, version])
+}
+
+enum ClientAgreementStatus {
+  DRAFT
+  // A staff member asked Tabitha to send it.
+  WAITING_FOR_OWNER
+  SENT
+  SIGNED
+  DECLINED
+  // Sent but not signed before its signing deadline.
+  EXPIRED
+  VOID
+}
+
+model ClientAgreement {
+  id               String                @id @default(cuid())
+  clientId         String
+  client           Client                @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  templateId       String
+  template         AgreementTemplate     @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  templateVersion  Int
+  title            String
+  status           ClientAgreementStatus @default(DRAFT)
+  // Every option chosen in step (c): services, fees, schedule, term, methods, toggles.
+  options          Json
+  // Copied from the options so tax-work gates can find a signed agreement covering a service and year.
+  serviceTypes     ServiceType[]
+  taxYear          Int?
+  startDate        DateTime?             @db.Date
+  termEndDate      DateTime?             @db.Date
+  // Frozen when sent: the exact text, the clause versions and their fingerprint.
+  frozenText       String?
+  frozenClauses    Json?
+  textHash         String?
+  requestedAt      DateTime?
+  requestedById    String?
+  sentAt           DateTime?
+  sentById         String?
+  // PORTAL (sign-in link notice) or LINK (single-use signing link).
+  sentVia          String?
+  signBy           DateTime?
+  // Signing evidence.
+  signedAt         DateTime?
+  signerName       String?
+  signerAddress    String?
+  signerPhone      String?
+  signerEmail      String?
+  signerAnswers    Json?
+  acknowledgments  Json?
+  signerIp         String?
+  signerAgent      String?
+  signedByPortalId String?
+  signedViaLinkId  String?
+  pdfDocumentId    String?               @unique
+  declinedAt       DateTime?
+  declineReason    String?
+  voidedAt         DateTime?
+  voidReason       String?
+  // A renewal draft points at the agreement it renews.
+  renewsId         String?
+  renews           ClientAgreement?      @relation("AgreementRenewal", fields: [renewsId], references: [id], onDelete: SetNull)
+  renewals         ClientAgreement[]     @relation("AgreementRenewal")
+  // Drafts made together with "Create for several clients".
+  bulkBatchId      String?
+  createdById      String
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  invoices Invoice[]
+  links    AgreementSigningLink[]
+
+  @@index([clientId, status])
+  @@index([status])
+  @@index([bulkBatchId])
+}
+
+// A secure, expiring, single-use signing link for a client with no portal login.
+// Only a hash of the token is stored; Tabitha copies the link once.
+model AgreementSigningLink {
+  id          String          @id @default(cuid())
+  agreementId String
+  agreement   ClientAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  tokenHash   String          @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  revokedAt   DateTime?
+  emailedAt   DateTime?
+  emailedTo   String?
+  createdById String
+  createdAt   DateTime        @default(now())
+
+  @@index([agreementId])
 }
 
 // ===========================================================================

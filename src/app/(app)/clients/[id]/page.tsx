@@ -23,7 +23,7 @@ import { PortalTab } from "@/components/client-tabs/portal";
 import { TaxesTab } from "@/components/client-tabs/taxes";
 import { TaxDetails } from "@/components/client-tabs/tax-details";
 import { returnTypeLabel } from "@/lib/tax/return-types";
-import { ServicesTab } from "@/components/client-tabs/services";
+import { AgreementsInvoicesTab } from "@/components/client-tabs/agreements-invoices";
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
 import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { can } from "@/lib/auth/permissions";
@@ -44,7 +44,7 @@ const TABS = [
   { key: "documents", label: "Documents" },
   { key: "bookkeeping", label: "Bookkeeping" },
   { key: "taxes", label: "Taxes" },
-  { key: "services", label: "Services & Agreements" },
+  { key: "services", label: "Agreements & Invoices" },
   { key: "appointments", label: "Appointments" },
   // Owner's Office invoices: only for staff holding Billing and invoicing → View.
   { key: "invoices", label: "Invoices" },
@@ -157,12 +157,17 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       {tab === "messages" && <MessagesTab clientId={id} conversationId={sp.c} user={user} />}
       {tab === "documents" && <DocumentsTab clientId={id} user={user} />}
       {tab === "bookkeeping" && <BookkeepingTab clientId={id} />}
-      {tab === "taxes" && <TaxesTab clientId={id} user={user} taxYear={Number(sp.taxYear) || undefined} deliver={sp.deliver ? { year: Number(sp.year) || undefined, state: sp.jur === "state", amended: sp.amended === "1" } : undefined} />}
-      {tab === "services" && <ServicesTab clientId={id} user={user} />}
-      {tab === "appointments" && <AppointmentsTab clientId={id} />}
-      {tab === "invoices" && seesInvoices && <InvoicesTab clientId={id} actor={user} />}
-      {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} actor={user} />}
-
+     {tab === "taxes" && (
+  <TaxesTab
+    clientId={id}
+    user={user}
+    taxYear={Number(sp.taxYear) || undefined}
+    deliver={sp.deliver ? { year: Number(sp.year) || undefined } : undefined}
+  />
+)}
+{tab === "services" && (
+  <AgreementsInvoicesTab clientId={id} user={user} />
+)}
       {tab === "overview" && (
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">

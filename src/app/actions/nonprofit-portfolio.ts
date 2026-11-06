@@ -154,7 +154,7 @@ export async function assignPackageAction(orgId: string, _prev: ActionState, fd:
   return run(async () => {
     const r = await assignPackage(actor, orgId, { packageKey: str(fd, "packageKey"), govFeeCents: money(str(fd, "govFee")), priceCents: money(str(fd, "price")) });
     refresh(orgId);
-    return { ok: `Package assigned. ${r.added} document${r.added === 1 ? "" : "s"} added to the checklist, and a draft pricing agreement is ready — package work begins after the client signs it.`, next: { href: `/clients/${orgId}?tab=services`, label: "Review and send the agreement" } };
+    return { ok: `Package assigned. ${r.added} document${r.added === 1 ? "" : "s"} added to the checklist, and a draft pricing agreement is ready — package work begins after the client signs it.`, next: { href: `/nonprofits/${orgId}`, label: "Review and send the package agreement" } };
   });
 }
 
