@@ -1,16 +1,17 @@
 import { ActionForm } from "@/components/action-form";
 import { Button, Field } from "@/components/ui";
 import { uploadDocumentAction } from "@/app/actions/workspace";
-import { CATEGORY_LABELS, REPORT_LABELS } from "@/lib/services/documents";
+import { REPORT_LABELS, STAFF_CATEGORY_LABELS } from "@/lib/services/documents";
 import { MONTHS } from "@/lib/services/bookkeeping";
 import { TAX_DOC_TYPES } from "@/lib/document-types";
+import { OwnerReturnInline, type DeliveryContext } from "@/components/accepted-return-fields";
 
 /**
  * Staff upload: choose the client (unless fixed), category, tax year, optional
  * month/report/tax document type, and staff-only draft or publish. Every file
  * is quarantined until the malware scan passes.
  */
-export function UploadDocumentForm({ clientId, clients }: { clientId?: string; clients?: { id: string; displayName: string }[] }) {
+export function UploadDocumentForm({ clientId, clients, delivery }: { clientId?: string; clients?: { id: string; displayName: string }[]; delivery?: DeliveryContext }) {
   const year = new Date().getFullYear();
   return (
     <ActionForm action={uploadDocumentAction.bind(null, clientId ?? null)} className="grid gap-3 sm:grid-cols-2" resetOnSuccess idempotent>
@@ -26,7 +27,7 @@ export function UploadDocumentForm({ clientId, clients }: { clientId?: string; c
       <Field label="Title"><input className="input" name="title" placeholder="e.g. 2025 Form 1040" /></Field>
       <Field label="Category">
         <select className="input" name="category" defaultValue="TAXES">
-          {Object.entries(CATEGORY_LABELS).filter(([k]) => k !== "IDENTITY" && k !== "OWNER_K1").map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          {Object.entries(STAFF_CATEGORY_LABELS).filter(([k]) => k !== "IDENTITY" && k !== "OWNER_K1").map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
       </Field>
       <Field label="Tax year" hint="Required for tax records."><input className="input" name="year" inputMode="numeric" defaultValue={year - 1} /></Field>
@@ -36,7 +37,7 @@ export function UploadDocumentForm({ clientId, clients }: { clientId?: string; c
           {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
         </select>
       </Field>
-      <Field label="Tax document type" hint="Required for tax records. Federal, state and amended returns appear separately in the client's Retrieve Tax Filings. Labels the file only — it never marks a return accepted or work complete.">
+      <Field label="Tax document type" hint={delivery?.owner ? "Required for tax records. Choosing Federal, State or Amended return lets you record the acceptance and deliver it in one step, right here." : "Required for tax records. Federal, state and amended returns appear separately in the client's Retrieve Tax Filings. Labels the file only — it never marks a return accepted or work complete."}>
         <select className="input" name="docType" defaultValue="">
           <option value="">—</option>
           {Object.entries(TAX_DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -48,6 +49,7 @@ export function UploadDocumentForm({ clientId, clients }: { clientId?: string; c
           {Object.entries(REPORT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
       </Field>
+      {clientId && delivery?.owner && <OwnerReturnInline ctx={delivery} />}
       <fieldset className="space-y-1 text-sm sm:col-span-2">
         <legend className="mb-1 font-semibold text-navy-900">Who can see it</legend>
         <label className="flex items-center gap-2"><input type="radio" name="visibility" value="STAFF_ONLY" defaultChecked /> Staff-only draft</label>

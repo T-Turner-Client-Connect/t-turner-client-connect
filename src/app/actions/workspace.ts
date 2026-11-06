@@ -83,6 +83,19 @@ export async function uploadDocumentAction(fixedClientId: string | null, _prev: 
       if (!y || y < 2000 || y > new Date().getFullYear() + 1) throw new ValidationError("Enter the tax year for this tax record.");
       if (!docType) throw new ValidationError("Choose the tax document type (federal return, state return, amended return…).");
     }
+    // Tabitha's one step on the Documents tab: a federal/state/amended return delivered as accepted.
+    if (fixedClientId && fd.get("deliverAccepted") === "on" && str(fd, "category") === "TAXES" && ["FEDERAL_RETURN", "STATE_RETURN", "AMENDED_RETURN"].includes(docType)) {
+      const { isReportApprover } = await import("@/lib/services/bookkeeping-clients");
+      if (!(await isReportApprover(actor))) throw new ValidationError("Only Tabitha delivers a return in one step. Use the client's Taxes tab → Finish & Send a Return; it waits there for her release.");
+      const { deliverAcceptedReturn } = await import("@/lib/services/accepted-returns");
+      const { deliveryFrom, fileIn, summarize } = await import("@/lib/tax/delivery-form");
+      const ret = await fileIn(fd, "file");
+      if (!ret) throw new ValidationError("Choose the return PDF.");
+      const r = await deliverAcceptedReturn(actor, { ...(await deliveryFrom(fd, clientId, ret)), sendToClient: true });
+      refresh(clientId);
+      revalidatePath("/taxes/returns");
+      return summarize(r, Number(str(fd, "year")));
+    }
     const file = await fileFrom(fd);
     const doc = await staffUploadDocument(actor, {
       clientId,

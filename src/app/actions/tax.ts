@@ -10,7 +10,6 @@ import { staffUploadDocument } from "@/lib/services/documents";
 import {
   attachFilingDocument,
   commitTaxImport,
-  correctFilingForm,
   createFiling,
   decideTaxRow,
   publishFilingUpdate,
@@ -54,6 +53,10 @@ export async function prepStatusAction(clientId: string, filingId: string, _prev
 export async function filingStatusAction(clientId: string, filingId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
+    // The return PDF (client copy) is its own field — never the acknowledgment box.
+    const ret = fd.get("returnFile");
+    const returnCopy = ret instanceof File && ret.size > 0 ? { bytes: new Uint8Array(await ret.arrayBuffer()), originalName: ret.name } : null;
+    if (returnCopy && str(fd, "filingStatus") !== "ACCEPTED") throw new ValidationError("Attach the accepted return PDF only when recording Accepted.");
     let evidenceDocumentId = str(fd, "evidenceDocumentId") || null;
     const file = fd.get("ackFile");
     if (file instanceof File && file.size > 0) {
@@ -80,6 +83,13 @@ export async function filingStatusAction(clientId: string, filingId: string, _pr
       rejectionCodes: str(fd, "rejectionCodes"),
       submission: { form8879Confirmed: fd.get("form8879") === "on", overrideReason: str(fd, "overrideReason") || null },
     });
+    if (returnCopy) {
+      const { fileReturnForFiling } = await import("@/lib/services/accepted-returns");
+      const doc = await fileReturnForFiling(actor, filingId, returnCopy);
+      refresh(clientId);
+      revalidatePath("/taxes/returns");
+      return doc.visibility === "PUBLISHED" ? "Accepted recorded and the return copy sent to the client's vault (shown once the malware scan passes)." : "Accepted recorded and the return copy saved. Tabitha releases it to the client.";
+    }
     refresh(clientId);
     return "Filing status recorded.";
   });
@@ -179,16 +189,5 @@ export async function commitTaxImportAction(batchId: string, _prev: ActionState,
     revalidatePath(`/imports/tax/${batchId}`);
     revalidatePath("/workflows");
     return `Applied ${r.applied}, skipped ${r.skipped}. Nothing was published to clients — publish acknowledgments from each filing.`;
-  });
-}
-
-/** Owner-only: fix a filing's form number (e.g. AL 1040 → 40). */
-export async function correctFilingFormAction(clientId: string, filingId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
-  const actor = await requireUser();
-  return run(async () => {
-    const r = await correctFilingForm(actor, filingId, str(fd, "returnType"), str(fd, "reason"));
-    refresh(clientId);
-    revalidatePath("/portal");
-    return `Form number corrected: ${r.from} → ${r.to}.${r.renamed ? ` ${r.renamed} document name${r.renamed === 1 ? "" : "s"} updated.` : ""}`;
   });
 }

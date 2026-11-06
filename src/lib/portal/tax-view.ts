@@ -1,6 +1,7 @@
 import "server-only";
 import { notRoutineStatementRequest } from "@/lib/services/client-request-scope";
 import { prisma } from "@/lib/prisma";
+import { clientReceivableWhere } from "@/lib/services/documents";
 
 /**
  * Filings and their published documents for one account, grouped by tax
@@ -10,7 +11,8 @@ export async function loadPortalTaxes(clientId: string) {
   const [filings, requests, signatures] = await Promise.all([
     prisma.filingRecord.findMany({
       where: { clientId, visibleToClient: true },
-      include: { documents: { where: { deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN" }, orderBy: { createdAt: "desc" } } },
+      // Released returns only (the same client-receivable rule as every client list).
+      include: { documents: { where: { deletedAt: null, visibility: "PUBLISHED", scanStatus: "CLEAN", AND: [clientReceivableWhere] }, orderBy: { createdAt: "desc" } } },
       orderBy: [{ taxYear: "desc" }, { filingType: "asc" }, { jurisdiction: "asc" }],
     }),
     prisma.documentRequest.findMany({ where: { clientId, status: "OPEN", category: { in: ["TAXES", "CLIENT_UPLOADS"] }, AND: [notRoutineStatementRequest] }, orderBy: { dueAt: "asc" } }),

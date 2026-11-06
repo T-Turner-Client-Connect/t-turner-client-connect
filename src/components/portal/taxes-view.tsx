@@ -1,6 +1,6 @@
 import type { loadPortalTaxes } from "@/lib/portal/tax-view";
 import { Badge, Card, EmptyState } from "@/components/ui";
-import { AMENDMENT_LABELS, filingStatusLabel, jurisdictionLabel } from "@/lib/tax/normalize";
+import { AMENDMENT_LABELS, federalFirst, filingStatusLabel, portalJurisdictionLabel } from "@/lib/tax/normalize";
 import { SIGNATURE_LABELS } from "@/lib/services/signatures";
 import { fmtDate } from "@/lib/format";
 
@@ -13,7 +13,7 @@ const PREP_PLAIN = {
   AWAITING_SIGNATURE: "Waiting for your signature",
   READY_TO_FILE: "Ready to file",
 } as const;
-const DOC_LABEL: Record<string, string> = { OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Notice from the agency", CORRESPONDENCE: "Correspondence" };
+const DOC_LABEL: Record<string, string> = { RETURN: "Your accepted return", OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Notice from the agency", CORRESPONDENCE: "Correspondence" };
 
 export function PortalTaxesView({ data, linkFor }: { data: Data; linkFor: (id: string) => string }) {
   if (!data.years.length && !data.requests.length) return <EmptyState title="No tax filings yet">Your return progress and filing updates will appear here, by tax year.</EmptyState>;
@@ -25,7 +25,7 @@ export function PortalTaxesView({ data, linkFor }: { data: Data; linkFor: (id: s
         </Card>
       )}
       {data.years.map((year) => {
-        const filings = data.filings.filter((f) => f.taxYear === year);
+        const filings = data.filings.filter((f) => f.taxYear === year).sort(federalFirst);
         const sigs = data.signatures.filter((s) => s.taxYear === year);
         const groups = [
           ["Your return", filings.filter((f) => f.filingType === "ORIGINAL")],
@@ -44,7 +44,7 @@ export function PortalTaxesView({ data, linkFor }: { data: Data; linkFor: (id: s
                       <li key={f.id} className="rounded-xl border border-ivory-200 p-4">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div>
-                            <p className="font-semibold text-navy-900">{jurisdictionLabel(f.jurisdiction)} — Form {f.returnType}</p>
+                            <p className="font-semibold text-navy-900">{portalJurisdictionLabel(f.jurisdiction)} — Form {f.returnType}</p>
                             {f.filingType === "ORIGINAL" && f.filingStatus === "NOT_SUBMITTED" && <p className="text-sm text-slate-600">Progress: {PREP_PLAIN[f.prepStatus]}</p>}
                             {f.submittedAt && <p className="text-sm text-slate-600">{f.method === "PAPER" ? "Mailed" : "Submitted"} {fmtDate(f.submittedAt)}</p>}
                           </div>
