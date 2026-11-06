@@ -157,17 +157,11 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       {tab === "messages" && <MessagesTab clientId={id} conversationId={sp.c} user={user} />}
       {tab === "documents" && <DocumentsTab clientId={id} user={user} />}
       {tab === "bookkeeping" && <BookkeepingTab clientId={id} />}
-     {tab === "taxes" && (
-  <TaxesTab
-    clientId={id}
-    user={user}
-    taxYear={Number(sp.taxYear) || undefined}
-    deliver={sp.deliver ? { year: Number(sp.year) || undefined } : undefined}
-  />
-)}
-{tab === "services" && (
-  <AgreementsInvoicesTab clientId={id} user={user} />
-)}
+      {tab === "taxes" && <TaxesTab clientId={id} user={user} taxYear={Number(sp.taxYear) || undefined} deliver={sp.deliver ? { year: Number(sp.year) || undefined, state: sp.jur === "state", amended: sp.amended === "1" } : undefined} />}
+      {tab === "services" && <AgreementsInvoicesTab clientId={id} user={user} />}
+      {tab === "appointments" && <AppointmentsTab clientId={id} />}
+      {tab === "invoices" && seesInvoices && <InvoicesTab clientId={id} actor={user} />}
+      {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} actor={user} />}
       {tab === "overview" && (
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
