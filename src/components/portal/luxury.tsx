@@ -50,7 +50,7 @@ export function ActionTiles({ tiles, compact = false }: { tiles: Tile[]; compact
   );
 }
 
-export type NewsItem = { id: string; title: string; body: string; topic: string | null; clientId: string | null; pinned: boolean; at?: Date | null; sourceUrl?: string | null };
+export type NewsItem = { id: string; title: string; body: string; topic: string | null; clientId: string | null; pinned: boolean; at?: Date | null; sourceUrl?: string | null; flyer?: { src: string; alt: string } | null };
 
 function topicLook(n: NewsItem) {
   const t = (n.topic ?? "").toUpperCase();
@@ -72,7 +72,7 @@ export function NewsList({ items, href, limit = 3, full }: { items: NewsItem[]; 
           <li key={n.id}>
             <Link href={href} className="group flex items-center gap-4 py-4">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={look.img} alt="" width={128} height={82} className="h-16 w-24 shrink-0 rounded-xl object-cover shadow-sm ring-1 ring-gold-200 sm:h-20 sm:w-32" />
+              <img src={n.flyer?.src ?? look.img} alt="" width={128} height={82} className="h-16 w-24 shrink-0 rounded-xl object-cover shadow-sm ring-1 ring-gold-200 sm:h-20 sm:w-32" />
               <span className="min-w-0 flex-1">
                 <span className="block font-serif text-[17px] font-bold leading-snug text-navy-900 [overflow-wrap:anywhere]">{n.title}</span>
                 <span className={`mt-1 block text-sm text-slate-700 ${full ? "whitespace-pre-wrap" : "line-clamp-2"}`}>{n.body}</span>
@@ -84,6 +84,12 @@ export function NewsList({ items, href, limit = 3, full }: { items: NewsItem[]; 
               </span>
               <ChevronRight className="size-5 shrink-0 text-gold-600 transition group-hover:translate-x-0.5" aria-hidden />
             </Link>
+            {full && n.flyer && (
+              <a href={n.flyer.src} target="_blank" rel="noopener" className="mb-4 block" data-testid="news-flyer" aria-label={`${n.title} (opens the flyer in a new tab)`}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={n.flyer.src} alt={n.flyer.alt} width={1536} height={1024} loading="lazy" className="h-auto w-full rounded-2xl shadow-sm ring-1 ring-gold-200" />
+              </a>
+            )}
           </li>
         );
       })}

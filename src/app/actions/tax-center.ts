@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { joinFlyer } from "@/lib/news/flyers";
 import { requireUser } from "@/lib/auth/session";
 import { requirePortalUser } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
@@ -125,7 +126,7 @@ export async function saveQuestionnaireAction(id: string | null, _prev: ActionSt
 export async function saveAnnouncementAction(id: string | null, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    const a = await saveAnnouncement(actor, { title: str(fd, "title"), body: str(fd, "body"), audience: str(fd, "audience"), topic: str(fd, "topic"), pinned: fd.get("pinned") === "on", publishAt: dateOrNull(fd, "publishAt"), expiresAt: dateOrNull(fd, "expiresAt") }, id ?? undefined);
+    const a = await saveAnnouncement(actor, { title: str(fd, "title"), body: joinFlyer(str(fd, "body"), str(fd, "flyer")), audience: str(fd, "audience"), topic: str(fd, "topic"), pinned: fd.get("pinned") === "on", publishAt: dateOrNull(fd, "publishAt"), expiresAt: dateOrNull(fd, "expiresAt") }, id ?? undefined);
     revalidatePath("/news");
     revalidatePath("/client", "layout");
     return a.publishedAt! > new Date() ? "Scheduled. It appears on client dashboards at the start time — no texts or emails are sent." : "Published to client dashboards. No texts or emails are sent.";
