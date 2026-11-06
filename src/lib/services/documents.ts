@@ -8,7 +8,7 @@ import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
 import { allowedCategories, effectiveGrantsFor, k1VisibleWhere, portalDocumentScope, requireClientAccess } from "@/lib/portal/access";
 import { storage } from "@/lib/storage";
-import { decryptBytes, encryptBytes, sign, verifySignature } from "@/lib/crypto";
+import { currentFileKeyVersion, decryptBytes, encryptBytes, sign, verifySignature } from "@/lib/crypto";
 import { imageSize, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import { scanBytesDetailed, scanConfigured } from "@/lib/scan";
 import { queueStaffAlert } from "./staff-alerts";
@@ -88,12 +88,20 @@ export const REPORT_LABELS: Record<ReportType, string> = {
 // "system": files received from an integration (e.g. a Jotform submission).
 type Uploader = { staff: Actor } | { portal: PortalActor } | { system: string };
 
-/** The original bytes of a stored document (decrypted when the app encrypted them). */
-export async function readDocumentBytes(file: { storageKey: string; encrypted: boolean }) {
-  const bytes = await storage.get(file.storageKey);
+/**
+ * The original bytes of a stored document. Files written since the document-security release are
+ * encrypted (AES-256-GCM, the app key); older plaintext files still read as they are until the
+ * owner's encryption job moves them. A file encrypted with the previous key still opens during a
+ * key rotation (APP_ENCRYPTION_KEY_PREVIOUS).
+ */
+export async function readDocumentBytes(file: { storageKey: string; encrypted: boolean }, store: { get(key: string): Promise<Uint8Array | null> } = storage) {
+  const bytes = await store.get(file.storageKey);
   if (!bytes) return null;
   return file.encrypted ? decryptBytes(bytes) : bytes;
 }
+
+/** How long a deleted document stays in the owner's "Recently deleted" list before its bytes may be purged. */
+export const RECOVERY_DAYS = 30;
 
 export const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -120,8 +128,10 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
   if (scan === "INFECTED") throw new ValidationError("This file was flagged by the virus scanner and was not saved.");
   const size = type.mime.startsWith("image/") ? imageSize(bytes, type.mime) : null;
   const storageKey = `client_document/${randomUUID()}`;
-  // Identity documents are encrypted by the app before they reach storage.
-  await storage.put(storageKey, opts.encrypt ? encryptBytes(bytes) : bytes);
+  // Every client document (all categories) is encrypted by the app before it reaches storage.
+  // `opts.encrypt` is kept for callers written before this was the rule; it no longer changes anything.
+  void opts.encrypt;
+  await storage.put(storageKey, encryptBytes(bytes));
   const name = originalName.replace(/[^\w.\- ()]/g, "_").slice(0, 150) || `document.${type.ext}`;
   return {
     storageKey,
@@ -140,7 +150,8 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
       uploadedById: "staff" in uploader ? uploader.staff.id : null,
       uploadedByPortalUserId: "portal" in uploader ? uploader.portal.id : null,
       sha256,
-      encrypted: !!opts.encrypt,
+      encrypted: true,
+      keyVersion: currentFileKeyVersion(),
     },
   };
 }
@@ -429,7 +440,12 @@ export async function setRetention(actor: Actor, category: DocumentCategory, yea
   await audit(prisma, { actorId: actor.id, action: "retention.updated", entityType: "RetentionPolicy", entityId: category, details: { years } });
 }
 
-/** Admin-only. Destroys the stored file, keeps a tombstone and audit trail. */
+/**
+ * Admin-only, and recoverable. The document leaves every staff and client list at once and moves to
+ * the owner's "Recently deleted" list (Owner's Office). Its bytes are NOT removed here: the nightly
+ * purge removes them only after RECOVERY_DAYS and once a successful backup holds them
+ * (src/lib/services/recently-deleted.ts). The owner can restore it until then.
+ */
 export async function deleteDocument(actor: Actor, documentId: string, reason: string) {
   assertAdmin(actor);
   if (!reason.trim()) throw new ValidationError("Record why this document is being deleted.");
@@ -437,11 +453,13 @@ export async function deleteDocument(actor: Actor, documentId: string, reason: s
   if (!doc || doc.deletedAt) throw new ValidationError("Document not found.");
   const pinned = await prisma.signatureRequest.count({ where: { OR: [{ signedDocumentId: documentId }, { auditTrailDocumentId: documentId }] } });
   if (pinned) throw new ValidationError("Signed documents and signature audit trails can't be deleted here.");
-  await storage.remove(doc.file.storageKey);
+  const now = new Date();
+  const purgeAfter = new Date(now.getTime() + RECOVERY_DAYS * 24 * 60 * 60 * 1000);
   await prisma.$transaction([
-    prisma.document.update({ where: { id: documentId }, data: { deletedAt: new Date(), deletedById: actor.id, deletionReason: reason.trim().slice(0, 500), visibility: "STAFF_ONLY" } }),
+    // The visibility before deletion is kept in the audit entry so a restore can put it back.
+    prisma.document.update({ where: { id: documentId }, data: { deletedAt: now, deletedById: actor.id, deletionReason: reason.trim().slice(0, 500), visibility: "STAFF_ONLY", purgeAfter, restoredAt: null, restoredById: null } }),
     prisma.documentAccessLog.create({ data: { documentId, action: "DELETE", staffUserId: actor.id } }),
-    prisma.auditLog.create({ data: { actorId: actor.id, action: "document.deleted", entityType: "Document", entityId: documentId, clientId: doc.clientId, details: { reason: reason.trim().slice(0, 500), title: doc.title } } }),
+    prisma.auditLog.create({ data: { actorId: actor.id, action: "document.deleted", entityType: "Document", entityId: documentId, clientId: doc.clientId, details: { reason: reason.trim().slice(0, 500), title: doc.title, visibilityBefore: doc.visibility, purgeAfter: purgeAfter.toISOString(), recoverable: true } } }),
   ]);
 }
 
