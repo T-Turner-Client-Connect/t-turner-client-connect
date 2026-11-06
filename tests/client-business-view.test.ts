@@ -106,7 +106,7 @@ describe("Personal / Business Home", () => {
     expect(d.client.name).toBe("Lakeside Pretend Bakery LLC");
     expect(d.figures).toBeNull(); // nothing released yet
     expect(d.isReleased).toBe(false);
-    expect(d.feed.connected).toBe(false);
+    expect(d.feed?.connected).toBe(false); // managed() enrolls it on the Bookkeeping Clients list, so banking is shown
     // A plain business with no payroll, cards, mortgage or contractors: only the basics are asked for
     // (never bank statements: our office retrieves those itself).
     expect(d.checklist.map((c) => c.key)).toEqual(["RECEIPTS"]);
