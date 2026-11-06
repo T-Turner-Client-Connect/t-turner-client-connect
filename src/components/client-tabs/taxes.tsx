@@ -6,7 +6,7 @@ import { filingLabel, RETURN_COPY_STATUS } from "@/lib/services/tax-returns";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Field, Notice } from "@/components/ui";
-import { amendmentOutcomeAction, attachFilingDocAction, createFilingAction, filingStatusAction, prepStatusAction, publishFilingAction, setTaxSoftwareIdAction } from "@/app/actions/tax";
+import { amendmentOutcomeAction, attachFilingDocAction, correctFilingFormAction, createFilingAction, filingStatusAction, prepStatusAction, publishFilingAction, setTaxSoftwareIdAction } from "@/app/actions/tax";
 import { prisma } from "@/lib/prisma";
 import { downloadToken } from "@/lib/services/documents";
 import { AMENDMENT_LABELS, FILING_LABELS, filingStatusLabel, filingTitle, PREP_LABELS } from "@/lib/tax/normalize";
@@ -131,6 +131,17 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
                       <Button type="submit" variant="secondary">Update</Button>
                     </ActionForm>
 
+                    {approver && (
+                      <details>
+                        <summary className="cursor-pointer text-sm font-semibold underline">Correct form number (Tabitha only)</summary>
+                        <ActionForm action={correctFilingFormAction.bind(null, clientId, f.id)} className="mt-2 grid gap-2 sm:grid-cols-3" confirm="Change this filing's form number? The client's portal and document names will show the new number.">
+                          <Field label="Correct form number" hint={f.jurisdiction === "AL" ? "Alabama individual return: 40" : undefined}><input className="input" name="returnType" defaultValue={f.returnType} required /></Field>
+                          <Field label="Reason" className="sm:col-span-2"><input className="input" name="reason" placeholder="Entered as 1040 by mistake" required /></Field>
+                          <div><Button type="submit" variant="secondary">Save form number</Button></div>
+                        </ActionForm>
+                      </details>
+                    )}
+
                     <details>
                       <summary className="cursor-pointer text-sm font-semibold underline">Record a filing status (audited)</summary>
                       <ActionForm action={filingStatusAction.bind(null, clientId, f.id)} className="mt-2 grid gap-2 sm:grid-cols-2" resetOnSuccess>
@@ -218,7 +229,7 @@ export async function TaxesTab({ clientId, user }: { clientId: string; user: Act
                       <ul className="mt-1 space-y-0.5 text-slate-600">
                         {f.events.map((e) => (
                           <li key={e.id}>
-                            {fmtDate(e.eventAt)} · {e.field === "PREP" ? "Preparation" : e.field === "AMENDMENT" ? "Amendment" : "Filing"}: {e.fromValue?.toLowerCase().replace(/_/g, " ") ?? "—"} → {e.toValue.toLowerCase().replace(/_/g, " ")} · {e.source === "TAXACT_IMPORT" ? "TaxAct import" : staffNames.get(e.actorId ?? "") ?? "staff"}
+                            {fmtDate(e.eventAt)} · {e.field === "PREP" ? "Preparation" : e.field === "AMENDMENT" ? "Amendment" : e.field === "FORM" ? "Form number" : "Filing"}: {e.fromValue?.toLowerCase().replace(/_/g, " ") ?? "—"} → {e.toValue.toLowerCase().replace(/_/g, " ")} · {e.source === "TAXACT_IMPORT" ? "TaxAct import" : staffNames.get(e.actorId ?? "") ?? "staff"}
                             {e.verificationNote && ` · “${e.verificationNote}”`}
                           </li>
                         ))}
