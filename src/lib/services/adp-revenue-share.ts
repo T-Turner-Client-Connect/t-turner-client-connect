@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/lib/auth/actor";
 import { assertOwner } from "@/lib/auth/owner";
 import { storage } from "@/lib/storage";
+import { encryptBytes, openStoredBytes } from "@/lib/crypto";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import {
   ADP_PRODUCTS,
@@ -262,7 +263,8 @@ async function storeStatementFile(file: UploadInput) {
   const type = sniffType(file.bytes, { allowSpreadsheet: true, name: file.originalName });
   need(type && ["pdf", "csv", "xlsx"].includes(type.ext), `Upload the ADP statement as ${STATEMENT_FILE_TYPES}.`);
   const key = `owner_private/adp/statements/${randomBytes(16).toString("hex")}`;
-  await storage.put(key, file.bytes);
+  // Encrypted at rest, like every other stored file (the sha256 is of the original bytes).
+  await storage.put(key, encryptBytes(file.bytes));
   return { fileKey: key, fileName: file.originalName.replace(/[\r\n"]/g, "").slice(0, 200) || `statement.${type.ext}`, fileMime: type.mime, fileSize: file.bytes.byteLength, fileSha256: sha256(file.bytes), fileUploadedAt: new Date() };
 }
 
@@ -492,7 +494,8 @@ export async function readStatementFile(actor: Actor, id: string) {
   await assertOwner(actor);
   const s = await prisma.adpStatement.findUnique({ where: { id }, select: { fileKey: true, fileName: true, fileMime: true } });
   if (!s?.fileKey) return null;
-  const bytes = await storage.get(s.fileKey);
+  const stored = await storage.get(s.fileKey);
+  const bytes = stored ? openStoredBytes(stored) : null;
   return bytes ? { bytes, name: s.fileName ?? "adp-statement", mime: s.fileMime ?? "application/octet-stream" } : null;
 }
 

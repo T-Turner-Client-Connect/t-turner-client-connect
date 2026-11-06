@@ -12,6 +12,7 @@ import { claimOwnerOffice, officeTabs } from "@/lib/auth/owner";
 import { officeAccessFor } from "@/lib/auth/permissions";
 import { GRANTABLE_KEYS } from "@/lib/permissions";
 import { storage } from "@/lib/storage";
+import { looksEncrypted, openStoredBytes } from "@/lib/crypto";
 import {
   adpFiscalQuarter,
   allocate,
@@ -564,7 +565,10 @@ describe("statement file upload", () => {
     expect(a.fileKey).toMatch(/^owner_private\/adp\/statements\/[0-9a-f]{32}$/);
     expect(a.fileSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(a.fileMime).toBe("application/pdf");
-    expect(await storage.get(a.fileKey!)).toEqual(bytes);
+    // Stored encrypted at rest; it opens to the original bytes.
+    const stored = (await storage.get(a.fileKey!))!;
+    expect(looksEncrypted(stored)).toBe(true);
+    expect(openStoredBytes(stored)).toEqual(bytes);
 
     const dup = svc.createStatement(o.tab, { ...header({ periodLabel: "Another" }), file: { bytes, originalName: "renamed.pdf" } });
     await expect(dup).rejects.toThrow("already uploaded with the statement “ADP FY2027 Q1 (FICTIONAL)”");
