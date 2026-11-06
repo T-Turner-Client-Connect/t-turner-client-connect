@@ -16,10 +16,15 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:sample": "tsx prisma/sample-data.ts",
     "postinstall": "prisma generate",
-    "db:migrate:local": "node scripts/migrate-local.mjs"
+    "db:migrate:local": "node scripts/migrate-local.mjs",
+    "backup": "tsx --require ./scripts/lib/cli-preload.cjs scripts/backup-restore.ts",
+    "files:encrypt": "tsx --require ./scripts/lib/cli-preload.cjs scripts/encrypt-files.ts",
+    "storage:report": "tsx --require ./scripts/lib/cli-preload.cjs scripts/storage-report.ts",
+    "drill:seed": "tsx --require ./scripts/lib/cli-preload.cjs scripts/drill-seed.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.4.0",
+    "@aws-sdk/client-s3": "^3.1161.0",
     "@netlify/blobs": "^11.1.7",
     "@netlify/database": "^2.0.1",
     "@prisma/client": "^5.22.0",
