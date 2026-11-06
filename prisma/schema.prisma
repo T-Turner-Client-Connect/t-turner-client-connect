@@ -575,8 +575,11 @@ model StoredFile {
   uploadedByPortalUser   PortalUser? @relation(fields: [uploadedByPortalUserId], references: [id])
   // SHA-256 of the bytes: the same file is stored once per client.
   sha256                 String?
-  // Bytes encrypted by the app (AES-256-GCM) before storage — identity documents.
+  // Bytes encrypted by the app (AES-256-GCM) before storage — every client file written since the
+  // document-security release; older plaintext files are moved by the owner's encryption job.
   encrypted              Boolean     @default(false)
+  // Which app key wrote the bytes ("k" + 8 hex of a key fingerprint — never the key). Null: older format or plaintext.
+  keyVersion             String?
   createdAt              DateTime    @default(now())
 
   campaigns      Campaign[]
@@ -1192,10 +1195,17 @@ model Document {
   requestId          String?
   request            DocumentRequest?   @relation(fields: [requestId], references: [id], onDelete: SetNull)
   retainUntil        DateTime?
-  // Audited deletion: metadata is kept, the stored file is destroyed.
+  // Audited, recoverable deletion: the document leaves every staff and client list and goes to the
+  // owner's "Recently deleted" list. Its bytes are kept until purgeAfter (30 days) AND a successful
+  // backup holds them; then the nightly purge removes the bytes (purgedAt) and keeps the record.
   deletedAt          DateTime?
   deletedById        String?
   deletionReason     String?
+  purgeAfter         DateTime?
+  purgedAt           DateTime?
+  purgedById         String?
+  restoredAt         DateTime?
+  restoredById       String?
   createdAt          DateTime           @default(now())
 
   messages               Message[]            @relation("MessageAttachments")
@@ -2627,19 +2637,21 @@ model BillingSettings {
 }
 
 model Expense {
-  id          String         @id @default(cuid())
-  spentOn     DateTime       @db.Date
-  vendor      String
-  category    String
-  amountCents Int
-  method      PaymentMethod?
-  note        String?
-  receiptKey  String?        @unique
-  receiptName String?
-  receiptMime String?
-  createdById String
-  createdAt   DateTime       @default(now())
-  deletedAt   DateTime?
+  id               String         @id @default(cuid())
+  spentOn          DateTime       @db.Date
+  vendor           String
+  category         String
+  amountCents      Int
+  method           PaymentMethod?
+  note             String?
+  receiptKey       String?        @unique
+  receiptName      String?
+  receiptMime      String?
+  // Receipt bytes encrypted at rest (null/false: an older plaintext receipt).
+  receiptEncrypted Boolean?
+  createdById      String
+  createdAt        DateTime       @default(now())
+  deletedAt        DateTime?
 
   @@index([spentOn])
 }
@@ -2798,6 +2810,8 @@ model OnboardingFile {
   mimeType        String
   sizeBytes       Int
   movedDocumentId String?
+  // Encrypted at rest by the app (null/false: an older plaintext file, moved by the owner's encryption job).
+  encrypted       Boolean?
   createdAt       DateTime              @default(now())
 }
 
@@ -4468,6 +4482,14 @@ model IntegrationSettings {
   portalInvitesAuthorized   Boolean   @default(false)
   portalInvitesChangedById  String?
   portalInvitesChangedAt    DateTime?
+  // Owner-only switch: independent, encrypted nightly backups (also need the BACKUP_* settings in Netlify).
+  nightlyBackupsEnabled     Boolean?
+  nightlyBackupsChangedById String?
+  nightlyBackupsChangedAt   DateTime?
+  // The owner's attestation that both keys are held offline (two sealed copies, stored separately).
+  keyEscrowConfirmedAt      DateTime?
+  keyEscrowConfirmedById    String?
+  keyEscrowNote             String?
   updatedById               String?
   updatedAt                 DateTime  @updatedAt
 }
@@ -5903,4 +5925,159 @@ model AgreementSigningLink {
   createdAt   DateTime        @default(now())
 
   @@index([agreementId])
+}
+
+// ===========================================================================
+// Document security: encryption migration, backups, restore tests
+// ===========================================================================
+
+// One owner-started run of the encryption job (plaintext → encrypted, or re-encrypt to the
+// current key). Never started by a deploy. Resumable: each batch picks up files still to do.
+model FileEncryptionJob {
+  id          String    @id @default(cuid())
+  // "ENCRYPT" (plaintext files) | "REKEY" (encrypted with an older key)
+  mode        String    @default("ENCRYPT")
+  // "RUNNING" | "PAUSED" | "COMPLETED"
+  status      String    @default("RUNNING")
+  // Category groups in the order the owner chose (records that exist only in Client Connect first).
+  groupOrder  String[]
+  startedById String?
+  // "PAGE" | "CLI"
+  source      String    @default("PAGE")
+  totalFiles  Int       @default(0)
+  totalBytes  BigInt    @default(0)
+  doneFiles   Int       @default(0)
+  doneBytes   BigInt    @default(0)
+  failedFiles Int       @default(0)
+  batches     Int       @default(0)
+  lastError   String?
+  startedAt   DateTime  @default(now())
+  lastBatchAt DateTime?
+  finishedAt  DateTime?
+
+  items FileEncryptionItem[]
+}
+
+// Per-file result. A failure leaves the original untouched and is retried on the next batch.
+model FileEncryptionItem {
+  id         String            @id @default(cuid())
+  jobId      String
+  job        FileEncryptionJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  // What the bytes belong to: "StoredFile" | "OnboardingFile" | "Expense"
+  sourceType String
+  sourceId   String
+  group      String
+  // "MIGRATED" | "FAILED"
+  status     String
+  attempts   Int               @default(1)
+  oldKey     String
+  newKey     String?
+  sizeBytes  Int               @default(0)
+  lastError  String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@unique([jobId, sourceType, sourceId])
+  @@index([status])
+}
+
+// Originals the encryption job replaced. They are never removed automatically: the owner removes
+// them separately, only after 30 days AND a successful backup that includes the encrypted copy.
+model PendingOriginalRemoval {
+  id             String    @id @default(cuid())
+  sourceType     String
+  sourceId       String
+  originalKey    String    @unique
+  replacementKey String
+  sha256         String?
+  // "ENCRYPTION_MIGRATION" | "KEY_ROTATION"
+  reason         String
+  jobId          String?
+  createdAt      DateTime  @default(now())
+  removedAt      DateTime?
+  removedById    String?
+
+  @@index([removedAt, createdAt])
+}
+
+// One backup run (nightly or started by the owner). Resumable through phase + cursor.
+model BackupRun {
+  id             String    @id @default(cuid())
+  // "NIGHTLY" | "MANUAL"
+  trigger        String    @default("NIGHTLY")
+  // "RUNNING" | "SUCCEEDED" | "FAILED"
+  status         String    @default("RUNNING")
+  // "DB" | "FILES" | "MANIFEST" | "PRUNE" | "DONE"
+  phase          String    @default("DB")
+  cursor         Json?
+  // Office (Central) date the run covers, e.g. 2026-11-04.
+  backupDate     String
+  prefix         String
+  startedById    String?
+  startedAt      DateTime  @default(now())
+  heartbeatAt    DateTime  @default(now())
+  // A step holds this lease while it works, so two callers never work on the same run at once.
+  leaseUntil     DateTime?
+  finishedAt     DateTime?
+  steps          Int       @default(0)
+  tables         Int       @default(0)
+  rows           BigInt    @default(0)
+  // Files listed in this night's manifest / newly uploaded this night.
+  files          Int       @default(0)
+  filesUploaded  Int       @default(0)
+  bytesUploaded  BigInt    @default(0)
+  manifestKey    String?
+  manifestSha256 String?
+  lastMigration  String?
+  // Retention class once finished: "DAILY" | "MONTHLY" | "YEARLY"
+  retention      String?
+  lockedUntil    DateTime?
+  prunedAt       DateTime?
+  error          String?
+  alertedAt      DateTime?
+
+  @@index([status, startedAt])
+}
+
+// Which stored files are already in the backup bucket (incremental uploads), by storage key and sha256.
+model BackupFileIndex {
+  storageKey   String    @id
+  objectKey    String    @unique
+  // sha256 of the bytes as stored by the app (app-encrypted) and of the uploaded backup object.
+  storedSha256 String
+  objectSha256 String
+  plainSha256  String?
+  sizeBytes    Int
+  // "StoredFile" | "OnboardingFile" | "Expense"
+  sourceType   String
+  sourceId     String
+  group        String?
+  firstRunId   String
+  firstRunAt   DateTime
+  // Set when the file is no longer in the live set (e.g. purged); the object is pruned once no kept backup lists it.
+  goneAt       DateTime?
+  lockedUntil  DateTime?
+  prunedAt     DateTime?
+
+  @@index([goneAt])
+}
+
+// Restore tests for the WISP: verify runs into a scratch target, and any full restore.
+model RestoreTest {
+  id          String    @id @default(cuid())
+  backupRunId String?
+  manifestKey String
+  // "VERIFY" | "FULL"
+  mode        String
+  // "PAGE" | "CLI"
+  source      String
+  // "RUNNING" | "PASSED" | "FAILED"
+  status      String    @default("RUNNING")
+  startedById String?
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  result      Json?
+  error       String?
+
+  @@index([status, startedAt])
 }

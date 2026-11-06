@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { storage } from "@/lib/storage";
+import { currentFileKeyVersion, decryptBytes, encryptBytes } from "@/lib/crypto";
 import { imageSize, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import { ValidationError } from "./clients";
 
@@ -15,7 +16,8 @@ export async function saveUpload(actor: Actor, args: { kind: FileKind; bytes: Ui
   if (!type) throw new ValidationError(args.kind === "FLYER" ? "Upload a PNG, JPG, PDF, MP4 or MOV file." : "Upload a PNG, JPG, or PDF file.");
   const size = type.mime.startsWith("image/") ? imageSize(args.bytes, type.mime) : null;
   const storageKey = `${args.kind.toLowerCase()}/${randomUUID()}`;
-  await storage.put(storageKey, args.bytes);
+  // Flyers and consent evidence are encrypted at rest like every other stored file.
+  await storage.put(storageKey, encryptBytes(args.bytes));
   const name = args.originalName.replace(/[^\w.\- ()]/g, "_").slice(0, 150) || `upload.${type.ext}`;
   try {
     return await prisma.$transaction(async (tx) => {
@@ -30,6 +32,8 @@ export async function saveUpload(actor: Actor, args: { kind: FileKind; bytes: Ui
           width: size?.width ?? null,
           height: size?.height ?? null,
           uploadedById: actor.id,
+          encrypted: true,
+          keyVersion: currentFileKeyVersion(),
         },
       });
       await audit(tx, { actorId: actor.id, action: "file.uploaded", entityType: "StoredFile", entityId: file.id, details: { kind: args.kind, mime: type.mime } });
@@ -45,6 +49,8 @@ export async function saveUpload(actor: Actor, args: { kind: FileKind; bytes: Ui
 export async function readStoredFile(fileId: string) {
   const file = await prisma.storedFile.findFirst({ where: { id: fileId, kind: { in: ["FLYER", "CONSENT_EVIDENCE"] } } });
   if (!file) return null;
-  const bytes = await storage.get(file.storageKey);
-  return bytes ? { file, bytes } : null;
+  const stored = await storage.get(file.storageKey);
+  if (!stored) return null;
+  // Older files were stored as they were uploaded; newer ones are encrypted.
+  return { file, bytes: file.encrypted ? decryptBytes(stored) : stored };
 }
