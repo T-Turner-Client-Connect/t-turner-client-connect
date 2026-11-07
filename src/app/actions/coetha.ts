@@ -63,6 +63,10 @@ export async function ownerSwitchAction(which: OwnerSwitch, on: boolean, _prev: 
     await setOwnerSwitch(actor, which, on);
     revalidatePath("/owner/automation");
     if (which === "clientRollout") revalidatePath("/owner/client-letters");
+    if (which === "clientBankBalances") {
+      revalidatePath("/client", "layout");
+      revalidatePath("/bookkeeping", "layout");
+    }
     const label = SWITCH_LABEL[which];
     return `${label} turned ${on ? "on" : "off"}.`;
   });

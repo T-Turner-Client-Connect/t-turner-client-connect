@@ -46,7 +46,7 @@ export default async function OwnerAutomationPage() {
     isReportApprover(actor),
     prisma.bankConnection.groupBy({ by: ["environment", "status"], _count: true, where: { status: { not: "DISCONNECTED" } } }),
   ]);
-  const ids = [sw.liveBanking.changedById, sw.coetha.changedById, sw.coethaAutoSend.changedById, sw.taxSummaryAutoSend.changedById].filter((x): x is string => !!x);
+  const ids = [sw.liveBanking.changedById, sw.coetha.changedById, sw.coethaAutoSend.changedById, sw.taxSummaryAutoSend.changedById, sw.clientBankBalances.changedById].filter((x): x is string => !!x);
   const names = new Map((await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const env = (process.env.PLAID_ENV ?? "sandbox").trim().toLowerCase();
   const keys = !!process.env.PLAID_CLIENT_ID?.trim() && !!process.env.PLAID_SECRET?.trim();
@@ -125,6 +125,20 @@ export default async function OwnerAutomationPage() {
             {primary && (
               <ActionForm action={ownerSwitchAction.bind(null, "taxSummaryAutoSend", !sw.taxSummaryAutoSend.on)} confirm={sw.taxSummaryAutoSend.on ? "Turn off automatic sending? Every tax summary will wait for your “Send for approval”." : "Send tax summaries automatically? Only summaries you upload, that pass every check, for clients with an active portal login."}>
                 <button type="submit" className={clsx("inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold shadow", sw.taxSummaryAutoSend.on ? "border-[1.5px] border-navy-900 bg-white text-navy-900" : "bg-navy-900 text-white hover:bg-navy-800")} data-testid="toggle-tax-summary-auto-send">{sw.taxSummaryAutoSend.on ? "Turn off" : "Turn on"}</button>
+              </ActionForm>
+            )}
+          </div>
+        </section>
+
+        <section className={card} data-testid="switch-client-bank-balances">
+          <h2 className="flex items-center gap-3 font-serif text-xl font-bold text-navy-900"><FileText className="size-7 text-gold-600" aria-hidden /> Show office-entered bank balances to clients</h2>
+          <p className="mt-1 text-sm text-navy-800">Staff record balances they read at the bank (Morning bank pull) or take from an imported bank file. <strong>Off</strong>: those balances are for staff only; clients&apos; dashboards show nothing from them. <strong>On</strong>: bookkeeping clients&apos; dashboards show them, labeled &ldquo;Updated by our office&rdquo; with each balance&apos;s as-of date, and marked &ldquo;Not current&rdquo; when old — never presented as a live bank balance. This switch is separate from the client rollout lock.</p>
+          <p className="mt-2 text-xs text-slate-600">{sw.clientBankBalances.changedAt ? changed(sw.clientBankBalances) : "Never changed (off by default)."} Each change is recorded in the audit log.</p>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-ivory-200 pt-4">
+            <Switch on={sw.clientBankBalances.on} label="Show to clients" testId="client-bank-balances-state" />
+            {primary && (
+              <ActionForm action={ownerSwitchAction.bind(null, "clientBankBalances", !sw.clientBankBalances.on)} confirm={sw.clientBankBalances.on ? "Hide office-entered bank balances from clients? Staff keep seeing and updating them." : "Show office-entered bank balances on bookkeeping clients' dashboards? Each is labeled \u201cUpdated by our office\u201d with its as-of date."}>
+                <button type="submit" className={clsx("inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold shadow", sw.clientBankBalances.on ? "border-[1.5px] border-navy-900 bg-white text-navy-900" : "bg-navy-900 text-white hover:bg-navy-800")} data-testid="toggle-client-bank-balances">{sw.clientBankBalances.on ? "Turn off" : "Turn on"}</button>
               </ActionForm>
             )}
           </div>
