@@ -230,7 +230,9 @@ export default async function CyclePage({ params }: { params: Promise<{ cycleId:
 
       <Card title="ADP RUN import (Time Sheet Import)" className="mt-4">
         <div data-testid="adp-csv">
-          {!adp.setupReady ? (
+          {!adp.allowed ? (
+            <p className="text-sm text-slate-700">ADP setup and files for this business are available only to staff assigned to it (or given All clients by the owner).</p>
+          ) : !adp.setupReady ? (
             <p className="text-sm text-slate-700">Download ADP CSV turns on after this business&apos;s one-time setup. Still to do: {adp.missing.join("; ")}. <Link href={`/payroll-taxes/schedules/${cycle.clientId}/adp`} className="font-semibold underline">Open ADP RUN import setup</Link></p>
           ) : adp.processed ? (
             <p className="text-sm text-slate-700">This payroll is processed.</p>

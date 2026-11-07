@@ -7,6 +7,7 @@ import { fmtWhen, RemindersOffBanner } from "@/components/payroll-taxes/bits";
 import { resetClientPlanAction, saveReminderPlanAction, sendTestAction, setRemindersAuthorizedAction } from "@/app/actions/payroll-taxes";
 import { requirePayrollTaxPage } from "@/lib/payroll-taxes/access";
 import { identifierListAction } from "@/app/actions/adp-run";
+import { adpAllClients } from "@/lib/services/adp-run";
 import { hasClientPlan, listSchedules, payrollTaxSettings, reminderPlan } from "@/lib/services/payroll-taxes";
 import { prisma } from "@/lib/prisma";
 import { CHANNELS, REMINDER_STEPS, type ReminderChannel, type ReminderStep } from "@/lib/payroll/queue";
@@ -109,7 +110,7 @@ export default async function ReminderSettings({ searchParams }: { searchParams:
           </Card>
         </div>
       </div>
-      {access.level === "MANAGE" && (
+      {access.level === "MANAGE" && (await adpAllClients(actor, access)) && (
         <Card title="ADP RUN import: company identifiers (one time)" className="mt-4">
           <p className="mb-2 text-sm text-slate-600">Paste one business per line: <code>Business, ADP Client ID, Branch, Code</code> (from ADP Accountant Connect; a header line is skipped). Each business is matched by its exact name to a client with a payroll schedule. The first submit only previews; nothing is saved until you tick the box. Values are stored encrypted and never shown in full again.</p>
           <ActionForm action={identifierListAction} className="space-y-2">

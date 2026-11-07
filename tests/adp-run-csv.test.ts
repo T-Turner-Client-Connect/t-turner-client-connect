@@ -55,6 +55,8 @@ async function setup() {
     await saveProfile(tabitha, c.id, { active: true, frequency: "MONTHLY", payroll: true, payrollFrequency: "WEEKLY", payrollProvider: "ADP" });
     await savePayrollSetup(tabitha, c.id, { system: "ADP_RUN", frequency: "WEEKLY" });
     await saveSchedule(tabitha, c.id, WEEKLY);
+    // The payroll preparer is assigned to these two fictional businesses.
+    await prisma.payrollSchedule.update({ where: { clientId: c.id }, data: { assignedStaffId: mom.id } });
   }
   return { tabitha, mom, vera, bakery, auto };
 }
@@ -230,7 +232,7 @@ describe("one-time setup, Download ADP CSV and safeguards (fictional company)", 
     await expect(saveEmployeeMap(mom, auto.id, avaMap.id, { name: "Ava Fictional", adpEmployeeId: "101", departmentCode: "", rateCode: "BASE", active: true })).rejects.toThrow(ForbiddenError);
     // View-only staff can see the setup but can't change it or download files.
     await expect(adpSetupPage(vera, bakery.id)).rejects.toThrow(ForbiddenError); // not assigned to Vera
-    await prisma.payrollSchedule.update({ where: { clientId: bakery.id }, data: { assignedStaffId: vera.id } });
+    await prisma.client.update({ where: { id: bakery.id }, data: { assignedToId: vera.id } });
     expect((await adpSetupPage(vera, bakery.id)).canManage).toBe(false);
     await expect(confirmTimeSheetFeature(vera, bakery.id, false)).rejects.toThrow(/only the owner or staff she allows/);
     const test = await createTestFile(mom, bakery.id);
@@ -331,5 +333,50 @@ describe("other pay: vacation, sick, holiday, bonus, commission, tips (fictional
     expect(body.map((x) => [x[4], x[5], x[6], x[7]])).toEqual([
       ["101", "REG", "30.00", ""], ["101", "HOL", "8.00", ""], ["101", "BONUS", "", "1000.00"], ["101", "CTIP", "", "55.00"], ["102", "REG", "40.00", ""], ["102", "OT", "1.00", ""],
     ]);
+  });
+});
+
+describe("client-specific payroll permissions (ADP setup and files)", () => {
+  it("Payroll Manage alone doesn't open every business: only assigned clients, the owner, or an owner-granted All clients", async () => {
+    const { tabitha, mom, bakery } = await setup();
+    await fullSetup(mom, bakery.id);
+    await prisma.adpRunSetup.update({ where: { clientId: bakery.id }, data: { testVerifiedAt: new Date(), testVerifiedNote: "fictional" } });
+    const cycle = await firstCycle(bakery.id);
+    await recordHoursByStaff(mom, cycle.id, { employees: [{ name: "Ava Fictional", regularHours: 8, overtimeHours: 0 }] });
+    const file = await generateCycleFile(mom, cycle.id);
+
+    // A second preparer with Payroll View + Manage, assigned to nothing.
+    const other = await makeUser("STAFF", "Other Preparer Fictional");
+    await setStaffPermissions(tabitha, other.id, ["payroll_taxes.view", "payroll_taxes.manage"]);
+    const denied = [
+      () => adpSetupPage(other, bakery.id),
+      () => confirmTimeSheetFeature(other, bakery.id, false),
+      () => saveEmployeeMap(other, bakery.id, null, { name: "X Fictional", adpEmployeeId: "999", departmentCode: "", rateCode: "BASE", active: true }),
+      () => createTestFile(other, bakery.id),
+      () => generateCycleFile(other, cycle.id),
+      () => readAdpFile(other, file.export.id),
+      () => markFileImported(other, file.export.id),
+    ];
+    for (const call of denied) await expect(call()).rejects.toThrow(ForbiddenError);
+    expect(await cycleAdpStatus(other, cycle.id)).toEqual({ allowed: false, clientId: bakery.id });
+    expect((await previewIdentifierList(other, "Magnolia Bakery Co. (FICTIONAL), 90000009, ZZ, NEW"))[0].clientId).toBeNull();
+    // Nothing was changed by the refused calls.
+    expect(await prisma.adpRunEmployeeMap.count({ where: { adpEmployeeId: "999" } })).toBe(0);
+
+    // Assigned to one pay cycle → that business opens (and only it).
+    await prisma.payrollCycle.update({ where: { id: cycle.id }, data: { assignedStaffId: other.id } });
+    expect((await adpSetupPage(other, bakery.id)).canManage).toBe(true);
+    expect((await readAdpFile(other, file.export.id)).csv).toContain("ZZFIC");
+
+    // The owner sees every business; "All clients" is an explicit owner grant.
+    const third = await makeUser("STAFF", "Third Preparer Fictional");
+    await setStaffPermissions(tabitha, third.id, ["payroll_taxes.view", "payroll_taxes.manage"]);
+    await expect(adpSetupPage(third, bakery.id)).rejects.toThrow(ForbiddenError);
+    await setStaffPermissions(tabitha, third.id, ["payroll_taxes.view", "payroll_taxes.manage", "payroll_taxes.all_clients"]);
+    expect((await adpSetupPage(third, bakery.id)).canManage).toBe(true);
+    expect((await adpSetupPage(tabitha, bakery.id)).canManage).toBe(true);
+    // No bookkeeping access is granted along the way.
+    const { canUseLedger } = await import("@/lib/services/ledger");
+    expect(await canUseLedger(other, bakery.id)).toBe(false);
   });
 });

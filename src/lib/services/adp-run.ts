@@ -5,7 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
-import { assertPayrollTaxManage, assertPayrollTaxView, clientVisible, cycleScope } from "@/lib/payroll-taxes/access";
+import { assertPayrollTaxManage, assertPayrollTaxView, type PayrollTaxAccess } from "@/lib/payroll-taxes/access";
+import { officeAccessFor } from "@/lib/auth/permissions";
 import type { HoursSubmission } from "@/lib/payroll/queue";
 import {
   ADP_FREQUENCY, ADP_FREQUENCY_LABEL, EARNING_KINDS, EARNING_KIND_ORDER, RATE_CODES, adpFileName, branchCompanyCode, buildAdpCsv, checkTemplate, isCompanyCode, nameKey, normalizeCompanyCode, parseEarningsReport,
@@ -33,9 +34,30 @@ const hint = (s: string) => `…${s.slice(-3)}`;
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const MAX_REPORT_BYTES = 2_000_000;
 
+/**
+ * Client-specific scope for ADP setup and files, enforced here independently of the wider
+ * workspace: Payroll Manage alone does NOT open every business. Allowed only for the owner, staff
+ * the owner explicitly granted "ADP Payroll & Taxes → All clients", or staff assigned to this
+ * client (the payroll schedule's or a pay cycle's assigned staff, or the client's assigned staff).
+ */
+export async function adpAllClients(actor: Pick<Actor, "id">, access: PayrollTaxAccess) {
+  if (access.isOwner) return true;
+  return (await officeAccessFor(actor.id)).can("payroll_taxes", "all_clients");
+}
+
+const assignedClientWhere = (userId: string): Prisma.ClientWhereInput => ({
+  OR: [{ assignedToId: userId }, { payrollSchedule: { assignedStaffId: userId } }, { payrollCycles: { some: { assignedStaffId: userId } } }],
+});
+
+export async function adpClientAllowed(actor: Pick<Actor, "id">, access: PayrollTaxAccess, clientId: string) {
+  if (access.level === "NONE") return false;
+  if (await adpAllClients(actor, access)) return true;
+  return (await prisma.client.count({ where: { id: clientId, ...assignedClientWhere(actor.id) } })) > 0;
+}
+
 async function scopeClient(actor: Actor, clientId: string, manage: boolean) {
   const access = manage ? await assertPayrollTaxManage(actor) : await assertPayrollTaxView(actor);
-  if (!(await clientVisible(access, clientId))) throw new ForbiddenError("Not found.");
+  if (!(await adpClientAllowed(actor, access, clientId))) throw new ForbiddenError("Not found.");
   const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, businessName: true, displayName: true, payrollSchedule: { select: { frequency: true, active: true } } } });
   if (!client) throw new ForbiddenError("Not found.");
   return { access, client, name: client.businessName || client.displayName };
@@ -326,8 +348,9 @@ export async function recordTestVerified(actor: Actor, clientId: string, note: s
 /** What the cycle page shows: whether a file can be built, and any active file. */
 export async function cycleAdpStatus(actor: Actor, cycleId: string) {
   const access = await assertPayrollTaxView(actor);
-  const cycle = await prisma.payrollCycle.findFirst({ where: { id: cycleId, ...cycleScope(access) }, include: { schedule: true } });
+  const cycle = await prisma.payrollCycle.findFirst({ where: { id: cycleId }, include: { schedule: true } });
   if (!cycle) throw new ForbiddenError("Not found.");
+  if (!(await adpClientAllowed(actor, access, cycle.clientId))) return { allowed: false as const, clientId: cycle.clientId };
   const setup = await prisma.adpRunSetup.findUnique({ where: { clientId: cycle.clientId }, include: { employees: true } });
   const active = await prisma.adpRunExport.findFirst({ where: { clientId: cycle.clientId, cycleId, status: "ACTIVE", isTest: false }, orderBy: { createdAt: "desc" } });
   const checklist = setup ? setupChecklist(setup, cycle.schedule.frequency) : null;
@@ -341,14 +364,14 @@ export async function cycleAdpStatus(actor: Actor, cycleId: string) {
       ? { ok: true, problems: [], cannotTransfer: [], lines: result.lines.map((l) => ({ name: l.name, label: EARNING_KINDS[l.kind].label, code: l.code, amount: l.hours ? `${l.hours} hrs` : `$${l.dollars}` })) }
       : { ok: false, problems: result.problems.filter((p) => !p.startsWith("Can't transfer")), cannotTransfer: result.cannotTransfer, lines: [] };
   }
-  return { clientId: cycle.clientId, setupReady, missing: checklist ? checklist.filter((c) => !c.done).map((c) => c.label) : ["ADP setup not started"], hoursIn: !!cycle.hoursSubmittedAt, noChanges: !!hours?.noChanges, active, processed: !!cycle.processedAt, check, unmapped: setup ? unmappedKinds(earningsMapOf(setup)) : [] };
+  return { allowed: true as const, clientId: cycle.clientId, setupReady, missing: checklist ? checklist.filter((c) => !c.done).map((c) => c.label) : ["ADP setup not started"], hoursIn: !!cycle.hoursSubmittedAt, noChanges: !!hours?.noChanges, active, processed: !!cycle.processedAt, check, unmapped: setup ? unmappedKinds(earningsMapOf(setup)) : [] };
 }
 
 /** "Download ADP CSV": builds (or reuses) this pay cycle's file. */
 export async function generateCycleFile(actor: Actor, cycleId: string, replaceReason = "") {
   const access = await assertPayrollTaxManage(actor);
-  const cycle = await prisma.payrollCycle.findFirst({ where: { id: cycleId, ...cycleScope(access) }, include: { schedule: true, client: { select: { businessName: true, displayName: true } } } });
-  if (!cycle) throw new ForbiddenError("Not found.");
+  const cycle = await prisma.payrollCycle.findFirst({ where: { id: cycleId }, include: { schedule: true, client: { select: { businessName: true, displayName: true } } } });
+  if (!cycle || !(await adpClientAllowed(actor, access, cycle.clientId))) throw new ForbiddenError("Not found.");
   if (cycle.processedAt) throw new ValidationError("This payroll is already processed.");
   const setup = await prisma.adpRunSetup.findUnique({ where: { clientId: cycle.clientId }, include: { employees: true } });
   if (!setup || !setupChecklist(setup, cycle.schedule.frequency).every((c) => c.done)) throw new ValidationError("Finish the ADP setup checklist for this business, including the test import, before downloading live payroll files.");
@@ -375,7 +398,7 @@ export async function generateCycleFile(actor: Actor, cycleId: string, replaceRe
 export async function markFileImported(actor: Actor, exportId: string) {
   const access = await assertPayrollTaxManage(actor);
   const exp = await prisma.adpRunExport.findUnique({ where: { id: exportId } });
-  if (!exp || !(await clientVisible(access, exp.clientId))) throw new ForbiddenError("Not found.");
+  if (!exp || !(await adpClientAllowed(actor, access, exp.clientId))) throw new ForbiddenError("Not found.");
   if (exp.isTest) throw new ValidationError("A test file is never imported for payroll. Record the test on the setup page.");
   if (exp.status !== "ACTIVE") throw new ValidationError("This file was replaced. Use the current file.");
   if (!exp.downloads) throw new ValidationError("Download the file first.");
@@ -388,7 +411,7 @@ export async function markFileImported(actor: Actor, exportId: string) {
 export async function readAdpFile(actor: Actor, exportId: string) {
   const access = await assertPayrollTaxManage(actor);
   const exp = await prisma.adpRunExport.findUnique({ where: { id: exportId } });
-  if (!exp || !(await clientVisible(access, exp.clientId))) throw new ForbiddenError("Not found.");
+  if (!exp || !(await adpClientAllowed(actor, access, exp.clientId))) throw new ForbiddenError("Not found.");
   if (exp.status !== "ACTIVE") throw new ValidationError("This file was replaced by a newer one.");
   const csv = decryptSecret(exp.contentEnc);
   if (sha(csv) !== exp.contentSha256) throw new Error("ADP file integrity check failed");
@@ -427,7 +450,7 @@ export async function previewIdentifierList(actor: Actor, text: string): Promise
     try { companyCodeFrom({ acClientId, branch, code, form: "BRANCH_CODE" }); if (!/^\d{4,10}$/.test(acClientId)) throw new ValidationError("The ADP Client ID is missing or incomplete."); } catch (e) { problem = e instanceof Error ? e.message : "Not valid."; }
     const matches = byName.get(nameKey(business)) ?? [];
     const visible = [];
-    for (const m of matches) if (await clientVisible(access, m.id)) visible.push(m);
+    for (const m of matches) if (await adpClientAllowed(actor, access, m.id)) visible.push(m);
     if (!problem && visible.length !== 1) problem = visible.length ? "More than one client has this name — set this one up on its own page." : "No client with a payroll schedule has exactly this name — set it up on the client's own page.";
     rows.push({ line: i + 1, business, acClientId, branch, code, clientId: visible.length === 1 ? visible[0].id : null, clientName: visible.length === 1 ? visible[0].name : null, problem });
   }
