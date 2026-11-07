@@ -36,7 +36,17 @@ let staff: Actor | null = null;
 vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<object>()), requireUser: async () => staff, getCurrentUser: async () => staff }));
 // The month picker is a client component that uses the router; rendering outside Next needs a stand-in.
 vi.mock("next/navigation", async (orig) => ({ ...(await orig<object>()), useRouter: () => ({ push() {}, replace() {}, refresh() {} }) }));
-const { default: PortalPreview } = await import("@/app/(app)/clients/[id]/portal-preview/page");
+// View as Client: the client's own pages under a signed preview cookie (see tests/vac-harness.ts).
+vi.mock("next/headers", async () => (await import("./vac-harness")).headersMock);
+const { h } = await import("./vac-harness");
+const { previewCookieValue, previewLogins, VAC_COOKIE } = await import("@/lib/portal/viewer");
+const { default: PortalHome } = await import("@/app/client/(secure)/page");
+/** A client page as View as Client shows it (the client's primary owner login), for the signed-in staff member. */
+async function viewAsClient(clientId: string, render: (sp: { searchParams: Promise<Record<string, string>> }) => Promise<unknown>, sp: Record<string, string> = {}) {
+  h.jar.clear();
+  h.jar.set(VAC_COOKIE, previewCookieValue({ staffId: staff!.id, clientId, loginId: (await previewLogins(clientId))[0]?.id ?? null }));
+  return (await render({ searchParams: Promise.resolve({ account: clientId, ...sp }) })) as ReactNode;
+}
 
 // --- Simulated services ---------------------------------------------------------------------------
 
@@ -47,6 +57,7 @@ const ACCESS = "access-sandbox-fictional-books";
 beforeEach(async () => {
   await resetDb();
   staff = null;
+  h.jar.clear();
   scanner = "clean";
   plaidPages = [];
   vi.stubEnv("MALWARE_SCAN_URL", "https://scanner.test/scan");
@@ -374,7 +385,7 @@ describe("Isolation, engagement and View as Client", () => {
     await staffUploadStatement(p.daria, b.biz.id, { accountId: b.registry.id, month: MONTH, bytes: pdf(), originalName: "october.pdf" });
     await bringInTransactions(p, b, "PLAID");
     const mine = await dash(b);
-    const tree = (await PortalPreview({ params: Promise.resolve({ id: b.biz.id }), searchParams: Promise.resolve({ month: MONTH }) })) as ReactNode;
+    const tree = await viewAsClient(b.biz.id, PortalHome as never, { month: MONTH });
     const view = find(tree, BusinessDashboardView);
     expect(view).not.toBeNull();
     const d = (view!.props as { d: Awaited<ReturnType<typeof businessDashboardFor>> }).d;
@@ -479,11 +490,12 @@ describe("How access is decided: only clients enrolled on the bookkeeping servic
       () => portalClientInvoicing(garage.login, garage.biz.id),
     ]) await expect(call()).rejects.toBeInstanceOf(ForbiddenError);
     // View as Client shows the tax client Home, never the business dashboard.
-    const tree = (await PortalPreview({ params: Promise.resolve({ id: garage.biz.id }), searchParams: Promise.resolve({}) })) as ReactNode;
+    const tree = await viewAsClient(garage.biz.id, PortalHome as never);
     expect(find(tree, BusinessDashboardView)).toBeNull();
     expect(find(tree, PortalHomeView)).not.toBeNull();
     for (const v of ["payroll", "licenses", "year-end", "invoicing"]) {
-      const t = (await PortalPreview({ params: Promise.resolve({ id: garage.biz.id }), searchParams: Promise.resolve({ view: v }) })) as ReactNode;
+      const Page = (await import(`@/app/client/(secure)/${v}/page`)).default;
+      const t = await viewAsClient(garage.biz.id, Page);
       expect(find(t, BusinessDashboardView)).toBeNull();
       expect(renderToStaticMarkup(t as ReactElement)).not.toMatch(/data-testid="(payroll-page|licenses-page|year-end-page|invoicing-page)"/);
     }

@@ -1,7 +1,13 @@
 import { Car, ChevronDown, IdCard, Lightbulb, ShieldCheck, Trash2, UserPlus, UserRound, Users } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { SlotRow } from "@/components/identity-section";
-import { portalAddPersonAction, portalRemovePersonAction } from "@/app/actions/identity";
+import { PreviewDisabled } from "@/components/portal/preview-off";
+
+type FormAction = (prev: { error?: string; ok?: string; at?: number } | null, fd: FormData) => Promise<{ error?: string; ok?: string; at?: number } | null>;
+/** The page's actions, passed in by the page: the portal's own, or View as Client's stand-ins (`readOnly`). */
+export type IdentityActions = { upload?: FormAction; addPerson: (clientId: string) => FormAction; removePerson: (clientId: string, personId: string) => FormAction };
+type Ctx = { actions: IdentityActions; readOnly?: boolean };
+
 import { ID_ROLES, ID_TYPES, type identityOverview, type IdRole, type IdType } from "@/lib/services/identity";
 import { fmtIso } from "@/lib/tax/deadlines";
 import { NavyCard } from "./luxury";
@@ -50,20 +56,22 @@ const hasSubmitted = (e: Entry) => e.slots.some((s) => s.history.length > 0);
  * A spouse or dependent added by mistake can be removed until something is submitted for
  * them; after that only our office can remove them (the server enforces this too).
  */
-function RemovePerson({ entry, clientId }: { entry: Entry; clientId: string }) {
+function RemovePerson({ entry, clientId, ctx }: { entry: Entry; clientId: string; ctx: Ctx }) {
   if (entry.person.role === "CLIENT" || entry.person.role === "OWNER") return null;
   if (hasSubmitted(entry)) return <p className="px-4 pb-3 text-xs text-slate-500 sm:px-6">Documents were submitted for {entry.person.name}. To remove them, please send our office a message.</p>;
   return (
-    <ActionForm action={portalRemovePersonAction.bind(null, clientId, entry.person.id)} className="px-4 pb-3 sm:px-6">
+    <PreviewDisabled readOnly={ctx.readOnly} className="px-4 pb-3 sm:px-6">
+    <ActionForm action={ctx.actions.removePerson(clientId, entry.person.id)} className={ctx.readOnly ? "" : "px-4 pb-3 sm:px-6"}>
       <button type="submit" className="inline-flex items-center gap-1.5 text-sm font-semibold text-red-700 underline-offset-2 hover:underline" data-testid="remove-person">
         <Trash2 className="size-4" aria-hidden /> Remove {entry.person.name}
       </button>
       <span className="ml-2 text-xs text-slate-500">Added by mistake? You can remove them until documents are submitted.</span>
     </ActionForm>
+    </PreviewDisabled>
   );
 }
 
-function Slots({ entry, clientId, linkFor }: { entry: Entry; clientId: string; linkFor: (id: string) => string }) {
+function Slots({ entry, clientId, linkFor, ctx }: { entry: Entry; clientId: string; linkFor: (id: string) => string; ctx: Ctx }) {
   // Dependents: a driver's license only for those old enough to drive — never asked by default.
   const isDependent = entry.person.role === "DEPENDENT";
   const license = entry.slots.find((s) => s.type === "DRIVERS_LICENSE");
@@ -71,15 +79,15 @@ function Slots({ entry, clientId, linkFor }: { entry: Entry; clientId: string; l
   return (
     <div className="border-t border-ivory-200 bg-ivory-50/40">
       <ul className="divide-y divide-navy-100 px-4 sm:px-6">
-        {entry.slots.filter((s) => showLicense || s.type !== "DRIVERS_LICENSE").map((s) => <SlotRow key={s.type} slot={s} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} />)}
+        {entry.slots.filter((s) => showLicense || s.type !== "DRIVERS_LICENSE").map((s) => <SlotRow key={s.type} slot={s} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} previewAction={ctx.readOnly ? ctx.actions.upload : undefined} />)}
       </ul>
       {!showLicense && license && (
         <details className="px-4 pb-3 sm:px-6">
           <summary className="flex cursor-pointer list-none items-center gap-1.5 text-sm font-semibold text-navy-900 underline underline-offset-2 [&::-webkit-details-marker]:hidden"><Car className="size-4 text-gold-600" aria-hidden />Only if {entry.person.name} drives: add a driver&apos;s license</summary>
-          <ul className="mt-1"><SlotRow slot={license} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} /></ul>
+          <ul className="mt-1"><SlotRow slot={license} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} previewAction={ctx.readOnly ? ctx.actions.upload : undefined} /></ul>
         </details>
       )}
-      <RemovePerson entry={entry} clientId={clientId} />
+      <RemovePerson entry={entry} clientId={clientId} ctx={ctx} />
     </div>
   );
 }
@@ -87,7 +95,7 @@ function Slots({ entry, clientId, linkFor }: { entry: Entry; clientId: string; l
 const updateBtn = "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-2.5 text-sm font-semibold text-white shadow group-open:from-gold-500 group-open:to-gold-600 group-open:text-navy-950";
 
 /** Client or spouse: navy name block, three document statuses, Update Documents. */
-function PersonRow({ entry, clientId, linkFor }: { entry: Entry; clientId: string; linkFor: (id: string) => string }) {
+function PersonRow({ entry, clientId, linkFor, ctx }: { entry: Entry; clientId: string; linkFor: (id: string) => string; ctx: Ctx }) {
   return (
     <details className="group overflow-hidden rounded-2xl border border-ivory-200 bg-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)]" data-person={entry.person.role}>
       <summary className="grid cursor-pointer list-none gap-4 p-3 sm:p-4 md:grid-cols-[15rem_1fr_auto] md:items-center [&::-webkit-details-marker]:hidden">
@@ -103,14 +111,15 @@ function PersonRow({ entry, clientId, linkFor }: { entry: Entry; clientId: strin
         </span>
         <span className={updateBtn}>Update Documents <ChevronDown className="size-4 transition group-open:rotate-180" aria-hidden /></span>
       </summary>
-      <Slots entry={entry} clientId={clientId} linkFor={linkFor} />
+      <Slots entry={entry} clientId={clientId} linkFor={linkFor} ctx={ctx} />
     </details>
   );
 }
 
-function AddPerson({ clientId, role, label }: { clientId: string; role: "SPOUSE" | "DEPENDENT"; label: string }) {
+function AddPerson({ clientId, role, label, ctx }: { clientId: string; role: "SPOUSE" | "DEPENDENT"; label: string; ctx: Ctx }) {
   return (
-    <ActionForm action={portalAddPersonAction.bind(null, clientId)} className="flex flex-wrap items-end gap-3" resetOnSuccess>
+    <PreviewDisabled readOnly={ctx.readOnly}>
+    <ActionForm action={ctx.actions.addPerson(clientId)} className="flex flex-wrap items-end gap-3" resetOnSuccess>
       <input type="hidden" name="role" value={role} />
       <label className="block min-w-0 flex-1">
         <span className="mb-1 block text-sm font-semibold text-navy-900">{label}</span>
@@ -120,6 +129,7 @@ function AddPerson({ clientId, role, label }: { clientId: string; role: "SPOUSE"
         <UserPlus className="size-4" aria-hidden /> {role === "SPOUSE" ? "Add Spouse" : "Add a Dependent"}
       </button>
     </ActionForm>
+    </PreviewDisabled>
   );
 }
 
@@ -129,7 +139,8 @@ function AddPerson({ clientId, role, label }: { clientId: string; role: "SPOUSE"
  * Identity section); Social Security cards and birth certificates stay status-only here.
  */
 /** `ownerOnly`: a business owner's own record on a business-only account (no spouse or dependents). */
-export function IdentityPageView({ overview, clientId, linkFor, ownerOnly = false }: { overview: Overview; clientId: string; linkFor: (id: string) => string; ownerOnly?: boolean }) {
+export function IdentityPageView({ overview, clientId, linkFor, ownerOnly = false, actions, readOnly }: { overview: Overview; clientId: string; linkFor: (id: string) => string; ownerOnly?: boolean; actions: IdentityActions; readOnly?: boolean }) {
+  const ctx: Ctx = { actions, readOnly };
   const client = overview.find((o) => o.person.role === "CLIENT");
   const spouse = overview.find((o) => o.person.role === "SPOUSE");
   const dependents = overview.filter((o) => o.person.role === "DEPENDENT");
@@ -144,17 +155,17 @@ export function IdentityPageView({ overview, clientId, linkFor, ownerOnly = fals
         </div>
       </section>
 
-      {ownerOnly && overview.map((o) => <PersonRow key={o.person.id} entry={o} clientId={clientId} linkFor={linkFor} />)}
-      {!ownerOnly && client && <PersonRow entry={client} clientId={clientId} linkFor={linkFor} />}
+      {ownerOnly && overview.map((o) => <PersonRow key={o.person.id} entry={o} clientId={clientId} linkFor={linkFor} ctx={ctx} />)}
+      {!ownerOnly && client && <PersonRow entry={client} clientId={clientId} linkFor={linkFor} ctx={ctx} />}
       {ownerOnly ? null : spouse ? (
-        <PersonRow entry={spouse} clientId={clientId} linkFor={linkFor} />
+        <PersonRow entry={spouse} clientId={clientId} linkFor={linkFor} ctx={ctx} />
       ) : (
         <div className="grid gap-4 rounded-2xl border border-dashed border-gold-400 bg-white p-3 sm:p-4 md:grid-cols-[15rem_1fr] md:items-center" data-person="SPOUSE" data-empty>
           <span className="flex items-center gap-3 rounded-xl bg-navy-900/90 px-4 py-4 text-white">
             <UserRound className="size-8 shrink-0 text-gold-400" aria-hidden />
             <span><span className="block font-serif text-lg font-bold text-white">Spouse</span><span className="block text-sm text-gold-300">Not listed</span></span>
           </span>
-          <AddPerson clientId={clientId} role="SPOUSE" label="Add your spouse to upload their documents" />
+          <AddPerson clientId={clientId} role="SPOUSE" label="Add your spouse to upload their documents" ctx={ctx} />
         </div>
       )}
 
@@ -176,12 +187,12 @@ export function IdentityPageView({ overview, clientId, linkFor, ownerOnly = fals
                 <span role="cell"><span className="mr-2 text-xs font-semibold text-slate-500 md:hidden">SS Card</span><StatusChip s={slotOf(d, "SOCIAL_SECURITY_CARD")} /></span>
                 <span role="cell" className="md:text-right"><span className={updateBtn}>Update <ChevronDown className="size-4 transition group-open:rotate-180" aria-hidden /></span></span>
               </summary>
-              <Slots entry={d} clientId={clientId} linkFor={linkFor} />
+              <Slots entry={d} clientId={clientId} linkFor={linkFor} ctx={ctx} />
             </details>
           ))}
         </div>
         <div className="mt-4 rounded-xl border border-dashed border-gold-400 bg-gold-50/40 p-3 sm:p-4">
-          <AddPerson clientId={clientId} role="DEPENDENT" label="Add a Dependent" />
+          <AddPerson clientId={clientId} role="DEPENDENT" label="Add a Dependent" ctx={ctx} />
         </div>
       </NavyCard>
       )}

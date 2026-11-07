@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { requirePortalUser } from "@/lib/portal/session";
+import { portalViewer } from "@/lib/portal/viewer";
+import { NoPortalLoginNotice, PreviewDisabled } from "@/components/portal/preview-off";
 import { ActionForm } from "@/components/action-form";
 import { Button } from "@/components/ui";
 import { ApprovalSummary, DecisionForm } from "@/components/payroll/approval-summary";
@@ -14,8 +15,14 @@ export const metadata = { title: "Payroll Approval" };
 /** Business owners designated as payroll approvers: review and approve or deny. Read-only otherwise. */
 export default async function PayrollApprovalPage() {
   await connection();
-  const user = await requirePortalUser();
-  const dash = await approverDashboard(user.id);
+  const viewer = await portalViewer("payroll-approval");
+  const user = viewer.user;
+  if (!user) return <NoPortalLoginNotice />;
+  const all = await approverDashboard(user.id);
+  // View as Client: the previewed client only, never the login's other businesses.
+  const only = viewer.preview?.clientId;
+  const mine = <T extends { clientId: string }>(rows: T[]) => (only ? rows.filter((r) => r.clientId === only) : rows);
+  const dash = { ...all, approvers: mine(all.approvers), pending: mine(all.pending), channels: mine(all.channels), history: mine(all.history) };
   if (!dash.approvers.length) notFound();
   const views = await Promise.all(dash.pending.map((r) => approverRunView(user.id, r.clientId, r.id)));
   const nameOf = (clientId: string) => {
@@ -34,7 +41,7 @@ export default async function PayrollApprovalPage() {
       {views.map((v) => (
         <section key={v.run.id} className="space-y-3" data-testid="pending-run">
           <h2 className="font-serif text-xl font-bold text-navy-900">{nameOf(v.run.clientId)} — pay date {dayOf(v.version.checkDate)} <span className="ml-1 inline-flex items-center rounded-md border border-navy-900 px-1.5 align-middle font-sans text-sm font-bold" data-testid="approval-version">v{v.version.number}</span></h2>
-          {v.version.documentId && v.showDetail && (
+          {v.version.documentId && v.showDetail && !viewer.readOnly && (
             <a href={`/api/client/payroll-preview/${v.version.id}`} target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-3 py-2 text-sm font-semibold text-navy-900 underline" data-testid="approval-preview-doc">
               Open ADP&apos;s payroll preview (PDF) for v{v.version.number}
             </a>
@@ -45,7 +52,7 @@ export default async function PayrollApprovalPage() {
           {v.mine ? (
             <p className="rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">You {v.mine.decision === "APPROVED" ? "approved" : "denied"} this payroll on {whenOf(v.mine.createdAt)}.</p>
           ) : (
-            <DecisionForm action={portalPayrollDecisionAction.bind(null, v.run.clientId, v.run.id, v.version.id)} />
+            <PreviewDisabled readOnly={viewer.readOnly}><DecisionForm action={viewer.act(portalPayrollDecisionAction, v.run.clientId, v.run.id, v.version.id)} /></PreviewDisabled>
           )}
         </section>
       ))}
@@ -57,7 +64,8 @@ export default async function PayrollApprovalPage() {
             <div key={a.id} className="rounded-2xl border border-navy-100 bg-white p-4" data-testid="notify-card">
               <h2 className="font-serif text-lg font-bold text-navy-900">How should we notify you?</h2>
               <p className="text-xs text-slate-600">{a.client.businessName || a.client.displayName} · payroll approval requests</p>
-              <ActionForm action={portalNotifyChannelAction.bind(null, a.clientId)} className="mt-3 space-y-2">
+              <PreviewDisabled readOnly={viewer.readOnly}>
+              <ActionForm action={viewer.act(portalNotifyChannelAction, a.clientId)} className="mt-3 space-y-2">
                 <div className="flex flex-wrap gap-3 text-sm">
                   {Object.entries(NOTIFY_CHANNELS).map(([k, label]) => (
                     <label key={k} className="flex items-center gap-1.5"><input type="radio" name="channel" value={k} defaultChecked={(a.notifyChannel ?? "BOTH") === k} /> {label}</label>
@@ -65,6 +73,7 @@ export default async function PayrollApprovalPage() {
                 </div>
                 <Button type="submit" variant="secondary" className="py-1 text-xs">Save</Button>
               </ActionForm>
+              </PreviewDisabled>
               {!a.notifyChannel && <p className="mt-2 text-xs text-slate-600">Default: email, plus a text when we have your permission to text you.</p>}
               {ch?.fallback && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-800">We&apos;ll email you instead of texting: {ch.fallback}</p>}
               {!ch?.fallback && ch?.smsBlocked && a.notifyChannel !== "EMAIL" && <p className="mt-2 text-xs text-slate-600">Texts aren&apos;t available right now ({ch.smsBlocked}) — you&apos;ll get email.</p>}

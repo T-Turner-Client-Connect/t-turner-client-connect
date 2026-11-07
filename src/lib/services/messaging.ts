@@ -258,11 +258,28 @@ export async function setConversationState(actor: Actor, conversationId: string,
 /** Conversations visible to a portal user for one account. */
 export async function portalConversations(user: PortalActor, clientId: string) {
   await requireClientAccess(user.id, clientId, "message");
+  return conversationsFor(clientId, user.id);
+}
+
+/**
+ * The portal's conversation list for one client. `portalUserId` null (View as Client) shows the
+ * client's shared threads only — never a thread private to one login. Callers check access first.
+ */
+export async function conversationsFor(clientId: string, portalUserId: string | null) {
   return prisma.conversation.findMany({
     // Only portal messages are shown in the portal; email/text threads stay staff-side.
-    where: { clientId, messages: { some: { channel: "PORTAL" } }, ...conversationScope(user.id) },
+    where: { clientId, messages: { some: { channel: "PORTAL" } }, ...conversationScope(portalUserId) },
     include: { messages: { where: { channel: "PORTAL" }, orderBy: { createdAt: "desc" }, take: 1 }, _count
 : { select: { messages: { where: { channel: "PORTAL", direction: "OUTBOUND", readByClientAt: null } } } } },
     orderBy: { lastMessageAt: "desc" },
   });
 }
+
+/** One portal thread's messages as the client sees them (portal channel only). */
+export const portalThreadWhere = (conversationId: string) => ({ conversationId, channel: "PORTAL" as const });
+/** Authors and the client-visible attachments of a portal thread's messages. */
+export const THREAD_INCLUDE = {
+  staffAuthor: { select: { name: true } },
+  portalAuthor: { select: { name: true } },
+  attachments: { where: { visibility: "PUBLISHED" as const, deletedAt: null, category: { notIn: ["OWNER_K1" as const, "OWNER_PERSONAL" as const] } }, select: { id: true, title: true } },
+};

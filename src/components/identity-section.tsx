@@ -5,6 +5,9 @@ import { portalAddPersonAction, portalIdentityUploadAction, rejectIdentityAction
 import { ID_ROLES, ID_STATUS, ID_TYPES, isAdminOnlyType, maskedSsn, type identityOverview, type IdRole, type IdType } from "@/lib/services/identity";
 import { fmtIso } from "@/lib/tax/deadlines";
 import { fmtDateTime } from "@/lib/format";
+import { PreviewDisabled } from "@/components/portal/preview-off";
+
+type FormAction = (prev: { error?: string; ok?: string; at?: number } | null, fd: FormData) => Promise<{ error?: string; ok?: string; at?: number } | null>;
 
 type Overview = Awaited<ReturnType<typeof identityOverview>>;
 type Slot = Overview[number]["slots"][number];
@@ -18,11 +21,12 @@ function detail(r: Rec, mode: "portal" | "staff" = "staff") {
   return "No expiration";
 }
 
-function UploadForm({ mode, clientId, personId, type, replacing }: { mode: "portal" | "staff"; clientId: string; personId: string; type: IdType; replacing: boolean }) {
+function UploadForm({ mode, clientId, personId, type, replacing, previewAction }: { mode: "portal" | "staff"; clientId: string; personId: string; type: IdType; replacing: boolean; previewAction?: FormAction }) {
   const t = ID_TYPES[type];
   const action = mode === "portal" ? portalIdentityUploadAction : staffIdentityUploadAction;
   return (
-    <ActionForm action={action.bind(null, clientId)} className="mt-2 grid gap-2 rounded-xl bg-ivory-50 p-3 sm:grid-cols-2" resetOnSuccess idempotent>
+    <PreviewDisabled readOnly={!!previewAction}>
+    <ActionForm action={previewAction ?? action.bind(null, clientId)} className="mt-2 grid gap-2 rounded-xl bg-ivory-50 p-3 sm:grid-cols-2" resetOnSuccess idempotent>
       <input type="hidden" name="personId" value={personId} />
       <input type="hidden" name="type" value={type} />
       <Field label="File" hint="PDF, JPG or PNG. Front (and back for licenses) in one file if you can." className="sm:col-span-2"><input className="input" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required /></Field>
@@ -38,6 +42,7 @@ function UploadForm({ mode, clientId, personId, type, replacing }: { mode: "port
       <div className="sm:col-span-2"><Button type="submit" variant="gold">{replacing ? (type === "DRIVERS_LICENSE" ? "Upload Updated License" : "Upload replacement") : "Upload securely"}</Button></div>
       <p className="text-xs text-slate-600 sm:col-span-2">New uploads stay <strong>Pending Verification</strong> until our team reviews them.</p>
     </ActionForm>
+    </PreviewDisabled>
   );
 }
 
@@ -78,7 +83,8 @@ function ViewLink({ href, type, canOpen, mode }: { href: string; type: IdType; c
   );
 }
 
-export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean }) {
+/** `previewAction`: View as Client — the client's upload form, disabled, posting only to the preview stand-in. */
+export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin, previewAction }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean; previewAction?: FormAction }) {
   const canOpen = mode === "portal" ? !isAdminOnlyType(slot.type) : !!viewerIsAdmin || !isAdminOnlyType(slot.type);
   const t = ID_TYPES[slot.type];
   const { current, pending } = slot;
@@ -135,7 +141,7 @@ export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, vie
           <summary className="cursor-pointer text-sm font-semibold text-gold-700 underline">
             {has ? (slot.type === "DRIVERS_LICENSE" ? "Upload Updated License" : "Replace this document") : `Upload ${t.label.toLowerCase()}`}
           </summary>
-          <UploadForm mode={mode} clientId={clientId} personId={personId} type={slot.type} replacing={has} />
+          <UploadForm mode={mode} clientId={clientId} personId={personId} type={slot.type} replacing={has} previewAction={previewAction} />
         </details>
       )}
 

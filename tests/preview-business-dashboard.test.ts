@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { makeUser, managed, prisma, resetDb } from "./db";
-import type { Actor } from "@/lib/auth/actor";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -15,20 +14,24 @@ import { PortalHomeView } from "@/components/portal/home-view";
  * (an OWNER login of an active Bookkeeping Client gets the business dashboard). Fictional data only.
  */
 
-let staff: Actor | null = null;
-vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<object>()), requireUser: async () => staff, getCurrentUser: async () => staff }));
-// Imported after the mock is registered (vi.mock is hoisted).
-const { default: PortalPreview } = await import("@/app/(app)/clients/[id]/portal-preview/page");
+// View as Client is the client's own portal (the real /client pages) under a signed preview cookie
+// and the staff session; see tests/vac-harness.ts.
+vi.mock("next/headers", async () => (await import("./vac-harness")).headersMock);
+vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<object>()), ...(await import("./vac-harness")).sessionMock }));
+const { h, reset, startPreview } = await import("./vac-harness");
+const { previewLogins } = await import("@/lib/portal/viewer");
+// Imported after the mocks are registered (vi.mock is hoisted).
+const { default: PortalHome } = await import("@/app/client/(secure)/page");
 
 beforeEach(async () => {
   await resetDb();
-  staff = null;
+  reset();
 });
 
 async function world() {
   const tabitha = await makeUser("ADMIN", "Tabitha");
   await prisma.ownerAccess.create({ data: { userId: tabitha.id, isPrimary: true } });
-  staff = tabitha;
+  h.staff = tabitha;
   const pat = await createClient(tabitha, { firstName: "Pat", lastName: "Pretend", clientType: "INDIVIDUAL", status: "ACTIVE", email: "pat@fictional.example" });
   const bakery = await createClient(tabitha, { businessName: "Lakeside Pretend Bakery LLC", clientType: "BUSINESS", status: "ACTIVE", assignedToId: tabitha.id });
   const other = await createClient(tabitha, { businessName: "Other Fictional Hauling LLC", clientType: "BUSINESS", status: "ACTIVE", assignedToId: tabitha.id });
@@ -61,7 +64,12 @@ function find(node: ReactNode, type: unknown): ReactElement<Record<string, unkno
   if (node.type === type) return node as ReactElement<Record<string, unknown>>;
   return find((node.props as { children?: ReactNode }).children, type);
 }
-const preview = async (id: string, sp: Record<string, string> = {}) => (await PortalPreview({ params: Promise.resolve({ id }), searchParams: Promise.resolve(sp) })) as ReactNode;
+/** View as Client of a client (its primary owner login, as the start route picks), on its Home. */
+const preview = async (id: string, sp: Record<string, string> = {}) => {
+  h.jar.clear();
+  await startPreview(id, (await previewLogins(id))[0]?.id ?? null);
+  return (await PortalHome({ searchParams: Promise.resolve({ account: id, ...sp }) })) as ReactNode;
+};
 
 describe("View as Client: business dashboard", () => {
   it("an approved Managed Business previews as the business dashboard, read-only, with the portal's data, and is audited", async () => {
@@ -75,23 +83,26 @@ describe("View as Client: business dashboard", () => {
     expect(props.readOnly).toBe(true);
     expect(props.d.client.name).toBe("Lakeside Pretend Bakery LLC");
     expect(props.d.selected).toBe("2026-10"); // the same ?month= selection as the portal
-    expect(props.base).toBe(`/clients/${bakery.id}/portal-preview?view=home`);
+    // The client's own Home address: in the preview, the whole screen is the client's portal.
+    expect(props.base).toBe(`/client?account=${bakery.id}`);
+    // Only the previewed client: the owner's personal account isn't offered.
     expect(props.personalQ).toBeNull();
     // Owner-level data, the same the owner's login sees.
     const own = await portalBusinessDashboard(login, bakery.id, "2026-10");
     expect(JSON.stringify(props.d)).toBe(JSON.stringify(own));
-    // Links stay in the preview; portal pages with no preview are disabled, never the portal login.
-    expect(props.previewHref("/client/messages", "c=conv-1")).toBe(`/clients/${bakery.id}/portal-preview?view=messages&c=conv-1`);
-    expect(props.previewHref("/client/documents")).toBe(`/clients/${bakery.id}/portal-preview?view=documents`);
-    expect(props.previewHref("/client/billing")).toBeNull();
-    expect(props.previewHref("/client/bookkeeping")).toBeNull();
-    expect(props.tiles.every((t) => t.href === null || t.href.startsWith(`/clients/${bakery.id}/portal-preview?`))).toBe(true);
-    expect(props.tiles.find((t) => t.testId === "biz-billing")?.href ?? null).toBeNull();
+    // Every link opens the client's own page (the preview stays on through the cookie) — none is dead.
+    expect(props.previewHref("/client/messages", "c=conv-1")).toBe(`/client/messages?account=${bakery.id}&c=conv-1`);
+    expect(props.previewHref("/client/documents")).toBe(`/client/documents?account=${bakery.id}`);
+    expect(props.previewHref("/client/billing")).toBe(`/client/billing?account=${bakery.id}`);
+    expect(props.previewHref("/client/bookkeeping")).toBe(`/client/bookkeeping?account=${bakery.id}`);
+    expect(props.tiles.every((t) => t.href !== null && t.href.startsWith("/client"))).toBe(true);
+    expect(props.tiles.find((t) => t.testId === "biz-billing")?.href).toBe(`/client/billing?account=${bakery.id}`);
     // Documents open with a staff token, never a portal one.
-    expect(props.linkFor("doc-1")).toMatch(/^\/api\/documents\//);
+    expect(props.linkFor("doc-1")).toMatch(/^\/api\/documents\/doc-1\.s:/);
     const audits = await prisma.auditLog.findMany({ where: { action: "portal.staff_preview", entityId: bakery.id } });
     expect(audits).toHaveLength(1);
-    expect(audits[0].actorId).toBe(staff!.id);
+    expect(audits[0].actorId).toBe(h.staff!.id);
+    expect(audits[0].details).toMatchObject({ view: "home", loginId: login.id });
   });
 
   it("a regular tax client still previews as the regular tax Home", async () => {
@@ -99,7 +110,10 @@ describe("View as Client: business dashboard", () => {
     const tree = await preview(pat.id);
     expect(find(tree, PortalHomeView)).not.toBeNull();
     expect(find(tree, BusinessDashboardView)).toBeNull();
-    expect((find(tree, PortalHomeView)!.props as { readOnly: boolean }).readOnly).toBe(true);
+    // The client's Home exactly as they see it (it has no forms); documents open with a staff link.
+    const home = find(tree, PortalHomeView)!.props as { readOnly?: boolean; linkFor: (id: string) => string };
+    expect(home.readOnly).toBeFalsy();
+    expect(home.linkFor("doc-1")).toMatch(/^\/api\/documents\/doc-1\.s:/);
   });
 
   it("a client on the Bookkeeping Client list previews as the business dashboard; deactivating the profile goes back to the regular Home", async () => {
@@ -115,7 +129,7 @@ describe("View as Client: business dashboard", () => {
   it("staff without billing permission don't see the business's billing in the preview", async () => {
     const { bakery } = await world();
     await managed(bakery.id);
-    staff = await makeUser("STAFF", "Daria");
+    h.staff = await makeUser("STAFF", "Daria");
     const d = (find(await preview(bakery.id), BusinessDashboardView)!.props as { d: { account: unknown; perms: { canViewBilling: boolean } } }).d;
     expect(d.account).toBeNull();
     expect(d.perms.canViewBilling).toBe(false);
