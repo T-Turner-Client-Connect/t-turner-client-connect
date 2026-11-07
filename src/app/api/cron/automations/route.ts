@@ -7,7 +7,7 @@ import { runDailyBankRetrieval } from "@/lib/services/banking";
 import { runDailyCoetha } from "@/lib/services/coetha";
 import { runDailyWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { runBillingSchedules } from "@/lib/services/billing-schedules";
-import { ensureAccessReviewReminder } from "@/lib/services/access-review";
+import { runAccessReviewReminders } from "@/lib/services/access-review";
 import { generateCycles } from "@/lib/services/payroll-taxes";
 import { runPayrollReminders } from "@/lib/services/payroll-reminders";
 
@@ -38,8 +38,9 @@ export async function POST(req: Request) {
   // invoice (idempotent). Sent only if she turned on auto-send AND live sending is on; Square only
   // through the existing send path with its own switch. Bookkeeping subscriptions in Square are untouched.
   const schedules = await runBillingSchedules().catch(() => ({ error: "failed" }));
-  // Quarterly access review: one high-priority task for the owner when a review is due (never two open).
-  const accessReview = await ensureAccessReviewReminder().catch(() => "failed");
+  // Quarterly access review: one owner-only task per review cycle from 14 days before the due date
+  // (never two), and one email to the owner — never staff or clients — once the review is due.
+  const accessReview = await runAccessReviewReminders().catch(() => "failed");
   // ADP Payroll & Taxes: a rolling 6-week horizon of pay cycles (idempotent; sends nothing), then the
   // payroll reminders. Client reminders are HELD unless the owner's master switch and the client's
   // own switch are on; nothing here submits payroll, files taxes or moves money.

@@ -2,13 +2,23 @@ import "server-only";
 import type { Prisma, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { assertOwner } from "@/lib/auth/owner";
+import { assertOwner, primaryOwnerAccess } from "@/lib/auth/owner";
+import { appUrl } from "@/lib/integrations";
+import { brandedEmailHtml, sendEmail } from "@/lib/email";
 import type { Actor } from "@/lib/auth/actor";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { ALL_KEYS, GRANTABLE_KEYS, labelOf } from "@/lib/permissions";
 import {
+  ACCESS_REVIEW_PATH,
   REVIEW_TASK_TITLE,
   VENDORS,
+  dueEmailKey,
+  fmtDueDate,
+  reminderBannerText,
+  reminderStage,
+  reminderTaskKey,
+  reviewCycleKey,
+  type ReminderStage,
   offboardingChecklist,
   reviewStatus,
   type EditableReview,
@@ -180,7 +190,7 @@ export async function completeAccessReview(actor: Actor, input: ReviewInput, now
         changes: changes as unknown as Prisma.InputJsonValue,
       },
     });
-    const closed = await tx.task.updateMany({ where: { title: REVIEW_TASK_TITLE, status: "OPEN" }, data: { status: "DONE", completedAt: now } });
+    const closed = await tx.task.updateMany({ where: { status: "OPEN", OR: [{ title: REVIEW_TASK_TITLE }, { reminderKey: { startsWith: "access-review:" } }] }, data: { status: "DONE", completedAt: now } });
     await tx.ownerAuditLog.create({
       data: {
         actorId: actor.id,
@@ -370,35 +380,131 @@ export async function correctAccessReview(actor: Actor, reviewId: string, input:
   });
 }
 
+// ---------------------------------------------------------------------------------------------
+// Reminders: one owner-only task per review cycle (from 14 days before the due date), one email
+// when the review becomes due, and the Owner's Office banner. Never shown or sent to staff or clients.
+// ---------------------------------------------------------------------------------------------
+
+const primaryOwner = () =>
+  prisma.ownerAccess.findFirst({ where: { isPrimary: true, revokedAt: null, user: { active: true } }, select: { userId: true, user: { select: { email: true, name: true } } } });
+
+/** Absolute link to Owner's Office → Access review (the app's base URL). */
+export const accessReviewUrl = () => `${appUrl()}${ACCESS_REVIEW_PATH}`;
+
+function reminderDetails(last: { completedAt: Date } | null, s: ReminderStage) {
+  const when = s.dueAt ? `due ${fmtDueDate(s.dueAt)}` : "due now";
+  const lead = last
+    ? `The quarterly access review is ${when} (90 days after the last review, completed ${fmtDueDate(last.completedAt)}).`
+    : "No access review has been completed yet, so one is due now.";
+  return `${lead} Open Owner's Office → Access review, check every staff account and vendor account, and complete the review with a summary. This reminder closes when the new review is completed.\n${accessReviewUrl()}`;
+}
+
 /**
- * Cron (hourly, automations): when a review is due — immediately if none has ever been completed,
- * otherwise 90 days after the last — the owner gets one high-priority task. One open task at a time:
- * a retried or overlapping run finds it and does nothing.
+ * Cron (hourly, automations): from 14 days before the due date — immediately if no review has ever
+ * been completed — the owner has one high-priority, owner-only task due on the due date. Exactly
+ * one task per review cycle (Task.reminderKey is unique, and an advisory lock serializes runs): a
+ * retried or overlapping run finds it and does nothing. It stays open while overdue; only
+ * completing a new review closes it (completeAccessReview).
  */
 export async function ensureAccessReviewReminder(now = new Date()): Promise<"created" | "open" | "not_due" | "no_owner"> {
-  const owner = await prisma.ownerAccess.findFirst({ where: { isPrimary: true, revokedAt: null, user: { active: true } }, select: { userId: true } });
+  const owner = await primaryOwner();
   if (!owner) return "no_owner";
   const last = await lastReview();
-  const status = reviewStatus(last?.completedAt, now);
-  if (!status.due) return "not_due";
+  const s = reminderStage(last?.completedAt, now);
+  if (s.stage === "quiet") return "not_due";
+  const key = reminderTaskKey(reviewCycleKey(last?.id));
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('access-review-reminder'))`;
-    if (await tx.task.count({ where: { title: REVIEW_TASK_TITLE, status: "OPEN" } })) return "open" as const;
-    await tx.task.create({
-      data: {
-        title: REVIEW_TASK_TITLE,
-        details: last
-          ? `The last access review was completed ${last.completedAt.toISOString().slice(0, 10)}. Open Owner's Office → Access review, check every staff account and vendor account, and complete the review with a summary.`
-          : "No access review has been completed yet. Open Owner's Office → Access review, check every staff account and vendor account, and complete the review with a summary.",
-        priority: "HIGH",
-        dueAt: status.dueAt ?? now,
-        assigneeId: owner.userId,
-        createdById: owner.userId,
-      },
-    });
-    await tx.ownerAuditLog.create({ data: { actorId: owner.userId, action: "access_review.reminder_created", entityType: "AccessReview", entityId: last?.id ?? null, details: { dueAt: (status.dueAt ?? now).toISOString(), automated: true } } });
+    const open = await tx.task.findFirst({ where: { title: REVIEW_TASK_TITLE, status: "OPEN" }, select: { id: true, reminderKey: true, ownerOnly: true } });
+    if (open) {
+      // A reminder from before this change: make it owner-only and part of this cycle.
+      if (!open.ownerOnly || !open.reminderKey) await tx.task.update({ where: { id: open.id }, data: { ownerOnly: true, reminderKey: open.reminderKey ?? key } });
+      return "open" as const;
+    }
+    const data = {
+      title: REVIEW_TASK_TITLE,
+      details: reminderDetails(last, s),
+      priority: "HIGH" as const,
+      dueAt: s.dueAt ?? now,
+      assigneeId: owner.userId,
+      ownerOnly: true,
+    };
+    const existing = await tx.task.findUnique({ where: { reminderKey: key }, select: { id: true } });
+    // This cycle's task was closed some other way (e.g. before the review was completed): reopen it, never a second one.
+    if (existing) await tx.task.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+    else await tx.task.create({ data: { ...data, reminderKey: key, createdById: owner.userId } });
+    await tx.ownerAuditLog.create({ data: { actorId: owner.userId, action: "access_review.reminder_created", entityType: "AccessReview", entityId: last?.id ?? null, details: { dueAt: (s.dueAt ?? now).toISOString(), stage: s.stage, cycle: reviewCycleKey(last?.id), automated: true } } });
     return "created" as const;
   });
+}
+
+/** The owner's due email: subject, plain text and branded HTML, all with the direct link. */
+export function accessReviewDueEmail(input: { ownerName: string; stage: ReminderStage; lastCompletedAt: Date | null; url: string }) {
+  const { stage, lastCompletedAt, url } = input;
+  const first = input.ownerName.split(" ")[0] || input.ownerName;
+  const dueLine = stage.dueAt
+    ? stage.stage === "overdue"
+      ? `Your quarterly access review was due ${fmtDueDate(stage.dueAt)}.`
+      : `Your quarterly access review is due today, ${fmtDueDate(stage.dueAt)}.`
+    : "No quarterly access review has been completed yet, so one is due now.";
+  const lastLine = lastCompletedAt ? `The last review was completed ${fmtDueDate(lastCompletedAt)}.` : null;
+  const action = "Open Owner's Office → Access review, check every staff account and vendor account, and complete the review with a summary. The reminder in your Tasks closes when you do.";
+  const paragraphs = [`Hi ${first},`, dueLine, ...(lastLine ? [lastLine] : []), action];
+  return {
+    subject: "Quarterly access review due",
+    text: `${paragraphs.join("\n\n")}\n\nOpen the access review: ${url}\n\nThis reminder goes only to you as the owner. It is never sent to staff or clients.`,
+    html: brandedEmailHtml({
+      heading: "Quarterly access review due",
+      paragraphs,
+      button: { label: "Open the access review", url },
+      note: `Direct link: ${url} — This reminder goes only to you as the owner. It is never sent to staff or clients.`,
+    }),
+  };
+}
+
+/**
+ * Cron: one email to the owner when the review becomes due (on or after the due date, Chicago
+ * time) — at most one per review cycle. The OwnerReminderLog row is claimed first (unique key), so
+ * of two overlapping runs only one sends; if the send fails the claim is released and the next
+ * hourly run tries again. Goes only to the primary owner's own staff email.
+ */
+export async function ensureAccessReviewDueEmail(now = new Date()): Promise<"sent" | "already_sent" | "not_due" | "no_owner" | "not_sent"> {
+  const owner = await primaryOwner();
+  if (!owner) return "no_owner";
+  const last = await lastReview();
+  const s = reminderStage(last?.completedAt, now);
+  if (s.stage === "quiet" || s.stage === "upcoming") return "not_due";
+  const key = dueEmailKey(reviewCycleKey(last?.id));
+  const claimed = await prisma.ownerReminderLog.createMany({ data: [{ key, kind: "access_review_due_email" }], skipDuplicates: true });
+  if (claimed.count === 0) return "already_sent";
+  const mail = accessReviewDueEmail({ ownerName: owner.user.name, stage: s, lastCompletedAt: last?.completedAt ?? null, url: accessReviewUrl() });
+  const res = await sendEmail({ to: owner.user.email, ...mail, idempotencyKey: key, tags: { category: "owner_reminder" } }).catch(() => ({ ok: false as const, reason: "network" as const, detail: "failed" }));
+  if (!res.ok) {
+    await prisma.ownerReminderLog.delete({ where: { key } });
+    return "not_sent";
+  }
+  await prisma.ownerReminderLog.update({ where: { key }, data: { sentAt: now, providerId: res.providerId } });
+  await prisma.ownerAuditLog.create({ data: { actorId: owner.userId, action: "access_review.due_email_sent", entityType: "AccessReview", entityId: last?.id ?? null, details: { cycle: reviewCycleKey(last?.id), automated: true } } });
+  return "sent";
+}
+
+/** Hourly cron entry point: the task, then the email. */
+export async function runAccessReviewReminders(now = new Date()) {
+  const task = await ensureAccessReviewReminder(now).catch(() => "failed" as const);
+  const email = await ensureAccessReviewDueEmail(now).catch(() => "failed" as const);
+  return { task, email };
+}
+
+/**
+ * Owner's Office banner: the stage and its text, for the owner only (null for anyone else, and
+ * while the review is more than 14 days away).
+ */
+export async function accessReviewBanner(actor: Pick<Actor, "id">, now = new Date()) {
+  if (!(await primaryOwnerAccess(actor.id))) return null;
+  const last = await lastReview();
+  const stage = reminderStage(last?.completedAt, now);
+  const text = reminderBannerText(stage);
+  return text ? { ...text, stage: stage.stage, href: ACCESS_REVIEW_PATH } : null;
 }
 
 // ---------------------------------------------------------------------------------------------

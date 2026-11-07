@@ -11,6 +11,8 @@ import { AGING_BUCKETS, money } from "@/lib/billing/pricing";
 import { nameOf, paymentStatus, squareRevenueSummary } from "@/lib/services/square-billing";
 import { squareHealth } from "@/lib/services/square-health";
 import { fmtDate, fmtDateTime } from "@/lib/format";
+import { accessReviewBanner } from "@/lib/services/access-review";
+import { AccessReviewBanner } from "@/components/owner/access-review-banner";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ownerQueue } from "@/lib/services/agreements";
 import { pendingAcceptances } from "@/lib/services/accepted-returns";
@@ -27,6 +29,8 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
   // Agreements staff asked Tabitha to send, and recent signatures/declines (Tabitha only).
   const queue = (await isReportApprover(actor)) ? await ownerQueue() : null;
   const month = year === thisYear ? months[Number(todayYmd().slice(5, 7)) - 1] : null;
+  // Owner only: returns null for staff (even with every grant) and while the review is 14+ days away.
+  const reviewBanner = await accessReviewBanner(actor);
   // Returns staff delivered that wait for Tabitha's one-click acceptance confirmation.
   const toConfirm = (await isReportApprover(actor)) ? (await pendingAcceptances()).length : 0;
   return (
@@ -49,6 +53,7 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
           </>
         }
       />
+      {reviewBanner && <AccessReviewBanner banner={reviewBanner} />}
       {queue && (queue.waiting.length > 0 || queue.recent.length > 0) && (
         <Card className="mb-4" title="Agreements for you" actions={<Link className="text-sm underline" href="/agreements">All agreements</Link>}>
           <ul className="divide-y divide-navy-100 text-sm" data-testid="owner-agreements">
