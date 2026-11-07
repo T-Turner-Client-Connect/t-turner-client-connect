@@ -12,6 +12,7 @@ import { runTimeline } from "@/lib/services/payroll-approval";
 import { PAYROLL_SYSTEMS } from "@/lib/payroll/fields";
 import { AMOUNT_KEYS } from "@/lib/payroll/register";
 import { dayOf, hours, money, RunStatus, StatusSteps, whenOf } from "@/components/payroll/status";
+import { deliveryOf } from "@/lib/payroll/queue";
 
 export const metadata = { title: "Pay run" };
 
@@ -38,7 +39,7 @@ export default async function PayRunPage({ params }: { params: Promise<{ clientI
   const providerName = run.provider.startsWith("ADP") ? "ADP" : run.provider === "PAYCHEX_FLEX" ? "Paychex" : PAYROLL_SYSTEMS[run.provider as keyof typeof PAYROLL_SYSTEMS] ?? "the provider";
   return (
     <>
-      <PageHeader title={`Pay run — ${dayOf(version.checkDate)}`} subtitle={<><Link href={base} className="underline">{client.businessName || client.displayName} · Payroll</Link> · {PAYROLL_SYSTEMS[run.provider as keyof typeof PAYROLL_SYSTEMS] ?? run.provider} · version {version.number}{run.origin === "COETHA" ? " · prepared by Coetha (Tabitha approves)" : ""}</>} actions={<RunStatus status={run.status} approvedBy={current.filter((a) => a.decision === "APPROVED").map((a) => a.approverName)} />} />
+      <PageHeader title={`Pay run — ${dayOf(version.checkDate)}`} subtitle={<><Link href={base} className="underline">{client.businessName || client.displayName} · Payroll</Link> · {PAYROLL_SYSTEMS[run.provider as keyof typeof PAYROLL_SYSTEMS] ?? run.provider} · version {version.number}{run.origin === "COETHA" ? " · prepared by Coetha (Tabitha approves)" : ""}</>} actions={<RunStatus status={run.status} delivery={deliveryOf(notices.filter((n) => n.round === run.approvalRound))} approvedBy={current.filter((a) => a.decision === "APPROVED").map((a) => a.approverName)} />} />
 
       <Card title="Status" className="mb-4">
         <StatusSteps status={run.status} required={approvers.required.map((a) => ({ id: a.portalUserId, name: a.portalUser.name }))} approvedIds={approvedIds} />

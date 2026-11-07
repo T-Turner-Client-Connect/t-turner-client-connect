@@ -9,9 +9,13 @@ export const QUEUE_STATUS = {
   UPCOMING: { label: "Upcoming", tone: "gray" },
   WAITING_ON_HOURS: { label: "Waiting on hours", tone: "amber" },
   PREVIEW_TO_PREPARE: { label: "Preview to prepare", tone: "navy" },
-  AWAITING_CLIENT_APPROVAL: { label: "Awaiting client approval", tone: "gold" },
+  // PAY-1: what happened to the approval email decides which of these three a sent run shows.
+  APPROVAL_NOT_SENT: { label: "Approval Prepared — Not Sent", tone: "amber" },
+  DELIVERY_FAILED: { label: "Delivery Failed — Needs Attention", tone: "red" },
+  AWAITING_CLIENT_APPROVAL: { label: "Awaiting Client Approval", tone: "gold" },
+  CHANGES_REQUESTED: { label: "Changes Requested", tone: "red" },
   NEEDS_CORRECTION: { label: "Needs correction", tone: "red" },
-  READY_TO_PROCESS: { label: "Ready to process", tone: "green" },
+  READY_TO_PROCESS: { label: "Client Approved", tone: "green" },
   SUBMITTED_IN_ADP: { label: "Submitted in ADP", tone: "navy" },
   // Future provider API: ADP acknowledged the pay data. Still not processed until verified.
   ACCEPTED_BY_ADP: { label: "Accepted by ADP", tone: "navy" },
@@ -30,8 +34,22 @@ export type CycleFacts = {
   errorFlaggedAt: Date | null;
   processedAt: Date | null;
   /** The linked pay run, if any (a DISCARDED run counts as none). */
-  run: { status: string; currentVersionId: string | null; fullyApprovedVersionId?: string | null } | null;
+  run: { status: string; currentVersionId: string | null; fullyApprovedVersionId?: string | null; approvalDelivery?: ApprovalDelivery | null } | null;
 };
+
+/**
+ * PAY-1: whether the current round's approval email actually went out. NOT_SENT = held by the owner
+ * switches (or notifications off); FAILED = an approval email was rejected or couldn't be sent;
+ * SENT = accepted by the email provider for every approver who was emailed.
+ */
+export type ApprovalDelivery = "NOT_SENT" | "SENT" | "FAILED";
+export const NOTIFICATIONS_OFF_DETAIL = "Notifications are turned off (NOTIFICATIONS_ENABLED is not true)";
+export function deliveryOf(notices: { channel: string; status: string; detail: string | null }[]): ApprovalDelivery {
+  const email = notices.filter((n) => n.channel === "EMAIL");
+  if (email.some((n) => n.status === "FAILED" || (n.status === "SKIPPED" && n.detail !== NOTIFICATIONS_OFF_DETAIL))) return "FAILED";
+  if (email.some((n) => n.status === "SENT")) return "SENT";
+  return "NOT_SENT";
+}
 
 /** The one mapping from a cycle's facts to its queue status. */
 export function queueStatus(c: CycleFacts, today: string): QueueStatus {
@@ -40,11 +58,16 @@ export function queueStatus(c: CycleFacts, today: string): QueueStatus {
   if (c.processedAt || run?.status === "PROCESSED") return "PROCESSED";
   if (run?.status === "PROVIDER_ACCEPTED") return "ACCEPTED_BY_ADP";
   if (run?.status === "SUBMITTED") return "SUBMITTED_IN_ADP";
-  if (c.errorFlaggedAt || run?.status === "DENIED") return "NEEDS_CORRECTION";
+  if (c.errorFlaggedAt) return "NEEDS_CORRECTION";
+  if (run?.status === "DENIED") return "CHANGES_REQUESTED";
   // Ready only when the approvals are on the CURRENT version (the approval service resets the
   // status when a new version is made, so FULLY_APPROVED already implies it).
   if (run?.status === "FULLY_APPROVED") return "READY_TO_PROCESS";
-  if (run?.status === "AWAITING_APPROVAL") return "AWAITING_CLIENT_APPROVAL";
+  if (run?.status === "AWAITING_APPROVAL") {
+    if (run.approvalDelivery === "NOT_SENT") return "APPROVAL_NOT_SENT";
+    if (run.approvalDelivery === "FAILED") return "DELIVERY_FAILED";
+    return "AWAITING_CLIENT_APPROVAL";
+  }
   if (run || c.hoursSubmittedAt) return "PREVIEW_TO_PREPARE";
   if (c.hoursRequestedAt || today >= c.hoursRequestDate) return "WAITING_ON_HOURS";
   return "UPCOMING";
@@ -54,7 +77,10 @@ export const ITEM_LABEL: Record<QueueStatus, string> = {
   UPCOMING: "Hours request goes out",
   WAITING_ON_HOURS: "Hours due from client",
   PREVIEW_TO_PREPARE: "Preview to client for approval",
+  APPROVAL_NOT_SENT: "Approval prepared; the client hasn't been sent anything",
+  DELIVERY_FAILED: "Approval email didn't reach the client",
   AWAITING_CLIENT_APPROVAL: "Client approval due",
+  CHANGES_REQUESTED: "Client asked for changes",
   NEEDS_CORRECTION: "Revised preview due",
   READY_TO_PROCESS: "Submit in ADP by cutoff",
   SUBMITTED_IN_ADP: "Pay date (confirm processed)",
@@ -66,7 +92,10 @@ export const NEXT_ACTION: Record<QueueStatus, string> = {
   UPCOMING: "Open cycle",
   WAITING_ON_HOURS: "Record hours",
   PREVIEW_TO_PREPARE: "Prepare preview",
+  APPROVAL_NOT_SENT: "Send when authorized",
+  DELIVERY_FAILED: "Fix address and send again",
   AWAITING_CLIENT_APPROVAL: "View approvals",
+  CHANGES_REQUESTED: "Review the client's note",
   NEEDS_CORRECTION: "Send revised preview",
   READY_TO_PROCESS: "Mark submitted in ADP",
   SUBMITTED_IN_ADP: "Mark processed",
@@ -80,7 +109,10 @@ export function deadlineFor(c: CycleFacts, s: QueueStatus): string | null {
     case "UPCOMING": return c.hoursRequestDate;
     case "WAITING_ON_HOURS": return c.hoursDueDate;
     case "PREVIEW_TO_PREPARE":
+    case "APPROVAL_NOT_SENT":
+    case "DELIVERY_FAILED":
     case "AWAITING_CLIENT_APPROVAL":
+    case "CHANGES_REQUESTED":
     case "NEEDS_CORRECTION": return c.approvalDueDate;
     case "READY_TO_PROCESS": return c.adpCutoffDate;
     case "SUBMITTED_IN_ADP":

@@ -12,7 +12,7 @@ import { ymdOf } from "./ledger";
 import { canSend } from "./comm-prefs";
 import { clientTextingOn, staffAlertSettings } from "./staff-alerts";
 import { clientSmsAllowedNow, queuePortalNotification } from "./notifications";
-import { isPayrollApprover, requiredApprovers } from "./payroll-approval";
+import { approvalDelivery, isPayrollApprover, requiredApprovers } from "./payroll-approval";
 import { assigneeOf, deadlineAt, factsOf, payrollTaxSettings, reminderPlan } from "./payroll-taxes";
 
 /**
@@ -137,7 +137,9 @@ export async function runPayrollReminders(now = new Date()) {
     const status = queueStatus(facts, today);
     const business = c.client.businessName || c.client.displayName;
     const needsHours = status === "UPCOMING" || status === "WAITING_ON_HOURS";
-    const awaiting = run?.status === "AWAITING_APPROVAL";
+    // PAY-1: approval reminders follow only a request whose email actually reached the client. A
+    // request that wasn't sent or whose email failed gets no reminder; staff send it again first.
+    const awaiting = run?.status === "AWAITING_APPROVAL" && (await approvalDelivery(run)) === "SENT";
     const hoursDue = deadlineAt(facts.hoursDueDate);
     const approvalDue = deadlineAt(facts.approvalDueDate);
     for (const step of plan) {
