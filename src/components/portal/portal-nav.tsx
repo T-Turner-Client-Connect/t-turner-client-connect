@@ -110,7 +110,8 @@ function AccountTabs({ accounts, current, pathname }: { accounts: Account[]; cur
   );
 }
 
-export function PortalNav({ accounts, name, unread, signOut }: { accounts: Account[]; name: string; unread: number; signOut: () => Promise<void> }) {
+/** `exitHref` (View as Client): an Exit link takes the place of Sign out. */
+export function PortalNav({ accounts, name, unread, signOut, exitHref }: { accounts: Account[]; name: string; unread: number; signOut?: () => Promise<void>; exitHref?: string }) {
   const pathname = usePathname();
   const router = useRouter();
   const sp = useSearchParams();
@@ -158,9 +159,17 @@ export function PortalNav({ accounts, name, unread, signOut }: { accounts: Accou
         </label>
       )}
       <NavLinks q={q} pathname={pathname} unread={unread} onNavigate={onNavigate} business={business} payroll={payroll} hide={hide} />
-      <form action={signOut} className="px-3 pt-4">
-        <button className="flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left text-[13px] text-navy-100/80 hover:bg-white/10 hover:text-white"><LogOut className="size-4" aria-hidden />Sign out</button>
-      </form>
+      {exitHref ? (
+        <div className="px-3 pt-4">
+          <a href={exitHref} className="flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left text-[13px] text-navy-100/80 hover:bg-white/10 hover:text-white" data-testid="preview-exit-nav"><LogOut className="size-4" aria-hidden />Exit View as Client</a>
+        </div>
+      ) : (
+        signOut && (
+          <form action={signOut} className="px-3 pt-4">
+            <button className="flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left text-[13px] text-navy-100/80 hover:bg-white/10 hover:text-white"><LogOut className="size-4" aria-hidden />Sign out</button>
+          </form>
+        )
+      )}
     </div>
   );
 

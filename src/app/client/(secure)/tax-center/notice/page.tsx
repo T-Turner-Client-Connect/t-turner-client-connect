@@ -2,8 +2,9 @@ import Link from "next/link";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { submitNoticeAction } from "@/app/actions/notices";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
+import { portalViewer } from "@/lib/portal/viewer";
+import { PreviewDisabled } from "@/components/portal/preview-off";
+import { prisma } from "@/lib/prisma";
 import { questionnaireYears } from "@/lib/services/tax-center";
 import { AGENCIES, clientNoticeCases, NOTICE_STATUS } from "@/lib/services/notices";
 import { fmtDate } from "@/lib/format";
@@ -11,14 +12,16 @@ import { fmtDate } from "@/lib/format";
 export const metadata = { title: "Upload Audit or Tax Notice" };
 
 export default async function NoticeUpload({ searchParams }: { searchParams: Promise<{ account?: string; year?: string }> }) {
-  const user = await requirePortalUser();
   const sp = await searchParams;
-  const { current } = await resolveAccount(user.id, sp.account);
+  const v = await portalViewer("notice", sp.account);
+  const { user, current } = v;
   if (!current) return null;
   const q = `?account=${current.clientId}`;
   const years = questionnaireYears();
   const all = [...years, ...Array.from({ length: 11 }, (_, i) => years[0] - 4 - i)];
-  const cases = await clientNoticeCases(user, current.clientId);
+  const cases = user
+    ? await clientNoticeCases(user, current.clientId)
+    : await prisma.noticeCase.findMany({ where: { clientId: current.clientId }, include: { documents: { where: { deletedAt: null }, select: { id: true, title: true, scanStatus: true, createdAt: true } } }, orderBy: { createdAt: "desc" } });
   return (
     <>
       <p className="mb-2 text-sm"><Link className="underline" href={`/client/tax-center${q}`}>← My Tax Center</Link></p>
@@ -27,7 +30,8 @@ export default async function NoticeUpload({ searchParams }: { searchParams: Pro
         <Notice tone="warn" title="Uploading isn't included in your access to this account">Ask the account owner, or <Link className="underline" href={`/client/messages${q}`}>message our office</Link>.</Notice>
       ) : (
         <Card className="max-w-2xl">
-          <ActionForm action={submitNoticeAction.bind(null, current.clientId)} className="grid gap-3 sm:grid-cols-2" resetOnSuccess>
+          <PreviewDisabled readOnly={v.readOnly}>
+          <ActionForm action={v.act(submitNoticeAction, current.clientId)} className="grid gap-3 sm:grid-cols-2" resetOnSuccess>
             <Field label="Tax year on the notice">
               <select className="input" name="taxYear" defaultValue={sp.year && all.includes(Number(sp.year)) ? sp.year : "unsure"}>
                 <option value="unsure">Not sure</option>
@@ -44,6 +48,7 @@ export default async function NoticeUpload({ searchParams }: { searchParams: Pro
             <Field label="The notice — photos of every page, or a PDF (up to 5 MB each)" className="sm:col-span-2"><input className="input" type="file" name="file" multiple accept="application/pdf,image/*" /></Field>
             <div className="sm:col-span-2"><Button type="submit">Send notice securely</Button></div>
           </ActionForm>
+          </PreviewDisabled>
           <p className="mt-3 text-xs text-slate-600">We&apos;ll confirm when it&apos;s received. Receiving it doesn&apos;t mean it has been reviewed or answered — we&apos;ll contact you about next steps. Don&apos;t ignore a deadline while you wait; call us if it&apos;s close.</p>
         </Card>
       )}

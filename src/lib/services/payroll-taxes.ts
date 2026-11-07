@@ -11,13 +11,13 @@ import { chicagoLocalToUtc } from "@/lib/tz";
 import { isPayrollSystem } from "@/lib/payroll/fields";
 import { differenceOf, type Amounts, type PayDateTotals } from "@/lib/payroll/register";
 import { addDays, DEADLINE_TIME, DEFAULT_OFFSETS, isFrequency, planCycles, scheduleProblems, type Frequency, type ScheduleRule } from "@/lib/payroll/schedule";
-import { CHANGE_FLAGS, OTHER_PAY, type OtherPayKind, DEFAULT_PLAN, normalizePlan, toQueueRow, sortQueue, type ChangeFlag, type CycleFacts, type HoursSubmission, type QueueRow, type ReminderStep } from "@/lib/payroll/queue";
+import { CHANGE_FLAGS, OTHER_PAY, type OtherPayKind, DEFAULT_PLAN, deliveryOf, normalizePlan, toQueueRow, sortQueue, type ApprovalDelivery, type ChangeFlag, type CycleFacts, type HoursSubmission, type QueueRow, type ReminderStep } from "@/lib/payroll/queue";
 import { assertPayrollTaxManage, assertPayrollTaxView, cycleScope, payrollTaxAccess, scheduleScope, type PayrollTaxAccess } from "@/lib/payroll-taxes/access";
 import { ValidationError } from "./clients";
 import { canUseLedger, todayCentral, usd, ymdOf } from "./ledger";
 import { staffUploadDocument } from "./documents";
 import { attachRunDocument, createRunsFromPayDates, editPayrollRun, event, importPayrollRegister, loadRun, assertStaff, type VersionDocument } from "./payroll";
-import { isPayrollApprover, requestPayrollApproval, requiredApprovers, submitPayrollRun } from "./payroll-approval";
+import { approvalDelivery, isPayrollApprover, requestPayrollApproval, requiredApprovers, submitPayrollRun } from "./payroll-approval";
 
 /**
  * ADP Payroll & Taxes workspace (Stage 1: payroll). Builds on the existing pay runs, versions and
@@ -243,10 +243,13 @@ async function runsFor(cycles: { payrollRunId: string | null }[]) {
   const ids = cycles.map((c) => c.payrollRunId).filter((x): x is string => !!x);
   const runs = ids.length ? await prisma.payrollRun.findMany({ where: { id: { in: ids } }, select: { id: true, status: true, currentVersionId: true, approvalRound: true } }) : [];
   const versions = runs.length ? await prisma.payrollRunVersion.findMany({ where: { id: { in: runs.map((r) => r.currentVersionId!).filter(Boolean) } }, select: { id: true, number: true } }) : [];
-  return new Map(runs.map((r) => [r.id, { ...r, versionNumber: versions.find((v) => v.id === r.currentVersionId)?.number ?? null }]));
+  // PAY-1: whether each waiting run's approval email actually reached the client.
+  const waiting = runs.filter((r) => r.status === "AWAITING_APPROVAL");
+  const notices = waiting.length ? await prisma.payrollNotice.findMany({ where: { OR: waiting.map((r) => ({ runId: r.id, round: r.approvalRound })) }, select: { runId: true, channel: true, status: true, detail: true } }) : [];
+  return new Map(runs.map((r) => [r.id, { ...r, versionNumber: versions.find((v) => v.id === r.currentVersionId)?.number ?? null, approvalDelivery: r.status === "AWAITING_APPROVAL" ? deliveryOf(notices.filter((n) => n.runId === r.id)) : null }]));
 }
 
-export function factsOf(c: { payDate: Date; hoursRequestDate: Date; hoursDueDate: Date; approvalDueDate: Date; adpCutoffDate: Date; hoursRequestedAt: Date | null; hoursSubmittedAt: Date | null; errorFlaggedAt: Date | null; processedAt: Date | null }, run: { status: string; currentVersionId: string | null } | null): CycleFacts {
+export function factsOf(c: { payDate: Date; hoursRequestDate: Date; hoursDueDate: Date; approvalDueDate: Date; adpCutoffDate: Date; hoursRequestedAt: Date | null; hoursSubmittedAt: Date | null; errorFlaggedAt: Date | null; processedAt: Date | null }, run: { status: string; currentVersionId: string | null; approvalDelivery?: ApprovalDelivery | null } | null): CycleFacts {
   return { payDate: ymdOf(c.payDate), hoursRequestDate: ymdOf(c.hoursRequestDate), hoursDueDate: ymdOf(c.hoursDueDate), approvalDueDate: ymdOf(c.approvalDueDate), adpCutoffDate: ymdOf(c.adpCutoffDate), hoursRequestedAt: c.hoursRequestedAt, hoursSubmittedAt: c.hoursSubmittedAt, errorFlaggedAt: c.errorFlaggedAt, processedAt: c.processedAt, run };
 }
 
@@ -379,6 +382,7 @@ export async function cycleDetail(actor: Actor, cycleId: string, today = todayCe
     cycle,
     row,
     run: runRow,
+    delivery: runRow?.status === "AWAITING_APPROVAL" ? await approvalDelivery(runRow) : null,
     version: current ? { ...current, lines: employeeDetail ? current.lines : [] } : null,
     employeeDetail,
     versions,

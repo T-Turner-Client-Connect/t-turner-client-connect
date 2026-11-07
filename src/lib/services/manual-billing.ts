@@ -211,6 +211,11 @@ export async function manualBillingView(actor: Actor, clientId: string) {
 /** What the client sees: their own recorded payments only. */
 export async function portalManualBilling(user: PortalActor, clientId: string) {
   await requireClientAccess(user.id, clientId, "billing");
+  return manualBillingFor(clientId);
+}
+
+/** What portalManualBilling returns, without a portal login (View as Client). Callers check access first. */
+export async function manualBillingFor(clientId: string) {
   const { state } = await squareBillingFor(clientId);
   if (state !== "NONE") return null;
   const v = await viewFor(clientId);

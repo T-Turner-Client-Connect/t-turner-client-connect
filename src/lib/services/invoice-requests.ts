@@ -54,6 +54,11 @@ const lastTaxYear = () => new Date().getFullYear() - 1;
 /** What the client can choose from: their services, the tax return being prepared, open invoices, or Other. */
 export async function invoiceRequestChoices(user: PortalActor, clientId: string) {
   const access = await requireClientAccess(user.id, clientId, "message");
+  return invoiceRequestChoicesFor(clientId, access.canViewBilling);
+}
+
+/** The "Pay with an Invoice" choices, without a portal login (View as Client). Callers check access first. */
+export async function invoiceRequestChoicesFor(clientId: string, canViewBilling: boolean) {
   const [services, client] = await Promise.all([
     prisma.clientService.findMany({ where: { clientId, status: { not: "CLOSED" } }, orderBy: [{ taxYear: "desc" }, { createdAt: "desc" }], select: { id: true, title: true, taxYear: true, type: true } }),
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { clientType: true } }),
@@ -62,7 +67,7 @@ export async function invoiceRequestChoices(user: PortalActor, clientId: string)
   const y = lastTaxYear();
   const taxLike = services.some((s) => s.taxYear === y && s.type.startsWith("TAX"));
   if (!taxLike) choices.push({ kind: "TAX_YEAR", ref: String(y), label: `My ${y} ${client.clientType === "INDIVIDUAL" ? "tax return" : "business tax return"}`, taxYear: y });
-  if (access.canViewBilling) {
+  if (canViewBilling) {
     const open = (await openPublishedInvoices(clientId)).map((i) => ({ kind: "INVOICE" as const, ref: i.id, label: `Invoice ${i.number} · ${i.title} (balance ${money(i.balanceCents)})`, taxYear: null }));
     choices.push(...open);
   }

@@ -15,7 +15,7 @@ import { setClientTexting } from "@/lib/services/staff-alerts";
 import { handleInboundSms } from "@/lib/services/inbound-sms";
 import { discardPayrollRun, editPayrollRun, importPayrollRegister, loadRun, postPayrollRun, savePayrollSetup } from "@/lib/services/payroll";
 import {
-  approverDashboard, approverRunView, canManagePayrollApprovers, decideByLink, decidePayroll, isPayrollApprover, LINK_TTL_MS, linkView, notifyApprovers, requestPayrollApproval,
+  approvalDelivery, approverDashboard, approverRunView, dispatchHeldPayrollTexts, PAYROLL_SMS_NOTICE, canManagePayrollApprovers, decideByLink, decidePayroll, isPayrollApprover, LINK_TTL_MS, linkView, notifyApprovers, requestPayrollApproval,
   resolveLink, runTimeline, sendLinkCode, setNotifyChannel, setPayrollApprover, submitPayrollRun, verifyLink,
 } from "@/lib/services/payroll-approval";
 
@@ -24,12 +24,14 @@ import {
 const NOON = new Date("2026-11-04T18:00:00Z"); // 12:00 Central — inside the texting window
 const sms: { to: string; body: string }[] = [];
 const mail: { to: string; subject: string; text: string }[] = [];
+const failEmailTo = new Set<string>(); // addresses the simulated email provider rejects
 const ENV = { TWILIO_ACCOUNT_SID: "ACtest", TWILIO_AUTH_TOKEN: "t", TWILIO_MESSAGING_SERVICE_SID: "MGtest", RESEND_API_KEY: "re_test", EMAIL_FROM_ADDRESS: "office@example.com", RESEND_API_BASE: "https://resend.mock", NOTIFICATIONS_ENABLED: "true", APP_URL: "https://client.example.test" };
 
 beforeEach(async () => {
   await resetDb();
   sms.length = 0;
   mail.length = 0;
+  failEmailTo.clear();
   Object.assign(process.env, ENV);
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
     if (String(url).startsWith("https://api.twilio.com/")) {
@@ -39,6 +41,7 @@ beforeEach(async () => {
     }
     if (String(url).startsWith("https://resend.mock/")) {
       const b = JSON.parse(String(init.body));
+      if (failEmailTo.has(Array.isArray(b.to) ? b.to[0] : b.to)) return new Response(JSON.stringify({ message: "rejected (simulated)" }), { status: 422 });
       mail.push({ to: Array.isArray(b.to) ? b.to[0] : b.to, subject: b.subject, text: b.text });
       return new Response(JSON.stringify({ id: `em${mail.length}` }), { status: 200 });
     }
@@ -75,6 +78,8 @@ async function setup(opts: { texting?: boolean } = {}) {
   await savePayrollSetup(tabitha, biz.id, { system: "ADP_WFN", frequency: "BIWEEKLY" });
   await setupLedger(tabitha, biz.id, { basis: "CASH" });
   if (opts.texting !== false) await setClientTexting(tabitha, true);
+  // The general client portal rollout stays OFF in every test: payroll approvals don't depend on it.
+  await prisma.integrationSettings.upsert({ where: { id: "default" }, create: { id: "default", clientRolloutAuthorized: false }, update: { clientRolloutAuthorized: false } });
   const [a, b, c, d] = owners;
   // 4 owners are approvers; only Avery and Blake are required.
   await setPayrollApprover(tabitha, biz.id, a.id, { approver: true, required: true });
@@ -160,7 +165,7 @@ describe("approval flow", () => {
     expect(await status(s.runId)).toBe("DENIED");
     const task = await prisma.task.findFirstOrThrow({ where: { clientId: s.biz.id } });
     expect(task).toMatchObject({ assigneeId: s.daria.id, priority: "HIGH" });
-    expect(task.title).toMatch(/Payroll denied by Avery Pretend/);
+    expect(task.title).toMatch(/Payroll changes requested by Avery Pretend/);
     await expect(submitPayrollRun(s.daria, s.biz.id, s.runId)).rejects.toThrow(/must approve/);
     // The office can re-send after review.
     await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
@@ -233,13 +238,18 @@ describe("approval flow", () => {
 });
 
 describe("approval requests by text and email", () => {
-  it("default: email plus text (consent on file, texting on); text has no employee details", async () => {
+  it("default: the email carries the secure link; the text only says an approval is waiting in their email", async () => {
     const s = await setup();
     await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
-    expect(sms).toHaveLength(3);
     expect(mail).toHaveLength(3);
-    expect(sms[0].body).toMatch(/^TTurner Client Connect: Payroll for Pretend Tailored Smoke LLC \(pay date Oct 16, total \$[\d,]+\.\d\d\) needs your approval\. Review and approve or deny: https:\/\/client\.example\.test\/payroll-approval\//);
-    expect(sms[0].body).not.toMatch(/Rivera|Okafor|Lindqvist/);
+    expect(sms).toHaveLength(3);
+    expect(mail[0].text).toMatch(/payroll-approval\//);
+    for (const m of sms) {
+      expect(m.body).toBe(PAYROLL_SMS_NOTICE);
+      expect(m.body).not.toMatch(/https?:|payroll-approval|\$|\d{2,}|Rivera|Okafor|Lindqvist/);
+    }
+    // No text link exists: every link was created for the email.
+    expect(await prisma.payrollApprovalLink.count({ where: { channel: "SMS" } })).toBe(0);
   });
 
   it("each choice sends only to the chosen channel(s); staff can change it at the client's request (audited)", async () => {
@@ -250,7 +260,8 @@ describe("approval requests by text and email", () => {
     await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
     const to = (u: { phoneNormalized: string | null; email: string }) => ({ sms: sms.filter((m) => m.to === u.phoneNormalized).length, mail: mail.filter((m) => m.to === u.email).length });
     expect(to(s.a)).toEqual({ sms: 0, mail: 1 });
-    expect(to(s.b)).toEqual({ sms: 1, mail: 0 });
+    // The email is always the approval request; a "text" choice adds the text notice after it.
+    expect(to(s.b)).toEqual({ sms: 1, mail: 1 });
     expect(to(s.c)).toEqual({ sms: 1, mail: 1 });
     expect(await prisma.auditLog.count({ where: { action: "payroll.notify_channel_set" } })).toBe(3);
   });
@@ -282,11 +293,12 @@ describe("approval requests by text and email", () => {
     expect(await prisma.payrollNotice.count({ where: { channel: "SMS", status: "HELD" } })).toBe(3);
   });
 
-  it("a text reply never approves; the approver gets a fresh secure link", async () => {
+  it("a text reply never approves; the approver is pointed to the email link, with no link in the text", async () => {
     const s = await setup();
     await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
     const r = await handleInboundSms({ MessageSid: "SMin2", From: s.a.phone!, Body: "APPROVE" });
-    expect(r.reply).toMatch(/can't be approved by text reply.*payroll-approval\//);
+    expect(r.reply).toMatch(/can't be approved by text\. Please use the secure link in your payroll approval email/);
+    expect(r.reply).not.toMatch(/https?:|payroll-approval\//);
     expect(await prisma.payrollApproval.count()).toBe(0);
     expect(await status(s.runId)).toBe("AWAITING_APPROVAL");
   });
@@ -294,7 +306,9 @@ describe("approval requests by text and email", () => {
 
 describe("secure single-use links", () => {
   async function linkFor(s: Awaited<ReturnType<typeof setup>>, u: { phoneNormalized: string | null }) {
-    return tokenFrom(sms.filter((m) => m.to === u.phoneNormalized).at(-1)!.body);
+    void u;
+    const user = await prisma.portalUser.findFirstOrThrow({ where: { phoneNormalized: u.phoneNormalized } });
+    return tokenFrom(mail.filter((m) => m.to === user.email && /approval needed/.test(m.subject)).at(-1)!.text);
   }
   async function verifyByEmail(token: string, email: string) {
     await sendLinkCode(token);
@@ -302,7 +316,7 @@ describe("secure single-use links", () => {
     return verifyLink(token, { code });
   }
 
-  it("verification is required without a session; after the emailed code the decision is recorded with channel SMS", async () => {
+  it("verification is required without a session; after the emailed code the decision is recorded with channel EMAIL", async () => {
     const s = await setup();
     await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
     const token = await linkFor(s, s.a);
@@ -312,7 +326,7 @@ describe("secure single-use links", () => {
     const { nonce } = await verifyByEmail(token, s.a.email);
     await decideByLink(token, { decision: "APPROVED", comment: "OK from my phone", nonce, ip: "198.51.100.7", userAgent: "iPhone test" });
     const a = await prisma.payrollApproval.findFirstOrThrow({ where: { portalUserId: s.a.id } });
-    expect(a).toMatchObject({ channel: "SMS_LINK", verifiedBy: "EMAIL_CODE", ip: "198.51.100.7", userAgent: "iPhone test", comment: "OK from my phone", decision: "APPROVED" });
+    expect(a).toMatchObject({ channel: "EMAIL_LINK", verifiedBy: "EMAIL_CODE", ip: "198.51.100.7", userAgent: "iPhone test", comment: "OK from my phone", decision: "APPROVED" });
   });
 
   it("a valid portal session for the same approver skips the code; another approver's session doesn't", async () => {
@@ -434,10 +448,12 @@ describe("payroll approval with owner permissions, communication preferences and
     // Avery: STOP-blocked, so email only.
     expect(sms.filter((m) => m.to === s.a.phoneNormalized)).toHaveLength(0);
     expect(mail.filter((m) => m.to === s.a.email)).toHaveLength(1);
-    // Blake: email bounced, so text only, and the reason is recorded.
+    // Blake: email bounced, so no approval email, and no misleading text either; the preparer is told.
     expect(mail.filter((m) => m.to === s.b.email)).toHaveLength(0);
-    expect(sms.filter((m) => m.to === s.b.phoneNormalized)).toHaveLength(1);
+    expect(sms.filter((m) => m.to === s.b.phoneNormalized)).toHaveLength(0);
     expect(await prisma.payrollNotice.findFirstOrThrow({ where: { portalUserId: s.b.id, channel: "EMAIL" } })).toMatchObject({ status: "SKIPPED", detail: expect.stringMatching(/bounce/i) });
+    expect(await prisma.payrollNotice.findFirstOrThrow({ where: { portalUserId: s.b.id, channel: "SMS" } })).toMatchObject({ status: "SKIPPED", detail: expect.stringMatching(/email wasn't accepted/) });
+    expect(await prisma.task.count({ where: { clientId: s.biz.id, assigneeId: s.daria.id, title: { contains: "email not delivered to Blake" } } })).toBe(1);
     // A marketing opt-out never stops this essential notice.
     await prisma.suppression.create({ data: { channel: "EMAIL", addressNormalized: s.c.email, reason: "UNSUBSCRIBE", note: "promo opt-out" } });
     mail.length = 0;
@@ -453,5 +469,116 @@ describe("payroll approval with owner permissions, communication preferences and
     await setStaffPermissions(s.tabitha, s.daria.id, []);
     expect(await canManagePayrollApprovers(s.daria)).toBe(false);
     await expect(setPayrollApprover(s.daria, s.biz.id, s.d.id, { approver: true, required: false })).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+// --- PAY-1: the complete payroll approval notification workflow ----------------------------------
+describe("PAY-1: Send for Approval → email with secure link → text notice → decision → preparer alerted", () => {
+  const NIGHT = new Date("2026-11-05T04:00:00Z"); // 10 p.m. Central, outside the texting window
+  const runOf = (s: Awaited<ReturnType<typeof setup>>) => prisma.payrollRun.findUniqueOrThrow({ where: { id: s.runId } });
+
+  it("the whole workflow, with the general portal rollout OFF: email (link) → text (notice only) → Approve / Request Changes → preparer alerted → submit", async () => {
+    const s = await setup();
+    expect((await prisma.integrationSettings.findUniqueOrThrow({ where: { id: "default" } })).clientRolloutAuthorized).toBe(false);
+    const { notices } = await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    // 1. Email first, to each approver, with their own secure single-use link.
+    expect(mail.filter((m) => /approval needed/.test(m.subject))).toHaveLength(3);
+    expect(notices.filter((n) => n.channel === "EMAIL").every((n) => n.status === "SENT")).toBe(true);
+    // 2. Then the text: notice only, after the email was accepted.
+    expect(sms).toHaveLength(3);
+    expect(sms.every((m) => m.body === PAYROLL_SMS_NOTICE)).toBe(true);
+    expect(await approvalDelivery(await runOf(s))).toBe("SENT");
+    // 3. The approver opens the emailed link (no portal session needed) and approves.
+    const token = tokenFrom(mail.find((m) => m.to === s.a.email)!.text);
+    await sendLinkCode(token);
+    const code = mail.filter((m) => m.to === s.a.email).at(-1)!.subject.match(/^(\d{6})/)![1];
+    const { nonce } = await verifyLink(token, { code });
+    await decideByLink(token, { decision: "APPROVED", nonce });
+    // 4. The preparer is alerted at once; Blake approves in the portal; the run is Client Approved.
+    expect(await prisma.task.count({ where: { assigneeId: s.daria.id, title: { contains: "Payroll approved by Avery" } } })).toBe(1);
+    await decide(s, s.b, "APPROVED");
+    expect(await status(s.runId)).toBe("FULLY_APPROVED");
+    // 5. The preparer submits in ADP and records it here (never automatic).
+    await submitPayrollRun(s.daria, s.biz.id, s.runId, { note: "Submitted in ADP" });
+    expect(await status(s.runId)).toBe("SUBMITTED");
+  });
+
+  it("Request Changes alerts the preparer with the client's note, and the run reads Changes Requested", async () => {
+    const s = await setup();
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    await decide(s, s.b, "DENIED", "Please fix Monday's hours");
+    const t = await prisma.task.findFirstOrThrow({ where: { title: { contains: "Payroll changes requested by Blake" } } });
+    expect(t).toMatchObject({ assigneeId: s.daria.id, priority: "HIGH" });
+    expect(t.details).toMatch(/Monday's hours/);
+    expect(await status(s.runId)).toBe("DENIED"); // shown as "Changes Requested"
+  });
+
+  it("a failed approval email: no text for that approver, the preparer is alerted, it reads Delivery Failed; staff can send it again", async () => {
+    const s = await setup();
+    failEmailTo.add(s.a.email);
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    expect(sms.filter((m) => m.to === s.a.phoneNormalized)).toHaveLength(0);
+    expect(await prisma.payrollNotice.findFirstOrThrow({ where: { portalUserId: s.a.id, channel: "EMAIL" } })).toMatchObject({ status: "FAILED" });
+    expect(await prisma.payrollNotice.findFirstOrThrow({ where: { portalUserId: s.a.id, channel: "SMS" } })).toMatchObject({ status: "SKIPPED", detail: expect.stringMatching(/email wasn't accepted/) });
+    expect(await prisma.task.findFirstOrThrow({ where: { title: { contains: "email not delivered to Avery" } } })).toMatchObject({ assigneeId: s.daria.id, priority: "HIGH" });
+    expect(await approvalDelivery(await runOf(s))).toBe("FAILED");
+    failEmailTo.clear();
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    expect(await approvalDelivery(await runOf(s))).toBe("SENT");
+  });
+
+  it("when email is switched off on the server, nothing goes out and it reads Approval Prepared — Not Sent (never as sent); sending again later is a staff action", async () => {
+    const s = await setup();
+    delete process.env.NOTIFICATIONS_ENABLED;
+    const { notices } = await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    expect(mail.length + sms.length).toBe(0);
+    expect(notices.some((n) => n.status === "SENT")).toBe(false);
+    expect(await approvalDelivery(await runOf(s))).toBe("NOT_SENT");
+    process.env.NOTIFICATIONS_ENABLED = "true";
+    await dispatchHeldPayrollTexts(NOON); // the scheduled job releases nothing on its own
+    expect(mail.length + sms.length).toBe(0);
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    expect(mail.filter((m) => /approval needed/.test(m.subject))).toHaveLength(3);
+  });
+
+  it("no duplicates: once the email went out it can't be sent again while it's with the approvers; held texts go once", async () => {
+    const s = await setup();
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NIGHT);
+    expect(mail).toHaveLength(3); // emails go any time
+    expect(sms).toHaveLength(0); // texts wait for 8 a.m.
+    await expect(requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON)).rejects.toThrow(/already with the approvers/);
+    expect(await dispatchHeldPayrollTexts(NOON)).toBe(3);
+    expect(await dispatchHeldPayrollTexts(NOON)).toBe(0);
+    expect(sms).toHaveLength(3);
+    expect(sms.every((m) => m.body === PAYROLL_SMS_NOTICE)).toBe(true);
+    expect(mail).toHaveLength(3);
+  });
+
+  it("an approver decides once per round; a repeat is refused and recorded only once", async () => {
+    const s = await setup();
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    await decide(s, s.a, "APPROVED");
+    await expect(decide(s, s.a, "APPROVED")).rejects.toThrow();
+    expect(await prisma.payrollApproval.count({ where: { portalUserId: s.a.id } })).toBe(1);
+  });
+
+  it("the secure link shows only this payroll; it opens nothing else in the portal", async () => {
+    const s = await setup();
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    const view = await linkView(tokenFrom(mail.find((m) => m.to === s.a.email)!.text));
+    expect(view.state).toBe("OK");
+    const json = JSON.stringify(view);
+    expect(json).not.toMatch(/"documents"|"invoices"|"messages"|"identity"/);
+  });
+
+  it("only authorized staff can send, and every request, notice and decision is in the audit trail", async () => {
+    const s = await setup();
+    await expect(requestPayrollApproval(s.sam, s.biz.id, s.runId, NOON)).rejects.toBeInstanceOf(ForbiddenError);
+    expect(mail.length + sms.length).toBe(0);
+    await requestPayrollApproval(s.daria, s.biz.id, s.runId, NOON);
+    await decide(s, s.a, "APPROVED");
+    expect(await prisma.auditLog.count({ where: { action: "payroll.approval_requested", entityId: s.runId } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "payroll.approved_by_owner" } })).toBe(1);
+    expect(await prisma.payrollNotice.count({ where: { runId: s.runId } })).toBe(6);
   });
 });

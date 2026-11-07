@@ -17,10 +17,15 @@ const TONE: Record<string, string> = {
   DISCARDED: "bg-slate-100 text-slate-500",
 };
 
-/** "Awaiting Approval", or "Approved by Avery" while some (not all) required owners approved. */
-export function RunStatus({ status, approvedBy = [], className }: { status: string; approvedBy?: string[]; className?: string }) {
-  const label = status === "AWAITING_APPROVAL" && approvedBy.length ? `Approved by ${approvedBy.join(", ")} · awaiting others` : RUN_STATUS[status as keyof typeof RUN_STATUS] ?? status;
-  return <span className={clsx("inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold", TONE[status] ?? TONE.DRAFT, className)} data-testid="run-status">{label}</span>;
+/** PAY-1: an approval that never reached the client must never read as "Awaiting Client Approval". */
+export const DELIVERY_LABEL = { NOT_SENT: "Approval Prepared — Not Sent", FAILED: "Delivery Failed — Needs Attention" } as const;
+
+/** "Awaiting Client Approval", or "Approved by Avery" while some (not all) required owners approved. */
+export function RunStatus({ status, approvedBy = [], delivery = null, className }: { status: string; approvedBy?: string[]; delivery?: "NOT_SENT" | "SENT" | "FAILED" | null; className?: string }) {
+  const undelivered = status === "AWAITING_APPROVAL" && !approvedBy.length && (delivery === "NOT_SENT" || delivery === "FAILED") ? delivery : null;
+  const label = undelivered ? DELIVERY_LABEL[undelivered] : status === "AWAITING_APPROVAL" && approvedBy.length ? `Approved by ${approvedBy.join(", ")} · awaiting others` : RUN_STATUS[status as keyof typeof RUN_STATUS] ?? status;
+  const tone = undelivered === "FAILED" ? "bg-red-600 text-white" : undelivered === "NOT_SENT" ? "bg-amber-100 text-amber-900" : TONE[status] ?? TONE.DRAFT;
+  return <span className={clsx("inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold", tone, className)} data-testid="run-status">{label}</span>;
 }
 
 /** The status timeline: Awaiting Approval → Approved by each required owner → Fully Approved → Submitted. */

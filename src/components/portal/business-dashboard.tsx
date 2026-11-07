@@ -12,6 +12,8 @@ import { INVOICE_STATUS } from "@/lib/billing/invoice-status";
 import type { Deadline } from "@/lib/services/business-overview";
 import type { portalBusinessDashboard } from "@/lib/services/portal-business";
 import { portalUploadAction } from "@/app/actions/portal";
+import { previewFormAction } from "@/app/actions/preview";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import { ActionTiles, NewsList, type NewsItem, type Tile } from "./luxury";
 import { BooksProgressCard } from "./books-progress";
 import { LiveBankCard, LiveBankKpi, LiveBankProvider, LiveBankTicker } from "./business-live";
@@ -118,14 +120,15 @@ const STATUS_PILL: Record<ChecklistStatus, string> = {
  * the request's document type and tax year. The client only picks the month or quarter when the
  * request covers one, and the file.
  */
-function RequestUpload({ clientId, item }: { clientId: string; item: Dash["checklist"][number] }) {
+function RequestUpload({ clientId, item, readOnly }: { clientId: string; item: Dash["checklist"][number]; readOnly?: boolean }) {
   const typed = item.docType && item.period && item.taxYear;
   return (
     <details className="group mt-2">
       <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-lg border-[1.5px] border-navy-900 bg-white px-3 py-1 text-sm font-semibold text-navy-900 hover:bg-ivory-50" data-testid={`upload-${item.id}`}>
         <Upload className="size-4" aria-hidden /> {item.files ? "Upload another" : "Upload"}
       </summary>
-      <ActionForm action={portalUploadAction.bind(null, clientId)} className="mt-2 grid gap-2 rounded-xl border border-ivory-200 bg-white p-3 sm:grid-cols-2" resetOnSuccess>
+      <PreviewDisabled readOnly={readOnly}>
+      <ActionForm action={readOnly ? previewFormAction : portalUploadAction.bind(null, clientId)} className="mt-2 grid gap-2 rounded-xl border border-ivory-200 bg-white p-3 sm:grid-cols-2" resetOnSuccess>
         <input type="hidden" name="requestId" value={item.id} />
         {typed && (
           <>
@@ -148,11 +151,13 @@ function RequestUpload({ clientId, item }: { clientId: string; item: Dash["check
         <input className="input sm:col-span-2" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label={`File for ${item.title}`} />
         <button type="submit" className={clsx(navyBtn, "sm:col-span-2")}>Send securely</button>
       </ActionForm>
+      </PreviewDisabled>
     </details>
   );
 }
 
-export function NeedList({ items, clientId, canUpload }: { items: Dash["checklist"]; clientId: string; canUpload: boolean }) {
+/** `readOnly` (View as Client): each upload shows, disabled. */
+export function NeedList({ items, clientId, canUpload, readOnly }: { items: Dash["checklist"]; clientId: string; canUpload: boolean; readOnly?: boolean }) {
   return (
     <ul className="mt-2 grid gap-x-6 md:grid-cols-2">
       {items.map((c) => (
@@ -165,14 +170,13 @@ export function NeedList({ items, clientId, canUpload }: { items: Dash["checklis
             </div>
             <span className={clsx("shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold", STATUS_PILL[c.status])}>{CHECKLIST_STATUS[c.status].label}</span>
           </div>
-          {canUpload && c.status !== "ACCEPTED" && <RequestUpload clientId={clientId} item={c} />}
+          {canUpload && c.status !== "ACCEPTED" && <RequestUpload clientId={clientId} item={c} readOnly={readOnly} />}
         </li>
       ))}
     </ul>
   );
 }
 
-const UPLOADS_OFF = <p className="mt-2 rounded-lg bg-gold-50 px-3 py-2 text-sm text-navy-900" data-testid="preview-uploads-off">Uploads are turned off in View as Client.</p>;
 
 /**
  * The Managed Business / Bookkeeping Client landing page. `readOnly` is the owner's View as
@@ -188,7 +192,8 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
   const neededCount = d.checklist.filter((c) => c.status === "NEEDED" || c.status === "MORE_INFO").length;
   // Portal: the client's own page for this account. View as Client: the preview page, or null.
   const to = (path: string, extra?: string): string | null => (readOnly ? (previewHref?.(path, extra) ?? null) : `${path}${q}${extra ? `&${extra}` : ""}`);
-  const canUpload = d.perms.canUpload && !readOnly;
+  // View as Client shows the client's upload buttons too, disabled (the server refuses them anyway).
+  const canUpload = d.perms.canUpload;
   const anchor = (href: string | null, id: string) => (href ? `${href}#${id}` : null);
   const ytd = d.figures?.ytd ?? null;
   const ytdNote = d.figures ? undefined : d.isReleased ? "See Financial statements below" : `Shown once ${mName} is released`;
@@ -405,10 +410,9 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
                 <p className="text-sm text-navy-800">{neededCount ? `${neededCount} still needed.` : "Nothing is needed right now. Thank you!"} Only what applies to your business is listed. Uploads save to {d.client.name} only, never your personal files.</p>
               </div>
             </div>
-            {personalQ && !readOnly && <Link href={`/client/tax-center/upload${personalQ}`} className={outlineBtn} data-testid="personal-upload">Upload personal tax documents</Link>}
+            {personalQ && <Link href={`/client/tax-center/upload${personalQ}`} className={outlineBtn} data-testid="personal-upload">Upload personal tax documents</Link>}
           </div>
-          {readOnly && d.perms.canUpload && UPLOADS_OFF}
-          {d.checklist.length === 0 ? <p className="mt-3 text-sm text-navy-800">No documents requested right now.</p> : <NeedList items={d.checklist} clientId={d.client.id} canUpload={canUpload} />}
+          {d.checklist.length === 0 ? <p className="mt-3 text-sm text-navy-800">No documents requested right now.</p> : <NeedList items={d.checklist} clientId={d.client.id} canUpload={canUpload} readOnly={readOnly} />}
         </section>
 
         {/* Year-End Tax Documents: annual forms only, from January for the prior tax year. */}
@@ -425,7 +429,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
           ) : d.yearEndDocs.items.length === 0 ? (
             <p className="mt-3 text-sm text-navy-800">No year-end forms apply to your business for {d.yearEndDocs.taxYear}.</p>
           ) : (
-            <NeedList items={d.yearEndDocs.items} clientId={d.client.id} canUpload={canUpload} />
+            <NeedList items={d.yearEndDocs.items} clientId={d.client.id} canUpload={canUpload} readOnly={readOnly} />
           )}
         </section>
 

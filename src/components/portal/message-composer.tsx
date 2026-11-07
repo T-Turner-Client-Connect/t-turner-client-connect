@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Laptop, Mail, Paperclip, Send, Smartphone } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
+import { PREVIEW_OFF_NOTE } from "@/lib/portal/preview-off";
 
 type State = { error?: string; ok?: string; at?: number } | null;
 
@@ -20,6 +21,7 @@ export function MessageComposer({
   email,
   defaultSubject,
   uploadLabel,
+  readOnly,
 }: {
   action: (prev: State, fd: FormData) => Promise<State>;
   canUpload: boolean;
@@ -27,6 +29,8 @@ export function MessageComposer({
   email: string;
   defaultSubject?: string;
   uploadLabel: string;
+  /** View as Client: the same composer, disabled (the preview passes a stand-in action that saves nothing). */
+  readOnly?: boolean;
 }) {
   const [mode, setMode] = useState<"portal" | "text" | "email">("portal");
   const [subject, setSubject] = useState(defaultSubject ?? "");
@@ -75,6 +79,7 @@ export function MessageComposer({
 
       {mode === "portal" ? (
         <ActionForm action={action} className="space-y-5" resetOnSuccess idempotent>
+          <fieldset disabled={readOnly} className="min-w-0 space-y-5" data-testid={readOnly ? "preview-disabled" : undefined}>
           {fields}
           {canUpload && (
             <label className="block">
@@ -89,6 +94,8 @@ export function MessageComposer({
           <button type="submit" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-b from-navy-900 to-navy-950 px-7 py-3 text-lg font-semibold text-white shadow hover:to-navy-900" data-testid="send-message">
             <Send className="size-5" aria-hidden /> Send Message
           </button>
+          {readOnly && <p className="text-xs font-semibold text-gold-700" data-testid="preview-off">{PREVIEW_OFF_NOTE}</p>}
+          </fieldset>
         </ActionForm>
       ) : (
         <form
@@ -98,11 +105,14 @@ export function MessageComposer({
             window.location.href = external;
           }}
         >
+          <fieldset disabled={readOnly} className="min-w-0 space-y-5">
           {fields}
           <p className="text-sm text-slate-600">{mode === "text" ? "This opens your phone's texting app, addressed to our office." : "This opens your email app, addressed to our office."} For documents or account details, please use a secure portal message instead.</p>
           <button type="submit" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-b from-navy-900 to-navy-950 px-7 py-3 text-lg font-semibold text-white shadow hover:to-navy-900">
             <Send className="size-5" aria-hidden /> {mode === "text" ? "Open Text Message" : "Open Email"}
           </button>
+          {readOnly && <p className="text-xs font-semibold text-gold-700" data-testid="preview-off">{PREVIEW_OFF_NOTE}</p>}
+          </fieldset>
         </form>
       )}
     </div>

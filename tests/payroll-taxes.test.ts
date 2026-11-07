@@ -226,10 +226,10 @@ describe("workup: v1 → client denied → v2 → approved → submitted → pro
     // The same document again isn't a new version.
     await expect(uploadPreview(s.mom, c.id, pdf("preview-v1-corrected"))).rejects.toThrow(/already saved|already attached/);
 
-    // Round 2 on v2: Ben denies with a comment → Needs correction.
+    // Round 2 on v2: Ben requests changes with a comment → Changes Requested.
     await sendForClientApproval(s.mom, c.id);
     await decidePayroll(s.ben.id, s.bakery.id, cyc.payrollRunId!, { decision: "DENIED", comment: "Bonus should be $200, not $250", versionId: v2.id }, meta);
-    expect((await workQueue(s.mom)).rows.find((r) => r.data.cycleId === c.id)?.status).toBe("NEEDS_CORRECTION");
+    expect((await workQueue(s.mom)).rows.find((r) => r.data.cycleId === c.id)?.status).toBe("CHANGES_REQUESTED");
     // Send revised preview: corrected totals + PDF in one new version (v3), new approval round.
     const v3 = await saveManualTotals(s.mom, c.id, { ...totals, grossCents: 295000, netPayCents: 245000 }, pdf("preview-v3"));
     expect(v3.version).toBe(3);
@@ -275,6 +275,32 @@ describe("workup: v1 → client denied → v2 → approved → submitted → pro
 
 describe("reminders", () => {
   const atHoursRequest = new Date("2026-11-05T15:30:00Z"); // 9:30 a.m. Central on the request date of the Nov 13 cycle
+
+  it("PAY-1 statuses on the cycle: Approval Prepared — Not Sent (email off) → Awaiting Client Approval (sent) → Changes Requested; no reminder follows an unsent request", async () => {
+    const s = await setup();
+    await saveSchedule(s.mom, s.bakery.id, { ...WEEKLY, clientRemindersEnabled: true });
+    await setClientRemindersAuthorized(s.tabitha, true);
+    const c = await cycleOn(s.bakery.id, "2026-11-13");
+    await saveManualTotals(s.mom, c.id, totals);
+    delete process.env.NOTIFICATIONS_ENABLED;
+    const r = await sendForClientApproval(s.mom, c.id);
+    expect(r.notices.some((n) => n.status === "SENT")).toBe(false);
+    let d = await cycleDetail(s.mom, c.id);
+    expect(d.row.status).toBe("APPROVAL_NOT_SENT");
+    expect(d.delivery).toBe("NOT_SENT");
+    // The preparer picks these out of her work queue at a glance.
+    expect((await workQueue(s.mom, "all")).rows.filter((x) => x.status === "APPROVAL_NOT_SENT").map((x) => x.data.cycleId)).toContain(c.id);
+    process.env.NOTIFICATIONS_ENABLED = "true";
+    await runPayrollReminders(new Date("2026-11-09T23:30:00Z")); // 24h before the approval deadline
+    expect(clientSends()).toBe(0);
+    await sendForClientApproval(s.mom, c.id);
+    d = await cycleDetail(s.mom, c.id);
+    expect(d.row.status).toBe("AWAITING_CLIENT_APPROVAL");
+    expect(clientSends()).toBeGreaterThan(0);
+    const v = await currentVersion(s.bakery.id, r.run.id);
+    await decidePayroll(s.ben.id, s.bakery.id, r.run.id, { decision: "DENIED", comment: "Ben's hours are short", versionId: v.id }, meta);
+    expect((await cycleDetail(s.mom, c.id)).row.status).toBe("CHANGES_REQUESTED");
+  });
 
   it("are HELD (never sent) while the owner's switch is off, deduplicated, and only the owner flips it", async () => {
     const s = await setup();
