@@ -2,7 +2,7 @@ import { Landmark } from "lucide-react";
 import type { RefundTransferPayment } from "@prisma/client";
 import { ActionForm } from "@/components/action-form";
 import { Button } from "@/components/ui";
-import { requestRefundTransferAction } from "@/app/actions/refund-transfers";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import { DEBT_CHECK, OFFSET_RISK, RT_STATUS, type RtStatus } from "@/lib/services/refund-transfers";
 
 const usd = (c: number | null) => (c == null ? "" : `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
@@ -11,7 +11,8 @@ const usd = (c: number | null) => (c == null ? "" : `$${(c / 100).toLocaleString
  * "Pay From My Refund" on Billing & Payments. Records the client's choice, debt check and
  * acknowledgments for the office to review; it is not a Republic Bank application and charges nothing.
  */
-export function PayFromRefund({ clientId, existing }: { clientId: string; existing: RefundTransferPayment | null }) {
+/** `action`: the portal's request action bound to the account, or View as Client's stand-in (`readOnly`: shown disabled). */
+export function PayFromRefund({ action, readOnly, existing }: { action: (prev: { error?: string; ok?: string; at?: number } | null, fd: FormData) => Promise<{ error?: string; ok?: string; at?: number } | null>; readOnly?: boolean; existing: RefundTransferPayment | null }) {
   const taxYear = new Date().getFullYear() - 1;
   const head = (
     <span className="flex items-start gap-3">
@@ -36,7 +37,8 @@ export function PayFromRefund({ clientId, existing }: { clientId: string; existi
   return (
     <details className="group rounded-xl border-2 border-gold-400 bg-white open:bg-ivory-50/40" data-testid="pay-refund">
       <summary className="cursor-pointer list-none px-4 py-3 [&::-webkit-details-marker]:hidden">{head}</summary>
-      <ActionForm action={requestRefundTransferAction.bind(null, clientId)} className="space-y-3 border-t border-gold-200 px-4 py-3 text-sm text-navy-900">
+      <PreviewDisabled readOnly={readOnly} className="border-t border-gold-200 px-4 py-3">
+      <ActionForm action={action} className={readOnly ? "space-y-3 text-sm text-navy-900" : "space-y-3 border-t border-gold-200 px-4 py-3 text-sm text-navy-900"}>
         <input type="hidden" name="taxYear" value={taxYear} />
         <p>Would you like your tax preparation fees deducted from your tax refund? Republic Bank charges additional fees for this optional Refund Transfer service. Paying directly avoids those fees. Our office will confirm the total fees with you before you authorize the service.</p>
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
@@ -58,6 +60,7 @@ export function PayFromRefund({ clientId, existing }: { clientId: string; existi
         <p className="text-xs text-slate-600">If you haven&apos;t checked yet, you can still continue — your request stays pending review. Republic Bank&apos;s own application and agreement are completed separately.</p>
         <Button type="submit" data-testid="request-refund-pay">Choose Pay From My Refund</Button>
       </ActionForm>
+      </PreviewDisabled>
     </details>
   );
 }

@@ -3,12 +3,15 @@ import { CalendarClock, ClipboardCheck, FileText } from "lucide-react";
 import { HoursForm } from "@/components/payroll-taxes/hours-form";
 import { fmtDay, fmtWhen, VersionTag } from "@/components/payroll-taxes/bits";
 import { submitPortalHoursAction } from "@/app/actions/payroll-taxes-portal";
+import { previewFormAction } from "@/app/actions/preview";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import type { portalPayrollRequests } from "@/lib/services/payroll-taxes";
 
 type Requests = NonNullable<Awaited<ReturnType<typeof portalPayrollRequests>>>;
 
 /** "Payroll requests" on the client's Payroll page: only this business, only this login's items. */
-export function PortalPayrollRequests({ clientId, r, linkFor }: { clientId: string; r: Requests; linkFor: (id: string) => string }) {
+/** `readOnly` (View as Client): the hours form shows, disabled, posting only to the preview stand-in. */
+export function PortalPayrollRequests({ clientId, r, linkFor, readOnly }: { clientId: string; r: Requests; linkFor: (id: string) => string; readOnly?: boolean }) {
   return (
     <section className="mb-6 space-y-4 rounded-2xl border border-navy-100 bg-white p-5" data-testid="payroll-requests">
       <h2 className="flex items-center gap-2 font-serif text-2xl font-bold text-navy-900"><ClipboardCheck className="size-6 text-gold-600" aria-hidden /> Payroll requests</h2>
@@ -18,7 +21,7 @@ export function PortalPayrollRequests({ clientId, r, linkFor }: { clientId: stri
         <div key={h.cycleId} className="rounded-xl border border-gold-300 bg-gold-50/40 p-4" data-testid="hours-request">
           <p className="font-semibold text-navy-900">Hours for pay date {fmtDay(h.payDate)} <span className="font-normal text-slate-600">(period {fmtDay(h.periodStart)} – {fmtDay(h.periodEnd)})</span></p>
           <p className="mb-3 text-sm text-slate-700">Please send them by <strong>{fmtDay(h.hoursDue)}</strong>.{h.submittedAt && ` You sent hours on ${fmtWhen(h.submittedAt)} — you can update them until the office prepares the payroll.`}</p>
-          <HoursForm action={submitPortalHoursAction.bind(null, clientId, h.cycleId)} initial={h.submission} submitLabel={h.submittedAt ? "Update hours" : "Send hours"} />
+          <PreviewDisabled readOnly={readOnly}><HoursForm action={readOnly ? previewFormAction : submitPortalHoursAction.bind(null, clientId, h.cycleId)} initial={h.submission} submitLabel={h.submittedAt ? "Update hours" : "Send hours"} /></PreviewDisabled>
         </div>
       ))}
 

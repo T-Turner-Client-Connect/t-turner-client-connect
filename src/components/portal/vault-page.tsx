@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import { Archive, Briefcase, ChevronDown, CloudUpload, FileBadge, FileText, FolderOpen, IdCard, Receipt, UserRound, Infinity as InfinityIcon, Info, Layers, Mail, MoreHorizontal, ShieldCheck, Upload, Users, UsersRound } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { CLIENT_DOC_TYPES, ALL_DOC_TYPES } from "@/lib/document-types";
@@ -236,7 +237,7 @@ function PdfIcon() {
   );
 }
 
-export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityHref }: { rows: Row[]; years: { year: number | null; count: number }[]; year: number | "none" | null; yearHref: (y: string | null) => string; linkFor: (id: string) => string; identityHref: string }) {
+export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityHref, uploadHref }: { rows: Row[]; years: { year: number | null; count: number }[]; year: number | "none" | null; yearHref: (y: string | null) => string; linkFor: (id: string) => string; identityHref: string; uploadHref?: string }) {
   return (
     <section className="min-w-0 rounded-2xl border border-ivory-200 bg-white p-4 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] sm:p-5" data-testid="vault-table">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -250,7 +251,10 @@ export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityH
         <YearFilter years={years} current={year} href={yearHref} />
       </div>
       {rows.length === 0 ? (
-        <p className="rounded-xl border border-ivory-200 px-5 py-10 text-center text-slate-600">No documents here yet.</p>
+        <div className="rounded-xl border border-ivory-200 px-5 py-8 text-center text-slate-600" data-testid="vault-empty">
+          <p className="font-semibold text-navy-900">No documents here yet.</p>
+          <p className="mt-1 text-sm">To add one, use <strong>Upload a Document</strong> on this page{uploadHref ? <>, or go to <Link className="font-semibold text-navy-900 underline decoration-gold-500" href={uploadHref}>Upload Documents →</Link></> : "."}</p>
+        </div>
       ) : (
         <div className="relative overflow-x-auto rounded-xl border border-ivory-200">
           <table className="w-full min-w-[34rem] text-sm">
@@ -291,10 +295,12 @@ export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityH
 
 type State = { error?: string; ok?: string; at?: number } | null;
 
-export function UploadPanel({ action, defaultYear }: { action: (prev: State, fd: FormData) => Promise<State>; defaultYear: string }) {
+/** `readOnly`: View as Client — the same upload area, disabled, posting only to the preview stand-in. */
+export function UploadPanel({ action, defaultYear, readOnly }: { action: (prev: State, fd: FormData) => Promise<State>; defaultYear: string; readOnly?: boolean }) {
   const thisYear = new Date().getFullYear();
   return (
     <HeadCard icon={CloudUpload} title="Upload a Document" testId="vault-upload">
+      <PreviewDisabled readOnly={readOnly}>
       <ActionForm action={action} className="space-y-3" resetOnSuccess>
         <label className="block">
           <span className="mb-1 block text-sm font-semibold text-navy-900">Document Category</span>
@@ -325,6 +331,7 @@ export function UploadPanel({ action, defaultYear }: { action: (prev: State, fd:
           <Upload className="size-4" aria-hidden /> Upload Document
         </button>
       </ActionForm>
+      </PreviewDisabled>
     </HeadCard>
   );
 }

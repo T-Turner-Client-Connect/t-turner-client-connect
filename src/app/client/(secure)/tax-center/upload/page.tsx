@@ -3,8 +3,8 @@ import { CloudUpload } from "lucide-react";
 import { Notice } from "@/components/ui";
 import { PageBanner } from "@/components/portal/luxury";
 import { TaxUploadForm } from "@/components/portal/tax-upload-form";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
+import { portalViewer } from "@/lib/portal/viewer";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import { questionnaireYears } from "@/lib/services/tax-center";
 import { serviceProfile } from "@/lib/services/service-profile";
 import { myOwnerRequests, ownerForLogin } from "@/lib/services/owner-personal-docs";
@@ -16,17 +16,17 @@ import { portalUploadAction } from "@/app/actions/portal";
 export const metadata = { title: "Upload Documents" };
 
 export default async function TaxUpload({ searchParams }: { searchParams: Promise<{ account?: string; year?: string }> }) {
-  const user = await requirePortalUser();
   const sp = await searchParams;
-  const { current } = await resolveAccount(user.id, sp.account);
+  const v = await portalViewer("upload", sp.account);
+  const { user, current } = v;
   if (!current) return null;
   // A business-only account (no personal tax preparation) uses this page for each owner's own
   // personal supporting documents: filed privately to that owner and a tax year. This never adds
   // personal tax preparation; Tax Summary, refunds and the questionnaire stay closed to it.
   const { businessOnly } = await serviceProfile(current.clientId);
-  const requests = businessOnly ? await myOwnerRequests(user, current.clientId) : [];
+  const requests = businessOnly && user ? await myOwnerRequests(user, current.clientId) : [];
   // A business owner may send their own personal documents even without upload access to the business's files.
-  const canSend = current.canUpload || (businessOnly && !!(await ownerForLogin(current.clientId, user.id)));
+  const canSend = current.canUpload || (businessOnly && !!user && !!(await ownerForLogin(current.clientId, user.id)));
   const q = `?account=${current.clientId}`;
   const years = questionnaireYears();
   const thisYear = years[0];
@@ -49,11 +49,13 @@ export default async function TaxUpload({ searchParams }: { searchParams: Promis
                 ) : r.docType && r.docType in ID_TYPES ? (
                   <Link className="mt-1 inline-block text-sm font-semibold text-navy-900 underline decoration-gold-500" href={`/client/identity${q}`} data-testid="owner-request-identity">Provide it securely in Identity Documents</Link>
                 ) : canSend ? (
-                  <ActionForm action={portalUploadAction.bind(null, current.clientId)} className="mt-2 flex flex-wrap items-center gap-2" resetOnSuccess>
+                  <PreviewDisabled readOnly={v.readOnly}>
+                  <ActionForm action={v.act(portalUploadAction, current.clientId)} className="mt-2 flex flex-wrap items-center gap-2" resetOnSuccess>
                     <input type="hidden" name="requestId" value={r.id} />
                     <input className="input max-w-xs" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label={`File for ${r.title}`} />
                     <Button type="submit">Send securely</Button>
                   </ActionForm>
+                  </PreviewDisabled>
                 ) : null}
               </li>
             ))}
@@ -63,7 +65,9 @@ export default async function TaxUpload({ searchParams }: { searchParams: Promis
       {!canSend ? (
         <Notice tone="warn" title="Uploading isn't included in your access to this account">Ask the account owner, or <Link className="underline" href={`/client/messages${q}`}>message our office</Link> and we&apos;ll help.</Notice>
       ) : (
-        <TaxUploadForm account={current.clientId} years={all} defaultYear={defaultYear} vaultHref={`/client/documents${q}${businessOnly ? "&cat=personal-tax" : ""}`} owner={businessOnly} />
+        <PreviewDisabled readOnly={v.readOnly}>
+          <TaxUploadForm account={current.clientId} years={all} defaultYear={defaultYear} vaultHref={`/client/documents${q}${businessOnly ? "&cat=personal-tax" : ""}`} owner={businessOnly} />
+        </PreviewDisabled>
       )}
     </>
   );

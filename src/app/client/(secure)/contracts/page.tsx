@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { Badge, Card, EmptyState, Notice, PageHeader } from "@/components/ui";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
+import { portalViewer } from "@/lib/portal/viewer";
 import { prisma } from "@/lib/prisma";
 import { SIGNATURE_LABELS } from "@/lib/services/signatures";
 import { fmtDate } from "@/lib/format";
@@ -9,8 +8,7 @@ import { fmtDate } from "@/lib/format";
 export const metadata = { title: "Forms & signatures" };
 
 export default async function PortalContracts({ searchParams }: { searchParams: Promise<{ account?: string }> }) {
-  const user = await requirePortalUser();
-  const { current } = await resolveAccount(user.id, (await searchParams).account);
+  const { current } = await portalViewer("contracts", (await searchParams).account);
   if (!current) return null;
   const q = `?account=${current.clientId}`;
   const [contracts, signatures] = await Promise.all([

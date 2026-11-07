@@ -119,6 +119,8 @@ export function AppointmentBooking(props: {
   loadMonth: (clientId: string, year: number, month: number, rescheduleId?: string) => Promise<Month | { error: string }>;
   book: (clientId: string, payload: { services: string[]; date: string; time: string; info: Record<string, unknown> }) => Promise<BookResult>;
   reschedulePick: (clientId: string, appointmentId: string, date: string, time: string) => Promise<{ error?: string; ok?: string }>;
+  /** View as Client: everything can be clicked through, but Confirm & Book is turned off. */
+  readOnly?: boolean;
 }) {
   const { reschedule } = props;
   const [selected, setSelected] = useState<string[]>(reschedule?.services ?? []);
@@ -430,9 +432,10 @@ export function AppointmentBooking(props: {
           <div className="space-y-4">
             {summary}
             {error && <p role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-800">{error}</p>}
-            <button type="button" className={goldBtn} disabled={pending || !info.meetingType || info.reason.trim().length < 3 || (business && !info.businessName.trim())} onClick={submitBooking} data-testid="confirm-book">
+            <button type="button" className={goldBtn} disabled={props.readOnly || pending || !info.meetingType || info.reason.trim().length < 3 || (business && !info.businessName.trim())} onClick={submitBooking} data-testid="confirm-book">
               {pending ? "Booking…" : <>Confirm &amp; Book <ArrowRight className="size-5" aria-hidden /></>}
             </button>
+            {props.readOnly && <p className="text-center text-xs font-semibold text-gold-300" data-testid="preview-off">Turned off in View as Client</p>}
             {props.requireApproval && <p className="text-center text-xs text-navy-100">Your time is held as soon as you book. Our office confirms each appointment.</p>}
             <button type="button" onClick={() => setView("pick")} className="inline-flex w-full items-center justify-center gap-2 text-sm font-semibold text-gold-300 hover:text-gold-200"><ArrowLeft className="size-4" aria-hidden />Back to date &amp; time</button>
           </div>

@@ -6,7 +6,8 @@ import { portalPrefsAction, removeAuthenticatorAction, revokeDeviceAction } from
 import { emailCodesFor } from "@/lib/auth/client-auth";
 import { maskEmail } from "@/lib/services/mfa";
 import { fmtDateTime } from "@/lib/format";
-import { requirePortalUser } from "@/lib/portal/session";
+import { portalViewer } from "@/lib/portal/viewer";
+import { NoPortalLoginNotice, PreviewDisabled } from "@/components/portal/preview-off";
 import { prisma } from "@/lib/prisma";
 import { CommPrefsCard } from "@/components/portal/comm-prefs-card";
 import { portalPeople, preferenceState } from "@/lib/services/comm-prefs";
@@ -14,7 +15,9 @@ import { portalPeople, preferenceState } from "@/lib/services/comm-prefs";
 export const metadata = { title: "Account" };
 
 export default async function PortalSettings() {
-  const actor = await requirePortalUser();
+  const v = await portalViewer("account");
+  const actor = v.user;
+  if (!actor) return <><PageHeader title="Account" subtitle="Communication preferences, notifications and sign-in security." /><NoPortalLoginNotice /></>;
   const user = await prisma.portalUser.findUniqueOrThrow({ where: { id: actor.id } });
   const people = await portalPeople(actor.id);
   const [emailCodes, devices, prefs] = await Promise.all([
@@ -26,14 +29,15 @@ export default async function PortalSettings() {
     <>
       <PageHeader title="Account" subtitle="Communication preferences, notifications and sign-in security." />
       <div id="communication-preferences" className="max-w-2xl scroll-mt-24">
-        <CommPrefsCard prefs={prefs} />
+        <CommPrefsCard prefs={prefs} readOnly={v.readOnly} />
       </div>
       <Card title="Notifications" className="mt-4 max-w-2xl">
         <p className="mb-3 text-sm text-slate-600">
           We&apos;ll let you know when there&apos;s a new message, document or request in your portal. Notices only contain a sign-in link — never your documents or account details.
           These are essential account notices, separate from your Communication Preferences above.
         </p>
-        <ActionForm action={portalPrefsAction} className="space-y-3">
+        <PreviewDisabled readOnly={v.readOnly}>
+        <ActionForm action={v.act(portalPrefsAction)} className="space-y-3">
           <label className="flex items-center gap-2"><input type="checkbox" name="notifyByEmail" defaultChecked={user.notifyByEmail} className="size-4 accent-navy-900" /> Email me at {user.email}</label>
           <Field label="Mobile number for texts"><input className="input" type="tel" name="phone" defaultValue={user.phone ?? ""} /></Field>
           <label className="flex items-start gap-2 text-sm">
@@ -46,6 +50,7 @@ export default async function PortalSettings() {
           </p>
           <Button type="submit">Save</Button>
         </ActionForm>
+        </PreviewDisabled>
       </Card>
       <Card title="Sign-in security" className="mt-4 max-w-2xl">
         <p className="text-sm text-slate-700">
@@ -54,9 +59,9 @@ export default async function PortalSettings() {
             : "You sign in with your password and a code from your authenticator app."}
         </p>
         {emailCodes && user.mfaEnabledAt && (
-          <ActionForm action={removeAuthenticatorAction} className="mt-3" confirm="Stop using your authenticator app? You'll get sign-in codes by email instead.">
+          <ActionForm action={v.act(removeAuthenticatorAction)} className="mt-3" confirm="Stop using your authenticator app? You'll get sign-in codes by email instead.">
             <p className="mb-2 text-sm text-slate-600">You also have an authenticator app set up. You can keep it as a backup or remove it.</p>
-            <Button type="submit" variant="secondary">Remove authenticator app</Button>
+            <Button type="submit" variant="secondary" disabled={v.readOnly}>Remove authenticator app</Button>
           </ActionForm>
         )}
         <h3 className="mt-4 mb-1 font-semibold">Remembered devices</h3>
@@ -67,7 +72,7 @@ export default async function PortalSettings() {
             {devices.map((d) => (
               <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                 <span>{d.label} · added {fmtDateTime(d.createdAt)} · expires {fmtDateTime(d.expiresAt)}</span>
-                <ActionForm action={revokeDeviceAction.bind(null, d.id)}><Button variant="ghost">Remove</Button></ActionForm>
+                <ActionForm action={v.act(revokeDeviceAction, d.id)}><Button variant="ghost" disabled={v.readOnly}>Remove</Button></ActionForm>
               </li>
             ))}
           </ul>

@@ -31,6 +31,9 @@ export function proxy(request: NextRequest) {
   }
   if (portalArea) {
     if (portalCookie) return NextResponse.next();
+    // View as Client: a staff session with a preview cookie may open portal pages (read-only; each
+    // page re-checks both). Never the /api/client routes — those need a real portal session.
+    if (staffCookie && has(request, ["__Host-tcc_vac", "tcc_vac"]) && !pathname.startsWith("/api/")) return NextResponse.next();
     if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
     return NextResponse.redirect(new URL("/client/login", request.url));
   }
