@@ -5,11 +5,11 @@ import { portalUploadAction } from "@/app/actions/portal";
 import { BkUploadFields, UploadMeta } from "@/components/bk-upload";
 import { UploadReceipt } from "@/components/portal/upload-receipt";
 import { scanConfigured } from "@/lib/scan";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
+import { portalViewer } from "@/lib/portal/viewer";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import { prisma } from "@/lib/prisma";
 import { MONTHS } from "@/lib/services/bookkeeping";
-import { downloadToken, REPORT_LABELS } from "@/lib/services/documents";
+import { REPORT_LABELS } from "@/lib/services/documents";
 import { fmtDate } from "@/lib/format";
 import { PERIOD_TYPES, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
 import { reportCaption } from "@/lib/services/bookkeeping-clients";
@@ -22,8 +22,8 @@ export const metadata = { title: "Bookkeeping & requests" };
 
 
 export default async function PortalBookkeeping({ searchParams }: { searchParams: Promise<{ account?: string }> }) {
-  const user = await requirePortalUser();
-  const { current } = await resolveAccount(user.id, (await searchParams).account);
+  const v = await portalViewer("bookkeeping", (await searchParams).account);
+  const { current } = v;
   if (!current) return null;
   const q = `?account=${current.clientId}`;
   const [periods, looseRequests] = await Promise.all([
@@ -46,13 +46,14 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
   // Only operational status reaches the client: "in preparation" or "available for download".
   const interims = current.canViewBookkeeping ? await clientInterimStatements(current.clientId) : [];
   const statuses = new Map(await Promise.all(periods.map(async (p) => [p.id, { status: await clientStatementStatus(p.id), ledger: !!(await ledgerStatementsReleased(p.id)) }] as const)));
-  const link = (id: string) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`;
+  const link = v.linkFor;
   const fye = (await prisma.client.findUnique({ where: { id: current.clientId }, select: { fiscalYearEnd: true } }))?.fiscalYearEnd ?? null;
   const ORDER = ["FINANCIAL_PACKET", "PROFIT_AND_LOSS", "GROSS_RECEIPTS", "BALANCE_SHEET", "BANK_RECONCILIATION", "SUPPORTING_SCHEDULE", "OTHER_REPORT"];
   const business = current.client.businessName || current.client.displayName;
   const upload = (requestId: string | null, periodId: string | null, label: string, year?: number, month?: number | null) =>
     current.canUpload ? (
-      <ActionForm action={portalUploadAction.bind(null, current.clientId)} className="mt-1 space-y-2" resetOnSuccess>
+      <PreviewDisabled readOnly={v.readOnly}>
+      <ActionForm action={v.act(portalUploadAction, current.clientId)} className="mt-1 space-y-2" resetOnSuccess>
         <input type="hidden" name="bk" value="1" />
         {requestId && <input type="hidden" name="requestId" value={requestId} />}
         {periodId && <input type="hidden" name="periodId" value={periodId} />}
@@ -62,16 +63,19 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
           <Button type="submit" variant="secondary">Upload</Button>
         </div>
       </ActionForm>
+      </PreviewDisabled>
     ) : null;
 
   // A targeted request already names the document, account and period: the client just attaches the file.
   const linkedUpload = (requestId: string, label: string) =>
     current.canUpload ? (
-      <ActionForm action={portalUploadAction.bind(null, current.clientId)} className="mt-1 flex flex-wrap items-center gap-2" resetOnSuccess>
+      <PreviewDisabled readOnly={v.readOnly}>
+      <ActionForm action={v.act(portalUploadAction, current.clientId)} className="mt-1 flex flex-wrap items-center gap-2" resetOnSuccess>
         <input type="hidden" name="requestId" value={requestId} />
         <input className="input max-w-xs" type="file" name="file" accept="application/pdf,image/png,image/jpeg" required aria-label={label} />
         <Button type="submit" variant="secondary">Upload</Button>
       </ActionForm>
+      </PreviewDisabled>
     ) : null;
   type Req = { id: string; title: string; instructions: string | null; reason: string | null; dueAt: Date | null; status: string; docType: string | null; periodStart: Date | null; periodEnd: Date | null; bookkeepingAccount: { institution: string; nickname: string | null; last4: string | null; accountType: string } | null };
   const requestItem = (r: Req, periodId: string | null, period?: { year: number; month: number }) => (

@@ -8,18 +8,19 @@ import { luxPanel, navyTable, NoteBar, PanelTitle, pillButton, StatCard, StatusP
 import { PaymentPanel } from "@/components/portal/payment-panel";
 import { acceptQuoteAction, declineQuoteAction } from "@/app/actions/portal-billing";
 import { requestInvoiceAction } from "@/app/actions/invoice-requests";
-import { invoiceRequestChoices, portalInvoiceRequests, REQUEST_STATUS, type RequestItem } from "@/lib/services/invoice-requests";
+import { invoiceRequestChoices, invoiceRequestChoicesFor, portalInvoiceRequests, REQUEST_STATUS, type RequestItem } from "@/lib/services/invoice-requests";
 import { PayFromRefund } from "@/components/portal/pay-from-refund";
+import { requestRefundTransferAction } from "@/app/actions/refund-transfers";
 import { portalRefundTransfers, RT_STATUS, type RtStatus } from "@/lib/services/refund-transfers";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
-import { portalBilling, quoteTermsHash } from "@/lib/services/owner-billing";
+import { portalViewer, type PortalViewer } from "@/lib/portal/viewer";
+import { PreviewDisabled } from "@/components/portal/preview-off";
+import { portalBilling, publishedBillingFor, quoteTermsHash } from "@/lib/services/owner-billing";
 import { money } from "@/lib/billing/pricing";
 import { METHOD_LABELS } from "@/lib/billing/labels";
 import { fmtDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
-import { NOT_SYNCED, portalSquareBilling, todayCentral } from "@/lib/services/square-billing";
-import { portalManualBilling } from "@/lib/services/manual-billing";
+import { NOT_SYNCED, portalSquareBilling, squareBillingViewsFor, todayCentral } from "@/lib/services/square-billing";
+import { manualBillingFor, portalManualBilling } from "@/lib/services/manual-billing";
 import { firmInvoiceDoc, markInvoiceViewed } from "@/lib/services/firm-invoices";
 import { FirmInvoiceDocument } from "@/components/billing/firm-invoice-document";
 import { INVOICE_STATUS } from "@/lib/billing/invoice-status";
@@ -65,9 +66,9 @@ function squareStatus(status: string, due: string, today: string): [string, Tone
 
 /** Billing & Payments, built to Tabitha's design. Only this account's own records — the same ones our office sees. */
 export default async function PortalBilling({ searchParams }: { searchParams: Promise<{ account?: string; invoice?: string }> }) {
-  const user = await requirePortalUser();
   const sp = await searchParams;
-  const { current } = await resolveAccount(user.id, sp.account);
+  const v = await portalViewer("billing", sp.account);
+  const { user, current, readOnly } = v;
   if (!current) return null;
   const banner = <PageBanner icon={CreditCard} title="Billing & Payments" subtitle="View your invoices, make a payment, and choose your preferred payment method." />;
   if (!current.canViewBilling) {
@@ -80,21 +81,28 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
   }
   // Refund options are personal tax preparation; a business-only account never sees them.
   const { businessOnly } = await serviceProfile(current.clientId);
+  // The signed-in client's (or the previewed login's) records — through the same access checks.
+  // View as Client with no portal login: the same published records, this client only.
   const [items, sq, manual, instructions, refundPays] = await Promise.all([
-    portalBilling(user, current.clientId),
-    portalSquareBilling(user, current.clientId),
-    portalManualBilling(user, current.clientId),
+    user ? portalBilling(user, current.clientId) : publishedBillingFor(current.clientId),
+    user ? portalSquareBilling(user, current.clientId) : squareBillingViewsFor(current.clientId, new Set([current.clientId])),
+    user ? portalManualBilling(user, current.clientId) : manualBillingFor(current.clientId),
     prisma.paymentInstruction.findMany({ where: { active: true }, select: { method: true, details: true } }),
-    portalRefundTransfers(user, current.clientId),
+    user ? portalRefundTransfers(user, current.clientId) : prisma.refundTransferPayment.findMany({ where: { clientId: current.clientId }, orderBy: { taxYear: "desc" } }),
   ]);
-  const [invoiceChoices, recentRequests] = current.canMessage ? await Promise.all([invoiceRequestChoices(user, current.clientId), portalInvoiceRequests(user, current.clientId)]) : [null, []];
+  const [invoiceChoices, recentRequests] = !current.canMessage
+    ? [null, []]
+    : user
+      ? await Promise.all([invoiceRequestChoices(user, current.clientId), portalInvoiceRequests(user, current.clientId)])
+      : [await invoiceRequestChoicesFor(current.clientId, current.canViewBilling), []];
   const q = `account=${current.clientId}`;
   const today = todayCentral();
   const year = today.slice(0, 4);
 
   // One invoice opened from the table: the existing quote review, schedule and payment method.
   const opened = sp.invoice ? items.find((i) => i.id === sp.invoice) : undefined;
-  if (opened) await markInvoiceViewed(user, opened.id);
+  // Opening an invoice marks it viewed — never from View as Client.
+  if (opened && user && !readOnly) await markInvoiceViewed(user, opened.id);
   if (opened && opened.formType === "INVOICE") {
     const doc = await firmInvoiceDoc({
       number: opened.number,
@@ -118,7 +126,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
         {!businessOnly && doc.options.some((o) => o.method === "REFUND_TRANSFER") && doc.balanceCents > 0 && (
           <section className={`${luxPanel} p-4 sm:p-5`} data-testid="refund-transfer-request">
             <PanelTitle icon={Info} title="Paying from your refund?" sub="Tell us here first — our office reviews every request before your return is filed." />
-            <div className="mt-3"><PayFromRefund clientId={current.clientId} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} /></div>
+            <div className="mt-3"><PayFromRefund action={v.act(requestRefundTransferAction, current.clientId)} readOnly={readOnly} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} /></div>
           </section>
         )}
       </div>
@@ -131,7 +139,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
       <div className="space-y-6">
         {banner}
         <Link href={`/client/billing?${q}`} className="inline-flex items-center gap-2 font-semibold text-navy-900 underline decoration-gold-500 underline-offset-4"><ArrowLeft className="size-4" aria-hidden /> Back to Billing &amp; Payments</Link>
-        <InvoiceDetail inv={opened} clientId={current.clientId} clientName={client.displayName} paymentMethod={method} />
+        <InvoiceDetail inv={opened} clientId={current.clientId} clientName={client.displayName} paymentMethod={method} v={v} />
       </div>
     );
   }
@@ -281,8 +289,8 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
               </span>
             </div>
             {/* Lets the office know to create an invoice, and what it's for: a structured request plus a secure message (our office is alerted). Not a payment. */}
-            {current.canMessage && invoiceChoices && <RequestInvoice clientId={current.clientId} choices={invoiceChoices.choices} years={invoiceChoices.years} recent={recentRequests} />}
-            {!businessOnly && <PayFromRefund clientId={current.clientId} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} />}
+            {current.canMessage && invoiceChoices && <RequestInvoice action={v.act(requestInvoiceAction, current.clientId)} readOnly={readOnly} choices={invoiceChoices.choices} years={invoiceChoices.years} recent={recentRequests} />}
+            {!businessOnly && <PayFromRefund action={v.act(requestRefundTransferAction, current.clientId)} readOnly={readOnly} existing={refundPays.find((r) => r.taxYear === new Date().getFullYear() - 1 && r.status !== "CANCELLED") ?? null} />}
             {WAYS.map((w) => {
 
               const d = instructions.find((i) => i.method === w.method)?.details;
@@ -310,7 +318,7 @@ export default async function PortalBilling({ searchParams }: { searchParams: Pr
 }
 
 /** One office invoice: quote review and acceptance, payment schedule, and payment method (unchanged flows). */
-function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Office; clientId: string; clientName: string; paymentMethod: string | null }) {
+function InvoiceDetail({ inv, clientId, clientName, paymentMethod, v }: { inv: Office; clientId: string; clientName: string; paymentMethod: string | null; v: PortalViewer }) {
   return (
     <Card
       title={<>{inv.title} <span className="text-sm font-normal text-slate-600">· {inv.number}</span></>}
@@ -330,7 +338,8 @@ function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Offi
       </div>
 
       {inv.state === "OFFERED" ? (
-        <ActionForm action={acceptQuoteAction.bind(null, inv.id)} className="mt-4 space-y-3">
+        <PreviewDisabled readOnly={v.readOnly}>
+        <ActionForm action={v.act(acceptQuoteAction, inv.id)} className="mt-4 space-y-3">
           <fieldset className="grid gap-3 sm:grid-cols-2">
             <legend className="mb-2 font-semibold text-navy-900">Choose how you&apos;d like to pay</legend>
             {(["FULL", "PLAN"] as const).map((k) => {
@@ -356,6 +365,7 @@ function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Offi
           </label>
           <Button type="submit">Accept quote</Button>
         </ActionForm>
+        </PreviewDisabled>
       ) : inv.schedule.length > 0 ? (
         <div className="mt-4">
           {inv.acceptedAt && (
@@ -378,12 +388,16 @@ function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Offi
         </div>
       ) : null}
       {inv.state === "OFFERED" && (
-        <ActionForm action={declineQuoteAction.bind(null, inv.id)} confirm="Decline this quote?" className="mt-2">
-          <Button variant="ghost">Decline</Button>
-        </ActionForm>
+        <PreviewDisabled readOnly={v.readOnly}>
+          <ActionForm action={v.act(declineQuoteAction, inv.id)} confirm="Decline this quote?" className="mt-2">
+            <Button variant="ghost">Decline</Button>
+          </ActionForm>
+        </PreviewDisabled>
       )}
       {inv.state !== "DECLINED" && (inv.balanceCents ?? 1) > 0 && (
-        <PaymentPanel clientId={clientId} invoice={{ id: inv.id, serviceCents: inv.breakdown.options.FULL?.totalCents ?? inv.breakdown.lines.reduce((a, l) => a + l.amountCents, 0), paymentMethod }} />
+        <PreviewDisabled readOnly={v.readOnly}>
+        <PaymentPanel clientId={clientId} readOnly={v.readOnly} invoice={{ id: inv.id, serviceCents: inv.breakdown.options.FULL?.totalCents ?? inv.breakdown.lines.reduce((a, l) => a + l.amountCents, 0), paymentMethod }} />
+        </PreviewDisabled>
       )}
       {inv.memo && <p className="mt-3 text-sm text-slate-700">{inv.memo}</p>}
     </Card>
@@ -394,7 +408,7 @@ function InvoiceDetail({ inv, clientId, clientName, paymentMethod }: { inv: Offi
  * "Pay with an Invoice": the client says what the invoice is for — one of their services, the tax
  * return being prepared, an open invoice, or Other with a short note — and, optionally, the amount.
  */
-function RequestInvoice({ clientId, choices, years, recent }: { clientId: string; choices: (RequestItem & { taxYear: number | null })[]; years: number[]; recent: { id: string; status: string; createdAt: Date }[] }) {
+function RequestInvoice({ action, readOnly, choices, years, recent }: { action: (prev: { error?: string; ok?: string; at?: number } | null, fd: FormData) => Promise<{ error?: string; ok?: string; at?: number } | null>; readOnly?: boolean; choices: (RequestItem & { taxYear: number | null })[]; years: number[]; recent: { id: string; status: string; createdAt: Date }[] }) {
   const open = recent.find((r) => r.status === "OPEN" || r.status === "INVOICE_CREATED");
   return (
     <details className="group rounded-xl border-2 border-gold-400 bg-white" data-testid="pay-with-invoice">
@@ -408,7 +422,8 @@ function RequestInvoice({ clientId, choices, years, recent }: { clientId: string
         </span>
         <span className="mt-2 inline-flex rounded-lg bg-navy-900 px-3 py-1.5 text-sm font-semibold text-white group-open:hidden" data-testid="request-invoice">Request an Invoice</span>
       </summary>
-      <ActionForm action={requestInvoiceAction.bind(null, clientId)} className="space-y-3 border-t border-gold-200 px-4 py-3" idempotent resetOnSuccess>
+      <PreviewDisabled readOnly={readOnly} className="border-t border-gold-200 px-4 py-3">
+      <ActionForm action={action} className={readOnly ? "space-y-3" : "space-y-3 border-t border-gold-200 px-4 py-3"} idempotent resetOnSuccess>
         {open && <p className="rounded-lg bg-gold-50 px-3 py-2 text-xs text-navy-900" data-testid="request-pending">Your request from {fmtDate(open.createdAt)} is with our office ({REQUEST_STATUS[open.status].label.toLowerCase()}).</p>}
         <fieldset>
           <legend className="mb-1 text-sm font-semibold text-navy-900">What is the invoice for?</legend>
@@ -443,6 +458,7 @@ function RequestInvoice({ clientId, choices, years, recent }: { clientId: string
         <Button type="submit" data-testid="send-invoice-request">Send request</Button>
         <p className="text-xs text-slate-600">This is not a payment. Nothing is charged.</p>
       </ActionForm>
+      </PreviewDisabled>
     </details>
   );
 }

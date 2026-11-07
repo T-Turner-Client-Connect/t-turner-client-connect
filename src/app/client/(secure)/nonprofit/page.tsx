@@ -1,9 +1,8 @@
 import Link from "next/link";
 import { Badge, Card, EmptyState, Notice, PageHeader } from "@/components/ui";
 import { PortfolioSections, type PortfolioSection } from "@/components/portal/portfolio-documents";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
-import { downloadToken } from "@/lib/services/documents";
+import { portalViewer } from "@/lib/portal/viewer";
+import { NoPortalLoginNotice } from "@/components/portal/preview-off";
 import { DONE, GRANT_DISCLAIMER, IRS_EVENTS, ITEM_STATUS, ORIGINS, portalPortfolio, SECTIONS, type Section } from "@/lib/services/nonprofit-portfolio";
 import { fmtDate } from "@/lib/format";
 
@@ -11,8 +10,8 @@ export const metadata = { title: "Nonprofit Portfolio" };
 
 /** The client's nonprofit portfolio: progress, checklist, released documents and annual deadline. */
 export default async function PortalNonprofit({ searchParams }: { searchParams: Promise<{ account?: string }> }) {
-  const user = await requirePortalUser();
-  const { accounts, current } = await resolveAccount(user.id, (await searchParams).account);
+  const viewer = await portalViewer("nonprofit", (await searchParams).account);
+  const { user, accounts, current } = viewer;
   if (!current) return null;
   const nonprofits = accounts.filter((a) => a.client.clientType === "NONPROFIT");
   if (current.client.clientType !== "NONPROFIT") {
@@ -27,6 +26,7 @@ export default async function PortalNonprofit({ searchParams }: { searchParams: 
       </>
     );
   }
+  if (!user) return <><PageHeader title="Nonprofit Portfolio" /><NoPortalLoginNotice /></>;
   const v = await portalPortfolio(user, current.clientId);
   if (!v) return <><PageHeader title="Nonprofit Portfolio" /><Notice>Your portfolio is being set up. Check back soon.</Notice></>;
   const pct = v.progress.total ? Math.round((v.progress.done / v.progress.total) * 100) : 0;
@@ -44,7 +44,7 @@ export default async function PortalNonprofit({ searchParams }: { searchParams: 
         done: DONE.includes(i.status),
         deliverable: i.deliverable,
         origin: i.files[0] ? ORIGINS[i.files[0].origin].replace(" (prepared by us)", "") : null,
-        files: i.files.map((f) => ({ id: f.id, kind: kind(f.mime), name: f.name, href: `/api/documents/${downloadToken(f.documentId, { portalUserId: user.id })}` })),
+        files: i.files.map((f) => ({ id: f.id, kind: kind(f.mime), name: f.name, href: viewer.linkFor(f.documentId) })),
       })),
     }));
 

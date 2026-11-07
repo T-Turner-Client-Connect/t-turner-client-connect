@@ -23,10 +23,22 @@ import { BusinessDashboardView } from "@/components/portal/business-dashboard";
 
 let staff: Actor | null = null;
 vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<object>()), requireUser: async () => staff, getCurrentUser: async () => staff }));
-const { default: PortalPreview } = await import("@/app/(app)/clients/[id]/portal-preview/page");
+// View as Client is the client's own portal under a signed preview cookie (see tests/vac-harness.ts).
+vi.mock("next/headers", async () => (await import("./vac-harness")).headersMock);
+const { h } = await import("./vac-harness");
+const { previewCookieValue, previewLogins, VAC_COOKIE } = await import("@/lib/portal/viewer");
+const { default: PortalHome } = await import("@/app/client/(secure)/page");
+/** View as Client of a client's Home (its primary owner login, as the start route picks), for the signed-in staff member. */
+async function PortalPreview({ params }: { params: Promise<{ id: string }>; searchParams?: unknown }) {
+  const { id } = await params;
+  h.jar.clear();
+  h.jar.set(VAC_COOKIE, previewCookieValue({ staffId: staff!.id, clientId: id, loginId: (await previewLogins(id))[0]?.id ?? null }));
+  return PortalHome({ searchParams: Promise.resolve({ account: id }) });
+}
 
 beforeEach(async () => {
   await resetDb();
+  h.jar.clear();
   staff = null;
 });
 

@@ -5,9 +5,9 @@ import { SignAgreementForm } from "@/components/portal/sign-agreement-form";
 import { PageBanner } from "@/components/portal/luxury";
 import { GoldNote, luxPanel, navyTable, NoteBar, PanelTitle, pillButton, StatusPill, type Tone } from "@/components/portal/billing-pages";
 import { signAgreementAction } from "@/app/actions/service-agreements";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
-import { downloadToken } from "@/lib/services/documents";
+import { portalViewer, type PortalViewer } from "@/lib/portal/viewer";
+import { PreviewDisabled } from "@/components/portal/preview-off";
+import { prisma } from "@/lib/prisma";
 import { portalAgreements, signingHash, viewAgreement } from "@/lib/services/service-agreements";
 import { portalAgreementList } from "@/lib/services/agreements";
 import { CONSENT_TEXT, type AgreementTerms } from "@/lib/billing/agreement-terms";
@@ -32,14 +32,15 @@ const STATUS: Record<string, [string, Tone]> = {
 
 /** Pricing & Agreements, built to Tabitha's design: standard pricing, pricing notice, the client's agreements. */
 export default async function PortalAgreements({ searchParams }: { searchParams: Promise<{ account?: string; sign?: string }> }) {
-  const user = await requirePortalUser();
   const sp = await searchParams;
-  const { current } = await resolveAccount(user.id, sp.account);
+  const v = await portalViewer("agreements", sp.account);
+  const { user, current } = v;
   if (!current) return null;
   const banner = <PageBanner icon={FileSignature} title="Pricing & Agreements" subtitle="Review our tax preparation pricing and access your agreements in one place." />;
   // Agreements & contracts from the Agreements center (Contracts access): to sign, and signed copies.
-  const mine = current.canViewContracts ? await portalAgreementList(user, current.clientId) : [];
-  const section = current.canViewContracts ? <ClientAgreementsSection list={mine} account={current.clientId} portalUserId={user.id} /> : null;
+  // View as Client with no portal login: the same records, read directly for this client.
+  const mine = !current.canViewContracts ? [] : user ? await portalAgreementList(user, current.clientId) : await prisma.clientAgreement.findMany({ where: { clientId: current.clientId, status: { in: ["SENT", "SIGNED", "DECLINED", "EXPIRED"] } }, orderBy: { sentAt: "desc" }, select: { id: true, title: true, status: true, sentAt: true, signedAt: true, declinedAt: true, pdfDocumentId: true, signBy: true } });
+  const section = current.canViewContracts ? <ClientAgreementsSection list={mine} account={current.clientId} linkFor={v.linkFor} /> : null;
   if (!current.canViewBilling) {
     return (
       <>
@@ -49,10 +50,12 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
       </>
     );
   }
-  let list = await portalAgreements(user, current.clientId);
-  // Opening the page marks newly sent agreements as viewed.
-  for (const a of list.filter((x) => x.status === "SENT")) await viewAgreement(user, a.id);
-  if (list.some((x) => x.status === "SENT")) list = await portalAgreements(user, current.clientId);
+  let list = user ? await portalAgreements(user, current.clientId) : await prisma.pricingAgreement.findMany({ where: { clientId: current.clientId, status: { not: "DRAFT" } }, include: { service: { select: { title: true, taxYear: true, periodLabel: true } } }, orderBy: [{ createdAt: "desc" }] });
+  // Opening the page marks newly sent agreements as viewed (the client's own login only — never View as Client).
+  if (user && !v.readOnly) {
+    for (const a of list.filter((x) => x.status === "SENT")) await viewAgreement(user, a.id);
+    if (list.some((x) => x.status === "SENT")) list = await portalAgreements(user, current.clientId);
+  }
   const q = `account=${current.clientId}`;
   const signing = list.find((a) => a.id === sp.sign && (a.status === "SENT" || a.status === "VIEWED"));
 
@@ -117,7 +120,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
                             {open ? (
                               <Link href={`/client/agreements?${q}&sign=${a.id}#sign`} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-navy-900 px-4 py-1.5 text-[13px] font-semibold text-white hover:bg-navy-950"><PenLine className="size-4" aria-hidden /> Review &amp; Sign</Link>
                             ) : a.pdfDocumentId ? (
-                              <a className={pillButton} href={`/api/documents/${downloadToken(a.pdfDocumentId, { portalUserId: user.id })}`} target="_blank" rel="noopener">
+                              <a className={pillButton} href={v.linkFor(a.pdfDocumentId)} target="_blank" rel="noopener">
                                 <Download className="size-4" aria-hidden /> Download
                               </a>
                             ) : (
@@ -135,7 +138,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
         </div>
       </div>
 
-      {signing && <SignCard a={signing} />}
+      {signing && <SignCard a={signing} v={v} />}
 
       <NoteBar icon={FileText} title="Important" testId="agreements-important">
         <p>This page displays our standard tax preparation pricing and your personalized pricing agreement. It is not a contract and does not automatically charge your account.</p>
@@ -145,7 +148,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
 }
 
 /** The existing review-and-sign flow for one open agreement (opened from "Review & Sign"). */
-function SignCard({ a }: { a: Awaited<ReturnType<typeof portalAgreements>>[number] }) {
+function SignCard({ a, v }: { a: Awaited<ReturnType<typeof portalAgreements>>[number]; v: PortalViewer }) {
   const t = a.terms as unknown as AgreementTerms;
   const options = t.options.filter((o) => o.available);
   const hashes = Object.fromEntries(options.map((o) => [o.method, signingHash(t, o.method)]));
@@ -173,7 +176,9 @@ function SignCard({ a }: { a: Awaited<ReturnType<typeof portalAgreements>>[numbe
             <p className="mt-2 text-xs text-slate-600">Signing this agreement acknowledges this disclaimer.</p>
           </div>
         ))}
-        <SignAgreementForm action={signAgreementAction.bind(null, a.id)} baseCents={t.baseCents} options={options} hashes={hashes} consentText={CONSENT_TEXT} />
+        <PreviewDisabled readOnly={v.readOnly}>
+          <SignAgreementForm action={v.act(signAgreementAction, a.id)} baseCents={t.baseCents} options={options} hashes={hashes} consentText={CONSENT_TEXT} />
+        </PreviewDisabled>
       </Card>
     </div>
   );
@@ -187,7 +192,7 @@ const NEW_STATUS: Record<string, [string, Tone]> = {
 };
 
 /** Agreements & contracts: open ones to sign, signed copies to view or download. */
-function ClientAgreementsSection({ list, account, portalUserId }: { list: Awaited<ReturnType<typeof portalAgreementList>>; account: string; portalUserId: string }) {
+function ClientAgreementsSection({ list, account, linkFor }: { list: Awaited<ReturnType<typeof portalAgreementList>>; account: string; linkFor: (id: string) => string }) {
   const open = list.filter((a) => a.status === "SENT");
   return (
     <section className={`${luxPanel} p-4 sm:p-5`} data-testid="client-agreements">
@@ -209,7 +214,7 @@ function ClientAgreementsSection({ list, account, portalUserId }: { list: Awaite
                 ) : a.pdfDocumentId ? (
                   <span className="flex gap-2">
                     <Link href={`/client/agreements/${a.id}?account=${account}`} className={`${pillButton} min-h-11`}>View</Link>
-                    <a className={`${pillButton} min-h-11`} href={`/api/documents/${downloadToken(a.pdfDocumentId, { portalUserId })}`} target="_blank" rel="noopener"><Download className="size-4" aria-hidden /> Download</a>
+                    <a className={`${pillButton} min-h-11`} href={linkFor(a.pdfDocumentId)} target="_blank" rel="noopener"><Download className="size-4" aria-hidden /> Download</a>
                   </span>
                 ) : null}
               </li>

@@ -220,6 +220,22 @@ export async function bookingProfile(portalUserId: string, clientId: string): Pr
   };
 }
 
+/** View as Client: the booking form's "on file" details from the client record (no portal login). */
+export async function previewBookingProfile(clientId: string): Promise<BookingProfile> {
+  const client = await prisma.client.findUniqueOrThrow({ where: { id: clientId } });
+  const individual = client.clientType === "INDIVIDUAL";
+  const phoneE164 = client.phoneNormalized || normalizePhone(client.phone);
+  return {
+    legalName: individual ? [client.firstName, client.middleName, client.lastName].filter(Boolean).join(" ") || client.displayName : client.displayName,
+    phone: phoneE164 ? formatPhone(phoneE164) : "",
+    email: client.email ?? "",
+    existingClient: client.status !== "PROSPECT",
+    businessName: client.businessName ?? (individual ? null : client.displayName),
+    businessAccount: !individual,
+    smsConsentOnFile: false,
+  };
+}
+
 export type BookingInfoInput = {
   legalName?: string;
   phone?: string;
@@ -363,6 +379,14 @@ export function changePolicy(a: Pick<Appointment, "status" | "startsAt">, settin
 
 export async function portalAppointments(portalUserId: string, clientId: string, now = new Date()) {
   await requireClientAccess(portalUserId, clientId);
+  return clientAppointmentsFor(clientId, now);
+}
+
+/**
+ * One account's appointments as its portal shows them. Callers check access first:
+ * portalAppointments for a portal login, the staff View as Client page for the preview.
+ */
+export async function clientAppointmentsFor(clientId: string, now = new Date()) {
   const settings = await appointmentSettings();
   const rows = await prisma.appointment.findMany({ where: { clientId }, orderBy: { startsAt: "asc" } });
   const map = (a: Appointment): ClientAppointment => {
