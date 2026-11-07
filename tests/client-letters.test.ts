@@ -67,6 +67,8 @@ async function setup() {
   await saveProfile(tabitha, archived.id, { active: true, frequency: "MONTHLY", payroll: false });
   await prisma.client.update({ where: { id: archived.id }, data: { archivedAt: new Date() } });
   const taxOnly = await mk("Tax Only Example", "x@taxonly.example");
+  // Sending needs the owner's "Client rollout authorized" switch (its own tests are in client-letter-delivery.test.ts).
+  await setOwnerSwitch(tabitha, "clientRollout", true);
   return { tabitha, admin, staff, bakery, plumbing, garden, failing, inactive, archived, taxOnly };
 }
 

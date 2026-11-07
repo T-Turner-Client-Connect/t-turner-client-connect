@@ -1,8 +1,11 @@
 # Coetha in Client Connect
 
 Coetha is the firm's AI Senior Accountant. Inside Client Connect she prepares **draft** bookkeeping
-work for one business at a time from that business's connected bank data. Only Tabitha approves
-her work; staff can't, and Coetha never posts or finalizes anything herself.
+work for one business at a time from the bank transactions the office imports (the daily CSV
+statement imports in Books & Ledger) or, in future, syncs from a bank connection, and from the
+ledger data staff enter. Plaid is not needed: Coetha works the same way on CSV-imported
+transactions. Only Tabitha approves her work; staff can't, and Coetha never posts or finalizes
+anything herself.
 
 ## Where
 
@@ -13,8 +16,8 @@ her work; staff can't, and Coetha never posts or finalizes anything herself.
 
 ## What a run does
 
-**Run Coetha** (or the optional daily run after bank retrieval, same switch) reads only that
-business's data: transactions waiting for review, the chart of accounts, categorization rules, how
+**Run Coetha** (or the optional daily run, same switch) reads only that business's data: bank
+transactions waiting for review (CSV-imported or synced, it makes no difference), the chart of accounts, categorization rules, how
 similar transactions were categorized before, reconciliation status, the month-end checklist and the
 ledger's warnings. It asks Claude for:
 
@@ -63,5 +66,8 @@ ANTHROPIC_API_KEY in Netlify" and the rest of Client Connect works as usual.
 
 ## Limits
 
-A run looks at up to 80 waiting transactions at a time (run again for more). The daily run handles up
-to two businesses per hour so each run finishes within the hosting time limit.
+A run looks at up to 80 waiting transactions at a time (run again for more). The daily run picks a
+business when bank transactions waiting for review have arrived since its last Coetha run, from any
+source (a CSV import counts the same as a bank sync), at most once every 20 hours per business. It
+skips clients who prefer no Coetha and handles up to two businesses per hour so each run finishes
+within the hosting time limit.

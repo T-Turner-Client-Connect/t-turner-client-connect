@@ -6,13 +6,14 @@ import { NavyCard, PageBanner } from "@/components/portal/luxury";
 import { MessageComposer } from "@/components/portal/message-composer";
 import { BUSINESS } from "@/lib/business";
 import { MAX_UPLOAD_LABEL } from "@/lib/files";
-import { portalMessageAction } from "@/app/actions/portal";
+import { acknowledgeLetterAction, portalMessageAction } from "@/app/actions/portal";
 import { requirePortalUser } from "@/lib/portal/session";
 import { resolveAccount } from "@/lib/portal/account";
 import { prisma } from "@/lib/prisma";
 import { markClientRead, portalConversations } from "@/lib/services/messaging";
 import { downloadToken } from "@/lib/services/documents";
 import { fmtDateTime } from "@/lib/format";
+import { portalLettersForMessages, recordLetterViewed } from "@/lib/services/client-letters";
 
 export const metadata = { title: "Messages" };
 
@@ -33,6 +34,11 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
       })
     : [];
   if (selected) await markClientRead(user, selected.id);
+  // Client letters in this thread: the client's own login opening it is the letter's first view
+  // (staff "View as Client" is a separate page and never records one).
+  const letters = selected ? await portalLettersForMessages(user, current.clientId, thread.map((m) => m.id)) : [];
+  if (letters.length) await recordLetterViewed(user.id, current.clientId, { messageIds: letters.map((l) => l.messageId!) });
+  const letterOf = new Map(letters.map((l) => [l.messageId, l]));
 
   const composer = (
     <ActionForm action={portalMessageAction.bind(null, current.clientId)} className="space-y-3" resetOnSuccess idempotent>
@@ -149,6 +155,21 @@ export default async function PortalMessages({ searchParams }: { searchParams: P
                         <a key={a.id} className={`mt-1 block text-sm underline ${mine ? "text-gold-300" : ""}`} href={`/api/documents/${downloadToken(a.id, { portalUserId: user.id })}`} target="_blank" rel="noopener">📎 {a.title}</a>
                       ))}
                       <p className={`mt-1 text-xs ${mine ? "text-navy-100" : "text-slate-500"}`}>{mine ? m.portalAuthor?.name ?? "You" : m.staffAuthor?.name ?? "T. Turner & Associates"} · {fmtDateTime(m.createdAt)}</p>
+                      {letterOf.has(m.id) && (() => {
+                        const l = letterOf.get(m.id)!;
+                        return (
+                          <div className="mt-3 rounded-xl border border-gold-300 bg-white px-3 py-2.5 text-sm text-navy-900" data-testid="letter-ack">
+                            {l.acknowledgedAt ? (
+                              <p data-testid="letter-acknowledged">You told us you read this notice on {fmtDateTime(l.acknowledgedAt)}. Thank you.</p>
+                            ) : (
+                              <ActionForm action={acknowledgeLetterAction.bind(null, l.id)} className="space-y-2">
+                                <p>Optional: let us know you&apos;ve read this letter. You don&apos;t need to do anything else.</p>
+                                <Button type="submit" variant="secondary" className="w-full sm:w-auto" data-testid="acknowledge-letter">I have read this notice</Button>
+                              </ActionForm>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </li>
                   );
                 })}

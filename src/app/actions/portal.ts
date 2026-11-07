@@ -235,3 +235,14 @@ export async function removeAuthenticatorAction(_prev: ActionState): Promise<Act
     return "Authenticator app removed. You'll sign in with a code sent to your email.";
   });
 }
+
+/** "I have read this notice" on a client letter (optional; the client's own login only). */
+export async function acknowledgeLetterAction(letterId: string, _prev: ActionState): Promise<ActionState> {
+  const user = await requirePortalUser();
+  return run(async () => {
+    const { acknowledgeClientLetter } = await import("@/lib/services/client-letters");
+    const r = await acknowledgeClientLetter(user, letterId);
+    revalidatePath("/client/messages");
+    return r.already ? "You've already told us you read this notice. Thank you." : "Thank you. We've noted that you read this notice.";
+  });
+}
