@@ -4598,6 +4598,11 @@ model IntegrationSettings {
   clientRolloutAuthorized   Boolean?
   clientRolloutChangedById  String?
   clientRolloutChangedAt    DateTime?
+  // Owner-only: show balances entered by our office on clients' business dashboards. Off unless
+  // true (null = never set = off). Separate from the client rollout lock on purpose.
+  clientBankBalancesVisible     Boolean?
+  clientBankBalancesChangedById String?
+  clientBankBalancesChangedAt   DateTime?
   updatedById               String?
   updatedAt                 DateTime  @updatedAt
 }

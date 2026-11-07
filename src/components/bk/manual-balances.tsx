@@ -19,7 +19,7 @@ type Rows = Awaited<ReturnType<typeof manualAccountsForStaff>>;
 type GlChoice = { id: string; label: string; linkedTo: string | null };
 
 /** shownToClient: ids of our accounts whose figure the client's dashboard uses (bank-feed.ts chooseSources). */
-export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected, ledgerChoices = [], shownToClient, now = new Date() }: { clientId: string; rows: Rows; canEdit: boolean; plaidConnected: boolean; ledgerChoices?: GlChoice[]; shownToClient?: Set<string>; now?: Date }) {
+export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected, ledgerChoices = [], shownToClient, clientVisible = false, now = new Date() }: { clientId: string; rows: Rows; canEdit: boolean; plaidConnected: boolean; ledgerChoices?: GlChoice[]; shownToClient?: Set<string>; clientVisible?: boolean; now?: Date }) {
   const nowLocal = utcToChicagoLocal(now);
   const active = rows.filter((r) => !r.archivedAt);
   const archived = rows.filter((r) => r.archivedAt);
@@ -46,7 +46,8 @@ export function ManualBalancesSection({ clientId, rows, canEdit, plaidConnected,
                   <div className="min-w-0">
                     <p className="font-semibold text-navy-900">{a.name}{a.last4 && <span className="ml-1 font-normal text-navy-800">••{a.last4}</span>}</p>
                     <p className="text-xs text-slate-600">{[a.institution, MANUAL_KINDS[a.kind] ?? a.kind, a.kind === "CREDIT_CARD" ? "not counted as cash" : null, a.ledgerAccountId ? `GL ${ledgerChoices.find((l) => l.id === a.ledgerAccountId)?.label ?? "linked"}` : null].filter(Boolean).join(" · ")}</p>
-                    {shownToClient && a.latest && <p className={clsx("text-xs", shownToClient.has(a.id) ? "text-emerald-800" : "text-navy-800")} data-testid="manual-shown">{shownToClient.has(a.id) ? "Client's dashboard shows this balance" : "Client's dashboard shows the bank feed for this account"}{a.balanceSource === "OFFICE" ? " · source: Office-entered" : ""}</p>}
+                    {a.latest && !clientVisible && <p className="text-xs text-navy-800" data-testid="manual-shown">Staff only: clients don&apos;t see office-entered balances (Tabitha&apos;s switch is off){a.balanceSource === "OFFICE" ? " · source: Office-entered" : ""}</p>}
+                    {clientVisible && shownToClient && a.latest && <p className={clsx("text-xs", shownToClient.has(a.id) ? "text-emerald-800" : "text-navy-800")} data-testid="manual-shown">{shownToClient.has(a.id) ? "Client's dashboard shows this balance" : "Client's dashboard shows the bank feed for this account"}{a.balanceSource === "OFFICE" ? " · source: Office-entered" : ""}</p>}
                     {a.signInUrl && <a href={a.signInUrl} target="_blank" rel="noopener noreferrer" className="mt-0.5 inline-flex items-center gap-1 text-xs font-semibold text-navy-900 underline"><ExternalLink className="size-3.5" aria-hidden /> Open bank site</a>}
                   </div>
                   <div className="text-right">

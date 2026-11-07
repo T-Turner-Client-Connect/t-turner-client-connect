@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { balanceDay } from "./banking";
 import { clientManualBalances, MANUAL_STALE_DAYS, type ClientManualBalance } from "./manual-bank";
+import { clientBankBalancesVisible } from "./owner-switches";
 
 /**
  * One business's bank balances, account by account: each bank-feed (Plaid) account as the bank
@@ -9,6 +10,11 @@ import { clientManualBalances, MANUAL_STALE_DAYS, type ClientManualBalance } fro
  * office keeps up by hand (manual-bank.ts), labeled "Updated by our office".
  * This module never checks access itself: the staff overview calls it after canUseLedger,
  * the client portal after requireClientAccess(…, "bookkeeping"). Only this client's rows are read.
+ *
+ * Office-entered balances reach this feed (and so any client screen) only while Tabitha's
+ * owner switch "Show office-entered bank balances to clients" is on. It is off by default; while
+ * it's off the feed carries bank-feed (Plaid) accounts only. Staff screens read our balances
+ * directly (manual-bank.ts), so the office keeps working with them either way.
  *
  * Source per account (never one rule for the whole business):
  * - A manual account and a Plaid account are the SAME real account when they're linked to the
@@ -110,13 +116,14 @@ export function chooseSources(plaid: PlaidRow[], manual: ClientManualBalance[], 
 
 export async function bankFeed(clientId: string, opts: { transactions?: number; now?: Date } = {}): Promise<BankFeed> {
   const now = opts.now ?? new Date();
+  const officeVisible = await clientBankBalancesVisible();
   const [conns, manual] = await Promise.all([
     prisma.bankConnection.findMany({
       where: { clientId, status: { not: "DISCONNECTED" } },
       orderBy: { createdAt: "asc" },
       select: { id: true, institutionName: true, status: true, environment: true, lastSuccessAt: true, lastClientRefreshAt: true, accounts: { orderBy: { createdAt: "asc" } } },
     }),
-    clientManualBalances(clientId),
+    officeVisible ? clientManualBalances(clientId) : Promise.resolve([] as ClientManualBalance[]),
   ]);
 
   const all: PlaidRow[] = conns.flatMap((c) => c.accounts.map((a) => ({ id: a.id, name: a.name, mask: a.mask, type: a.type, ledgerAccountId: a.ledgerAccountId, currentBalanceCents: a.currentBalanceCents, availableBalanceCents: a.availableBalanceCents, balanceAsOf: a.balanceAsOf, institution: c.institutionName, connStatus: c.status })));

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { type ComponentProps, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { grantPerms, makeUser, managed, prisma, resetDb } from "./db";
+import { grantPerms, makeUser, managed, prisma, resetDb, showOfficeBalancesToClients } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient, ValidationError } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -49,6 +49,7 @@ async function world() {
 const kpi = (feed: BankFeed) => renderToStaticMarkup(createElement(LiveBankProvider, { account: "x", initial: feed, live: false } as ComponentProps<typeof LiveBankProvider>, createElement(LiveBankKpi, { className: "" })));
 
 describe("bank CSV running balance", () => {
+  beforeEach(showOfficeBalancesToClients);
   it("detects an optional balance column and keeps the old behavior without one", () => {
     for (const h of ["Balance", "Running Balance", "available balance", "LEDGER BALANCE"]) {
       const p = parseBankCsv(`Date,Description,Amount,${h}\n01/05/2026,Coffee,-4.50,"1,995.50"\n`);

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ComponentProps, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { grantPerms, makeUser, managed, managedOnly, prisma, resetDb } from "./db";
+import { grantPerms, makeUser, managed, managedOnly, prisma, resetDb, showOfficeBalancesToClients } from "./db";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { createClient, ValidationError } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -101,6 +101,7 @@ function find(node: ReactNode, type: unknown): ReactElement<Record<string, unkno
 }
 
 describe("balance source, account by account", () => {
+  beforeEach(showOfficeBalancesToClients);
   it("a mixed business shows its bank-feed account and its office account, each once, cash apart from cards", async () => {
     const w = await world();
     await plaidAccount(w, { name: "Feed Checking", mask: "7777", type: "depository", cents: 400_000 });
@@ -157,6 +158,7 @@ describe("balance source, account by account", () => {
 });
 
 describe("banking information only for Bookkeeping Clients", () => {
+  beforeEach(showOfficeBalancesToClients);
   it("a Managed Business not on the list, a paused profile, or a sign-up choice never shows banking", async () => {
     const w = await world({ bookkeeping: false });
     const op = await createManualAccount(w.tabitha, w.bakery.id, { name: "Operating checking", kind: "CHECKING" });
