@@ -157,9 +157,24 @@ export const CHANGE_FLAGS = {
   PTO: "PTO / time off",
 } as const;
 export type ChangeFlag = keyof typeof CHANGE_FLAGS;
+/**
+ * Pay other than regular and overtime hours, entered once with the hours. HOURS kinds are hours,
+ * DOLLARS kinds are amounts. Each company maps the kinds it uses to its own ADP earnings codes.
+ */
+export const OTHER_PAY = {
+  VACATION: { label: "Vacation", unit: "HOURS" },
+  SICK: { label: "Sick", unit: "HOURS" },
+  HOLIDAY: { label: "Holiday", unit: "HOURS" },
+  BONUS: { label: "Bonus", unit: "DOLLARS" },
+  COMMISSION: { label: "Commission", unit: "DOLLARS" },
+  CHARGED_TIPS: { label: "Card tips", unit: "DOLLARS" },
+  CASH_TIPS: { label: "Cash tips", unit: "DOLLARS" },
+  OTHER: { label: "Other pay", unit: "DOLLARS" },
+} as const;
+export type OtherPayKind = keyof typeof OTHER_PAY;
 export type HoursSubmission = {
   noChanges: boolean;
-  employees: { name: string; regularHours: number; overtimeHours: number; notes: string }[];
+  employees: { name: string; regularHours: number; overtimeHours: number; notes: string; pay?: Partial<Record<OtherPayKind, number>> }[];
   flags: ChangeFlag[];
   notes: string;
 };

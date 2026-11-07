@@ -350,6 +350,7 @@ model Client {
   payrollConnections     PayrollConnection[]
   payrollSchedule        PayrollSchedule?
   payrollCycles          PayrollCycle[]
+  adpRunSetup            AdpRunSetup?
   businessOwners         BusinessOwner[]
   ownerK1Grants          OwnerK1Grant[]
   jointFilingYears       JointFilingYear[]
@@ -5854,6 +5855,120 @@ model PayrollCycle {
 
 /// Reminder steps (relative to each deadline) and their channels: one global plan (key "global")
 /// and optional per-client plans (key = the client's id).
+/// ADP RUN Time Sheet Import: one-time setup for one payroll client (one ADP company).
+/// The company code and Accountant Connect identifiers are stored encrypted (APP_ENCRYPTION_KEY);
+/// only their last characters are kept in the clear for display.
+model AdpRunSetup {
+  id                       String              @id @default(cuid())
+  clientId                 String              @unique
+  client                   Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // The value written to the CSV's Company Code column: the IID, or Branch Code + ADP Code.
+  companyCodeEnc           String?
+  companyCodeHint          String?
+  // IID | BRANCH_CODE — which form the company's own template uses.
+  companyCodeForm          String?
+  // ADP Accountant Connect identifiers (Client ID, Branch, Code), encrypted.
+  acClientIdEnc            String?
+  acClientIdHint           String?
+  acBranchEnc              String?
+  acCodeEnc                String?
+  // EMPLOYEE_ID (RUN-assigned) | TIME_CLOCK_ID
+  identifierType           String              @default("EMPLOYEE_ID")
+  // ADP pay frequency letter: W | B | S | M | Q
+  payFrequency             String?
+  // Time Sheet Import selected on RUN's Company > Features Overview (confirmed by staff).
+  featureConfirmedAt       DateTime?
+  featureConfirmedById     String?
+  // The company's own template, checked against ADP's layout.
+  templateVersion          String?
+  templateTitles           String[]            @default([])
+  templateDocumentId       String?
+  templateSha256           String?
+  templateCheckedAt        DateTime?
+  employeeReportDocumentId String?
+  employeeReportAt         DateTime?
+  earningsReportDocumentId String?
+  earningsReportAt         DateTime?
+  usesDepartments          Boolean             @default(false)
+  departmentReportAt       DateTime?
+  // [{ code, description }] from the Earnings Codes Report.
+  earningsCatalog          Json                @default("[]")
+  // { REGULAR: "REG", OVERTIME: "OT", BONUS: "BON", CASH_TIPS: … } — this company's ADP earnings
+  // code for each kind of pay entered in Client Connect. A kind with no code can't transfer.
+  earningsMap              Json                @default("{}")
+  // A test file (fictional hours) was imported in RUN without errors, then deleted there
+  // without approving. Until then only test files can be downloaded.
+  testVerifiedAt           DateTime?
+  testVerifiedById         String?
+  testVerifiedNote         String?
+  updatedById              String?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+  employees                AdpRunEmployeeMap[]
+  exports                  AdpRunExport[]
+}
+
+/// One employee as named in Client Connect hours ↔ their RUN employee ID, for one company only.
+model AdpRunEmployeeMap {
+  id             String      @id @default(cuid())
+  setupId        String
+  setup          AdpRunSetup @relation(fields: [setupId], references: [id], onDelete: Cascade)
+  clientId       String
+  name           String
+  nameKey        String
+  adpEmployeeId  String
+  payFrequency   String?
+  departmentCode String?
+  rateCode       String      @default("BASE")
+  active         Boolean     @default(true)
+  // REPORT | MANUAL
+  source         String      @default("REPORT")
+  updatedById    String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([clientId, adpEmployeeId])
+  @@unique([clientId, nameKey])
+  @@index([setupId])
+}
+
+/// Every ADP CSV Client Connect produced. The file itself is kept (encrypted) so a re-download is
+/// byte-for-byte the same; one ACTIVE file per pay cycle prevents importing two versions.
+model AdpRunExport {
+  id               String      @id @default(cuid())
+  setupId          String
+  setup            AdpRunSetup @relation(fields: [setupId], references: [id], onDelete: Cascade)
+  clientId         String
+  // Null for a setup test file.
+  cycleId          String?
+  isTest           Boolean     @default(false)
+  fileName         String
+  contentEnc       String
+  contentSha256    String
+  rows             Int
+  employees        Int
+  hoursHundredths  Int
+  dollarsCents     Int         @default(0)
+  payFrequency     String
+  periodStart      DateTime    @db.Date
+  periodEnd        DateTime    @db.Date
+  // ACTIVE | REPLACED
+  status           String      @default("ACTIVE")
+  replacedAt       DateTime?
+  replacedById     String?
+  replaceReason    String?
+  // Staff record that this file was imported into RUN (nothing is sent to ADP from here).
+  importedAt       DateTime?
+  importedById     String?
+  downloads        Int         @default(0)
+  lastDownloadedAt DateTime?
+  createdById      String
+  createdAt        DateTime    @default(now())
+
+  @@index([clientId, cycleId])
+  @@index([setupId])
+}
+
 model PayrollReminderPlan {
   id          String   @id @default(cuid())
   key         String   @unique
