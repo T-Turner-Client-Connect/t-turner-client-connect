@@ -12,6 +12,8 @@ import {
 } from "@/app/actions/payroll-taxes";
 import { requirePayrollTaxPage } from "@/lib/payroll-taxes/access";
 import { cycleDetail, payrollTaxSettings } from "@/lib/services/payroll-taxes";
+import { cycleAdpStatus } from "@/lib/services/adp-run";
+import { cycleFileAction, fileImportedAction } from "@/app/actions/adp-run";
 import { downloadToken } from "@/lib/services/documents";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { CHANGE_FLAGS, REMINDER_STEPS } from "@/lib/payroll/queue";
@@ -31,6 +33,7 @@ export default async function CyclePage({ params }: { params: Promise<{ cycleId:
     throw e;
   });
   const settings = await payrollTaxSettings();
+  const adp = await cycleAdpStatus(actor, cycleId);
   const { cycle, run, version, row, canManage } = d;
   const name = cycle.client.businessName || cycle.client.displayName;
   const docLink = (id: string) => `/api/documents/${downloadToken(id, { staffId: actor.id })}`;
@@ -222,6 +225,42 @@ export default async function CyclePage({ params }: { params: Promise<{ cycleId:
           ) : <p className="text-sm text-slate-600">After every required approver approves the current version, the office submits it in ADP and records it here. Nothing is submitted automatically.</p>}
         </Card>
       </div>
+
+      <Card title="ADP RUN import (Time Sheet Import)" className="mt-4">
+        <div data-testid="adp-csv">
+          {!adp.setupReady ? (
+            <p className="text-sm text-slate-700">Download ADP CSV turns on after this business&apos;s one-time setup. Still to do: {adp.missing.join("; ")}. <Link href={`/payroll-taxes/schedules/${cycle.clientId}/adp`} className="font-semibold underline">Open ADP RUN import setup</Link></p>
+          ) : adp.processed ? (
+            <p className="text-sm text-slate-700">This payroll is processed.</p>
+          ) : !adp.hoursIn ? (
+            <p className="text-sm text-slate-700">Enter or receive this period&apos;s hours first (step 1). They&apos;re entered once here and go into the file as they are.</p>
+          ) : adp.noChanges ? (
+            <p className="text-sm text-slate-700">“No changes — same as last period”: RUN&apos;s standard hours apply, so no file is needed.</p>
+          ) : (
+            <div className="space-y-3 text-sm">
+              {adp.active && (
+                <div className="rounded-lg border border-ivory-200 bg-ivory-50 p-3">
+                  <p className="font-semibold text-navy-900">{adp.active.fileName}</p>
+                  <p className="text-xs text-slate-600">{adp.active.employees} employees · {adp.active.rows} rows · {(adp.active.hoursHundredths / 100).toFixed(2)} hours · downloaded {adp.active.downloads}×{adp.active.importedAt ? ` · imported into RUN ${fmtWhen(adp.active.importedAt)}` : ""}</p>
+                  {adp.active.importedAt && <p className="mt-1 text-xs font-semibold text-amber-800">Already imported into RUN — don&apos;t import it again.</p>}
+                  {canManage && !adp.active.importedAt && adp.active.downloads > 0 && (
+                    <ActionForm action={fileImportedAction.bind(null, adp.active.id)} className="mt-2" confirm="Record that you imported this file in RUN (Home > Time Sheet Import)?">
+                      <Button type="submit" variant="secondary">I imported it into RUN</Button>
+                    </ActionForm>
+                  )}
+                </div>
+              )}
+              {canManage && (
+                <ActionForm action={cycleFileAction.bind(null, cycle.id)} className="space-y-2">
+                  {adp.active?.importedAt && <input name="replaceReason" placeholder="Only if the hours changed after import: why (delete the old pay data file in RUN first)" className={input} />}
+                  <Button type="submit" variant="gold">Download ADP CSV</Button>
+                </ActionForm>
+              )}
+              <p className="text-xs text-slate-600">In RUN: Home &gt; Time Sheet Import → Browse → Import Pay Data → review Pay Data Approval. Use “Accept Import Only” unless you also entered hours in RUN&apos;s Payroll Worksheet. Then review and submit payroll in RUN as usual.</p>
+            </div>
+          )}
+        </div>
+      </Card>
 
       {canManage && (
         <Card title="Assignment for this pay cycle" className="mt-4">
