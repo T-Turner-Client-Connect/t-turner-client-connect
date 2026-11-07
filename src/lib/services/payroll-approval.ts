@@ -20,6 +20,7 @@ import { sendEmailCode, verifyEmailCode, verifySecondFactor } from "./mfa";
 import { assertPayrollWork, assertStaff, event, LOCKED, loadRun } from "./payroll";
 import { payrollCost } from "@/lib/payroll/register";
 import { NOTIFY_CHANNELS, type NotifyChannel } from "@/lib/payroll/fields";
+import { deliveryOf, NOTIFICATIONS_OFF_DETAIL, type ApprovalDelivery } from "@/lib/payroll/queue";
 
 /**
  * Payroll Review & Approval by business owners.
@@ -181,7 +182,13 @@ export function requestSummary(business: string, v: { periodStart: Date | null; 
 }
 const fmtShort = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
-/** Sends each approver the request on their channel(s), each with its own single-use link. */
+/** The text an approver gets after their approval email was accepted. Notification only: never a link, amounts or employee details. */
+export const PAYROLL_SMS_NOTICE = "T. Turner & Associates, LLC: You have an ADP payroll approval request waiting in your email. Please review it before your payroll deadline.";
+
+/**
+ * Sends each approver the approval request by email (with their own single-use link), then, only
+ * if that email was accepted and they can be texted, a short text pointing them to the email.
+ */
 export async function notifyApprovers(runId: string, now = new Date()) {
   const run = await prisma.payrollRun.findUniqueOrThrow({ where: { id: runId }, include: { client: { select: { displayName: true, businessName: true } } } });
   const version = await prisma.payrollRunVersion.findUniqueOrThrow({ where: { id: run.currentVersionId! } });
@@ -191,42 +198,53 @@ export async function notifyApprovers(runId: string, now = new Date()) {
   const results: { portalUserId: string; channel: string; status: string; detail: string | null }[] = [];
   for (const a of all) {
     const user = await prisma.portalUser.findUniqueOrThrow({ where: { id: a.portalUserId } });
-    const ch = await channelsFor(a, user);
     const record = async (channel: "SMS" | "EMAIL", status: string, detail: string | null, linkId: string | null) => {
       await prisma.payrollNotice.create({ data: { runId, round: run.approvalRound, portalUserId: a.portalUserId, channel, status, detail, linkId, sentAt: status === "SENT" ? new Date() : null } });
       results.push({ portalUserId: a.portalUserId, channel, status, detail });
     };
-    if (ch.smsBlocked && ch.choice !== "EMAIL") await record("SMS", "SKIPPED", ch.smsBlocked, null);
-    for (const channel of [...(ch.sms ? (["SMS"] as const) : []), ...(ch.email ? (["EMAIL"] as const) : [])]) {
-      if (!enabled) {
-        await record(channel, "SKIPPED", "Notifications are turned off (NOTIFICATIONS_ENABLED is not true)", null);
-        continue;
-      }
-      if (channel === "EMAIL" && ch.emailBlocked) {
-        await record("EMAIL", "SKIPPED", ch.emailBlocked, null);
-        continue;
-      }
-      const { url, link } = await prisma.$transaction((tx) => createLink(tx, run, a.portalUserId, channel));
-      const summary = requestSummary(business, version);
-      if (channel === "SMS") {
-        if (!smsWindowOpen(now)) {
-          await record("SMS", "HELD", "Held for quiet hours — sends after 8 a.m. Central", link.id);
-          continue;
-        }
-        const r = await sendSms(user.phoneNormalized!, `TTurner Client Connect: ${summary} Review and approve or deny: ${url}`);
-        await record("SMS", r.ok ? "SENT" : "FAILED", r.detail, link.id);
-      } else {
-        const r = await sendEmail({
-          to: user.email,
-          subject: `Payroll approval needed — ${business}`,
-          text: `${summary}\n\nReview and approve or deny: ${url}\n\nThe link works once and expires in 72 hours. You'll confirm it's you before your decision is recorded.\n\nT. Turner & Associates`,
-          html: brandedEmailHtml({ heading: "Payroll needs your approval", paragraphs: [summary, "The link works once and expires in 72 hours. You'll confirm it's you before your decision is recorded."], button: { label: "Review payroll", url }, footer: "T. Turner & Associates" }),
-          idempotencyKey: `payroll-approval/${link.id}`,
-          tags: { category: "payroll_approval" },
-        });
-        await record("EMAIL", r.ok ? "SENT" : "FAILED", r.ok ? "Accepted by email provider" : r.detail, link.id);
-      }
+    const ch = await channelsFor(a, user);
+    const wantsSms = ch.choice !== "EMAIL";
+    if (!enabled) {
+      await record("EMAIL", "SKIPPED", NOTIFICATIONS_OFF_DETAIL, null);
+      if (wantsSms) await record("SMS", "SKIPPED", NOTIFICATIONS_OFF_DETAIL, null);
+      continue;
     }
+    // 1. The email is the approval request: it carries the approver's secure single-use link.
+    let emailOk = false;
+    if (ch.emailBlocked) {
+      await record("EMAIL", "SKIPPED", ch.emailBlocked, null);
+    } else {
+      const { url, link } = await prisma.$transaction((tx) => createLink(tx, run, a.portalUserId, "EMAIL"));
+      const summary = requestSummary(business, version);
+      const r = await sendEmail({
+        to: user.email,
+        subject: `Payroll approval needed — ${business}`,
+        text: `${summary}\n\nReview and approve, or request changes: ${url}\n\nThe link works once and expires in 72 hours. You'll confirm it's you before your decision is recorded.\n\nT. Turner & Associates`,
+        html: brandedEmailHtml({ heading: "Payroll needs your approval", paragraphs: [summary, "The link works once and expires in 72 hours. You'll confirm it's you before your decision is recorded."], button: { label: "Review payroll", url }, footer: "T. Turner & Associates" }),
+        idempotencyKey: `payroll-approval/${link.id}`,
+        tags: { category: "payroll_approval" },
+      });
+      await record("EMAIL", r.ok ? "SENT" : "FAILED", r.ok ? "Accepted by email provider" : r.detail, link.id);
+      emailOk = r.ok;
+    }
+    if (!emailOk) {
+      // No misleading text about an email that didn't go out: the office is told instead.
+      await officeAlert(run, `Payroll approval email not delivered to ${user.name} — ${business}`, "The approval email to this approver wasn't accepted for delivery, so no text was sent. Check the address and send for approval again, or contact the approver.");
+      if (wantsSms) await record("SMS", "SKIPPED", "Not sent because the approval email wasn't accepted for delivery", null);
+      continue;
+    }
+    // 2. The text only says an approval is waiting in their email. No link, amounts or names.
+    if (!wantsSms) continue;
+    if (!ch.sms) {
+      await record("SMS", "SKIPPED", ch.smsBlocked ?? "Text not allowed", null);
+      continue;
+    }
+    if (!smsWindowOpen(now)) {
+      await record("SMS", "HELD", "Held for quiet hours — sends after 8 a.m. Central", null);
+      continue;
+    }
+    const t = await sendSms(user.phoneNormalized!, PAYROLL_SMS_NOTICE);
+    await record("SMS", t.ok ? "SENT" : "FAILED", t.detail, null);
   }
   return results;
 }
@@ -253,7 +271,6 @@ export async function dispatchHeldPayrollTexts(now = new Date()) {
 
 async function notifyOne(runId: string, portalUserId: string, channel: "SMS", noticeId: string) {
   const run = await prisma.payrollRun.findUniqueOrThrow({ where: { id: runId }, include: { client: { select: { displayName: true, businessName: true } } } });
-  const version = await prisma.payrollRunVersion.findUniqueOrThrow({ where: { id: run.currentVersionId! } });
   const user = await prisma.portalUser.findUniqueOrThrow({ where: { id: portalUserId } });
   const approver = await prisma.payrollApprover.findUnique({ where: { clientId_portalUserId: { clientId: run.clientId, portalUserId } } });
   const ch = approver ? await channelsFor(approver, user) : null;
@@ -261,13 +278,17 @@ async function notifyOne(runId: string, portalUserId: string, channel: "SMS", no
     await prisma.payrollNotice.update({ where: { id: noticeId }, data: { status: "SKIPPED", detail: ch?.smsBlocked ?? "No longer an approver" } });
     return;
   }
-  const { url, link } = await prisma.$transaction((tx) => createLink(tx, run, portalUserId, channel));
-  const business = run.client.businessName || run.client.displayName;
-  const r = await sendSms(user.phoneNormalized!, `TTurner Client Connect: ${requestSummary(business, version)} Review and approve or deny: ${url}`);
-  await prisma.payrollNotice.update({ where: { id: noticeId }, data: { status: r.ok ? "SENT" : "FAILED", detail: r.detail, linkId: link.id, sentAt: r.ok ? new Date() : null } });
+  void channel;
+  const r = await sendSms(user.phoneNormalized!, PAYROLL_SMS_NOTICE);
+  await prisma.payrollNotice.update({ where: { id: noticeId }, data: { status: r.ok ? "SENT" : "FAILED", detail: r.detail, sentAt: r.ok ? new Date() : null } });
 }
 
 // --- Office workflow ----------------------------------------------------------------------
+
+/** Did this round's approval email reach the client? (Not Sent / Sent / Failed.) */
+export async function approvalDelivery(run: { id: string; approvalRound: number }, db: Tx | typeof prisma = prisma): Promise<ApprovalDelivery> {
+  return deliveryOf(await db.payrollNotice.findMany({ where: { runId: run.id, round: run.approvalRound }, select: { channel: true, status: true, detail: true } }));
+}
 
 /** Staff send the current version to the business's approvers (a new round each time). */
 export async function requestPayrollApproval(actor: Actor, clientId: string, runId: string, now = new Date()) {
@@ -278,7 +299,12 @@ export async function requestPayrollApproval(actor: Actor, clientId: string, run
   const run = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"payroll-run:" + runId}))`;
     const { run, version } = await loadRun(clientId, runId, tx);
-    if (run.status !== "DRAFT" && run.status !== "DENIED") throw new ValidationError(LOCKED.has(run.status) ? "This pay run is locked." : "This pay run is already with the approvers.");
+    if (run.status === "AWAITING_APPROVAL") {
+      // A request whose email never went out (email off on the server) or failed can be sent again by
+      // staff. Never automatically, and never once the email went out or an approver has decided.
+      const decided = await tx.payrollApproval.count({ where: { runId: run.id, round: run.approvalRound } });
+      if (decided || (await approvalDelivery(run, tx)) === "SENT") throw new ValidationError("This pay run is already with the approvers.");
+    } else if (run.status !== "DRAFT" && run.status !== "DENIED") throw new ValidationError(LOCKED.has(run.status) ? "This pay run is locked." : "This pay run is already with the approvers.");
     const r = await tx.payrollRun.update({ where: { id: run.id }, data: { status: "AWAITING_APPROVAL", approvalRound: { increment: 1 }, approvalRequestedAt: new Date(), approvalRequestedById: actor.id, fullyApprovedAt: null } });
     await event(tx, run.id, "APPROVAL_REQUESTED", { userId: actor.id, name: actor.name }, { versionNumber: version.number, note: `Sent to ${all.map((a) => a.portalUser.name).join(", ")}` });
     await audit(tx, { actorId: actor.id, action: "payroll.approval_requested", entityType: "PayrollRun", entityId: run.id, clientId, details: { version: version.number, round: r.approvalRound, contentHash: version.contentHash, approvers: all.map((a) => a.portalUserId) } });
@@ -325,16 +351,29 @@ export async function decidePayroll(portalUserId: string, clientId: string, runI
     }
     return { approval: a, status, run };
   });
-  if (out.status === "DENIED") await alertOffice(out.run, user.name, comment);
+  const biz = await businessName(out.run.clientId);
+  if (out.status === "DENIED") await officeAlert(out.run, `Payroll changes requested by ${user.name} — ${biz}`, `Needs review. ${comment ?? ""}`.trim());
+  else await officeAlert(out.run, `Payroll approved by ${user.name} — ${biz}`, out.status === "FULLY_APPROVED" ? "Every required approver has approved this version. It's ready for you to enter and submit in ADP." : "Approved. Waiting on the other required approver(s).");
   return out;
 }
 
-/** A denial goes back to the office: a task for the client's assigned staff member (or unassigned). */
-async function alertOffice(run: { id: string; clientId: string; createdById: string | null }, owner: string, comment: string | null) {
-  const client = await prisma.client.findUniqueOrThrow({ where: { id: run.clientId }, select: { assignedToId: true, displayName: true, businessName: true } });
+async function businessName(clientId: string) {
+  const c = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { displayName: true, businessName: true } });
+  return c.businessName || c.displayName;
+}
+
+/**
+ * An immediate task for the payroll preparer: the pay cycle's assigned staff member, else the
+ * schedule's, else the client's assigned staff member. Used for every client decision and for an
+ * approval email that couldn't be delivered.
+ */
+async function officeAlert(run: { id: string; clientId: string; createdById: string | null }, title: string, details: string) {
+  const client = await prisma.client.findUniqueOrThrow({ where: { id: run.clientId }, select: { assignedToId: true } });
+  const cycle = await prisma.payrollCycle.findFirst({ where: { payrollRunId: run.id }, select: { assignedStaffId: true, schedule: { select: { assignedStaffId: true } } } });
+  const assignee = cycle?.assignedStaffId ?? cycle?.schedule?.assignedStaffId ?? client.assignedToId;
   const creator = run.createdById ?? (await prisma.user.findFirst({ where: { role: "ADMIN", active: true }, select: { id: true } }))?.id;
   if (!creator) return;
-  await prisma.task.create({ data: { title: `Payroll denied by ${owner} — ${client.businessName || client.displayName}`, details: `Needs review. ${comment ?? ""}`.trim().slice(0, 1000), priority: "HIGH", clientId: run.clientId, assigneeId: client.assignedToId, createdById: creator } });
+  await prisma.task.create({ data: { title: title.slice(0, 200), details: details.slice(0, 1000), priority: "HIGH", clientId: run.clientId, assigneeId: assignee, createdById: creator } });
 }
 
 /**
@@ -497,8 +536,7 @@ export async function payrollTextReply(fromNormalized: string, body: string): Pr
       const run = await prisma.payrollRun.findFirst({ where: { clientId: a.clientId, status: "AWAITING_APPROVAL" }, orderBy: { checkDate: "asc" } });
       if (!run) continue;
       if (await prisma.payrollApproval.count({ where: { runId: run.id, round: run.approvalRound, portalUserId: u.id } })) continue;
-      const { url } = await prisma.$transaction((tx) => createLink(tx, run, u.id, "SMS"));
-      return `TTurner Client Connect: For your security, payroll can't be approved by text reply. Review and approve or deny here: ${url}`;
+      return "T. Turner & Associates, LLC: For your security, payroll can't be approved by text. Please use the secure link in your payroll approval email.";
     }
   }
   return null;

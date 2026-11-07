@@ -9,7 +9,7 @@ import {
   sendForClientApproval, setClientRemindersAuthorized, setCycleAssignee, uploadPreview, type UploadedFile,
 } from "@/lib/services/payroll-taxes";
 import { sendTestToOffice } from "@/lib/services/payroll-reminders";
-import { CHANNELS, DEFAULT_PLAN, type ReminderChannel } from "@/lib/payroll/queue";
+import { CHANNELS, DEFAULT_PLAN, deliveryOf, type ReminderChannel } from "@/lib/payroll/queue";
 
 /**
  * ADP Payroll & Taxes server actions. Each one signs in the staff member from the session and the
@@ -122,6 +122,9 @@ export async function sendForApprovalAction(cycleId: string): Promise<ActionStat
     const r = await sendForClientApproval(actor, cycleId);
     refresh();
     const sent = r.notices.filter((n) => n.status === "SENT").length;
+    const delivery = deliveryOf(r.notices.map((n) => ({ channel: n.channel, status: n.status, detail: n.detail })));
+    if (delivery === "NOT_SENT") return "Approval Prepared — Not Sent. Email isn't turned on for Client Connect on the server, so nothing went out. Send it again once email is on.";
+    if (delivery === "FAILED") return "Delivery Failed — Needs Attention. An approval email wasn't accepted, so no text was sent for it. Check the approver's email address, then send it again.";
     return `Sent for client approval (round ${r.run.approvalRound}). ${sent ? `${sent} notice${sent === 1 ? "" : "s"} sent.` : "Approvers see it in their portal; no email or text went out (see the notices below)."}`;
   });
 }
