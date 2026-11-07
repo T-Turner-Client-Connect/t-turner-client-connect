@@ -1,4 +1,5 @@
 import Papa from "papaparse";
+import { OTHER_PAY, type OtherPayKind } from "./queue";
 
 /**
  * ADP RUN "Time Sheet Import" file (RUN Powered by ADP®, Time Sheet Import guide GTSG-V0418A,
@@ -30,9 +31,18 @@ export const ADP_FREQUENCY: Record<string, string> = { WEEKLY: "W", BIWEEKLY: "B
 export const ADP_FREQUENCY_LABEL: Record<string, string> = { W: "Weekly", B: "Biweekly", S: "Semimonthly", M: "Monthly", Q: "Quarterly" };
 export const RATE_CODES = ["BASE", "RATE_2", "RATE_3", "RATE_4", "RATE_5", "HRLY4SLRY1"] as const;
 
-/** What Client Connect sends today (from the hours entry) and the earnings code each uses. */
-export const EARNING_KINDS = { REGULAR: "Regular hours", OVERTIME: "Overtime hours" } as const;
-export type EarningKind = keyof typeof EARNING_KINDS;
+/**
+ * Every kind of pay entered once in Client Connect, and whether it goes in the file's Pay Hours or
+ * Dollars column. Each company maps the kinds it uses to its own ADP earnings codes; a kind with an
+ * amount but no code is reported as "can't transfer" and blocks the file.
+ */
+export const EARNING_KINDS = {
+  REGULAR: { label: "Regular hours", unit: "HOURS" },
+  OVERTIME: { label: "Overtime hours", unit: "HOURS" },
+  ...Object.fromEntries(Object.entries(OTHER_PAY).map(([k, v]) => [k, { label: v.unit === "HOURS" ? `${v.label} hours` : v.label, unit: v.unit }])),
+} as Record<"REGULAR" | "OVERTIME" | OtherPayKind, { label: string; unit: "HOURS" | "DOLLARS" }>;
+export type EarningKind = "REGULAR" | "OVERTIME" | OtherPayKind;
+export const EARNING_KIND_ORDER = Object.keys(EARNING_KINDS) as EarningKind[];
 
 /** Payroll items the Time Sheet Import doesn't carry: they stay in RUN, entered there as today. */
 export const NOT_IN_IMPORT = [
@@ -166,7 +176,7 @@ export function parseEarningsReport(text: string): { earnings: ReportEarning[]; 
 
 // --- The file -------------------------------------------------------------------------------------
 
-export type HoursEntry = { name: string; regularHours: number; overtimeHours: number };
+export type HoursEntry = { name: string; regularHours: number; overtimeHours: number; pay?: Partial<Record<OtherPayKind, number>> };
 export type EmployeeMap = { name: string; adpEmployeeId: string; active: boolean; departmentCode: string | null; rateCode: string };
 export type BuildInput = {
   clientId: string;
@@ -184,13 +194,24 @@ export type BuildInput = {
   employeeClientIds: string[]; // clientId of every mapping row used (cross-client guard)
   earnings: Partial<Record<EarningKind, string>>;
 };
-export type BuildResult = { ok: true; csv: string; rows: number; employees: number; hoursHundredths: number; lines: { name: string; adpEmployeeId: string; code: string; hours: string }[] } | { ok: false; problems: string[] };
+export type BuildLine = { name: string; adpEmployeeId: string; kind: EarningKind; code: string; hours: string; dollars: string };
+export type BuildResult =
+  | { ok: true; csv: string; rows: number; employees: number; hoursHundredths: number; dollarsCents: number; lines: BuildLine[] }
+  | { ok: false; problems: string[]; cannotTransfer: string[] };
 
 const hundredths = (n: number) => Math.round(n * 100);
+
+/** Each kind of pay an employee has this period, in hundredths (hours or cents). */
+function amountsOf(h: HoursEntry): [EarningKind, number][] {
+  const out: [EarningKind, number][] = [["REGULAR", hundredths(h.regularHours)], ["OVERTIME", hundredths(h.overtimeHours)]];
+  for (const k of Object.keys(OTHER_PAY) as OtherPayKind[]) out.push([k, hundredths(h.pay?.[k] ?? 0)]);
+  return out.filter(([, n]) => n !== 0);
+}
 
 /** Builds the CSV for one company and one pay period, or explains exactly what blocks it. */
 export function buildAdpCsv(input: BuildInput): BuildResult {
   const problems: string[] = [];
+  const cannotTransfer: string[] = [];
   if (input.setupClientId !== input.clientId || input.employeeClientIds.some((c) => c !== input.clientId)) problems.push("The ADP setup or an employee mapping belongs to a different business. Nothing was built.");
   const company = normalizeCompanyCode(input.companyCode);
   if (!COMPANY_CODE.test(company)) problems.push("The ADP company code is missing or not valid (letters and numbers, 2–10 characters).");
@@ -201,19 +222,14 @@ export function buildAdpCsv(input: BuildInput): BuildResult {
   const titles = input.identifierType === "TIME_CLOCK_ID" ? TIME_CLOCK_TITLES : EMPLOYEE_ID_TITLES;
   if (input.templateTitles.length !== 11 || !titles.every((t, i) => sameTitle(input.templateTitles[i] ?? "", t))) problems.push("This company's ADP template hasn't been checked yet (or doesn't match ADP's layout). Upload it in the ADP setup.");
   if (!/^##GENERIC##\s*V\d+(\.\d+)?$/i.test(input.templateVersion)) problems.push("The template's version row is missing.");
-  for (const kind of ["REGULAR", "OVERTIME"] as const) {
-    const code = input.earnings[kind];
-    const used = input.hours.some((h) => (kind === "REGULAR" ? h.regularHours : h.overtimeHours) > 0);
-    if (used && (!code || !EARNINGS_CODE.test(code))) problems.push(`Choose the ADP earnings code for ${EARNING_KINDS[kind].toLowerCase()} in the ADP setup.`);
-  }
   const byName = new Map(input.employees.map((e) => [nameKey(e.name), e]));
   const usedIds = new Map<string, string>();
-  const lines: { name: string; adpEmployeeId: string; code: string; hours: string; dept: string; rate: string }[] = [];
-  let total = 0;
+  const lines: (BuildLine & { dept: string; rate: string })[] = [];
+  let hoursTotal = 0;
+  let dollarsTotal = 0;
   for (const h of input.hours) {
-    const reg = hundredths(h.regularHours);
-    const ot = hundredths(h.overtimeHours);
-    if (!reg && !ot) continue;
+    const amounts = amountsOf(h);
+    if (!amounts.length) continue;
     const m = byName.get(nameKey(h.name));
     if (!m) { problems.push(`“${h.name}” isn't matched to an ADP employee ID. Match them in the ADP setup.`); continue; }
     if (!m.active) { problems.push(`“${h.name}” (ADP ${m.adpEmployeeId}) is marked inactive. RUN only imports active employees.`); continue; }
@@ -223,19 +239,24 @@ export function buildAdpCsv(input: BuildInput): BuildResult {
     const other = usedIds.get(m.adpEmployeeId);
     if (other) { problems.push(`“${h.name}” and “${other}” both point to ADP employee ${m.adpEmployeeId}.`); continue; }
     usedIds.set(m.adpEmployeeId, h.name);
-    for (const [kind, n] of [["REGULAR", reg], ["OVERTIME", ot]] as const) {
-      if (!n) continue;
-      if (n < 0 || n > 99_999_999_999) { problems.push(`“${h.name}” has hours out of range.`); continue; }
-      total += n;
-      lines.push({ name: h.name, adpEmployeeId: m.adpEmployeeId, code: input.earnings[kind] ?? "", hours: money(n), dept: m.departmentCode ?? "", rate: m.rateCode });
+    for (const [kind, n] of amounts) {
+      const def = EARNING_KINDS[kind];
+      const code = input.earnings[kind];
+      if (!code || !EARNINGS_CODE.test(code)) {
+        cannotTransfer.push(`${def.label} for “${h.name}” (${def.unit === "HOURS" ? `${money(n)} hrs` : `$${money(n)}`}): this company has no ADP earnings code chosen for ${def.label.toLowerCase()}. Choose one in the ADP setup if its Earnings Codes Report has it; otherwise enter it in RUN.`);
+        continue;
+      }
+      if (n < 0 || n > 99_999_999_999) { problems.push(`${def.label} for “${h.name}” is out of range.`); continue; }
+      if (def.unit === "HOURS") hoursTotal += n; else dollarsTotal += n;
+      lines.push({ name: h.name, adpEmployeeId: m.adpEmployeeId, kind, code, hours: def.unit === "HOURS" ? money(n) : "", dollars: def.unit === "DOLLARS" ? money(n) : "", dept: m.departmentCode ?? "", rate: m.rateCode });
     }
   }
-  if (!lines.length && !problems.length) problems.push("There are no hours to send. (If nothing changed, RUN's standard hours apply and no file is needed.)");
-  if (problems.length) return { ok: false, problems: [...new Set(problems)] };
+  if (!lines.length && !problems.length && !cannotTransfer.length) problems.push("There are no hours or pay to send. (If nothing changed, RUN's standard hours apply and no file is needed.)");
+  if (problems.length || cannotTransfer.length) return { ok: false, problems: [...new Set([...problems, ...cannotTransfer.map((c) => `Can't transfer — ${c}`)])], cannotTransfer };
   const head = [[input.templateVersion], input.templateTitles];
-  const body = lines.map((l) => [company, letter, mmddyyyy(input.periodStart), mmddyyyy(input.periodEnd), l.adpEmployeeId, l.code, l.hours, "", "0", l.dept, l.rate]);
+  const body = lines.map((l) => [company, letter, mmddyyyy(input.periodStart), mmddyyyy(input.periodEnd), l.adpEmployeeId, l.code, l.hours, l.dollars, "0", l.dept, l.rate]);
   const csv = Papa.unparse([...head, ...body], { newline: "\r\n", quotes: false }) + "\r\n";
-  return { ok: true, csv, rows: body.length, employees: usedIds.size, hoursHundredths: total, lines: lines.map(({ name, adpEmployeeId, code, hours }) => ({ name, adpEmployeeId, code, hours })) };
+  return { ok: true, csv, rows: body.length, employees: usedIds.size, hoursHundredths: hoursTotal, dollarsCents: dollarsTotal, lines: lines.map(({ name, adpEmployeeId, kind, code, hours, dollars }) => ({ name, adpEmployeeId, kind, code, hours, dollars })) };
 }
 
 /** Re-reads a built file and checks every rule again (what RUN checks on import). */
@@ -251,7 +272,9 @@ export function verifyAdpCsv(csv: string, expect: { companyCode: string; frequen
     if (r[1] !== expect.frequency) problems.push(`${at}: wrong pay frequency.`);
     if (r[2] !== mmddyyyy(expect.periodStart) || r[3] !== mmddyyyy(expect.periodEnd)) problems.push(`${at}: wrong pay period.`);
     if (!known.has(r[4])) problems.push(`${at}: employee ${r[4]} isn't one of this company's mapped employees.`);
-    if (!/^\d{1,9}\.\d{2}$/.test(r[6]) && r[6] !== "") problems.push(`${at}: Pay Hours must have two decimals.`);
+    const amount = /^\d{1,9}\.\d{2}$/;
+    if (!(amount.test(r[6]) || r[6] === "") || !(amount.test(r[7]) || r[7] === "")) problems.push(`${at}: Pay Hours and Dollars must have two decimals.`);
+    if ((r[6] === "") === (r[7] === "")) problems.push(`${at}: each row carries either Pay Hours or Dollars.`);
     if (!/^[0-9]$/.test(r[8])) problems.push(`${at}: Separate Check must be 0–9.`);
     if (!(RATE_CODES as readonly string[]).includes(r[10])) problems.push(`${at}: invalid rate code.`);
   }

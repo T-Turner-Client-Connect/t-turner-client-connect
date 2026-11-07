@@ -10,7 +10,7 @@ import {
 import { requirePayrollTaxPage } from "@/lib/payroll-taxes/access";
 import { adpSetupPage } from "@/lib/services/adp-run";
 import { ForbiddenError } from "@/lib/auth/actor";
-import { ADP_FREQUENCY, ADP_FREQUENCY_LABEL, NOT_IN_IMPORT, RATE_CODES } from "@/lib/payroll/adp-run-csv";
+import { ADP_FREQUENCY, ADP_FREQUENCY_LABEL, EARNING_KINDS, EARNING_KIND_ORDER, NOT_IN_IMPORT, RATE_CODES } from "@/lib/payroll/adp-run-csv";
 
 export const metadata = { title: "ADP RUN import setup" };
 
@@ -105,7 +105,7 @@ export default async function AdpSetupPage({ params }: { params: Promise<{ clien
             )}
           </Card>
 
-          <Card title="5–6. RUN reports">
+          <Card title="5–6. RUN reports and earnings codes">
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <p className="text-sm font-semibold text-navy-900">Employee Codes Report</p>
@@ -120,14 +120,14 @@ export default async function AdpSetupPage({ params }: { params: Promise<{ clien
             </div>
             <ActionForm action={earningsCodesAction.bind(null, clientId)} className="mt-4 grid gap-3 sm:grid-cols-3">
               <fieldset disabled={ro} className="contents">
-                {(["regular", "overtime"] as const).map((k) => (
-                  <Field key={k} label={k === "regular" ? "Code for regular hours" : "Code for overtime hours"}>
+                {EARNING_KIND_ORDER.map((k) => (
+                  <Field key={k} label={`${EARNING_KINDS[k].label} (${EARNING_KINDS[k].unit === "HOURS" ? "hours" : "dollars"})`}>
                     {s.earningsCatalog.length ? (
-                      <select name={k} defaultValue={(k === "regular" ? s.regularEarningsCode : s.overtimeEarningsCode) ?? ""} className={input}>
-                        <option value="">{k === "regular" ? "Choose…" : "None"}</option>
+                      <select name={`code_${k}`} defaultValue={s.earningsMap[k] ?? ""} className={input} data-testid={`code-${k}`}>
+                        <option value="">{k === "REGULAR" ? "Choose…" : "Not used / can't transfer"}</option>
                         {s.earningsCatalog.map((e) => <option key={e.code} value={e.code}>{e.code}{e.description ? ` — ${e.description}` : ""}</option>)}
                       </select>
-                    ) : <input name={k} defaultValue={(k === "regular" ? s.regularEarningsCode : s.overtimeEarningsCode) ?? ""} className={input} placeholder="Read the report first" />}
+                    ) : <input name={`code_${k}`} defaultValue={s.earningsMap[k] ?? ""} className={input} placeholder="Read the report first" />}
                   </Field>
                 ))}
                 <label className="flex items-center gap-2 pt-6 text-sm"><input type="checkbox" name="usesDepartments" defaultChecked={s.usesDepartments} className="size-4 accent-[#0a1a44]" /> Company uses departments</label>

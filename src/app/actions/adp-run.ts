@@ -7,6 +7,7 @@ import {
   applyIdentifierList, confirmTimeSheetFeature, createTestFile, generateCycleFile, importEarningsReport, importEmployeeReport, markFileImported, previewIdentifierList, recordTestVerified,
   saveAdpIdentifiers, saveEmployeeMap, setAdpPayFrequency, setEarningsCodes, uploadAdpTemplate,
 } from "@/lib/services/adp-run";
+import { EARNING_KIND_ORDER } from "@/lib/payroll/adp-run-csv";
 
 /** ADP RUN Time Sheet Import actions. The services re-check Manage access and the client scope. */
 
@@ -69,14 +70,14 @@ export async function earningsReportAction(clientId: string, _p: ActionState, fd
   return run(async () => {
     const n = await importEarningsReport(actor, clientId, await bytesOf(fd));
     refresh();
-    return `Earnings Codes Report read: ${n} codes. Confirm the codes for regular and overtime hours.`;
+    return `Earnings Codes Report read: ${n} codes. Choose this company's code for each kind of pay it uses.`;
   });
 }
 
 export async function earningsCodesAction(clientId: string, _p: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    await setEarningsCodes(actor, clientId, { regular: str(fd, "regular"), overtime: str(fd, "overtime"), usesDepartments: str(fd, "usesDepartments") === "on" });
+    await setEarningsCodes(actor, clientId, { codes: Object.fromEntries(EARNING_KIND_ORDER.map((k) => [k, str(fd, `code_${k}`)])), usesDepartments: str(fd, "usesDepartments") === "on" });
     refresh();
     return "Earnings codes saved.";
   });
@@ -118,7 +119,7 @@ export async function cycleFileAction(cycleId: string, _p: ActionState, fd: Form
     return {
       ok: r.reused
         ? `Same hours as the file made ${e.createdAt.toLocaleDateString("en-US")}: you'll get that same file.${e.importedAt ? " It was already imported into RUN — don't import it twice." : ""}`
-        : `ADP CSV ready: ${e.employees} employee${e.employees === 1 ? "" : "s"}, ${e.rows} row${e.rows === 1 ? "" : "s"}, ${(e.hoursHundredths / 100).toFixed(2)} hours.`,
+        : `ADP CSV ready: ${e.employees} employee${e.employees === 1 ? "" : "s"}, ${e.rows} row${e.rows === 1 ? "" : "s"}, ${(e.hoursHundredths / 100).toFixed(2)} hours${e.dollarsCents ? ` and $${(e.dollarsCents / 100).toFixed(2)} in other pay` : ""}.`,
       next: { href: `/api/payroll-taxes/adp-file/${e.id}`, label: "Download ADP CSV" },
     };
   });

@@ -5893,8 +5893,9 @@ model AdpRunSetup {
   departmentReportAt       DateTime?
   // [{ code, description }] from the Earnings Codes Report.
   earningsCatalog          Json                @default("[]")
-  regularEarningsCode      String?
-  overtimeEarningsCode     String?
+  // { REGULAR: "REG", OVERTIME: "OT", BONUS: "BON", CASH_TIPS: … } — this company's ADP earnings
+  // code for each kind of pay entered in Client Connect. A kind with no code can't transfer.
+  earningsMap              Json                @default("{}")
   // A test file (fictional hours) was imported in RUN without errors, then deleted there
   // without approving. Until then only test files can be downloaded.
   testVerifiedAt           DateTime?
@@ -5947,6 +5948,7 @@ model AdpRunExport {
   rows             Int
   employees        Int
   hoursHundredths  Int
+  dollarsCents     Int         @default(0)
   payFrequency     String
   periodStart      DateTime    @db.Date
   periodEnd        DateTime    @db.Date

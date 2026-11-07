@@ -66,7 +66,7 @@ async function fullSetup(mom: Awaited<ReturnType<typeof setup>>["mom"], clientId
   await uploadAdpTemplate(mom, clientId, enc(TEMPLATE));
   await importEmployeeReport(mom, clientId, enc(EMPLOYEE_REPORT));
   await importEarningsReport(mom, clientId, enc(EARNINGS_REPORT));
-  await setEarningsCodes(mom, clientId, { regular: "REG", overtime: "OT", usesDepartments: false });
+  await setEarningsCodes(mom, clientId, { codes: { REGULAR: "REG", OVERTIME: "OT" }, usesDepartments: false });
 }
 
 const firstCycle = (clientId: string) => prisma.payrollCycle.findFirstOrThrow({ where: { clientId }, orderBy: { payDate: "asc" } });
@@ -217,7 +217,7 @@ describe("one-time setup, Download ADP CSV and safeguards (fictional company)", 
     await confirmTimeSheetFeature(mom, auto.id, true);
     await uploadAdpTemplate(mom, auto.id, enc(TEMPLATE));
     await importEarningsReport(mom, auto.id, enc(EARNINGS_REPORT));
-    await setEarningsCodes(mom, auto.id, { regular: "REG", overtime: "OT", usesDepartments: false });
+    await setEarningsCodes(mom, auto.id, { codes: { REGULAR: "REG", OVERTIME: "OT" }, usesDepartments: false });
     await saveEmployeeMap(mom, auto.id, null, { name: "Eli Fictional", adpEmployeeId: "7", departmentCode: "", rateCode: "BASE", active: true });
     await prisma.adpRunSetup.update({ where: { clientId: auto.id }, data: { testVerifiedAt: new Date(), testVerifiedNote: "fictional" } });
     const autoCycle = await firstCycle(auto.id);
@@ -262,5 +262,74 @@ describe("one-time setup, Download ADP CSV and safeguards (fictional company)", 
     const r = await applyIdentifierList(mom, list);
     expect(r.saved).toBe(2);
     expect((await adpSetupPage(mom, auto.id)).setup.companyCodeHint).toBe("…AUT");
+  });
+});
+
+describe("other pay: vacation, sick, holiday, bonus, commission, tips (fictional)", () => {
+  it("pure: hours kinds go in Pay Hours, amounts in Dollars, each with the company's own code; unmapped kinds can't transfer", () => {
+    const base: BuildInput = {
+      clientId: "c1", setupClientId: "c1", companyCode: "ZZFIC", identifierType: "EMPLOYEE_ID", templateTitles: [...EMPLOYEE_ID_TITLES], templateVersion: FILE_IDENTIFIER, frequency: "WEEKLY", setupFrequency: "W",
+      periodStart: "2026-11-02", periodEnd: "2026-11-08",
+      hours: [{ name: "Ava Fictional", regularHours: 32, overtimeHours: 0, pay: { VACATION: 8, BONUS: 250, CHARGED_TIPS: 112.4, COMMISSION: 75.5 } }],
+      employees: [{ name: "Ava Fictional", adpEmployeeId: "101", active: true, departmentCode: null, rateCode: "BASE" }],
+      employeeClientIds: ["c1"],
+      earnings: { REGULAR: "REG", VACATION: "VAC", BONUS: "BON", CHARGED_TIPS: "CTIPS", COMMISSION: "COM" },
+    };
+    const r = buildAdpCsv(base);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(rows(r.csv).slice(2).map((x) => [x[4], x[5], x[6], x[7]])).toEqual([
+      ["101", "REG", "32.00", ""],
+      ["101", "VAC", "8.00", ""],
+      ["101", "BON", "", "250.00"],
+      ["101", "COM", "", "75.50"],
+      ["101", "CTIPS", "", "112.40"],
+    ]);
+    expect(r).toMatchObject({ hoursHundredths: 4000, dollarsCents: 43790 });
+    expect(verifyAdpCsv(r.csv, { companyCode: "ZZFIC", frequency: "W", periodStart: "2026-11-02", periodEnd: "2026-11-08", employeeIds: ["101"] })).toEqual([]);
+    // Cash tips with no code for this company: reported, and nothing is built.
+    const bad = buildAdpCsv({ ...base, hours: [{ ...base.hours[0], pay: { ...base.hours[0].pay, CASH_TIPS: 40 } }] });
+    expect(bad.ok).toBe(false);
+    if (bad.ok) return;
+    expect(bad.cannotTransfer).toHaveLength(1);
+    expect(bad.cannotTransfer[0]).toMatch(/Cash tips for “Ava Fictional” \(\$40\.00\): this company has no ADP earnings code/);
+  });
+
+  it("entered once with the hours, mapped once per company, checked before download", async () => {
+    const { mom, bakery } = await setup();
+    await fullSetup(mom, bakery.id);
+    await prisma.adpRunSetup.update({ where: { clientId: bakery.id }, data: { testVerifiedAt: new Date(), testVerifiedNote: "fictional" } });
+    // Out-of-range pay is refused at entry.
+    const cycle = await firstCycle(bakery.id);
+    await expect(recordHoursByStaff(mom, cycle.id, { employees: [{ name: "Ava Fictional", regularHours: 10, pay: { VACATION: 500 } }] })).rejects.toThrow(/Vacation must be a number of hours/);
+    await expect(recordHoursByStaff(mom, cycle.id, { employees: [{ name: "Ava Fictional", regularHours: 10, pay: { BONUS: -5 } }] })).rejects.toThrow(/Bonus must be an amount/);
+    await recordHoursByStaff(mom, cycle.id, { employees: [{ name: "Ava Fictional", regularHours: 30, overtimeHours: 0, pay: { HOLIDAY: "8", BONUS: "$1,000.00", CASH_TIPS: "55" } }, { name: "Ben Fictional", regularHours: 40, overtimeHours: 1 }] });
+    // Holiday and cash tips have no code yet: the check lists them, and download is refused.
+    let st = await cycleAdpStatus(mom, cycle.id);
+    expect(st.check?.ok).toBe(false);
+    expect(st.check?.cannotTransfer.join(" ")).toMatch(/Holiday hours for “Ava Fictional”.*Cash tips for “Ava Fictional”/);
+    expect(st.unmapped).toEqual(expect.arrayContaining(["Holiday hours", "Cash tips", "Bonus"]));
+    await expect(generateCycleFile(mom, cycle.id)).rejects.toThrow(/Can't transfer/);
+    // The codes must exist in this company's Earnings Codes Report.
+    await expect(setEarningsCodes(mom, bakery.id, { codes: { REGULAR: "REG", HOLIDAY: "HOL" }, usesDepartments: false })).rejects.toThrow(/HOL isn't in this company's Earnings Codes Report/);
+    await importEarningsReport(mom, bakery.id, enc("Code,Description\r\nREG,Regular\r\nOT,Overtime\r\nHOL,Holiday\r\nBONUS,Bonus\r\nCTIP,Cash Tips\r\n"));
+    expect((await adpSetupPage(mom, bakery.id)).setup.earningsMap).toMatchObject({ REGULAR: "REG", OVERTIME: "OT" }); // kept
+    await setEarningsCodes(mom, bakery.id, { codes: { REGULAR: "REG", OVERTIME: "OT", HOLIDAY: "HOL", BONUS: "BONUS", CASH_TIPS: "CTIP" }, usesDepartments: false });
+    st = await cycleAdpStatus(mom, cycle.id);
+    expect(st.check?.ok).toBe(true);
+    expect(st.check?.lines.map((l) => [l.name, l.label, l.code, l.amount])).toEqual([
+      ["Ava Fictional", "Regular hours", "REG", "30.00 hrs"],
+      ["Ava Fictional", "Holiday hours", "HOL", "8.00 hrs"],
+      ["Ava Fictional", "Bonus", "BONUS", "$1000.00"],
+      ["Ava Fictional", "Cash tips", "CTIP", "$55.00"],
+      ["Ben Fictional", "Regular hours", "REG", "40.00 hrs"],
+      ["Ben Fictional", "Overtime hours", "OT", "1.00 hrs"],
+    ]);
+    const r = await generateCycleFile(mom, cycle.id);
+    expect(r.export).toMatchObject({ rows: 6, employees: 2, hoursHundredths: 7900, dollarsCents: 105500 });
+    const body = rows((await readAdpFile(mom, r.export.id)).csv).slice(2);
+    expect(body.map((x) => [x[4], x[5], x[6], x[7]])).toEqual([
+      ["101", "REG", "30.00", ""], ["101", "HOL", "8.00", ""], ["101", "BONUS", "", "1000.00"], ["101", "CTIP", "", "55.00"], ["102", "REG", "40.00", ""], ["102", "OT", "1.00", ""],
+    ]);
   });
 });

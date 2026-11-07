@@ -11,7 +11,7 @@ import { chicagoLocalToUtc } from "@/lib/tz";
 import { isPayrollSystem } from "@/lib/payroll/fields";
 import { differenceOf, type Amounts, type PayDateTotals } from "@/lib/payroll/register";
 import { addDays, DEADLINE_TIME, DEFAULT_OFFSETS, isFrequency, planCycles, scheduleProblems, type Frequency, type ScheduleRule } from "@/lib/payroll/schedule";
-import { CHANGE_FLAGS, DEFAULT_PLAN, normalizePlan, toQueueRow, sortQueue, type ChangeFlag, type CycleFacts, type HoursSubmission, type QueueRow, type ReminderStep } from "@/lib/payroll/queue";
+import { CHANGE_FLAGS, OTHER_PAY, type OtherPayKind, DEFAULT_PLAN, normalizePlan, toQueueRow, sortQueue, type ChangeFlag, type CycleFacts, type HoursSubmission, type QueueRow, type ReminderStep } from "@/lib/payroll/queue";
 import { assertPayrollTaxManage, assertPayrollTaxView, cycleScope, payrollTaxAccess, scheduleScope, type PayrollTaxAccess } from "@/lib/payroll-taxes/access";
 import { ValidationError } from "./clients";
 import { canUseLedger, todayCentral, usd, ymdOf } from "./ledger";
@@ -408,6 +408,20 @@ export async function setCycleAssignee(actor: Actor, cycleId: string, staffId: s
 
 const MAX_EMPLOYEES = 200;
 
+/** Other pay (vacation hours, bonus, tips…): hours 0–200, amounts $0–$1,000,000, two decimals. */
+function otherPay(raw: unknown): Partial<Record<OtherPayKind, number>> {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const out: Partial<Record<OtherPayKind, number>> = {};
+  for (const [k, def] of Object.entries(OTHER_PAY) as [OtherPayKind, (typeof OTHER_PAY)[OtherPayKind]][]) {
+    const v = r[k];
+    const n = typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v.replace(/[$,]/g, "")) : 0;
+    const max = def.unit === "HOURS" ? 200 : 1_000_000;
+    if (!Number.isFinite(n) || n < 0 || n > max) throw new ValidationError(`${def.label} must be ${def.unit === "HOURS" ? "a number of hours from 0 to 200" : "an amount from $0 to $1,000,000"}.`);
+    if (n) out[k] = Math.round(n * 100) / 100;
+  }
+  return out;
+}
+
 /** Cleans a submitted hours form; refuses anything that isn't hours, notes or the change flags. */
 export function parseHours(raw: unknown): HoursSubmission {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -421,8 +435,11 @@ export function parseHours(raw: unknown): HoursSubmission {
   };
   const employees = list
     .map((e) => (e && typeof e === "object" ? (e as Record<string, unknown>) : {}))
-    .map((e) => ({ name: String(e.name ?? "").trim().slice(0, 120), regularHours: num(e.regularHours, "Regular hours"), overtimeHours: num(e.overtimeHours, "Overtime hours"), notes: String(e.notes ?? "").trim().slice(0, 300) }))
-    .filter((e) => e.name || e.regularHours || e.overtimeHours || e.notes);
+    .map((e) => {
+      const pay = otherPay(e.pay);
+      return { name: String(e.name ?? "").trim().slice(0, 120), regularHours: num(e.regularHours, "Regular hours"), overtimeHours: num(e.overtimeHours, "Overtime hours"), notes: String(e.notes ?? "").trim().slice(0, 300), ...(Object.keys(pay).length ? { pay } : {}) };
+    })
+    .filter((e) => e.name || e.regularHours || e.overtimeHours || e.notes || e.pay);
   if (employees.some((e) => !e.name)) throw new ValidationError("Give each row an employee name.");
   const flags = (Array.isArray(r.flags) ? r.flags : []).filter((f): f is ChangeFlag => typeof f === "string" && f in CHANGE_FLAGS);
   const notes = String(r.notes ?? "").trim().slice(0, 2000);

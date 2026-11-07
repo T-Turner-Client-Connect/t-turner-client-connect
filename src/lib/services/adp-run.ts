@@ -8,8 +8,8 @@ import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { assertPayrollTaxManage, assertPayrollTaxView, clientVisible, cycleScope } from "@/lib/payroll-taxes/access";
 import type { HoursSubmission } from "@/lib/payroll/queue";
 import {
-  ADP_FREQUENCY, ADP_FREQUENCY_LABEL, RATE_CODES, adpFileName, branchCompanyCode, buildAdpCsv, checkTemplate, isCompanyCode, nameKey, normalizeCompanyCode, parseEarningsReport,
-  parseEmployeeReport, verifyAdpCsv, type IdentifierType, type ReportEarning,
+  ADP_FREQUENCY, ADP_FREQUENCY_LABEL, EARNING_KINDS, EARNING_KIND_ORDER, RATE_CODES, adpFileName, branchCompanyCode, buildAdpCsv, checkTemplate, isCompanyCode, nameKey, normalizeCompanyCode, parseEarningsReport,
+  parseEmployeeReport, verifyAdpCsv, type EarningKind, type IdentifierType, type ReportEarning,
 } from "@/lib/payroll/adp-run-csv";
 import { ValidationError } from "./clients";
 
@@ -50,6 +50,8 @@ export function companyCodeOf(setup: { companyCodeEnc: string | null }) {
 }
 
 type SetupRow = Prisma.AdpRunSetupGetPayload<{ include: { employees: true } }>;
+export type EarningsMap = Partial<Record<EarningKind, string>>;
+export const earningsMapOf = (s: { earningsMap: Prisma.JsonValue }): EarningsMap => ((s.earningsMap && typeof s.earningsMap === "object" && !Array.isArray(s.earningsMap) ? s.earningsMap : {}) as EarningsMap);
 
 /** The setup checklist shown in the Payroll Work Center (each step says how to do it in RUN). */
 export function setupChecklist(s: SetupRow, scheduleFrequency: string | null) {
@@ -61,7 +63,7 @@ export function setupChecklist(s: SetupRow, scheduleFrequency: string | null) {
     { key: "frequency", label: "Pay frequency matches", done: !!letter && s.payFrequency === letter, how: `This client's pay schedule is ${letter ? ADP_FREQUENCY_LABEL[letter] : "not set"}; RUN must use the same pay frequency. One file covers one frequency.` },
     { key: "template", label: "Company's Time Sheet Import template checked", done: !!s.templateCheckedAt, how: "In RUN: Help & Support > Payroll & HR > Time Sheet Import → open the Employee ID template, save it as .csv and upload it here." },
     { key: "employees", label: "Employees matched to RUN employee IDs", done: active.length > 0, how: "In RUN: Reports → Employee Codes Report → Export to Excel, save as .csv and upload. Then check each name matches how hours are entered." },
-    { key: "earnings", label: "Earnings codes chosen", done: !!s.regularEarningsCode, how: "In RUN: Reports → Earnings Codes Report → Export to Excel, save as .csv and upload. Then choose the codes for regular and overtime hours (usually REG and OT)." },
+    { key: "earnings", label: "Earnings codes chosen", done: !!earningsMapOf(s).REGULAR, how: "In RUN: Reports → Earnings Codes Report → Export to Excel, save as .csv and upload. Then choose this company's code for each kind of pay it uses: regular and overtime hours, vacation, sick, holiday, bonus, commission, tips. Leave a kind blank if the company doesn't use it — it will then be reported as “can't transfer” if it's ever entered." },
     { key: "departments", label: "Departments (only if the company uses them)", done: !s.usesDepartments || active.every((e) => !!e.departmentCode), how: "In RUN: Reports → Department Numbers Report. Enter each employee's department number below." },
     { key: "test", label: "Test import verified in RUN", done: !!s.testVerifiedAt, how: "Download the test file (fictional hours), import it in RUN (Home > Time Sheet Import), confirm there are no errors on Pay Data Approval, then click “Delete this Pay Data File” — never Approve — and record it here." },
   ];
@@ -76,7 +78,7 @@ export async function adpSetupPage(actor: Actor, clientId: string) {
   return {
     canManage: access.level === "MANAGE",
     client: { id: client.id, name, frequency: client.payrollSchedule?.frequency ?? null },
-    setup: { ...setup, companyCodeEnc: undefined, acClientIdEnc: undefined, acBranchEnc: undefined, acCodeEnc: undefined, earningsCatalog: (setup.earningsCatalog as ReportEarning[]) ?? [] },
+    setup: { ...setup, companyCodeEnc: undefined, acClientIdEnc: undefined, acBranchEnc: undefined, acCodeEnc: undefined, earningsCatalog: (setup.earningsCatalog as ReportEarning[]) ?? [], earningsMap: earningsMapOf(setup) },
     checklist,
     ready: checklist.every((c) => c.done),
     setupComplete: checklist.filter((c) => c.key !== "test").every((c) => c.done),
@@ -199,9 +201,8 @@ export async function importEarningsReport(actor: Actor, clientId: string, bytes
     where: { id: setup.id },
     data: {
       earningsCatalog: earnings as unknown as Prisma.InputJsonValue, earningsReportAt: new Date(),
-      // Suggest the usual codes only when the company actually has them.
-      regularEarningsCode: setup.regularEarningsCode ?? (codes.has("REG") ? "REG" : null),
-      overtimeEarningsCode: setup.overtimeEarningsCode ?? (codes.has("OT") ? "OT" : null),
+      // Suggest the usual codes only when the company actually has them; never overwrite a choice.
+      earningsMap: { ...(codes.has("REG") ? { REGULAR: "REG" } : {}), ...(codes.has("OT") ? { OVERTIME: "OT" } : {}), ...earningsMapOf(setup) } as Prisma.InputJsonValue,
       updatedById: actor.id,
     },
   });
@@ -209,16 +210,26 @@ export async function importEarningsReport(actor: Actor, clientId: string, bytes
   return earnings.length;
 }
 
-export async function setEarningsCodes(actor: Actor, clientId: string, input: { regular: string; overtime: string; usesDepartments: boolean }) {
+export async function setEarningsCodes(actor: Actor, clientId: string, input: { codes: Partial<Record<EarningKind, string>>; usesDepartments: boolean }) {
   await scopeClient(actor, clientId, true);
   const setup = await setupOf(clientId);
   const catalog = new Set(((setup.earningsCatalog as ReportEarning[]) ?? []).map((e) => e.code));
-  const clean = (s: string) => s.trim().toUpperCase();
-  const regular = clean(input.regular), overtime = clean(input.overtime);
-  if (!regular) throw new ValidationError("Choose the earnings code for regular hours.");
-  for (const c of [regular, overtime].filter(Boolean)) if (catalog.size && !catalog.has(c)) throw new ValidationError(`${c} isn't in this company's Earnings Codes Report.`);
-  await prisma.adpRunSetup.update({ where: { id: setup.id }, data: { regularEarningsCode: regular, overtimeEarningsCode: overtime || null, usesDepartments: input.usesDepartments, departmentReportAt: input.usesDepartments ? setup.departmentReportAt ?? new Date() : null, updatedById: actor.id } });
-  await audit(prisma, { actorId: actor.id, action: "adp_run.earnings_codes_set", entityType: "AdpRunSetup", entityId: setup.id, clientId, details: { regular, overtime, usesDepartments: input.usesDepartments } });
+  const map: EarningsMap = {};
+  for (const kind of EARNING_KIND_ORDER) {
+    const code = (input.codes[kind] ?? "").trim().toUpperCase();
+    if (!code) continue;
+    if (!/^[A-Z0-9_\-]{1,10}$/.test(code)) throw new ValidationError(`${code} isn't a valid earnings code.`);
+    if (catalog.size && !catalog.has(code)) throw new ValidationError(`${code} isn't in this company's Earnings Codes Report.`);
+    map[kind] = code;
+  }
+  if (!map.REGULAR) throw new ValidationError("Choose the earnings code for regular hours.");
+  await prisma.adpRunSetup.update({ where: { id: setup.id }, data: { earningsMap: map as Prisma.InputJsonValue, usesDepartments: input.usesDepartments, departmentReportAt: input.usesDepartments ? setup.departmentReportAt ?? new Date() : null, updatedById: actor.id } });
+  await audit(prisma, { actorId: actor.id, action: "adp_run.earnings_codes_set", entityType: "AdpRunSetup", entityId: setup.id, clientId, details: { map, usesDepartments: input.usesDepartments } });
+}
+
+/** Kinds of pay this company can't send yet (no ADP earnings code chosen). */
+export function unmappedKinds(map: EarningsMap) {
+  return EARNING_KIND_ORDER.filter((k) => !map[k]).map((k) => EARNING_KINDS[k].label);
 }
 
 export type EmployeeEdit = { name: string; adpEmployeeId: string; departmentCode: string; rateCode: string; active: boolean };
@@ -251,9 +262,9 @@ export async function saveEmployeeMap(actor: Actor, clientId: string, id: string
 
 // --- Building files -------------------------------------------------------------------------------
 
-async function buildFor(clientId: string, period: { start: string; end: string }, hours: { name: string; regularHours: number; overtimeHours: number }[], scheduleFrequency: string) {
+async function buildFor(clientId: string, period: { start: string; end: string }, hours: HoursSubmission["employees"], scheduleFrequency: string) {
   const setup = await prisma.adpRunSetup.findUnique({ where: { clientId }, include: { employees: true } });
-  if (!setup || !setup.companyCodeEnc) return { setup, result: { ok: false as const, problems: ["Finish the ADP setup for this business first (Payroll schedule → ADP RUN import setup)."] } };
+  if (!setup || !setup.companyCodeEnc) return { setup, result: { ok: false as const, problems: ["Finish the ADP setup for this business first (Payroll schedule → ADP RUN import setup)."], cannotTransfer: [] as string[] } };
   const result = buildAdpCsv({
     clientId,
     setupClientId: setup.clientId,
@@ -268,16 +279,16 @@ async function buildFor(clientId: string, period: { start: string; end: string }
     hours,
     employees: setup.employees.map((e) => ({ name: e.name, adpEmployeeId: e.adpEmployeeId, active: e.active, departmentCode: e.departmentCode, rateCode: e.rateCode })),
     employeeClientIds: setup.employees.map((e) => e.clientId),
-    earnings: { REGULAR: setup.regularEarningsCode ?? undefined, OVERTIME: setup.overtimeEarningsCode ?? undefined },
+    earnings: earningsMapOf(setup),
   });
   if (result.ok) {
     if (setup.usesDepartments) {
       const used = new Set(result.lines.map((l) => l.adpEmployeeId));
       const missing = setup.employees.filter((e) => used.has(e.adpEmployeeId) && !e.departmentCode);
-      if (missing.length) return { setup, result: { ok: false as const, problems: missing.map((e) => `“${e.name}” needs a department number (this company uses departments).`) } };
+      if (missing.length) return { setup, result: { ok: false as const, problems: missing.map((e) => `“${e.name}” needs a department number (this company uses departments).`), cannotTransfer: [] as string[] } };
     }
     const again = verifyAdpCsv(result.csv, { companyCode: companyCodeOf(setup)!, frequency: ADP_FREQUENCY[scheduleFrequency], periodStart: period.start, periodEnd: period.end, employeeIds: setup.employees.filter((e) => e.active).map((e) => e.adpEmployeeId) });
-    if (again.length) return { setup, result: { ok: false as const, problems: again } };
+    if (again.length) return { setup, result: { ok: false as const, problems: again, cannotTransfer: [] as string[] } };
   }
   return { setup, result };
 }
@@ -289,14 +300,14 @@ export async function createTestFile(actor: Actor, clientId: string) {
   const cycle = await prisma.payrollCycle.findFirst({ where: { clientId, processedAt: null }, orderBy: { payDate: "asc" } });
   if (!cycle) throw new ValidationError("There's no open pay cycle to test with. Save the payroll schedule to create cycles.");
   const setup = await prisma.adpRunSetup.findUnique({ where: { clientId }, include: { employees: { where: { active: true } } } });
-  const fictional = (setup?.employees ?? []).map((e) => ({ name: e.name, regularHours: 1, overtimeHours: 0 }));
+  const fictional = (setup?.employees ?? []).map((e) => ({ name: e.name, regularHours: 1, overtimeHours: 0, notes: "" }));
   if (!fictional.length) throw new ValidationError("Match at least one employee first.");
   const period = { start: ymd(cycle.periodStart), end: ymd(cycle.periodEnd) };
   const { setup: s, result } = await buildFor(clientId, period, fictional, client.payrollSchedule.frequency);
   if (!result.ok) throw new ValidationError(result.problems.join(" "));
   const letter = ADP_FREQUENCY[client.payrollSchedule.frequency];
   const exp = await prisma.adpRunExport.create({
-    data: { setupId: s!.id, clientId, cycleId: null, isTest: true, fileName: adpFileName(name, letter, period.start, period.end, true), contentEnc: encryptSecret(result.csv), contentSha256: sha(result.csv), rows: result.rows, employees: result.employees, hoursHundredths: result.hoursHundredths, payFrequency: letter, periodStart: cycle.periodStart, periodEnd: cycle.periodEnd, createdById: actor.id },
+    data: { setupId: s!.id, clientId, cycleId: null, isTest: true, fileName: adpFileName(name, letter, period.start, period.end, true), contentEnc: encryptSecret(result.csv), contentSha256: sha(result.csv), rows: result.rows, employees: result.employees, hoursHundredths: result.hoursHundredths, dollarsCents: result.dollarsCents, payFrequency: letter, periodStart: cycle.periodStart, periodEnd: cycle.periodEnd, createdById: actor.id },
   });
   await audit(prisma, { actorId: actor.id, action: "adp_run.test_file_created", entityType: "AdpRunExport", entityId: exp.id, clientId, details: { rows: result.rows } });
   return exp;
@@ -321,7 +332,16 @@ export async function cycleAdpStatus(actor: Actor, cycleId: string) {
   const active = await prisma.adpRunExport.findFirst({ where: { clientId: cycle.clientId, cycleId, status: "ACTIVE", isTest: false }, orderBy: { createdAt: "desc" } });
   const checklist = setup ? setupChecklist(setup, cycle.schedule.frequency) : null;
   const hours = cycle.hoursSubmission as HoursSubmission | null;
-  return { clientId: cycle.clientId, setupReady: !!checklist && checklist.every((c) => c.done), missing: checklist ? checklist.filter((c) => !c.done).map((c) => c.label) : ["ADP setup not started"], hoursIn: !!cycle.hoursSubmittedAt, noChanges: !!hours?.noChanges, active, processed: !!cycle.processedAt };
+  const setupReady = !!checklist && checklist.every((c) => c.done);
+  // The transfer check: what would go into the file now, and anything that can't transfer.
+  let check: { ok: boolean; problems: string[]; cannotTransfer: string[]; lines: { name: string; label: string; code: string; amount: string }[] } | null = null;
+  if (setupReady && cycle.hoursSubmittedAt && hours && !hours.noChanges && !cycle.processedAt) {
+    const { result } = await buildFor(cycle.clientId, { start: ymd(cycle.periodStart), end: ymd(cycle.periodEnd) }, hours.employees, cycle.schedule.frequency);
+    check = result.ok
+      ? { ok: true, problems: [], cannotTransfer: [], lines: result.lines.map((l) => ({ name: l.name, label: EARNING_KINDS[l.kind].label, code: l.code, amount: l.hours ? `${l.hours} hrs` : `$${l.dollars}` })) }
+      : { ok: false, problems: result.problems.filter((p) => !p.startsWith("Can't transfer")), cannotTransfer: result.cannotTransfer, lines: [] };
+  }
+  return { clientId: cycle.clientId, setupReady, missing: checklist ? checklist.filter((c) => !c.done).map((c) => c.label) : ["ADP setup not started"], hoursIn: !!cycle.hoursSubmittedAt, noChanges: !!hours?.noChanges, active, processed: !!cycle.processedAt, check, unmapped: setup ? unmappedKinds(earningsMapOf(setup)) : [] };
 }
 
 /** "Download ADP CSV": builds (or reuses) this pay cycle's file. */
@@ -346,7 +366,7 @@ export async function generateCycleFile(actor: Actor, cycleId: string, replaceRe
   const name = cycle.client.businessName || cycle.client.displayName;
   const exp = await prisma.$transaction(async (tx) => {
     if (active) await tx.adpRunExport.update({ where: { id: active.id }, data: { status: "REPLACED", replacedAt: new Date(), replacedById: actor.id, replaceReason: replaceReason.trim().slice(0, 300) || "Hours changed before import" } });
-    return tx.adpRunExport.create({ data: { setupId: setup.id, clientId: cycle.clientId, cycleId, fileName: adpFileName(name, letter, period.start, period.end), contentEnc: encryptSecret(result.csv), contentSha256: digest, rows: result.rows, employees: result.employees, hoursHundredths: result.hoursHundredths, payFrequency: letter, periodStart: cycle.periodStart, periodEnd: cycle.periodEnd, createdById: actor.id } });
+    return tx.adpRunExport.create({ data: { setupId: setup.id, clientId: cycle.clientId, cycleId, fileName: adpFileName(name, letter, period.start, period.end), contentEnc: encryptSecret(result.csv), contentSha256: digest, rows: result.rows, employees: result.employees, hoursHundredths: result.hoursHundredths, dollarsCents: result.dollarsCents, payFrequency: letter, periodStart: cycle.periodStart, periodEnd: cycle.periodEnd, createdById: actor.id } });
   });
   await audit(prisma, { actorId: actor.id, action: "adp_run.file_created", entityType: "AdpRunExport", entityId: exp.id, clientId: cycle.clientId, details: { cycleId, rows: result.rows, replaced: active?.id ?? null } });
   return { export: exp, reused: false };
