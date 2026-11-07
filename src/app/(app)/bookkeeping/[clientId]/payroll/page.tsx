@@ -16,6 +16,7 @@ import { connectionStatus } from "@/lib/payroll/providers";
 import { NOTIFY_CHANNELS, PAYROLL_CONNECTIONS, PAYROLL_SYSTEMS } from "@/lib/payroll/fields";
 import { PayrollImport } from "@/components/payroll/payroll-import";
 import { dayOf, money, RunStatus } from "@/components/payroll/status";
+import { deliveryOf } from "@/lib/payroll/queue";
 
 export const metadata = { title: "Payroll" };
 
@@ -50,6 +51,9 @@ export default async function PayrollPage({ params }: { params: Promise<{ client
   const known = p.payrollPayDate?.toISOString().slice(0, 10) ?? null;
   const approverRows = await Promise.all(approvers.map(async (a) => ({ a, ch: await channelsFor(a, a.portalUser) })));
   const approvals = await prisma.payrollApproval.findMany({ where: { runId: { in: history.map((h) => h.run.id) }, decision: "APPROVED" }, select: { runId: true, round: true, versionId: true, approverName: true } });
+  // PAY-1: a waiting run whose approval email never reached the client shows as Not Sent / Failed.
+  const waitingRuns = history.map((h) => h.run).filter((r) => r.status === "AWAITING_APPROVAL");
+  const runNotices = waitingRuns.length ? await prisma.payrollNotice.findMany({ where: { OR: waitingRuns.map((r) => ({ runId: r.id, round: r.approvalRound })) }, select: { runId: true, channel: true, status: true, detail: true } }) : [];
   return (
     <>
       <PageHeader title="Payroll" subtitle={client.businessName || client.displayName} />
@@ -154,7 +158,7 @@ export default async function PayrollPage({ params }: { params: Promise<{ client
                 {history.map(({ run, version }) => (
                   <tr key={run.id} className="border-t border-navy-100">
                     <td className="py-2 pr-3 font-semibold text-navy-900">{dayOf(run.checkDate)}<span className="ml-1 text-xs font-normal text-slate-500">v{version.number}</span></td>
-                    <td className="py-2 pr-3"><RunStatus status={run.status} approvedBy={approvals.filter((x) => x.runId === run.id && x.round === run.approvalRound && x.versionId === run.currentVersionId).map((x) => x.approverName)} /></td>
+                    <td className="py-2 pr-3"><RunStatus status={run.status} delivery={run.status === "AWAITING_APPROVAL" ? deliveryOf(runNotices.filter((n) => n.runId === run.id)) : null} approvedBy={approvals.filter((x) => x.runId === run.id && x.round === run.approvalRound && x.versionId === run.currentVersionId).map((x) => x.approverName)} /></td>
                     <td className="py-2 pr-3 text-right">{version.employees}</td>
                     <td className="py-2 pr-3 text-right">{money(version.grossCents)}</td>
                     <td className="py-2 pr-3 text-right">{money(version.netPayCents)}</td>

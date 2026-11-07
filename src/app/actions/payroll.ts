@@ -5,6 +5,7 @@ import { run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
 import { discardPayrollRun, editPayrollRun, importPayrollRegister, postPayrollRun, previewPayrollImport, savePayrollSetup } from "@/lib/services/payroll";
 import { requestPayrollApproval, setNotifyChannel, setPayrollApprover, submitPayrollRun } from "@/lib/services/payroll-approval";
+import { deliveryOf } from "@/lib/payroll/queue";
 import { AMOUNT_KEYS, type Mapping } from "@/lib/payroll/register";
 import { isPayrollField } from "@/lib/payroll/fields";
 import { parseCents, usd } from "@/lib/services/ledger";
@@ -122,6 +123,9 @@ export async function requestApprovalAction(clientId: string, runId: string, _pr
     refresh();
     const sent = notices.filter((n) => n.status === "SENT").length;
     const other = notices.filter((n) => n.status !== "SENT");
+    const delivery = deliveryOf(notices);
+    if (delivery === "NOT_SENT") return "Approval Prepared — Not Sent. Email isn't turned on for Client Connect on the server, so nothing went out. Send it again once email is on.";
+    if (delivery === "FAILED") return "Delivery Failed — Needs Attention. An approval email wasn't accepted, so no text was sent for it. Check the approver's email address, then send it again.";
     return `Sent for approval. ${sent} notice${sent === 1 ? "" : "s"} sent${other.length ? `; ${other.length} not sent (see the timeline for why)` : ""}.`;
   });
 }

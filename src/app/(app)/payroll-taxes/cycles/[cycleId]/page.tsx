@@ -6,7 +6,7 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { HoursForm } from "@/components/payroll-taxes/hours-form";
 import { Countdown, fmtDay, fmtWhen, OverdueFlag, QueueBadge, RemindersOffBanner, VersionTag } from "@/components/payroll-taxes/bits";
-import { money } from "@/components/payroll/status";
+import { DELIVERY_LABEL, money } from "@/components/payroll/status";
 import {
   assignCycleAction, clearErrorAction, flagErrorAction, manualTotalsAction, markHoursRequestedAction, markProcessedAction, markSubmittedAction, recordHoursAction, sendForApprovalAction, uploadPreviewAction,
 } from "@/app/actions/payroll-taxes";
@@ -98,7 +98,7 @@ export default async function CyclePage({ params }: { params: Promise<{ cycleId:
           {version ? (
             <div className="mb-3 space-y-2 text-sm" data-testid="current-version">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {[["Employees", String(version.employees)], ["Gross", money(version.grossCents)], ["Employee taxes", money(employeeTaxes(version))], ["Net pay", money(version.netPayCents)], ["Deductions", money(version.deductionsCents)], ["Employer taxes", money(version.employerTaxCents)], ["Total cost", money(version.grossCents + version.employerTaxCents)], ["Run status", RUN_STATUS[run!.status as keyof typeof RUN_STATUS] ?? run!.status]].map(([k, v]) => (
+                {[["Employees", String(version.employees)], ["Gross", money(version.grossCents)], ["Employee taxes", money(employeeTaxes(version))], ["Net pay", money(version.netPayCents)], ["Deductions", money(version.deductionsCents)], ["Employer taxes", money(version.employerTaxCents)], ["Total cost", money(version.grossCents + version.employerTaxCents)], ["Run status", run!.status === "AWAITING_APPROVAL" && (d.delivery === "NOT_SENT" || d.delivery === "FAILED") ? DELIVERY_LABEL[d.delivery] : RUN_STATUS[run!.status as keyof typeof RUN_STATUS] ?? run!.status]].map(([k, v]) => (
                   <div key={k} className="rounded-lg bg-ivory-100 px-2 py-1.5"><p className="text-[11px] text-slate-500">{k}</p><p className="font-semibold text-navy-900">{v}</p></div>
                 ))}
               </div>
@@ -121,7 +121,7 @@ export default async function CyclePage({ params }: { params: Promise<{ cycleId:
           ) : <p className="mb-3 text-sm text-slate-600">No preview yet. Upload ADP&apos;s preview, import the register, or key in the totals.</p>}
           {canManage && !locked && (
             <div className="space-y-3">
-              {status === "NEEDS_CORRECTION" && <Notice tone="error" title="Needs correction">{cycle.errorFlaggedAt ? `Flagged by staff: ${cycle.errorNote}` : lastDenial ? `${lastDenial.approverName} denied v${lastDenial.version.number}: “${lastDenial.comment}”` : ""} Fix it in ADP, then attach the revised preview (it becomes the next version) and send it again.</Notice>}
+              {(status === "NEEDS_CORRECTION" || status === "CHANGES_REQUESTED") && <Notice tone="error" title={status === "CHANGES_REQUESTED" ? "Changes Requested" : "Needs correction"}>{cycle.errorFlaggedAt ? `Flagged by staff: ${cycle.errorNote}` : lastDenial ? `${lastDenial.approverName} denied v${lastDenial.version.number}: “${lastDenial.comment}”` : ""} Fix it in ADP, then attach the revised preview (it becomes the next version) and send it again.</Notice>}
               <details className="rounded-xl border border-ivory-200 p-3" open={!run}>
                 <summary className="cursor-pointer text-sm font-semibold text-navy-900">{run ? "Attach a revised ADP preview (PDF)" : "Upload ADP's preview or register"}</summary>
                 <ActionForm action={uploadPreviewAction.bind(null, cycle.id)} className="mt-3 space-y-2" resetOnSuccess>
