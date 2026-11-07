@@ -45,3 +45,7 @@ export async function grantPerms(userId: string, keys: string[]) {
 
 /** What "Billing only" Owner's Office access became (see the 20261106205000 migration). */
 export const OLD_BILLING_ONLY = ["billing.view", "billing.create", "billing.edit", "billing.record_payment", "receivables.reconcile"];
+
+/** Tests of what clients see from office-entered bank balances turn the owner's switch on (it's off by default). */
+export const showOfficeBalancesToClients = () =>
+  prisma.integrationSettings.upsert({ where: { id: "default" }, create: { id: "default", clientBankBalancesVisible: true }, update: { clientBankBalancesVisible: true } });

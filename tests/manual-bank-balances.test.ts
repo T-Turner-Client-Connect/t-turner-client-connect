@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type ComponentProps, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { grantPerms, makeUser, managed, prisma, resetDb } from "./db";
+import { grantPerms, makeUser, managed, prisma, resetDb, showOfficeBalancesToClients } from "./db";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { createClient, ValidationError } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
@@ -202,6 +202,7 @@ describe("staff: accounts and balances", () => {
 });
 
 describe("client dashboard: Bank Balance from our office", () => {
+  beforeEach(showOfficeBalancesToClients);
   it("shows the cash total with (N Accounts) and 'Updated by our office · as of', never 'live', never notes", async () => {
     const w = await world();
     await bakeryAccounts(w);
@@ -297,3 +298,80 @@ function find(node: ReactNode, type: unknown): ReactElement<Record<string, unkno
   if (node.type === type) return node as ReactElement<Record<string, unknown>>;
   return find((node.props as { children?: ReactNode }).children, type);
 }
+
+describe('owner switch "Show office-entered bank balances to clients" (off by default)', () => {
+  const OFFICE_FIGURES = [/1248055/, /12,480\.55/, /Operating checking/, /Reserve savings/, /Business card/, /Updated by our office/];
+
+  it("off by default: no client response (dashboard, bank API, refresh, View as Client) carries office-entered balances; staff still see them", async () => {
+    const w = await world();
+    await bakeryAccounts(w);
+    expect(await prisma.integrationSettings.findUnique({ where: { id: "default" } })).toBeNull(); // never set = off
+    const { ownerSwitches } = await import("@/lib/services/owner-switches");
+    expect((await ownerSwitches()).clientBankBalances.on).toBe(false);
+
+    // Bookkeeping client: server responses, not just the screen.
+    const dash = await portalBusinessDashboard(w.pat, w.bakery.id);
+    const api = await portalBankFeed(w.pat, w.bakery.id); // what /api/client/.../bank returns
+    expect(api.accounts).toEqual([]);
+    expect(api.source).toBe("NONE");
+    expect([api.cashCents ?? 0, api.creditCents ?? 0, api.netCents ?? 0]).toEqual([0, 0, 0]);
+    for (const payload of [JSON.stringify(dash), JSON.stringify(api)]) for (const re of OFFICE_FIGURES) expect(payload).not.toMatch(re);
+    expect(text(kpi(api))).not.toContain("Updated by our office");
+    // "Refresh now" can't reveal them either (it returns the same feed; live banking is off so it's refused first).
+    const { portalRefreshBank } = await import("@/lib/services/portal-business");
+    await expect(portalRefreshBank(w.pat, w.bakery.id)).rejects.toThrow(/isn't turned on/);
+
+    // View as Client (the owner's preview) matches what the client gets.
+    staff = w.tabitha;
+    const tree = (await PortalPreview({ params: Promise.resolve({ id: w.bakery.id }), searchParams: Promise.resolve({}) })) as ReactNode;
+    const preview = (find(tree, BusinessDashboardView)!.props as { d: Awaited<ReturnType<typeof businessDashboardFor>> }).d;
+    for (const re of OFFICE_FIGURES) expect(JSON.stringify(preview)).not.toMatch(re);
+
+    // Staff with banking access keep the whole workflow: accounts, latest balances and history.
+    for (const who of [w.tabitha, w.daria, w.vic]) {
+      const rows = await manualAccountsForStaff(who, w.bakery.id);
+      expect(rows.map((r) => r.name).sort()).toEqual(["Business card", "Operating checking", "Reserve savings"]);
+      expect(rows.find((r) => r.name === "Operating checking")!.latest).toMatchObject({ balanceCents: 1_248_055, source: "STAFF_ENTRY" });
+    }
+    // Staff without banking access still can't.
+    await expect(manualAccountsForStaff(w.stranger, w.bakery.id)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("only the primary owner can change it; every change is in both audit logs; it takes effect on the server immediately", async () => {
+    const w = await world();
+    await bakeryAccounts(w);
+    const { setOwnerSwitch } = await import("@/lib/services/owner-switches");
+    const otherAdmin = await makeUser("ADMIN", "Other Admin");
+    for (const who of [w.daria, w.bea, w.vic, w.stranger, otherAdmin]) await expect(setOwnerSwitch(who, "clientBankBalances", true)).rejects.toBeInstanceOf(ForbiddenError);
+    expect((await portalBankFeed(w.pat, w.bakery.id)).accounts).toEqual([]);
+
+    await setOwnerSwitch(w.tabitha, "clientBankBalances", true);
+    const on = await portalBankFeed(w.pat, w.bakery.id);
+    expect(on.accounts.map((a) => [a.name, a.source])).toEqual([["Operating checking", "OFFICE"], ["Reserve savings", "OFFICE"], ["Business card", "OFFICE"]]);
+    expect(text(kpi(on))).toMatch(/Updated by our office · as of /); // distinguished from a live bank balance, with its as-of date
+
+    await setOwnerSwitch(w.tabitha, "clientBankBalances", false);
+    expect((await portalBankFeed(w.pat, w.bakery.id)).accounts).toEqual([]);
+
+    const logs = await prisma.auditLog.findMany({ where: { action: { startsWith: "banking.client_balances_visible" } }, orderBy: { createdAt: "asc" } });
+    expect(logs.map((l) => [l.action, l.actorId])).toEqual([["banking.client_balances_visible_on", w.tabitha.id], ["banking.client_balances_visible_off", w.tabitha.id]]);
+    expect(await prisma.ownerAuditLog.count({ where: { action: { startsWith: "banking.client_balances_visible" }, actorId: w.tabitha.id } })).toBe(2);
+    const s = await prisma.integrationSettings.findUniqueOrThrow({ where: { id: "default" } });
+    expect([s.clientBankBalancesVisible, s.clientBankBalancesChangedById]).toEqual([false, w.tabitha.id]);
+  });
+
+  it("even when on: another business's owner can't read them, and nothing is sent to anyone", async () => {
+    const w = await world();
+    await bakeryAccounts(w);
+    const { setOwnerSwitch } = await import("@/lib/services/owner-switches");
+    const before = await Promise.all([prisma.notification.count(), prisma.message.count()]);
+    await setOwnerSwitch(w.tabitha, "clientBankBalances", true);
+    await expect(portalBankFeed(w.sam, w.bakery.id)).rejects.toBeInstanceOf(ForbiddenError);
+    expect((await portalBankFeed(w.sam, w.other.id)).accounts).toEqual([]);
+    await enterManualBalance(w.daria, w.bakery.id, { accountId: (await clientManualBalances(w.bakery.id))[0].id, amount: "100.00", asOf: hoursAgo(1) }, NOW);
+    expect(await Promise.all([prisma.notification.count(), prisma.message.count()])).toEqual(before);
+    // Plaid stays off: live bank connections are a different switch, untouched.
+    const { ownerSwitches } = await import("@/lib/services/owner-switches");
+    expect((await ownerSwitches()).liveBanking.on).toBe(false);
+  });
+});
