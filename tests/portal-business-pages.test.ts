@@ -32,12 +32,22 @@ const { default: PayrollPage } = await import("@/app/client/(secure)/payroll/pag
 const { default: LicensesPage } = await import("@/app/client/(secure)/licenses/page");
 const { default: YearEndPage } = await import("@/app/client/(secure)/year-end/page");
 const { default: InvoicingPage } = await import("@/app/client/(secure)/invoicing/page");
-const { default: PortalPreview } = await import("@/app/(app)/clients/[id]/portal-preview/page");
+const { default: PortalHome } = await import("@/app/client/(secure)/page");
+// View as Client: the client's own pages under a signed preview cookie (see tests/vac-harness.ts).
+vi.mock("next/headers", async () => (await import("./vac-harness")).headersMock);
+const { h } = await import("./vac-harness");
+const { previewCookieValue, previewLogins, VAC_COOKIE } = await import("@/lib/portal/viewer");
+/** Starts View as Client of a client (its primary owner login, as the start route picks) for the signed-in staff member. */
+const viewAsClient = async (clientId: string) => {
+  h.jar.clear();
+  h.jar.set(VAC_COOKIE, previewCookieValue({ staffId: staff!.id, clientId, loginId: (await previewLogins(clientId))[0]?.id ?? null }));
+};
 
 const PDF = () => new TextEncoder().encode(`%PDF-1.4\n% fictional ${Math.random()}\n`);
 
 beforeEach(async () => {
   await resetDb();
+  h.jar.clear();
   staff = null;
   portalLogin = null;
 });
@@ -248,13 +258,15 @@ describe("1099 / W-2 page", () => {
     expect(html(createElement(YearEndPageView, { d, canUpload: true, back: null }))).toContain('data-testid="year-end-empty"');
   });
 
-  it("the read-only View as Client version never offers an upload", async () => {
+  it("the read-only View as Client version shows the client's upload, turned off (it posts only to the preview stand-in)", async () => {
     const { bakery, tabitha } = await world();
     await prisma.yearEndFiling.create({ data: { clientId: bakery.id, taxYear: 2025, stage: "FORMS_PREPARED", updatedById: tabitha.id } });
     const r = await prisma.documentRequest.create({ data: { clientId: bakery.id, kind: "YEAR_END", taxYear: 2025, title: "2025 W-2s", createdById: tabitha.id } });
     const out = html(createElement(YearEndPageView, { d: await yearEndPageFor(bakery.id), canUpload: true, back: null, readOnly: true }));
-    expect(out).toContain('data-testid="preview-uploads-off"');
-    expect(out).not.toContain(`upload-${r.id}`);
+    expect(out).toContain(`upload-${r.id}`);
+    expect(out).toContain('data-testid="preview-disabled"');
+    expect(out).toMatch(/<fieldset[^>]*disabled=""/);
+    expect(out).toContain("Turned off in View as Client");
   });
 });
 
@@ -389,31 +401,34 @@ describe("Dashboard links and View as Client", () => {
     expect(hrefOf("request-invoice")).toBe(`/client/invoicing${q}#request`);
   });
 
-  it("View as Client opens read-only preview views of the new pages with staff document links", async () => {
+  it("View as Client opens the client's own pages, read-only, with staff document links", async () => {
     const { bakery } = await world();
     await doc(bakery.id, { title: "Q3 2026 Form 941 (fictional)", category: "PAYROLL" });
-    const preview = async (sp: Record<string, string>) => (await PortalPreview({ params: Promise.resolve({ id: bakery.id }), searchParams: Promise.resolve(sp) })) as ReactNode;
-    const dash = find(await preview({}), BusinessDashboardView)!;
+    await viewAsClient(bakery.id);
+    const dash = find((await PortalHome({ searchParams: Promise.resolve({ account: bakery.id }) })) as ReactNode, BusinessDashboardView)!;
     const props = dash.props as { previewHref: (p: string) => string | null; tiles: { testId: string; href: string | null }[] };
-    const base = `/clients/${bakery.id}/portal-preview`;
-    expect(props.previewHref("/client/payroll")).toBe(`${base}?view=payroll`);
-    expect(props.previewHref("/client/licenses")).toBe(`${base}?view=licenses`);
-    expect(props.previewHref("/client/year-end")).toBe(`${base}?view=year-end`);
-    expect(props.previewHref("/client/invoicing")).toBe(`${base}?view=invoicing`);
-    expect(props.previewHref("/client/payroll-approval")).toBeNull();
-    expect(props.tiles.find((t) => t.testId === "biz-payroll")?.href).toBe(`${base}?view=payroll`);
+    // Every card opens the client's own page; the preview stays on through the cookie.
+    const q = `?account=${bakery.id}`;
+    expect(props.previewHref("/client/payroll")).toBe(`/client/payroll${q}`);
+    expect(props.previewHref("/client/licenses")).toBe(`/client/licenses${q}`);
+    expect(props.previewHref("/client/year-end")).toBe(`/client/year-end${q}`);
+    expect(props.previewHref("/client/invoicing")).toBe(`/client/invoicing${q}`);
+    expect(props.previewHref("/client/payroll-approval")).toBe(`/client/payroll-approval${q}`);
+    expect(props.tiles.find((t) => t.testId === "biz-payroll")?.href).toBe(`/client/payroll${q}`);
 
-    const payroll = find(await preview({ view: "payroll" }), PayrollPageView)!;
+    const sp = { searchParams: Promise.resolve({ account: bakery.id }) };
+    const payroll = find((await PayrollPage(sp)) as ReactNode, PayrollPageView)!;
     const pd = payroll.props as { d: Awaited<ReturnType<typeof payrollPageFor>>; linkFor: (id: string) => string };
     expect(pd.d.documents).toHaveLength(1);
-    expect(pd.d).toEqual(await payrollPageFor(bakery.id, { ...OWNER_PREVIEW_PERMS, canViewBookkeeping: true }, null));
     expect(pd.linkFor("doc-1")).toMatch(/^\/api\/documents\/doc-1\.s:/);
-    expect(find(await preview({ view: "licenses" }), LicensesPageView)).not.toBeNull();
-    expect((find(await preview({ view: "year-end" }), YearEndPageView)!.props as { readOnly: boolean }).readOnly).toBe(true);
-    const inv = find(await preview({ view: "invoicing" }), InvoicingPageView)!;
+    expect(find((await LicensesPage(sp)) as ReactNode, LicensesPageView)).not.toBeNull();
+    expect((find((await YearEndPage(sp)) as ReactNode, YearEndPageView)!.props as { readOnly: boolean }).readOnly).toBe(true);
+    const inv = find((await InvoicingPage(sp)) as ReactNode, InvoicingPageView)!;
     expect((inv.props as { readOnly: boolean }).readOnly).toBe(true);
-    expect(html(inv as ReactElement)).toContain('data-testid="preview-request-off"');
-    expect(html(inv as ReactElement)).not.toContain('data-testid="send-invoice-request"');
+    // The request form shows as the client sees it, disabled, with the note.
+    const markup = html(inv as ReactElement);
+    expect(markup).toContain('data-testid="preview-off"');
+    expect(markup).toContain('data-testid="preview-disabled"');
     expect(await previewClientInvoicing(bakery.id)).toMatchObject({ invoices: [], requests: [] });
     expect(await licensesPageFor(bakery.id, OWNER_PREVIEW_PERMS, null)).toMatchObject({ licenses: [] });
   });
@@ -421,7 +436,8 @@ describe("Dashboard links and View as Client", () => {
   it("a regular tax client's preview shows the business-account notice for these views", async () => {
     const { tabitha } = await world();
     const pat = await createClient(tabitha, { firstName: "Riley", lastName: "Fictional", clientType: "INDIVIDUAL", status: "ACTIVE" });
-    const tree = (await PortalPreview({ params: Promise.resolve({ id: pat.id }), searchParams: Promise.resolve({ view: "payroll" }) })) as ReactNode;
+    await viewAsClient(pat.id);
+    const tree = (await PayrollPage({ searchParams: Promise.resolve({ account: pat.id }) })) as ReactNode;
     expect(find(tree, NotBusinessNotice)).not.toBeNull();
     expect(find(tree, PayrollPageView)).toBeNull();
   });

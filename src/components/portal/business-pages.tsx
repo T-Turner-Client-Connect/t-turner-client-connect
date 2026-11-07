@@ -9,6 +9,8 @@ import { LICENSE_STATUS, YEAR_END_STEPS, type licensesPageFor, type payrollPageF
 import { YEAR_END_STAGES } from "@/lib/services/business-overview";
 import { CLIENT_INVOICE_STATUS, type clientInvoicingFor } from "@/lib/services/portal-client-invoicing";
 import { requestCustomerInvoiceAction } from "@/app/actions/portal-invoicing";
+import { previewFormAction } from "@/app/actions/preview";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import { PageBanner } from "./luxury";
 import { NeedList } from "./business-dashboard";
 
@@ -139,7 +141,7 @@ export function PayrollPageView({ d, linkFor, back }: { d: Payroll; linkFor: (id
           </div>
           <div className={card} data-testid="payroll-documents">
             <h2 className={h2}><FileText className="size-5 text-gold-600" aria-hidden /> Payroll reports &amp; filings</h2>
-            {d.documents.length ? <DocList docs={d.documents} linkFor={linkFor} testId="payroll-doc-list" /> : <Empty testId="payroll-docs-empty">No payroll reports or filings have been released to you yet. Quarterly 941s, W-2s and payroll registers appear here once our office releases them.</Empty>}
+            {d.documents.length ? <DocList docs={d.documents} linkFor={linkFor} testId="payroll-doc-list" /> : <Empty testId="payroll-docs-empty">No payroll reports or filings have been released to you yet. Quarterly 941s, W-2s and payroll registers appear here once our office releases them. Have a payroll file for us? <Link className="font-semibold underline" href={`/client/documents?account=${d.client.id}&cat=payroll`}>Send it from your Document Vault →</Link></Empty>}
           </div>
         </section>
       ) : (
@@ -185,7 +187,7 @@ export function LicensesPageView({ d, linkFor, back }: { d: Licenses; linkFor: (
       <section className={card} data-testid="license-documents">
         <h2 className={h2}><FileText className="size-5 text-gold-600" aria-hidden /> License documents</h2>
         <p className="text-sm text-slate-600">Copies of your licenses released to you or sent by you.</p>
-        {d.documents.length ? <DocList docs={d.documents} linkFor={linkFor} testId="license-doc-list" /> : <Empty testId="license-docs-empty">No license documents in your portal yet.</Empty>}
+        {d.documents.length ? <DocList docs={d.documents} linkFor={linkFor} testId="license-doc-list" /> : <Empty testId="license-docs-empty">No license documents in your portal yet. Have a license or permit to share? <Link className="font-semibold underline" href={`/client/documents?account=${d.client.id}`}>Upload it in your Document Vault →</Link></Empty>}
       </section>
     </Shell>
   );
@@ -216,7 +218,6 @@ export function YearEndPageView({ d, canUpload, back, readOnly }: { d: YearEnd; 
       {!d.season.active && (
         <p className="rounded-xl border border-gold-300 bg-gold-50/70 px-4 py-3 text-sm text-navy-900" data-testid="year-end-season">Year-end form requests for {d.season.taxYear} start in {d.season.startsIn}. Anything already requested is listed below.</p>
       )}
-      {readOnly && canUpload && <p className="rounded-lg bg-gold-50 px-3 py-2 text-sm text-navy-900" data-testid="preview-uploads-off">Uploads are turned off in View as Client.</p>}
       {d.years.length === 0 ? (
         <section className={card}>
           <Empty testId="year-end-empty">Year-end W-2 / 1099 work hasn&apos;t started for your business. When our office starts the contractor review or requests forms from you, they appear here.</Empty>
@@ -235,7 +236,7 @@ export function YearEndPageView({ d, canUpload, back, readOnly }: { d: YearEnd; 
               </div>
             </div>
             <Steps step={y.step} />
-            {y.items.length ? <NeedList items={y.items} clientId={d.client.id} canUpload={canUpload && !readOnly} /> : <Empty testId="year-end-no-forms">No forms requested from you for {y.taxYear}.</Empty>}
+            {y.items.length ? <NeedList items={y.items} clientId={d.client.id} canUpload={canUpload} readOnly={readOnly} /> : <Empty testId="year-end-no-forms">No forms requested from you for {y.taxYear}.</Empty>}
           </section>
         ))
       )}
@@ -245,9 +246,10 @@ export function YearEndPageView({ d, canUpload, back, readOnly }: { d: YearEnd; 
 
 // --- Client invoicing ------------------------------------------------------------------------------
 
-function RequestForm({ clientId, customers }: { clientId: string; customers: Invoicing["customers"] }) {
+function RequestForm({ clientId, customers, readOnly }: { clientId: string; customers: Invoicing["customers"]; readOnly?: boolean }) {
   return (
-    <ActionForm action={requestCustomerInvoiceAction.bind(null, clientId)} className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" resetOnSuccess idempotent>
+    <PreviewDisabled readOnly={readOnly}>
+    <ActionForm action={readOnly ? previewFormAction : requestCustomerInvoiceAction.bind(null, clientId)} className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" resetOnSuccess idempotent>
       <label className="text-sm font-semibold text-navy-900">Customer
         <select className="input mt-1" name="customerId" defaultValue={customers.length ? "" : "NEW"} required>
           {customers.length > 0 && <option value="" disabled>Choose…</option>}
@@ -272,6 +274,7 @@ function RequestForm({ clientId, customers }: { clientId: string; customers: Inv
         <p className="text-xs text-slate-600">Our office creates and sends the invoice. Nothing is sent to your customer from here.</p>
       </div>
     </ActionForm>
+    </PreviewDisabled>
   );
 }
 
@@ -356,10 +359,8 @@ export function InvoicingPageView({ d, back, readOnly }: { d: Invoicing; back: s
         <div id="request" className={clsx(card, "scroll-mt-20")} data-testid="invoice-request">
           <h2 className={h2}><MessageSquarePlus className="size-5 text-gold-600" aria-hidden /> Request an invoice</h2>
           <p className="text-sm text-navy-800">Tell us who to invoice, how much and when it&apos;s due. We&apos;ll create the invoice for you.</p>
-          {readOnly ? (
-            <p className="mt-3 rounded-lg bg-gold-50 px-3 py-2 text-sm text-navy-900" data-testid="preview-request-off">The request form is turned off in View as Client.</p>
-          ) : d.canRequest ? (
-            <RequestForm clientId={d.client.id} customers={d.customers} />
+          {d.canRequest || readOnly ? (
+            <RequestForm clientId={d.client.id} customers={d.customers} readOnly={readOnly} />
           ) : (
             <p className="mt-3 text-sm text-slate-600" data-testid="request-no-access">Your login can&apos;t send requests to our office. The account owner can ask us to add messaging.</p>
           )}

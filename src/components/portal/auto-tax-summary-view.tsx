@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { CheckCircle2 } from "lucide-react";
 import { AutoSummaryDecision } from "./auto-summary-decision";
 import { approveSummaryAction, requestSummaryChangesAction } from "@/app/actions/tax-summary";
+import { previewFormAction } from "@/app/actions/preview";
 import { consentText, requiredRoles, type SummaryWithSigs } from "@/lib/services/tax-summary";
 import { clientSummaryOf, form8879Status, type F8879Status } from "@/lib/services/auto-tax-summary";
 import { money, type Row } from "@/lib/tax/return-parser/summary";
@@ -205,8 +206,8 @@ export function AutoTaxSummaryView({ s, clientId, readOnly }: { s: SummaryWithSi
             const g = signed.get(role);
             return { role, name, consent: consentText(role, name, s.taxYear), signed: g ? `${g.signerName} approved ${fmtDateTime(g.signedAt)}.${roles.length > 1 && signed.size < roles.length ? " The other spouse's approval is still needed." : ""}` : null };
           })}
-          approveActions={Object.fromEntries(roles.map((r) => [r, approveSummaryAction.bind(null, clientId, s.id, r)]))}
-          questionAction={requestSummaryChangesAction.bind(null, clientId, s.id)}
+          approveActions={Object.fromEntries(roles.map((r) => [r, (readOnly ? previewFormAction : approveSummaryAction.bind(null, clientId, s.id, r))]))}
+          questionAction={(readOnly ? previewFormAction : requestSummaryChangesAction.bind(null, clientId, s.id))}
         />
       )}
       {s.status === "CHANGES_REQUESTED" && (
