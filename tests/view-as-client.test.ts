@@ -201,6 +201,16 @@ describe("starting, keeping and ending View as Client", () => {
     const tree = await expand(await PortalLayout({ children: null }));
     expect(testIds(tree)).toContain("view-as-client-banner");
     expect(textOf(tree)).toContain("no portal login yet");
+    expect(textOf(tree)).toContain("Simulated view");
+  });
+
+  it("a client with a real portal login is previewed as that login and is NOT labelled simulated", async () => {
+    const { bakery, patLogin } = await world();
+    await startPreview(bakery.id, patLogin.id);
+    const tree = await expand(await PortalLayout({ children: null }));
+    expect(testIds(tree)).not.toContain("preview-simulated");
+    expect(textOf(tree)).not.toContain("Simulated view");
+    expect(textOf(tree)).toContain(`login: ${patLogin.name}`);
   });
 
   it("staff permissions still apply: billing stays hidden from staff without billing access", async () => {

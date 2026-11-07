@@ -4,7 +4,8 @@ type Login = { id: string; name: string; email: string; role: string; signedUp: 
 
 /**
  * The one thing View as Client adds to the client's screen: a slim, always-visible bar saying
- * whose portal this is, that it is read-only, which login it shows (switchable), and Exit.
+ * whose portal this is, that it is read-only, which login it shows (switchable), and Exit. A client
+ * with no portal login is labelled "Simulated view" on every screen size: it isn't an exact login.
  * The style block shifts the client's own fixed sidebar and phone top bar below it.
  */
 export function ViewAsClientBanner({ clientId, clientName, loginId, logins }: { clientId: string; clientName: string; loginId: string | null; logins: Login[] }) {
@@ -16,7 +17,8 @@ export function ViewAsClientBanner({ clientId, clientName, loginId, logins }: { 
         <Eye className="size-4 shrink-0" aria-hidden />
         <span className="min-w-0 flex-1 truncate font-semibold">
           Viewing as {clientName}
-          <span className="hidden font-normal sm:inline">{login ? ` · login: ${login.name}` : " · no portal login yet — owner-level view of their services"}</span>
+          {!login && <span className="ml-1.5 rounded bg-navy-900 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white" data-testid="preview-simulated">Simulated view</span>}
+          <span className="hidden font-normal sm:inline">{login ? ` · login: ${login.name}` : " · no portal login yet, so this shows what an owner login would see, not an actual client's sign-in"}</span>
           {" "}— read-only
         </span>
         {logins.length > 1 && (
