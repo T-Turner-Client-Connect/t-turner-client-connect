@@ -28,6 +28,7 @@ function dataOf(r: RuleSeed) {
     sourceUrls: r.sourceUrls,
     effectiveFrom: r.effectiveFrom ? new Date(`${r.effectiveFrom}T00:00:00Z`) : null,
     verificationStatus: r.verificationStatus,
+    ...(r.verificationStatus === "VERIFIED" && r.verifiedOn ? { lastReviewedAt: new Date(`${r.verifiedOn}T12:00:00Z`), lastReviewedBy: "Official source (seed library)" } : {}),
     notes: r.notes ?? null,
     clientApprovalDefault: !!r.clientApprovalDefault,
     portalKind: r.portalKind ?? null,

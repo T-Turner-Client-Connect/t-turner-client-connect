@@ -32,7 +32,7 @@ export const PROPOSALS: Record<string, ProposalPackage> = {
   RESTAURANT_AL_SCORP_JEFFERSON_BHM: {
     key: "RESTAURANT_AL_SCORP_JEFFERSON_BHM",
     name: "Restaurant + Alabama S corporation (effective 2025) + Jefferson County / Birmingham",
-    description: "Prepared for Mr. Shawarma. Restaurant in Birmingham (Jefferson County), Alabama, taxed as an S corporation from 2025, plus the owner's separate nonprofit.",
+    description: "Restaurant in Birmingham (Jefferson County), Alabama, taxed as an S corporation from 2025, plus the owner's separate nonprofit.",
     business: { kind: null, taxClassification: "S_CORP", sCorpYear: 2025, activityTags: ["restaurant", "food_service", "sells_taxable"], industry: "Restaurant", state: "AL", county: "Jefferson", city: "Birmingham" },
     items: [
       { key: "FED_1120S", ruleKey: "FED_1120S", verify: [...V("the IRS (federal)", { registration: "confirm the IRS accepted the S election (Form 2553) effective 2025 and record the effective date", frequency: "annual (tax year — confirm fiscal year end)", authority: "Form 8879-S signed by an officer; firm ERO e-file" }), "Shareholders and ownership percentages for each K-1"] },

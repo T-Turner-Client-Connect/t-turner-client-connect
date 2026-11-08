@@ -95,11 +95,14 @@ describe("rule evaluation", () => {
     expect(evaluateRule(rule("FED_7004"), baseFacts()).result).toBe("DOES_NOT_APPLY");
   });
 
-  it("ships every rule with a candidate source, and none VERIFIED without an opened source", () => {
+  it("ships every rule with a candidate source, and none VERIFIED without a dated, cited official source", () => {
     expect(RULES.length).toBeGreaterThanOrEqual(35);
     for (const r of RULES) {
       expect(r.sourceUrls.length).toBeGreaterThan(0);
-      expect(r.verificationStatus).toBe("NEEDS_VERIFICATION");
+      if (r.verificationStatus === "VERIFIED") {
+        expect(r.verifiedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(r.notes).toMatch(/verified \d{4}-\d{2}-\d{2}/);
+      } else expect(r.verificationStatus).toBe("NEEDS_VERIFICATION");
       expect(() => dueDatesFor(r.dueRuleCode, r.weekendRule, periodContaining("MONTHLY", "2026-03-10"))).not.toThrow();
     }
   });
@@ -188,8 +191,10 @@ describe("obligation generation", () => {
     expect(items.find((i) => i.ruleKey === "FED_941")?.result).toBe("DOES_NOT_APPLY");
     const all = await prisma.complianceObligation.findMany({ where: { entityId: e.id }, include: { rule: true } });
     expect(all.every((o) => o.status === "PROPOSED" && o.rule?.version === 1)).toBe(true);
-    // Every rule is unverified, so every obligation is Needs Verification and no period exists yet.
-    expect(all.every((o) => o.verification === "NEEDS_VERIFICATION")).toBe(true);
+    // Only a verified rule with no missing client facts is Verified (the Birmingham business license);
+    // Birmingham sales tax is verified too but still needs the client's account recorded.
+    expect(all.filter((o) => o.verification === "VERIFIED").map((o) => o.ruleKey)).toEqual(["BHM_BUSINESS_LICENSE"]);
+    expect(all.find((o) => o.ruleKey === "BHM_SALES_USE")?.verification).toBe("NEEDS_VERIFICATION");
     expect(await prisma.complianceFilingPeriod.count()).toBe(0);
     // Re-running never duplicates.
     await generateObligations(tab, e.id);
@@ -303,7 +308,7 @@ describe("reminders and safeguards", () => {
 async function approvalSetup() {
   const o = await office();
   const s = await salesTaxPeriod(o.tab);
-  const pu = await portalLogin(s.c.id, "owner.fictional@example.com", "Omar Fictional");
+  const pu = await portalLogin(s.c.id, "owner.fictional@example.com", "Sam Fictional");
   await prisma.complianceEntity.update({ where: { id: s.e.id }, data: { portalVisible: true } });
   await prisma.clientService.create({ data: { clientId: s.c.id, type: "BOOKKEEPING", title: "Bookkeeping", status: "IN_PROGRESS", createdById: o.tab.id } });
   await editObligation(o.tab, s.o.id, { clientApprovalRequired: true, clientVisible: true, serviceType: "BOOKKEEPING" });
@@ -318,7 +323,7 @@ describe("client approval gate", () => {
     const v1 = await createReturnVersion(daria, p.id);
     await sendForApproval(daria, v1.id);
     await expect(recordSubmitted(daria, p.id, { confirmationNumber: "C-1" })).rejects.toThrow(/approval is required/i);
-    await clientDecide(pu, v1.id, { decision: "APPROVED", signerName: "Omar Fictional", contentHash: v1.contentHash, comments: "Looks right" }, { ip: "203.0.113.7", userAgent: "TestAgent" });
+    await clientDecide(pu, v1.id, { decision: "APPROVED", signerName: "Sam Fictional", contentHash: v1.contentHash, comments: "Looks right" }, { ip: "203.0.113.7", userAgent: "TestAgent" });
     const a = await prisma.complianceApproval.findFirstOrThrow({ where: { returnVersionId: v1.id } });
     expect(a).toMatchObject({ portalUserId: pu.id, ipAddress: "203.0.113.7", userAgent: "TestAgent", contentHash: v1.contentHash, comments: "Looks right", decision: "APPROVED" });
     // Approvals are append-only.
@@ -336,14 +341,14 @@ describe("client approval gate", () => {
     expect(v2.contentHash).not.toBe(v1.contentHash);
     await sendForApproval(daria, v2.id);
     // The stale hash can't approve the new version.
-    await expect(clientDecide(pu, v2.id, { decision: "APPROVED", signerName: "Omar Fictional", contentHash: v1.contentHash }, {})).rejects.toThrow(/changed/);
-    await clientDecide(pu, v2.id, { decision: "APPROVED", signerName: "Omar Fictional", contentHash: v2.contentHash }, {});
+    await expect(clientDecide(pu, v2.id, { decision: "APPROVED", signerName: "Sam Fictional", contentHash: v1.contentHash }, {})).rejects.toThrow(/changed/);
+    await clientDecide(pu, v2.id, { decision: "APPROVED", signerName: "Sam Fictional", contentHash: v2.contentHash }, {});
     // Amount change also invalidates.
     await setAmountDue(daria, p.id, 999);
     expect(await currentApproval(p.id)).toBeNull();
     const v3 = await createReturnVersion(daria, p.id);
     await sendForApproval(daria, v3.id);
-    await clientDecide(pu, v3.id, { decision: "APPROVED", signerName: "Omar Fictional", contentHash: v3.contentHash }, {});
+    await clientDecide(pu, v3.id, { decision: "APPROVED", signerName: "Sam Fictional", contentHash: v3.contentHash }, {});
     await recordSubmitted(daria, p.id, { confirmationNumber: "MAT-77" });
     expect((await prisma.complianceFilingPeriod.findUniqueOrThrow({ where: { id: p.id } })).filingStatus).toBe("SUBMITTED");
     void tab;
@@ -353,8 +358,8 @@ describe("client approval gate", () => {
     const { daria, p, pu } = await approvalSetup();
     const v1 = await createReturnVersion(daria, p.id);
     await sendForApproval(daria, v1.id);
-    await expect(clientDecide(pu, v1.id, { decision: "CHANGES_REQUESTED", signerName: "Omar Fictional", contentHash: v1.contentHash }, {})).rejects.toThrow(/what should change/);
-    await clientDecide(pu, v1.id, { decision: "CHANGES_REQUESTED", signerName: "Omar Fictional", contentHash: v1.contentHash, comments: "Add the catering sales" }, {});
+    await expect(clientDecide(pu, v1.id, { decision: "CHANGES_REQUESTED", signerName: "Sam Fictional", contentHash: v1.contentHash }, {})).rejects.toThrow(/what should change/);
+    await clientDecide(pu, v1.id, { decision: "CHANGES_REQUESTED", signerName: "Sam Fictional", contentHash: v1.contentHash, comments: "Add the catering sales" }, {});
     expect((await prisma.complianceFilingPeriod.findUniqueOrThrow({ where: { id: p.id } })).filingStatus).toBe("PREPARING");
   });
 });
@@ -401,7 +406,7 @@ describe("evidence rules", () => {
 describe("entity separation and portal isolation", () => {
   it("restaurant and nonprofit calendars, approvals and documents never mix; other clients and owners can't see them", async () => {
     const { tab } = await office();
-    const c = await client("Fictional Shawarma Co");
+    const c = await client("Fictional Grill Co");
     await prisma.clientService.create({ data: { clientId: c.id, type: "BOOKKEEPING", title: "Bookkeeping", status: "IN_PROGRESS", createdById: tab.id } });
     const { business, nonprofit } = await applyProposedProfile(tab, c.id, "RESTAURANT_AL_SCORP_JEFFERSON_BHM");
     const bizObl = await prisma.complianceObligation.findMany({ where: { entityId: business.id } });
@@ -421,7 +426,7 @@ describe("entity separation and portal isolation", () => {
     // Portal: the business's client login sees the restaurant once visible; another client's login never.
     await prisma.complianceEntity.updateMany({ where: { id: { in: [business.id, nonprofit!.id] } }, data: { portalVisible: true } });
     await editObligation(tab, sales.id, { clientVisible: true, serviceType: "BOOKKEEPING" });
-    const me = await portalLogin(c.id, "omar.fictional@example.com", "Omar Fictional");
+    const me = await portalLogin(c.id, "sam.fictional@example.com", "Sam Fictional");
     const mine = await portalCompliance(me, c.id);
     expect(mine.entities.map((x) => x.id)).toContain(business.id);
     expect(mine.entities.find((x) => x.id === business.id)!.periods.map((x) => x.id)).toContain(salesPeriod.id);
@@ -525,10 +530,10 @@ describe("Missing Compliance Information", () => {
   });
 });
 
-describe("Mr. Shawarma proposal", () => {
+describe("Restaurant proposal (Birmingham S corporation)", () => {
   it("creates the expected PROPOSED / Needs Verification items, a separate nonprofit, and invents no identifiers", async () => {
     const { tab } = await office();
-    const c = await prisma.client.create({ data: { displayName: "Mr. Shawarma (DEMO, not real data)", businessName: "Mr. Shawarma (DEMO, not real data)", clientType: "BUSINESS", city: "Birmingham", state: "AL" } });
+    const c = await prisma.client.create({ data: { displayName: "Magnolia Grill (DEMO, not real data)", businessName: "Magnolia Grill (DEMO, not real data)", clientType: "BUSINESS", city: "Birmingham", state: "AL" } });
     const r = await applyProposedProfile(tab, c.id, "RESTAURANT_AL_SCORP_JEFFERSON_BHM");
     const again = await applyProposedProfile(tab, c.id, "RESTAURANT_AL_SCORP_JEFFERSON_BHM");
     expect(again.businessItems + again.nonprofitItems).toBe(0);
@@ -563,8 +568,8 @@ describe("rules library", () => {
     expect(await ensureRulesLoaded()).toBe(RULES.length);
     expect(await ensureRulesLoaded()).toBe(0);
     const lib = await rulesLibrary(tab);
-    expect(lib.counts).toEqual({ total: RULES.length, verified: 0, needsVerification: RULES.length });
-    expect(lib.reviewQueue).toHaveLength(RULES.length);
+    expect(lib.counts).toEqual({ total: RULES.length, verified: 3, needsVerification: RULES.length - 3 });
+    expect(lib.reviewQueue).toHaveLength(RULES.length - 3); // the 3 verified Birmingham rules were reviewed 2026-11-08
     await expect(editRule(tab, "FED_941", { sourceUrl: "not a link", verificationStatus: "VERIFIED", reason: "Checked the page" })).rejects.toThrow(/source link/);
     const v2 = await editRule(tab, "FED_941", { sourceUrl: "https://www.irs.gov/forms-pubs/about-form-941", verificationStatus: "VERIFIED", reason: "Opened the IRS page and read the due dates" });
     expect(v2).toMatchObject({ version: 2, isCurrent: true, editedById: tab.id, verificationStatus: "VERIFIED", origin: "OWNER_EDIT" });
@@ -618,5 +623,18 @@ describe("staff email switch", () => {
     // No provider is configured in tests, so the attempt is recorded as FAILED — never silently sent or held.
     expect(emails.every((r) => r.status === "FAILED")).toBe(true);
     expect(await prisma.auditLog.count({ where: { action: "compliance.switch.staffEmailReminders.on", actorId: tab.id } })).toBe(1);
+  });
+});
+
+describe("City of Birmingham rules (verified from the City's written taxpayer notice)", () => {
+  it("sales/use and occupational tax are monthly, due the 20th; the business license is delinquent after February 15", () => {
+    const r = (k: string) => RULES.find((x) => x.ruleKey === k)!;
+    expect(r("BHM_SALES_USE")).toMatchObject({ verificationStatus: "VERIFIED", verifiedOn: "2026-11-08", frequency: "ACCOUNT:MONTHLY", dueRuleCode: "DOM:20:1" });
+    expect(r("BHM_OCCUPATIONAL")).toMatchObject({ verificationStatus: "VERIFIED", frequency: "ACCOUNT:MONTHLY", dueRuleCode: "DOM:20:1" });
+    expect(r("BHM_BUSINESS_LICENSE")).toMatchObject({ verificationStatus: "VERIFIED", frequency: "ANNUAL", dueRuleCode: "FIXED:02-15:0" });
+    expect(r("BHM_BUSINESS_LICENSE").dueRuleDescription).toMatch(/Due January 1.*delinquent after February 15/);
+    for (const k of ["BHM_SALES_USE", "BHM_OCCUPATIONAL"]) expect(r(k).notes).toMatch(/every reporting period, even when no tax is due/);
+    // Still unverified: the beverage tax isn't in the notice.
+    expect(r("BHM_BEVERAGE").verificationStatus).toBe("NEEDS_VERIFICATION");
   });
 });

@@ -10,12 +10,18 @@
  * verification" and never presents them as certain. The owner verifies each rule on the
  * Rules library page; that creates a new version (editor, reason, source link).
  *
+ * 2026-11-08.1: the three City of Birmingham business-tax rules (sales/use, occupational, business
+ * license) are VERIFIED from the City's own written notice to a registered taxpayer: Tax & License
+ * Administration, Department of Finance, City of Birmingham ("Tax Filing Schedule" and "Important
+ * Reminder"). Occupational tax corrected to the 20th; business license corrected to January 1 due,
+ * delinquent after February 15. Returns are required for every period, even with no tax due.
+ *
  * Changing this file: bump SEED_VERSION, keep old keys, and describe the change in the rule's
  * `changeReason`. The loader (src/lib/services/compliance-rules.ts) adds a new version for any
  * rule whose content changed and never edits or deletes an existing version.
  */
 
-export const SEED_VERSION = "2026-11-05.1";
+export const SEED_VERSION = "2026-11-08.1";
 
 export type RuleConditions = {
   /** Entity kinds (LLC, CORPORATION, PARTNERSHIP, SOLE_PROPRIETORSHIP, NONPROFIT, OTHER). */
@@ -66,6 +72,8 @@ export type RuleSeed = {
   sourceUrls: string[];
   effectiveFrom?: string;
   verificationStatus: "VERIFIED" | "NEEDS_VERIFICATION";
+  /** VERIFIED rules: the date the official source was read (YYYY-MM-DD). */
+  verifiedOn?: string;
   notes?: string;
   clientApprovalDefault?: boolean;
   portalKind?: string;
@@ -272,18 +280,18 @@ export const RULES: RuleSeed[] = [
   // --- City of Birmingham ------------------------------------------------------------------------
   {
     ruleKey: "BHM_BUSINESS_LICENSE", jurisdictionLevel: "CITY", jurisdictionName: "City of Birmingham", formName: "Birmingham business license renewal", obligationName: "Municipal business license", category: "LICENSE_PERMIT",
-    conditions: { cities: ["Birmingham"] }, frequency: "ANNUAL", dueRuleCode: "FIXED:01-31:0", dueRuleDescription: "Annual renewal (candidate: by January 31 of the license year — verify).", weekendRule: AL,
-    sourceUrls: ["https://www.birminghamal.gov/"], verificationStatus: NV, portalKind: "CITY_BIRMINGHAM", requiredDocs: ["Gross receipts for the prior year", "Renewed license copy"], serviceTypes: ["BOOKKEEPING", "BUSINESS_FORMATION"],
+    conditions: { cities: ["Birmingham"] }, frequency: "ANNUAL", dueRuleCode: "FIXED:02-15:0", dueRuleDescription: "Annual. Due January 1; may be renewed on or before February 15; delinquent after February 15 (deadline shown: February 15).", weekendRule: AL,
+    sourceUrls: ["https://www.birminghamal.gov/"], verificationStatus: "VERIFIED", verifiedOn: "2026-11-08", notes: "City of Birmingham Tax & License Administration (Department of Finance), written taxpayer notice: Tax Filing Schedule, verified 2026-11-08. The account must be inactivated by request when business in Birmingham ends.", portalKind: "CITY_BIRMINGHAM", requiredDocs: ["Gross receipts for the prior year", "Renewed license copy"], serviceTypes: ["BOOKKEEPING", "BUSINESS_FORMATION"],
   },
   {
     ruleKey: "BHM_OCCUPATIONAL", jurisdictionLevel: "CITY", jurisdictionName: "City of Birmingham", formName: "Birmingham occupational tax return", obligationName: "Occupational (license) tax withheld from wages", category: "WITHHOLDING_PAYROLL",
-    conditions: { cities: ["Birmingham"], payroll: true, registration: { type: "LOCAL", jurisdiction: "Birmingham", missing: "Birmingham occupational tax account not recorded" } }, frequency: "ACCOUNT:MONTHLY", dueRuleCode: "EOM:1", dueRuleDescription: "Candidate: by the last day of the month after the period — verify frequency and due date.", weekendRule: AL,
-    sourceUrls: ["https://www.birminghamal.gov/"], verificationStatus: NV, portalKind: "CITY_BIRMINGHAM", requiredDocs: ["Payroll register", "Return confirmation"], serviceTypes: ["PAYROLL", "BOOKKEEPING"],
+    conditions: { cities: ["Birmingham"], payroll: true, registration: { type: "LOCAL", jurisdiction: "Birmingham", missing: "Birmingham occupational tax account not recorded" } }, frequency: "ACCOUNT:MONTHLY", dueRuleCode: "DOM:20:1", dueRuleDescription: "Monthly, due by the 20th of the month after the period. File every period, even with no tax due.", weekendRule: AL,
+    sourceUrls: ["https://www.birminghamal.gov/"], verificationStatus: "VERIFIED", verifiedOn: "2026-11-08", notes: "City of Birmingham Tax & License Administration (Department of Finance), written taxpayer notice: Tax Filing Schedule, verified 2026-11-08. A return is required for every reporting period, even when no tax is due (City of Birmingham General Code). The taxpayer must ask the City to inactivate the account when business in Birmingham ends.", portalKind: "CITY_BIRMINGHAM", requiredDocs: ["Payroll register", "Return confirmation"], serviceTypes: ["PAYROLL", "BOOKKEEPING"],
   },
   {
     ruleKey: "BHM_SALES_USE", jurisdictionLevel: "CITY", jurisdictionName: "City of Birmingham", formName: "Birmingham sales/use tax return", obligationName: "Municipal sales/use tax", category: "SALES_USE",
-    conditions: { cities: ["Birmingham"], activityTagsAny: SELLS, registration: { type: "SALES_USE", jurisdiction: "Birmingham", missing: "Birmingham sales/use tax account not recorded" } }, frequency: "ACCOUNT:MONTHLY", dueRuleCode: "DOM:20:1", dueRuleDescription: "20th day of the month after the reporting period (candidate — verify; confirm whether filed with the city or through ONE SPOT).", weekendRule: AL,
-    sourceUrls: ["https://www.birminghamal.gov/", "https://www.revenue.alabama.gov/sales-use/one-spot/"], verificationStatus: NV, portalKind: "CITY_BIRMINGHAM", requiredDocs: ["Sales summary", "Return confirmation", "Payment confirmation"], serviceTypes: ["BOOKKEEPING", "TAX_BUSINESS"],
+    conditions: { cities: ["Birmingham"], activityTagsAny: SELLS, registration: { type: "SALES_USE", jurisdiction: "Birmingham", missing: "Birmingham sales/use tax account not recorded" } }, frequency: "ACCOUNT:MONTHLY", dueRuleCode: "DOM:20:1", dueRuleDescription: "Monthly, due by the 20th of the month after the period. File every period, even with no tax due. (Filing route — City portal or ONE SPOT — still to confirm per client.)", weekendRule: AL,
+    sourceUrls: ["https://www.birminghamal.gov/", "https://www.revenue.alabama.gov/sales-use/one-spot/"], verificationStatus: "VERIFIED", verifiedOn: "2026-11-08", notes: "City of Birmingham Tax & License Administration (Department of Finance), written taxpayer notice: Tax Filing Schedule, verified 2026-11-08. A return is required for every reporting period, even when no tax is due (City of Birmingham General Code). The taxpayer must ask the City to inactivate the account when business in Birmingham ends.", portalKind: "CITY_BIRMINGHAM", requiredDocs: ["Sales summary", "Return confirmation", "Payment confirmation"], serviceTypes: ["BOOKKEEPING", "TAX_BUSINESS"],
   },
   {
     ruleKey: "BHM_BEVERAGE", jurisdictionLevel: "CITY", jurisdictionName: "City of Birmingham", formName: "Birmingham beverage tax (if applicable)", obligationName: "Municipal beverage tax", category: "SALES_USE",

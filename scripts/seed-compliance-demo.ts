@@ -34,7 +34,7 @@ async function main() {
   const { runComplianceReminders } = await import("@/lib/services/compliance/reminders");
   type Actor = { id: string; role: "ADMIN" | "STAFF"; name: string; email: string };
 
-  const DEMO = "Mr. Shawarma (DEMO, not real data)";
+  const DEMO = "Magnolia Grill (DEMO, not real data)";
   if (await prisma.client.count({ where: { businessName: DEMO } })) {
     console.log("Compliance demo data is already here. Nothing changed.");
     return;
@@ -67,12 +67,12 @@ async function main() {
     return { id: u.id, name: u.name, email: u.email };
   };
 
-  // 1. Mr. Shawarma (DEMO): the restaurant proposal + the owner's nonprofit.
-  const shawarma = await client(DEMO, { addressLine1: "100 Example Ave S", postalCode: "35203" });
-  await service(shawarma.id, "BOOKKEEPING");
-  await service(shawarma.id, "TAX_BUSINESS");
-  const omar = await portal(shawarma.id, "omar.demo@example.com", "Omar (DEMO owner)");
-  const { business, nonprofit } = await applyProposedProfile(tab, shawarma.id, "RESTAURANT_AL_SCORP_JEFFERSON_BHM");
+  // 1. Magnolia Grill (DEMO): the restaurant proposal + the owner's nonprofit.
+  const restaurant = await client(DEMO, { addressLine1: "100 Example Ave S", postalCode: "35203" });
+  await service(restaurant.id, "BOOKKEEPING");
+  await service(restaurant.id, "TAX_BUSINESS");
+  const samOwner = await portal(restaurant.id, "sam.demo@example.com", "Sam (DEMO owner)");
+  const { business, nonprofit } = await applyProposedProfile(tab, restaurant.id, "RESTAURANT_AL_SCORP_JEFFERSON_BHM");
   // Owner approves a few items after verifying (fictional example data only).
   await prisma.complianceEntity.update({ where: { id: business.id }, data: { status: "ACTIVE", portalVisible: true, fiscalYearEndMonth: 12 } });
   await E.saveTaxAccount(tab, business.id, { type: "SALES_USE", agency: "Alabama Department of Revenue", jurisdictionName: "Alabama", jurisdictionLevel: "STATE", accountNumber: "DEMO-000-1111", filingFrequency: "MONTHLY", status: "ACTIVE" });
@@ -90,12 +90,12 @@ async function main() {
 
   // September 2026: full approval flow (ready → client approved → submitted with evidence → accepted).
   const sep = await prisma.complianceFilingPeriod.findFirstOrThrow({ where: { obligationId: sales.id, periodKey: "2026-09" } });
-  const ret = await P.uploadComplianceDocument(daria, { entityId: business.id, periodId: sep.id, kind: "RETURN", title: "Form 2100 — Sept 2026 (DEMO)", bytes: await pdf(["Alabama Form 2100 — DEMO, not real data", "Mr. Shawarma (DEMO) · September 2026", "Taxable sales: $00,000.00 (fictional)"]), originalName: "form-2100-sep-2026-demo.pdf" });
+  const ret = await P.uploadComplianceDocument(daria, { entityId: business.id, periodId: sep.id, kind: "RETURN", title: "Form 2100 — Sept 2026 (DEMO)", bytes: await pdf(["Alabama Form 2100 — DEMO, not real data", "Magnolia Grill (DEMO) · September 2026", "Taxable sales: $00,000.00 (fictional)"]), originalName: "form-2100-sep-2026-demo.pdf" });
   await P.uploadComplianceDocument(daria, { entityId: business.id, periodId: sep.id, kind: "SUPPORTING", title: "Sales summary Sept 2026 (DEMO)", bytes: await pdf(["Sales summary — DEMO", "September 2026 (fictional)"]), originalName: "sales-sep-2026-demo.pdf" });
   await P.setAmountDue(daria, sep.id, 184250);
   const v = await P.createReturnVersion(daria, sep.id, { note: "September sales tax return for your review." });
   await P.sendForApproval(daria, v.id);
-  await P.clientDecide(omar, v.id, { decision: "APPROVED", signerName: "Omar (DEMO owner)", contentHash: v.contentHash, comments: "Approved — demo." }, { ip: "203.0.113.10", userAgent: "Demo browser" });
+  await P.clientDecide(samOwner, v.id, { decision: "APPROVED", signerName: "Sam (DEMO owner)", contentHash: v.contentHash, comments: "Approved — demo." }, { ip: "203.0.113.10", userAgent: "Demo browser" });
   const conf = await P.uploadComplianceDocument(daria, { entityId: business.id, periodId: sep.id, kind: "FILING_CONFIRMATION", title: "MAT confirmation (DEMO)", bytes: await pdf(["MAT filing confirmation — DEMO", "Confirmation DEMO-CONF-0920"]), originalName: "mat-confirmation-demo.pdf" });
   await P.recordSubmitted(daria, sep.id, { confirmationNumber: "DEMO-CONF-0920", documentId: conf.document.id, filedOn: "2026-10-16" });
   const ack = await P.uploadComplianceDocument(daria, { entityId: business.id, periodId: sep.id, kind: "ACCEPTANCE", title: "ALDOR acknowledgement (DEMO)", bytes: await pdf(["ALDOR acknowledgement — DEMO"]), originalName: "aldor-ack-demo.pdf" });
@@ -108,7 +108,7 @@ async function main() {
   const v2 = await P.createReturnVersion(daria, oct.id);
   await P.sendForApproval(daria, v2.id);
   // Demo files are marked scanned so the screens can open them (no scanner locally).
-  await prisma.document.updateMany({ where: { clientId: shawarma.id }, data: { scanStatus: "CLEAN" } });
+  await prisma.document.updateMany({ where: { clientId: restaurant.id }, data: { scanStatus: "CLEAN" } });
   await P.publishComplianceDocument(daria, ret.document.id, true);
   await P.publishComplianceDocument(daria, conf.document.id, true);
   void nonprofit;
@@ -152,7 +152,7 @@ async function main() {
   if (ez) await O.activateObligation(tab, ez.id);
 
   await runComplianceReminders(new Date());
-  console.log(`Compliance demo seeded. Owner: owner.demo@example.com · staff: daria.demo@example.com · no access: nora.demo@example.com · client login: omar.demo@example.com (password Demo-Only-Password-1, local only).`);
+  console.log(`Compliance demo seeded. Owner: owner.demo@example.com · staff: daria.demo@example.com · no access: nora.demo@example.com · client login: sam.demo@example.com (password Demo-Only-Password-1, local only).`);
   await prisma.$disconnect();
 }
 
