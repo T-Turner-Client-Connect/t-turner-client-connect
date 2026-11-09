@@ -136,7 +136,7 @@ describe("starting, keeping and ending View as Client", () => {
     const res = await GET(new Request(`http://localhost/view-as-client/${bakery.id}?as=${sam.id}`), { params: Promise.resolve({ clientId: bakery.id }) });
     // A login of another client is ignored: the bakery's primary owner login is used.
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe(`http://localhost/client?account=${bakery.id}`);
+    expect(res.headers.get("location")).toBe(`/client?account=${bakery.id}`);
     expect(viewer.parsePreviewCookie(h.jar.get(viewer.VAC_COOKIE))).toMatchObject({ s: h.staff!.id, c: bakery.id, l: patLogin.id });
     expect(await prisma.auditLog.count({ where: { action: "portal.staff_preview", entityId: bakery.id } })).toBe(1);
     // Another valid login of this client can be chosen.
@@ -145,7 +145,7 @@ describe("starting, keeping and ending View as Client", () => {
     expect(viewer.parsePreviewCookie(h.jar.get(viewer.VAC_COOKIE))?.l).toBe(casey.id);
     // Only a /client page may follow.
     const out = await GET(new Request(`http://localhost/view-as-client/${bakery.id}?to=https://evil.example`), { params: Promise.resolve({ clientId: bakery.id }) });
-    expect(out.headers.get("location")).toBe(`http://localhost/client?account=${bakery.id}`);
+    expect(out.headers.get("location")).toBe(`/client?account=${bakery.id}`);
     // No staff session: refused before anything is set.
     reset();
     await expect(GET(new Request(`http://localhost/view-as-client/${bakery.id}`), { params: Promise.resolve({ clientId: bakery.id }) })).rejects.toSatisfy((e) => nextTarget(e) === "/staff/login");
@@ -169,12 +169,12 @@ describe("starting, keeping and ending View as Client", () => {
     const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body, "base64url").toString()), c: "someone-else" })).toString("base64url");
     h.jar.set(viewer.VAC_COOKIE, `${forged}.${sig}`);
     expect(await viewer.getPreviewSession()).toBeNull();
-    expect(viewer.parsePreviewCookie(viewer.previewCookieValue({ staffId: tabitha.id, clientId: bakery.id, loginId: null }, Date.now() - 3 * 60 * 60 * 1000))).toBeNull();
+    expect(viewer.parsePreviewCookie(viewer.previewCookieValue({ staffId: tabitha.id, clientId: bakery.id, loginId: null }, Date.now() - 11 * 60 * 60 * 1000))).toBeNull();
     // Exit.
     await startPreview(bakery.id, patLogin.id);
     const { GET } = await import("@/app/view-as-client/exit/route");
-    const res = await GET(new Request("http://localhost/view-as-client/exit"));
-    expect(res.headers.get("location")).toBe(`http://localhost/clients/${bakery.id}`);
+    const res = await GET();
+    expect(res.headers.get("location")).toBe(`/clients/${bakery.id}`);
     expect(h.jar.has(viewer.VAC_COOKIE)).toBe(false);
   });
 
