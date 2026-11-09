@@ -62,7 +62,7 @@ export const clientReceivableWhere = {
 
 /** Return copies are released by Tabitha (Tax returns), never published directly. */
 export const RETURN_DOC_TYPES = ["FEDERAL_RETURN", "STATE_RETURN", "AMENDED_RETURN", "TAX_RETURN"];
-const RETURN_GATE = "Completed tax returns go through the client's Taxes tab → Finish & Send a Return. Only Tabitha, an Admin or the staff member assigned to this client can send one.";
+const RETURN_GATE = "Completed tax returns go through the client's Taxes tab → Finish & Send a Return. Any staff member can send one.";
 /** Tabitha files every return: for her the way through is the one-step delivery, never "send it for review". */
 const OWNER_RETURN_GATE = "Returns are sent from this client's Taxes tab → Finish & Send a Return (federal and state together). It marks them Accepted and sends them to the client in one step.";
 

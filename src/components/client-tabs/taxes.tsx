@@ -255,7 +255,7 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
                             <p className="text-xs text-slate-700">{req.approved ? `Client approved the ${f.taxYear} summary (version ${req.approved.version}) — ready for owner filing.` : `No client-approved ${f.taxYear} summary yet. Send the summary for approval first.`}</p>
                             {f.method === "ELECTRONIC" && <label className="mt-2 flex items-start gap-2"><input type="checkbox" name="form8879" className="mt-1 accent-navy-900" /> Signed IRS Form 8879 (and any state e-file authorization) is on file. The summary approval does not replace it.</label>}
                             {!req.approved && <PresetReason className="mt-2" />}
-                            {!approver && <p className="mt-1 text-xs font-semibold text-red-800">Only Tabitha, an Admin or the staff member assigned to this client can record a return as submitted.</p>}
+                            {!approver && <p className="mt-1 text-xs font-semibold text-red-800">Only office staff can record a return as submitted.</p>}
                           </div>
                         )}
                         <Field label="Submission ID / reference"><input className="input" name="filingReference" defaultValue={f.filingReference ?? ""} /></Field>

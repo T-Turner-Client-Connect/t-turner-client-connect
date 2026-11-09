@@ -5,6 +5,8 @@ import { createClient } from "@/lib/services/clients";
 import { attachFilingDocument, correctFilingForm, createFiling, setFilingStatusByStaff } from "@/lib/services/tax";
 import { staffUploadDocument } from "@/lib/services/documents";
 import { fileReturn } from "@/lib/services/tax-returns";
+// These tests cover the "waiting for Tabitha" path under the earlier sending rule (see the helper).
+vi.mock("@/lib/services/return-senders", async (orig) => (await import("./helpers/legacy-return-senders")).legacyReturnSenders(orig));
 
 const pdf = (tag: string) => new TextEncoder().encode(`%PDF-1.4\n% fictional state return ${tag}\n`);
 

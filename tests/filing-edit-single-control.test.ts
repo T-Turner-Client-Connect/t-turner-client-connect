@@ -9,6 +9,8 @@ import { fileReturn } from "@/lib/services/tax-returns";
 import { editFilingDetails, moveFilingDocument, removeFiling } from "@/lib/services/accepted-returns";
 import * as taxActions from "@/app/actions/tax";
 import { TaxesTab } from "@/components/client-tabs/taxes";
+// These tests cover the "waiting for Tabitha" path under the earlier sending rule (see the helper).
+vi.mock("@/lib/services/return-senders", async (orig) => (await import("./helpers/legacy-return-senders")).legacyReturnSenders(orig));
 
 /**
  * #122 + #124 reconciled: one correction control per filing card ("Edit filing

@@ -9,6 +9,8 @@ import { createFiling, setFilingStatusByStaff } from "@/lib/services/tax";
 import { approveSummary, createSummary, portalSummaries, requestSummaryChanges, reviseSummary, sendSummary, summaryRequirement } from "@/lib/services/tax-summary";
 import { attachPreparedReturn, excludeItem, sendBlockers, updateItem, verifyItem, resolveCheck } from "@/lib/services/tax-summary-items";
 import { extractFromPages, maskSensitive, parseMoney } from "@/lib/tax/extract";
+// These tests cover the "waiting for Tabitha" path under the earlier sending rule (see the helper).
+vi.mock("@/lib/services/return-senders", async (orig) => (await import("./helpers/legacy-return-senders")).legacyReturnSenders(orig));
 
 // All people, employers and amounts are fictional.
 async function pdf(pages: string[][]) {

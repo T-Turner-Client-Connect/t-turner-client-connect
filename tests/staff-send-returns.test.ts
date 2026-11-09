@@ -22,10 +22,10 @@ describe("Staff send tax returns to their clients", () => {
     return { tabitha, preparer, other, client };
   }
 
-  it("the assigned preparer can send the return; other staff can't; removing a filing stays with Tabitha", async () => {
+  it("any staff member sends the return to the client's vault (assigned or not); removing a filing stays with Tabitha", async () => {
     const s = await setup();
     expect(await canSendReturns(s.preparer, s.client.id)).toBe(true);
-    expect(await canSendReturns(s.other, s.client.id)).toBe(false);
+    expect(await canSendReturns(s.other, s.client.id)).toBe(true);
     expect(await canSendReturns(s.tabitha, s.client.id)).toBe(true);
 
     for (const [returnType, jurisdiction] of [["1040", "FEDERAL"], ["40", "AL"]]) {
@@ -37,8 +37,8 @@ describe("Staff send tax returns to their clients", () => {
     const al = await fileReturn(s.preparer, { clientId: s.client.id, taxYear: 2025, returnType: "40", jurisdiction: "AL", filingType: "ORIGINAL", bytes: pdf("al"), originalName: "al40.pdf" });
     await prisma.document.updateMany({ where: { id: { in: [fed.id, al.id] } }, data: { scanStatus: "CLEAN" } });
 
-    await expect(releaseReturn(s.other, fed.id)).rejects.toBeInstanceOf(ForbiddenError);
-    await releaseReturn(s.preparer, fed.id);
+    // Staff NOT assigned to the client send it straight to the vault.
+    await releaseReturn(s.other, fed.id);
     await releaseReturn(s.preparer, al.id);
     const sent = await prisma.document.findMany({ where: { id: { in: [fed.id, al.id] } } });
     expect(sent.every((d) => d.visibility === "PUBLISHED")).toBe(true);

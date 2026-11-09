@@ -377,7 +377,7 @@ export async function assertOwnerMaySubmit(
   input: { form8879Confirmed: boolean; overrideReason?: string | null },
 ) {
   const { canSendReturns } = await import("./return-senders");
-  if (!(await canSendReturns(actor, filing.clientId))) throw new ForbiddenError("Only Tabitha, an Admin or the staff member assigned to this client can record a return as submitted.");
+  if (!(await canSendReturns(actor, filing.clientId))) throw new ForbiddenError("Only office staff can record a return as submitted.");
   if (filing.filingType === "EXTENSION") return { summaryId: null, override: null };
   // A signed 8879 on file that matches the approved summary satisfies this; the checkbox is the fallback.
   if (filing.method === "ELECTRONIC" && !input.form8879Confirmed && !(await (await import("./auto-tax-summary")).signed8879OnFile(filing))) {
