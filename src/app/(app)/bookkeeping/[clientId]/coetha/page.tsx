@@ -12,8 +12,8 @@ import { taxProfile } from "@/lib/services/tax-classification";
 import { coethaCurrentWork } from "@/lib/services/monthly-workflow";
 import { RecommendationCard } from "@/components/bk/parts";
 import { COETHA_NO_KEY, COETHA_PRIVACY, coethaView, KIND_LABEL } from "@/lib/services/coetha";
-import { approveCoethaAction, approveMatchingAction, bulkCoethaAction, prepareFromRecordsAction, rejectCoethaAction, runCoethaAction, saveReferenceAction } from "@/app/actions/coetha";
-import { compareWithReference, matchingDraftIds } from "@/lib/services/coetha-records";
+import { approveCoethaAction, approveJudgmentAction, approveMatchingAction, bulkCoethaAction, prepareFromRecordsAction, rejectCoethaAction, runCoethaAction, saveReferenceAction, undoFamilyAction } from "@/app/actions/coetha";
+import { compareWithReference, familyPostingsToUndo, judgmentDraftIds, matchingDraftIds } from "@/lib/services/coetha-records";
 import { fmtDateTime } from "@/lib/format";
 import { canSetCoethaOptOut, coethaOptOutView } from "@/lib/services/coetha-opt-out";
 import { CoethaOptOutPanel } from "@/components/bk/coetha-opt-out-panel";
@@ -67,8 +67,8 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
   }
 
   const v = await coethaView(user, clientId);
-  const [cmp, matching] = v.book ? await Promise.all([compareWithReference(user, clientId), matchingDraftIds(clientId)]) : [null, [] as string[]];
-  const judgment = v.open.filter((p) => p.kind === "CATEGORY" && (p.payload as { needsJudgment?: boolean }).needsJudgment).length;
+  const [cmp, matching, judgmentIds, familyUndo] = v.book ? await Promise.all([compareWithReference(user, clientId), matchingDraftIds(clientId), judgmentDraftIds(clientId), familyPostingsToUndo(clientId)]) : [null, [] as string[], [] as string[], [] as { entryId: string }[]];
+  const judgment = judgmentIds.length;
   const byKind = (k: keyof typeof KIND_LABEL) => v.open.filter((p) => p.kind === k);
   const cats = byKind("CATEGORY");
   const discs = byKind("DISCREPANCY");
@@ -148,6 +148,7 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <ActionForm action={saveReferenceAction.bind(null, clientId)} className="flex flex-wrap items-center gap-2" resetOnSuccess idempotent>
               <input className="input max-w-72" type="file" name="file" accept="application/pdf" required aria-label="Completed financial statements PDF" />
+              <span className="w-full text-xs text-slate-600">The completed financial statements package with the monthly Profit &amp; Loss (not a bank statement).</span>
               <button type="submit" className={goldBtn} data-testid="records-upload"><Sparkles className="size-4" aria-hidden /> {cmp ? "Replace statements and prepare" : "Add statements and prepare"}</button>
             </ActionForm>
             {cmp && (
@@ -160,6 +161,18 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
             <ActionForm action={approveMatchingAction.bind(null, clientId)} className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900 ring-1 ring-emerald-200" confirm={`Approve and post all ${matching.length} transactions that match the completed statements? The ones that need your judgment are not included.`}>
               <span className="mr-auto"><strong>{matching.length}</strong> drafts match the completed statements.{judgment ? ` ${judgment} more need your judgment (below, marked “Needs your judgment”).` : ""}</span>
               <button type="submit" className={navyBtn} data-testid="records-approve-all">Approve all {matching.length}</button>
+            </ActionForm>
+          )}
+          {v.canApprove && judgment > 0 && (
+            <ActionForm action={approveJudgmentAction.bind(null, clientId)} className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-950 ring-1 ring-amber-200" confirm={`Approve and post all ${judgment} judgment items exactly as the completed statements treated them (owner draws, card payments, unidentified checks, unclassified items)? You can still reclassify any of them later with an adjusting entry.`}>
+              <span className="mr-auto"><strong>{judgment}</strong> need your judgment. Each is drafted the way the completed statements treated it. Review them in the list below, or approve them all as the statements treated them.</span>
+              <button type="submit" className={outlineBtn} data-testid="records-approve-judgment">Approve the {judgment} as the statements treated them</button>
+            </ActionForm>
+          )}
+          {v.canApprove && familyUndo.length > 0 && (
+            <ActionForm action={undoFamilyAction.bind(null, clientId)} className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-red-50 p-3 text-sm text-red-900 ring-1 ring-red-200" confirm={`Reverse these ${familyUndo.length} postings and prepare them again?`}>
+              <span className="mr-auto"><strong>Correction:</strong> {familyUndo.length} transaction{familyUndo.length === 1 ? " was" : "s were"} posted by a “same vendor family” shortcut inside the statement months (that shortcut now only applies to later months). Reverse {familyUndo.length === 1 ? "it" : "them"} so Coetha prepares {familyUndo.length === 1 ? "it" : "them"} again correctly.</span>
+              <button type="submit" className={outlineBtn} data-testid="records-undo-family">Reverse and prepare again</button>
             </ActionForm>
           )}
           {cmp && cmp.rows.some((r) => r.books) && (

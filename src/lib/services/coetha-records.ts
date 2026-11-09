@@ -126,6 +126,28 @@ export function matchVendors(lines: PackageLine[], groups: Group[], active?: boo
     search(0, [], new Array(n).fill(0));
     if (found) { result.set(i, (found as Group[]).map((g) => g.key)); for (const g of found as Group[]) used.add(g.key + g.dir); }
   }
+  // Last, lines made of many small purchases (meals, supplies): up to eight of the vendors still unmatched.
+  for (const i of order) {
+    if (result.has(i)) continue;
+    const l = lines[i];
+    if (l.amounts.every((v) => !v)) continue;
+    const dir = l.section === "INCOME" ? "IN" : "OUT";
+    const cand = groups.filter((x) => !used.has(x.key + x.dir) && x.dir === dir && x.vec.every((v, k) => v <= l.amounts[k]) && x.vec.some((v) => v > 0)).slice(0, 24);
+    let found: Group[] | null = null;
+    let steps = 0;
+    const search = (start: number, pick: Group[], sum: number[]) => {
+      if (found || ++steps > 400_000) return;
+      if (pick.length && eq(sum, l.amounts)) { found = [...pick]; return; }
+      if (pick.length === 8) return;
+      for (let k = start; k < cand.length; k++) {
+        const s = sum.map((v, j) => v + cand[k].vec[j]);
+        if (s.some((v, j) => v > l.amounts[j])) continue;
+        search(k + 1, [...pick, cand[k]], s);
+      }
+    };
+    search(0, [], new Array(n).fill(0));
+    if (found) { result.set(i, (found as Group[]).map((g) => g.key)); for (const g of found as Group[]) used.add(g.key + g.dir); }
+  }
   return result;
 }
 
@@ -207,7 +229,8 @@ export async function prepareFromRecords(actor: Actor, clientId: string) {
     const inRef = monthOf(ymdOf(t.date)) >= 0;
     let i = lineOfVendor.get(`${dir}|${key}`);
     let how = inRef ? `matches your completed statements (${refMonths}) to the cent` : `same vendor as in your completed statements (${refMonths})`;
-    if (i === undefined) {
+    // The "same vendor family" shortcut only applies after the statement months; inside them every vendor was checked to the cent.
+    if (i === undefined && !inRef) {
       const f = byFirst.get(`${dir}|${firstWord(key)}`);
       if (f && f.size === 1) { i = [...f][0]; how = `same vendor family as in your completed statements (${refMonths})`; }
     }
@@ -279,4 +302,45 @@ export async function compareWithReference(actor: Actor, clientId: string) {
     return { month, statementsNet: st, booksNet: bk, agrees: st === bk && rows.every((r) => !r.books || r.books[k] === r.statements[k]) };
   });
   return { title: ref.title, createdAt: ref.createdAt, months, rows };
+}
+
+// --- 6. One-step decisions for Tabitha -------------------------------------------------------------
+
+/** The open drafts flagged "Needs your judgment" (each drafted the way the completed statements treated it). */
+export async function judgmentDraftIds(clientId: string) {
+  const rows = await prisma.coethaProposal.findMany({ where: { clientId, status: "PROPOSED", kind: "CATEGORY", model: RECORDS_MODEL }, select: { id: true, payload: true } });
+  return rows.filter((r) => (r.payload as { needsJudgment?: boolean }).needsJudgment).map((r) => r.id);
+}
+
+/**
+ * Transactions an earlier version posted inside the statement months by the "same vendor family"
+ * shortcut (which now only applies after those months). Their entries can be reversed so the rows
+ * go back to waiting and are prepared again correctly.
+ */
+export async function familyPostingsToUndo(clientId: string) {
+  const ref = await latestReference(clientId);
+  if (!ref) return [];
+  const banks = await prisma.ledgerAccount.findMany({ where: { clientId, subtype: { in: ["BANK", "CREDIT_CARD"] } }, select: { id: true } });
+  const periods = await statementMonths(clientId, banks.map((b) => b.id), ref.months);
+  const first = periods[0]?.from, last = periods[periods.length - 1]?.to;
+  const rows = await prisma.coethaProposal.findMany({ where: { clientId, status: "APPROVED", kind: "CATEGORY", model: RECORDS_MODEL, reason: { contains: "same vendor family" }, journalEntryId: { not: null } }, select: { id: true, journalEntryId: true, payload: true } });
+  const ids = rows.filter((r) => { const d = (r.payload as { date?: string }).date ?? ""; return first && d >= first && d <= last; }).map((r) => r.journalEntryId!);
+  if (!ids.length) return [];
+  const live = await prisma.journalEntry.findMany({ where: { clientId, id: { in: ids }, reversedBy: null }, select: { id: true, date: true } });
+  return live.map((e) => ({ entryId: e.id, date: ymdOf(e.date) }));
+}
+
+export async function undoFamilyPostings(actor: Actor, clientId: string) {
+  const { assertCanApproveCoethaWork } = await import("@/lib/auth/permissions");
+  await assertCanApproveCoethaWork(actor);
+  await assertLedgerWrite(actor, clientId);
+  const { reverseEntry } = await import("./ledger");
+  const list = await familyPostingsToUndo(clientId);
+  let done = 0;
+  for (const e of list) {
+    await reverseEntry(actor, clientId, e.entryId, { date: e.date, reason: "Coetha matched this by vendor family inside the statement months; reversed so it is prepared again correctly." });
+    done++;
+  }
+  await audit(prisma, { actorId: actor.id, action: "coetha.family_postings_undone", entityType: "LedgerBook", entityId: clientId, clientId, details: { reversed: done } });
+  return done;
 }
