@@ -8,6 +8,7 @@ import { approveReconciliation, decideSharedCard, enterStatementBalances, monito
 import { discardDraftRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, staffUploadForRequest, staffUploadStatement } from "@/lib/services/client-requests";
 
 import { runWorkflowMonitor } from "@/lib/services/monthly-workflow";
+import { readAfterUpload, readStatementTransactions, statementReadMessage } from "@/lib/services/statement-import";
 import { setTaxClassification } from "@/lib/services/tax-classification";
 import { releaseInterimStatement, revokeInterimStatement } from "@/lib/services/client-statements";
 
@@ -174,8 +175,23 @@ export async function uploadStatementAction(clientId: string, _prev: ActionState
   return run(async () => {
     const file = await optionalFile(fd, "file");
     if (!file) throw new ValidationError("Choose the statement file.");
-    await staffUploadStatement(actor, clientId, { accountId: str(fd, "accountId"), month: str(fd, "month"), ...file });
+    const doc = await staffUploadStatement(actor, clientId, { accountId: str(fd, "accountId"), month: str(fd, "month"), ...file });
+    // Read its transactions straight away (imported only if they match the statement to the cent).
+    const read = /\.pdf$/i.test(file.originalName) ? await readAfterUpload(actor, clientId, doc.id) : "";
     refresh(clientId);
-    return "Statement uploaded and filed to that account and month.";
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    return `Statement uploaded and filed to that account and month.${read ? ` ${read}` : ""}`;
+  });
+}
+
+/** "Read transactions from statement": reads a statement PDF already on file. */
+export async function readStatementAction(clientId: string, documentId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const r = await readStatementTransactions(actor, clientId, documentId);
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    if (!r.ok) throw new ValidationError(statementReadMessage(r));
+    return statementReadMessage(r);
   });
 }

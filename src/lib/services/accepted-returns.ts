@@ -256,7 +256,9 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
   if (input.filingType !== "ORIGINAL" && input.filingType !== "AMENDED") throw new ValidationError("Choose original or amended.");
   if (!input.filings.length) throw new ValidationError("Tick Federal and/or the state returns being delivered.");
   if (input.filings.length > 10) throw new ValidationError("Deliver up to 10 returns at a time.");
-  const owner = await isReportApprover(actor);
+  // Tabitha, an Admin or the client's assigned preparer records acceptance and sends in one step.
+  const { canSendReturns } = await import("./return-senders");
+  const owner = await canSendReturns(actor, input.clientId);
   const note = input.verificationNote?.trim().slice(0, 300) || null;
 
   const seen = new Set<string>();
@@ -511,7 +513,10 @@ export async function pendingAcceptances(clientId?: string) {
 
 /** Tabitha confirms one waiting acceptance: Submitted → Accepted at the date staff entered, under the owner gate. */
 export async function confirmAcceptance(actor: Actor, filingId: string, ownerInput: OwnerConfirmation) {
-  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can confirm that a return was submitted and accepted.");
+  const { canSendReturns, NOT_RETURN_SENDER } = await import("./return-senders");
+  const target = await prisma.filingRecord.findUnique({ where: { id: filingId }, select: { clientId: true } });
+  if (!target) throw new ValidationError("Filing not found.");
+  if (!(await canSendReturns(actor, target.clientId))) throw new ForbiddenError(NOT_RETURN_SENDER);
   const req = await latestRequest(prisma, filingId);
   if (req?.toValue !== "REQUESTED") throw new ValidationError("That return is no longer waiting for confirmation.");
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
@@ -551,7 +556,7 @@ async function releaseFilingReturns(actor: Actor, filingId: string, d: { notifyE
 
 /** Several at once (each checked like a single confirmation). */
 export async function confirmAcceptances(actor: Actor, filingIds: string[], ownerInput: OwnerConfirmation) {
-  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can confirm that a return was submitted and accepted.");
+  // Each one is checked for this person and that client, like a single confirmation.
   const done: string[] = [];
   const skipped: { id: string; reason: string }[] = [];
   for (const id of Array.from(new Set(filingIds)).slice(0, 200)) {
@@ -618,7 +623,7 @@ export async function relabelFilingDocument(actor: Actor, documentId: string, to
 export async function convertToReturnCopy(actor: Actor, documentId: string) {
   const d = await loadFilingDoc(actor, documentId);
   if (d.filingDocType === "RETURN") return d;
-  const owner = await isReportApprover(actor);
+  const owner = await (await import("./return-senders")).canSendReturns(actor, d.clientId);
   const doc = await prisma.$transaction(async (tx) => {
     const filing = await tx.filingRecord.findUniqueOrThrow({ where: { id: d.filing.id } });
     const out = await asReturn(tx, filing, d, { actor, owner, title: convertedTitle(filing) });
@@ -654,7 +659,7 @@ export async function fileReturnForFiling(actor: Actor, filingId: string, file: 
   if (misfiled) return convertToReturnCopy(actor, misfiled.id);
   const { fileReturn, releaseReturn } = await import("./tax-returns");
   const doc = await fileReturn(actor, { clientId: f.clientId, taxYear: f.taxYear, returnType: f.returnType, jurisdiction: f.jurisdiction, filingType: f.filingType as "ORIGINAL" | "AMENDED", bytes: file.bytes, originalName: file.originalName });
-  if ((await isReportApprover(actor)) && doc.scanStatus !== "INFECTED") await releaseReturn(actor, doc.id, { notify: false, allowPendingScan: true });
+  if ((await (await import("./return-senders")).canSendReturns(actor, f.clientId)) && doc.scanStatus !== "INFECTED") await releaseReturn(actor, doc.id, { notify: false, allowPendingScan: true });
   return prisma.document.findUniqueOrThrow({ where: { id: doc.id } });
 }
 
@@ -695,7 +700,7 @@ export async function deliveryContext(clientId: string, actor: Actor) {
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { clientType: true, entityType: true, state: true } }),
     prisma.taxReturnSummary.findMany({ where: { clientId }, select: { taxYear: true, filingType: true } }),
     prisma.filingRecord.findMany({ where: { clientId, filingType: { in: ["ORIGINAL", "AMENDED"] } }, select: { taxYear: true, jurisdiction: true, filingType: true, returnType: true } }),
-    isReportApprover(actor),
+    import("./return-senders").then((m) => m.canSendReturns(actor, clientId)),
   ]);
   const keys = Array.from(new Set(summaries.map((x) => `${x.taxYear}:${x.filingType}`)));
   const approvedKeys: string[] = [];

@@ -4,26 +4,29 @@ import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { Button } from "@/components/ui";
-import { CHANGE_FLAGS, type ChangeFlag, type HoursSubmission } from "@/lib/payroll/queue";
+import { CHANGE_FLAGS, OTHER_PAY, type ChangeFlag, type HoursSubmission, type OtherPayKind } from "@/lib/payroll/queue";
 
 type State = { error?: string; ok?: string; at?: number } | null;
-type Row = { name: string; regularHours: string; overtimeHours: string; notes: string };
+type Row = { name: string; regularHours: string; overtimeHours: string; notes: string; pay: Partial<Record<OtherPayKind, string>> };
 
-const blank = (): Row => ({ name: "", regularHours: "", overtimeHours: "", notes: "" });
+const blank = (): Row => ({ name: "", regularHours: "", overtimeHours: "", notes: "", pay: {} });
+const PAY_KINDS = Object.entries(OTHER_PAY) as [OtherPayKind, (typeof OTHER_PAY)[OtherPayKind]][];
 const input = "w-full rounded-lg border border-ivory-200 px-2.5 py-1.5 text-sm focus:border-navy-700 focus:outline-none";
 
 /**
- * Hours for one pay period: each employee's regular and overtime hours with notes, change flags,
+ * Hours for one pay period: each employee's regular and overtime hours, any other pay (vacation,
+ * sick or holiday hours; bonus, commission, tips or other amounts) and notes, change flags,
  * or "No changes — same as last period". Used by the client in the portal and by staff recording
  * hours the client gave by phone or email. The server re-validates everything.
  */
 export function HoursForm({ action, initial, submitLabel = "Send hours" }: { action: (prev: State, fd: FormData) => Promise<State>; initial?: HoursSubmission | null; submitLabel?: string }) {
   const [noChanges, setNoChanges] = useState(initial?.noChanges ?? false);
-  const [rows, setRows] = useState<Row[]>(initial?.employees.length ? initial.employees.map((e) => ({ name: e.name, regularHours: String(e.regularHours), overtimeHours: String(e.overtimeHours || ""), notes: e.notes })) : [blank()]);
+  const [rows, setRows] = useState<Row[]>(initial?.employees.length ? initial.employees.map((e) => ({ name: e.name, regularHours: String(e.regularHours), overtimeHours: String(e.overtimeHours || ""), notes: e.notes, pay: Object.fromEntries(Object.entries(e.pay ?? {}).map(([k, v]) => [k, String(v)])) })) : [blank()]);
   const [flags, setFlags] = useState<ChangeFlag[]>(initial?.flags ?? []);
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const payload = JSON.stringify({ noChanges, employees: noChanges ? [] : rows, flags, notes });
-  const set = (i: number, k: keyof Row, v: string) => setRows((r) => r.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
+  const set = (i: number, k: Exclude<keyof Row, "pay">, v: string) => setRows((r) => r.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
+  const setPay = (i: number, k: OtherPayKind, v: string) => setRows((r) => r.map((x, j) => (j === i ? { ...x, pay: { ...x.pay, [k]: v } } : x)));
   return (
     <ActionForm action={action} className="space-y-3">
       <input type="hidden" name="hours" value={payload} />
@@ -45,6 +48,17 @@ export function HoursForm({ action, initial, submitLabel = "Send hours" }: { act
               <button type="button" aria-label="Remove row" onClick={() => setRows((x) => (x.length > 1 ? x.filter((_, j) => j !== i) : [blank()]))} className="flex items-center justify-center rounded-lg text-slate-500 hover:bg-red-50 hover:text-red-700">
                 <Trash2 className="size-4" aria-hidden />
               </button>
+              <details className="col-span-2 sm:col-span-5" open={Object.values(r.pay).some((v) => v && Number(v) !== 0)}>
+                <summary className="cursor-pointer text-xs font-semibold text-navy-900">Other pay{r.name ? ` for ${r.name}` : ""} (vacation, sick, holiday hours · bonus, commission, tips)</summary>
+                <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4" data-testid="other-pay">
+                  {PAY_KINDS.map(([k, def]) => (
+                    <label key={k} className="text-xs text-slate-600">
+                      {def.label} {def.unit === "HOURS" ? "(hrs)" : "($)"}
+                      <input aria-label={`${def.label} ${def.unit === "HOURS" ? "hours" : "amount"}`} inputMode="decimal" value={r.pay[k] ?? ""} onChange={(e) => setPay(i, k, e.target.value)} className={input} />
+                    </label>
+                  ))}
+                </div>
+              </details>
             </div>
           ))}
           <button type="button" onClick={() => setRows((x) => [...x, blank()])} className="inline-flex items-center gap-1 text-sm font-semibold text-navy-900 underline decoration-gold-500 underline-offset-4">

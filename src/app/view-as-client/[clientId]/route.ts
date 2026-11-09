@@ -24,5 +24,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ clientId: strin
   // Only a client portal page may follow (never an outside address).
   const to = url.searchParams.get("to");
   const next = to && /^\/client(\/[\w\-/]*)?$/.test(to) ? to : "/client";
-  return NextResponse.redirect(new URL(`${next}?account=${clientId}`, url));
+  // A path on the same site, never an absolute address built from the request: behind the host,
+  // the request's own URL can name the deploy's internal address, where the staff member isn't signed in.
+  return new NextResponse(null, { status: 307, headers: { Location: `${next}?account=${encodeURIComponent(clientId)}` } });
 }

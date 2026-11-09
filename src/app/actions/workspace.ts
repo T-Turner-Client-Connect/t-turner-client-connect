@@ -85,8 +85,8 @@ export async function uploadDocumentAction(fixedClientId: string | null, _prev: 
     }
     // Tabitha's one step on the Documents tab: a federal/state/amended return delivered as accepted.
     if (fixedClientId && fd.get("deliverAccepted") === "on" && str(fd, "category") === "TAXES" && ["FEDERAL_RETURN", "STATE_RETURN", "AMENDED_RETURN"].includes(docType)) {
-      const { isReportApprover } = await import("@/lib/services/bookkeeping-clients");
-      if (!(await isReportApprover(actor))) throw new ValidationError("Only Tabitha delivers a return in one step. Use the client's Taxes tab → Finish & Send a Return; it waits there for her release.");
+      const { canSendReturns, NOT_RETURN_SENDER } = await import("@/lib/services/return-senders");
+      if (!(await canSendReturns(actor, clientId))) throw new ValidationError(NOT_RETURN_SENDER);
       const { deliverAcceptedReturn } = await import("@/lib/services/accepted-returns");
       const { deliveryFrom, fileIn, summarize } = await import("@/lib/tax/delivery-form");
       const ret = await fileIn(fd, "file");

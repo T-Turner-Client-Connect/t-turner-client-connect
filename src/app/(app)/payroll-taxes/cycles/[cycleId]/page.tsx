@@ -12,9 +12,11 @@ import {
 } from "@/app/actions/payroll-taxes";
 import { requirePayrollTaxPage } from "@/lib/payroll-taxes/access";
 import { cycleDetail, payrollTaxSettings } from "@/lib/services/payroll-taxes";
+import { cycleAdpStatus } from "@/lib/services/adp-run";
+import { cycleFileAction, fileImportedAction } from "@/app/actions/adp-run";
 import { downloadToken } from "@/lib/services/documents";
 import { ForbiddenError } from "@/lib/auth/actor";
-import { CHANGE_FLAGS, REMINDER_STEPS } from "@/lib/payroll/queue";
+import { CHANGE_FLAGS, OTHER_PAY, REMINDER_STEPS, type OtherPayKind } from "@/lib/payroll/queue";
 import { employeeTaxes } from "@/lib/payroll/register";
 import { RUN_STATUS } from "@/lib/payroll/fields";
 
@@ -22,6 +24,8 @@ export const metadata = { title: "Pay cycle" };
 
 const input = "w-full rounded-lg border border-ivory-200 px-3 py-2 text-sm focus:border-navy-700 focus:outline-none";
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
+const payLines = (pay?: Partial<Record<OtherPayKind, number>>) =>
+  Object.entries(pay ?? {}).map(([k, v]) => { const def = OTHER_PAY[k as OtherPayKind]; return `${def.label}: ${def.unit === "HOURS" ? `${v} hrs` : `$${Number(v).toFixed(2)}`}`; });
 
 export default async function CyclePage({ params }: { params: Promise<{ cycleId: string }> }) {
   const { actor, access } = await requirePayrollTaxPage();
@@ -31,6 +35,7 @@ export default async function CyclePage({ params }: { params: Promise<{ cycleId:
     throw e;
   });
   const settings = await payrollTaxSettings();
+  const adp = await cycleAdpStatus(actor, cycleId);
   const { cycle, run, version, row, canManage } = d;
   const name = cycle.client.businessName || cycle.client.displayName;
   const docLink = (id: string) => `/api/documents/${downloadToken(id, { staffId: actor.id })}`;
@@ -73,7 +78,7 @@ export default async function CyclePage({ params }: { params: Promise<{ cycleId:
               <p className="font-semibold text-emerald-900">Received {fmtWhen(cycle.hoursSubmittedAt)}{d.hoursBy ? ` from ${d.hoursBy}` : ""}</p>
               {d.hours.noChanges ? <p>No changes — same as last period.</p> : (
                 <table className="mt-2 w-full text-xs"><thead className="text-left text-slate-600"><tr><th>Employee</th><th>Regular</th><th>Overtime</th><th>Notes</th></tr></thead>
-                  <tbody>{d.hours.employees.map((e, i) => <tr key={i}><td>{e.name}</td><td>{e.regularHours}</td><td>{e.overtimeHours}</td><td>{e.notes}</td></tr>)}</tbody></table>
+                  <tbody>{d.hours.employees.map((e, i) => <tr key={i}><td>{e.name}</td><td>{e.regularHours}</td><td>{e.overtimeHours}</td><td>{[e.notes, ...payLines(e.pay)].filter(Boolean).join(" · ")}</td></tr>)}</tbody></table>
               )}
               {d.hours.flags.length > 0 && <p className="mt-2 flex flex-wrap gap-1">{d.hours.flags.map((f) => <Badge key={f} tone="amber">{CHANGE_FLAGS[f]}</Badge>)}</p>}
               {d.hours.notes && <p className="mt-2 text-slate-700">“{d.hours.notes}”</p>}
@@ -222,6 +227,60 @@ export default async function CyclePage({ params }: { params: Promise<{ cycleId:
           ) : <p className="text-sm text-slate-600">After every required approver approves the current version, the office submits it in ADP and records it here. Nothing is submitted automatically.</p>}
         </Card>
       </div>
+
+      <Card title="ADP RUN import (Time Sheet Import)" className="mt-4">
+        <div data-testid="adp-csv">
+          {!adp.allowed ? (
+            <p className="text-sm text-slate-700">ADP setup and files for this business are available only to staff assigned to it (or given All clients by the owner).</p>
+          ) : !adp.setupReady ? (
+            <p className="text-sm text-slate-700">Download ADP CSV turns on after this business&apos;s one-time setup. Still to do: {adp.missing.join("; ")}. <Link href={`/payroll-taxes/schedules/${cycle.clientId}/adp`} className="font-semibold underline">Open ADP RUN import setup</Link></p>
+          ) : adp.processed ? (
+            <p className="text-sm text-slate-700">This payroll is processed.</p>
+          ) : !adp.hoursIn ? (
+            <p className="text-sm text-slate-700">Enter or receive this period&apos;s hours first (step 1). They&apos;re entered once here and go into the file as they are.</p>
+          ) : adp.noChanges ? (
+            <p className="text-sm text-slate-700">“No changes — same as last period”: RUN&apos;s standard hours apply, so no file is needed.</p>
+          ) : (
+            <div className="space-y-3 text-sm">
+              {adp.active && (
+                <div className="rounded-lg border border-ivory-200 bg-ivory-50 p-3">
+                  <p className="font-semibold text-navy-900">{adp.active.fileName}</p>
+                  <p className="text-xs text-slate-600">{adp.active.employees} employees · {adp.active.rows} rows · {(adp.active.hoursHundredths / 100).toFixed(2)} hours{adp.active.dollarsCents ? ` · $${(adp.active.dollarsCents / 100).toFixed(2)} other pay` : ""} · downloaded {adp.active.downloads}×{adp.active.importedAt ? ` · imported into RUN ${fmtWhen(adp.active.importedAt)}` : ""}</p>
+                  {adp.active.importedAt && <p className="mt-1 text-xs font-semibold text-amber-800">Already imported into RUN — don&apos;t import it again.</p>}
+                  {canManage && !adp.active.importedAt && adp.active.downloads > 0 && (
+                    <ActionForm action={fileImportedAction.bind(null, adp.active.id)} className="mt-2" confirm="Record that you imported this file in RUN (Home > Time Sheet Import)?">
+                      <Button type="submit" variant="secondary">I imported it into RUN</Button>
+                    </ActionForm>
+                  )}
+                </div>
+              )}
+              {adp.check && (
+                <div data-testid="adp-transfer-check" className="space-y-2">
+                  {adp.check.ok ? (
+                    <>
+                      <p className="text-xs font-semibold text-emerald-800">Everything entered transfers to ADP:</p>
+                      <table className="w-full text-left text-xs"><thead><tr className="text-slate-500"><th>Employee</th><th>Pay</th><th>ADP code</th><th>Amount</th></tr></thead>
+                        <tbody>{adp.check.lines.map((l, i) => <tr key={i}><td>{l.name}</td><td>{l.label}</td><td>{l.code}</td><td>{l.amount}</td></tr>)}</tbody></table>
+                    </>
+                  ) : (
+                    <Notice tone="warn" title="Not ready to download">
+                      {adp.check.cannotTransfer.length > 0 && (<><p className="font-semibold">Can&apos;t transfer:</p><ul className="list-disc pl-4">{adp.check.cannotTransfer.map((c) => <li key={c}>{c}</li>)}</ul></>)}
+                      {adp.check.problems.length > 0 && <ul className="mt-1 list-disc pl-4">{adp.check.problems.map((c) => <li key={c}>{c}</li>)}</ul>}
+                    </Notice>
+                  )}
+                </div>
+              )}
+              {canManage && adp.check?.ok !== false && (
+                <ActionForm action={cycleFileAction.bind(null, cycle.id)} className="space-y-2">
+                  {adp.active?.importedAt && <input name="replaceReason" placeholder="Only if the hours changed after import: why (delete the old pay data file in RUN first)" className={input} />}
+                  <Button type="submit" variant="gold">Download ADP CSV</Button>
+                </ActionForm>
+              )}
+              <p className="text-xs text-slate-600">In RUN: Home &gt; Time Sheet Import → Browse → Import Pay Data → review Pay Data Approval. Use “Accept Import Only” unless you also entered hours in RUN&apos;s Payroll Worksheet. Then review and submit payroll in RUN as usual.</p>
+            </div>
+          )}
+        </div>
+      </Card>
 
       {canManage && (
         <Card title="Assignment for this pay cycle" className="mt-4">

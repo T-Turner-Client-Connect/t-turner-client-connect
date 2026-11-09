@@ -25,7 +25,7 @@ export default async function ScheduleEditor({ params }: { params: Promise<{ cli
   const ro = !form.canManage;
   return (
     <>
-      <PageHeader title={`Payroll schedule — ${form.client.name}`} subtitle={<Link href="/payroll-taxes?tab=payroll&f=all" className="underline">← ADP Payroll &amp; Taxes</Link>} />
+      <PageHeader title={`Payroll schedule — ${form.client.name}`} subtitle={<Link href="/payroll-taxes?tab=payroll&f=all" className="underline">← ADP Payroll &amp; Taxes</Link>} actions={<Link href={`/payroll-taxes/schedules/${clientId}/adp`} className="text-sm font-semibold text-navy-900 underline" data-testid="adp-setup-link">ADP RUN import setup →</Link>} />
       {!settings.clientRemindersAuthorized && <RemindersOffBanner isOwner={access.isOwner} />}
       {form.fromProfile && <div className="mb-4"><Notice tone="info">Prefilled from this client&apos;s Bookkeeping profile (payroll frequency and known pay date). Check it, then save.</Notice></div>}
       {!form.client.payroll && <div className="mb-4"><Notice tone="warn">Payroll isn&apos;t turned on in this client&apos;s Bookkeeping settings, so ADP register imports won&apos;t work until it is. Keyed-in totals and PDFs still work.</Notice></div>}

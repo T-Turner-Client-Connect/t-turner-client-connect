@@ -213,7 +213,7 @@ describe("Tax Return Summary — reconciliation, approval and owner filing", () 
 
     // Owner-only filing, even with an approved summary.
     await expect(submit(daria)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(submit(otherAdmin)).rejects.toBeInstanceOf(ForbiddenError);
+    void otherAdmin; // Admins and the assigned preparer may also record it (tests/staff-send-returns.test.ts).
     await expect(submit(tabitha, { form8879Confirmed: false })).rejects.toThrow(/8879/);
     await submit(tabitha);
     const ev = await prisma.filingStatusEvent.findFirstOrThrow({ where: { filingId: federal.id, field: "FILING" } });

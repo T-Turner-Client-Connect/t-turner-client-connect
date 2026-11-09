@@ -43,8 +43,11 @@ describe("tax workspace", () => {
     const il = await createFiling(staff, { clientId: avery.id, taxYear: 2025, returnType: "1040", jurisdiction: "IL", filingType: "ORIGINAL" });
     await setPrepStatus(staff, fed.id, "READY_TO_FILE");
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED" })).rejects.toThrow(/acknowledgment/);
-    // Recording an individual return as filed is the owner's alone, with an approved summary (or a stated reason).
-    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center" })).rejects.toThrow(/Only Tabitha/);
+    // Recording an individual return as filed: Tabitha, an Admin or the assigned preparer, with the signed
+    // Form 8879 confirmed and an approved summary (or a stated reason). This Admin is stopped by the 8879 check.
+    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center" })).rejects.toThrow(/8879/);
+    const unassigned = await makeUser("STAFF", "Unassigned Staff");
+    await expect(setFilingStatusByStaff(unassigned, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true, overrideReason: "Filed in TaxAct (fictional)" } })).rejects.toThrow(/Only Tabitha, an Admin or the staff member assigned/);
     await prisma.ownerAccess.create({ data: { userId: staff.id, isPrimary: true } });
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: false } })).rejects.toThrow(/8879/);
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true } })).rejects.toThrow(/no client-approved/);
