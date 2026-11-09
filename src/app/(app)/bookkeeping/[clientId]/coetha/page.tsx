@@ -12,7 +12,8 @@ import { taxProfile } from "@/lib/services/tax-classification";
 import { coethaCurrentWork } from "@/lib/services/monthly-workflow";
 import { RecommendationCard } from "@/components/bk/parts";
 import { COETHA_NO_KEY, COETHA_PRIVACY, coethaView, KIND_LABEL } from "@/lib/services/coetha";
-import { approveCoethaAction, bulkCoethaAction, rejectCoethaAction, runCoethaAction } from "@/app/actions/coetha";
+import { approveCoethaAction, approveMatchingAction, bulkCoethaAction, prepareFromRecordsAction, rejectCoethaAction, runCoethaAction, saveReferenceAction } from "@/app/actions/coetha";
+import { compareWithReference, matchingDraftIds } from "@/lib/services/coetha-records";
 import { fmtDateTime } from "@/lib/format";
 import { canSetCoethaOptOut, coethaOptOutView } from "@/lib/services/coetha-opt-out";
 import { CoethaOptOutPanel } from "@/components/bk/coetha-opt-out-panel";
@@ -66,6 +67,8 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
   }
 
   const v = await coethaView(user, clientId);
+  const [cmp, matching] = v.book ? await Promise.all([compareWithReference(user, clientId), matchingDraftIds(clientId)]) : [null, [] as string[]];
+  const judgment = v.open.filter((p) => p.kind === "CATEGORY" && (p.payload as { needsJudgment?: boolean }).needsJudgment).length;
   const byKind = (k: keyof typeof KIND_LABEL) => v.open.filter((p) => p.kind === k);
   const cats = byKind("CATEGORY");
   const discs = byKind("DISCREPANCY");
@@ -133,6 +136,52 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
       )}
       {!v.book && <div className={clsx(card, "p-4 text-sm text-navy-900")}>Set up this business&apos;s books first in <Link className="font-semibold underline" href={`${base}/books`}>Books &amp; Ledger</Link>.</div>}
       {!office && <div className={clsx(card, "p-4 text-sm text-navy-900")}>Coetha works on Bookkeeping Clients. Add {biz} to the Bookkeeping Client list first.</div>}
+
+      {/* Prepare from the business's completed financial statements */}
+      {v.book && office && !optOut && (
+        <section className={clsx(card, "p-4 sm:p-5")} data-testid="coetha-records">
+          <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><BookOpenCheck className="size-5 text-gold-600" aria-hidden /> Prepare the books from completed statements</h2>
+          <p className="mt-1 text-sm text-navy-800">Coetha reads the completed financial statements, matches every recurring vendor in the bank activity to the line it was booked to (to the cent, month by month), and drafts a category for every waiting transaction, including later months. Uncertain treatments are flagged for you. Nothing posts until it&apos;s approved.</p>
+          {cmp ? (
+            <p className="mt-2 text-sm text-navy-900" data-testid="records-on-file"><FileText className="mr-1 inline size-4 text-gold-600" aria-hidden />On file: <strong>{cmp.title}</strong> ({cmp.months[0]?.month} to {cmp.months[cmp.months.length - 1]?.month}), added {fmtDateTime(cmp.createdAt)}.</p>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <ActionForm action={saveReferenceAction.bind(null, clientId)} className="flex flex-wrap items-center gap-2" resetOnSuccess idempotent>
+              <input className="input max-w-72" type="file" name="file" accept="application/pdf" required aria-label="Completed financial statements PDF" />
+              <button type="submit" className={goldBtn} data-testid="records-upload"><Sparkles className="size-4" aria-hidden /> {cmp ? "Replace statements and prepare" : "Add statements and prepare"}</button>
+            </ActionForm>
+            {cmp && (
+              <ActionForm action={prepareFromRecordsAction.bind(null, clientId)} idempotent>
+                <button type="submit" className={outlineBtn} data-testid="records-prepare">Prepare again</button>
+              </ActionForm>
+            )}
+          </div>
+          {v.canApprove && matching.length > 0 && (
+            <ActionForm action={approveMatchingAction.bind(null, clientId)} className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900 ring-1 ring-emerald-200" confirm={`Approve and post all ${matching.length} transactions that match the completed statements? The ones that need your judgment are not included.`}>
+              <span className="mr-auto"><strong>{matching.length}</strong> drafts match the completed statements.{judgment ? ` ${judgment} more need your judgment (below, marked “Needs your judgment”).` : ""}</span>
+              <button type="submit" className={navyBtn} data-testid="records-approve-all">Approve all {matching.length}</button>
+            </ActionForm>
+          )}
+          {cmp && cmp.rows.some((r) => r.books) && (
+            <div className="mt-4 overflow-x-auto" data-testid="records-compare">
+              <p className="mb-1 text-sm font-semibold text-navy-900">Books compared with the completed statements, month by month</p>
+              <table className="w-full min-w-[640px] text-xs">
+                <thead><tr className="text-left text-slate-600"><th className="py-1 pr-2">Line</th>{cmp.months.map((m) => <th key={m.month} className="px-1 text-right">{m.month.slice(5)}/{m.month.slice(2, 4)}</th>)}</tr></thead>
+                <tbody>
+                  {cmp.rows.filter((r) => r.books).map((r) => (
+                    <tr key={r.label} className="border-t border-ivory-200">
+                      <td className="py-1 pr-2 text-navy-900">{r.label}{r.needsJudgment ? <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-900">judgment</span> : null}</td>
+                      {r.books!.map((b, k) => <td key={k} className={clsx("px-1 text-right tabular-nums", b === r.statements[k] ? "text-emerald-700" : "font-semibold text-red-700")} title={`Statements ${usd(r.statements[k])} · Books ${usd(b)}`}>{b === r.statements[k] ? "✓" : usd(b - r.statements[k])}</td>)}
+                    </tr>
+                  ))}
+                  <tr className="border-t-2 border-navy-200 font-semibold"><td className="py-1 pr-2 text-navy-900">Net income</td>{cmp.months.map((m) => <td key={m.month} className={clsx("px-1 text-right", m.agrees ? "text-emerald-700" : "text-red-700")}>{m.agrees ? "✓" : usd(m.booksNet - m.statementsNet)}</td>)}</tr>
+                </tbody>
+              </table>
+              <p className="mt-1 text-[11px] text-slate-600">✓ = the books equal the statements to the cent. An amount is the difference (books minus statements) still to post or review.</p>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Figures */}
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="Coetha at a glance">
