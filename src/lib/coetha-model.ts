@@ -125,3 +125,68 @@ export async function callCoethaModel(input: unknown): Promise<CoethaCallResult>
   if (!msg.parsed_output) throw new CoethaModelError("Coetha's answer wasn't in the expected format.", "PARSE");
   return { output: msg.parsed_output, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0, requestId, model: msg.model || model };
 }
+
+// --- "Ask Coetha": a back-and-forth conversation about ONE client's books ------------------------
+
+export const COETHA_CHAT_SYSTEM = `You are Coetha, the Senior Accountant AI for T. Turner & Associates, a tax and bookkeeping firm. You are talking with the firm's own staff (Tabitha Turner, the owner, or a bookkeeper she assigned) about ONE small-business client's books.
+
+You receive that client's bookkeeping data as JSON below: chart of accounts, bank and card transactions waiting to be categorized (T1, T2, ...), recently posted transactions (P1, P2, ...), the firm's categorization rules, how similar descriptions were categorized before, reconciliation status, the month-end close checklist, the ledger's warnings and the business's tax classification rules. Amounts are in dollars; money into a bank account is positive and money out is negative. On a credit card account a negative amount is a charge and a positive amount is a payment or refund. Descriptions were shortened and de-identified before they reached you.
+
+How to answer:
+- Answer like a careful senior accountant: plain language, short paragraphs or a short list, specific dates, amounts and account codes from the data. Cite transactions by their T- or P- reference.
+- Use only this client's data. If the answer isn't in the data (for example, months not included, documents you can't see, other clients), say so plainly and say what would be needed.
+- Never invent transactions, balances, accounts or facts. Don't guess a figure; if you estimate, say it is an estimate and show how you got it.
+- You cannot post, change, approve, reconcile, close, send or delete anything, and you can't contact the client. When something should change, describe the correction (accounts, debit/credit, amount, date) and say that it needs Tabitha's approval, either through a Coetha run's drafts or a manual entry by staff.
+- Apply the business's tax classification rules (taxProfile.rules) to owner draws, distributions, guaranteed payments and payroll questions.
+- This is bookkeeping help, not a final tax or legal opinion; flag anything that needs Tabitha's professional judgment.`;
+
+export type CoethaChatTurn = { role: "user" | "assistant"; text: string };
+export type CoethaChatResult = { text: string; inputTokens: number; outputTokens: number; requestId: string | null; model: string };
+
+/**
+ * One chat reply. `books` is the de-identified data from buildCoethaInput for ONE client; `turns`
+ * is the earlier conversation (oldest first) ending with the new question. Returns text only:
+ * Coetha has no tools here, so a reply can't change anything. Tests replace global fetch.
+ */
+export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[]): Promise<CoethaChatResult> {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
+  if (!turns.length || turns[turns.length - 1].role !== "user") throw new CoethaModelError("Ask Coetha a question first.", "BAD_REQUEST");
+  const model = coethaModel();
+  // Short time limit: the reply is shown while the staff member waits on the page.
+  const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 90_000 });
+  // The API expects the conversation to start with a user turn.
+  const first = turns.findIndex((t) => t.role === "user");
+  const messages: Anthropic.Beta.BetaMessageParam[] = turns.slice(first).map((t) => ({ role: t.role, content: t.text }));
+  let msg;
+  try {
+    msg = await client.beta.messages.create({
+      model,
+      max_tokens: 4000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low" },
+      system: [
+        { type: "text", text: COETHA_CHAT_SYSTEM },
+        { type: "text", text: `Client bookkeeping data (JSON):\n${JSON.stringify(books)}` },
+      ],
+      messages,
+    });
+  } catch (err) {
+    if (err instanceof Anthropic.AuthenticationError) throw new CoethaModelError("The Anthropic API key was refused. Check ANTHROPIC_API_KEY in Netlify.", "AUTH");
+    if (err instanceof Anthropic.PermissionDeniedError) throw new CoethaModelError("The Anthropic API key isn't allowed to use this model.", "PERMISSION");
+    if (err instanceof Anthropic.NotFoundError) throw new CoethaModelError(`The model "${model}" wasn't found. Check COETHA_MODEL.`, "MODEL");
+    if (err instanceof Anthropic.RateLimitError) throw new CoethaModelError("Anthropic's rate limit was reached. Try again in a few minutes.", "RATE_LIMIT");
+    if (err instanceof Anthropic.BadRequestError) throw new CoethaModelError("Anthropic rejected the request.", "BAD_REQUEST");
+    if (err instanceof Anthropic.APIConnectionTimeoutError) throw new CoethaModelError("Coetha took too long to answer. Try a shorter or narrower question.", "TIMEOUT");
+    if (err instanceof Anthropic.APIConnectionError) throw new CoethaModelError("Couldn't reach Anthropic's API.", "NETWORK");
+    if (err instanceof Anthropic.APIError) throw new CoethaModelError(`Anthropic's API returned an error${err.status ? ` (${err.status})` : ""}.`, "API");
+    throw new CoethaModelError("Coetha's answer couldn't be read.", "PARSE");
+  }
+  const requestId: string | null = (msg as { _request_id?: string | null })._request_id ?? msg.id ?? null;
+  if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to answer this question.", "REFUSAL");
+  let text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
+  if (!text) throw new CoethaModelError("Coetha didn't return an answer. Try asking again.", "EMPTY");
+  if (msg.stop_reason === "max_tokens") text += "\n\n(Coetha's answer was cut off because it was long. Ask a narrower follow-up question for the rest.)";
+  return { text, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0, requestId, model: msg.model || model };
+}

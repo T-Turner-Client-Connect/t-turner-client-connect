@@ -2,7 +2,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { AlertTriangle, BookOpenCheck, CheckCircle2, FileText, History, KeyRound, Landmark, ListChecks, Lock, Power, ShieldCheck, Sparkles, Tags } from "lucide-react";
+import { AlertTriangle, BookOpenCheck, MessagesSquare, CheckCircle2, FileText, History, KeyRound, Landmark, ListChecks, Lock, Power, ShieldCheck, Sparkles, Tags } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { BusinessTabs } from "@/components/business-tabs";
@@ -107,11 +107,16 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
               </p>
             </div>
           </div>
-          {canRun ? (
-            <ActionForm action={runCoethaAction.bind(null, clientId)} className="w-full sm:w-auto" idempotent>
-              <button type="submit" className={clsx(goldBtn, "w-full px-6 py-3 text-base sm:w-auto")} data-testid="coetha-run"><Sparkles className="size-5" aria-hidden /> Run Coetha</button>
-            </ActionForm>
-          ) : null}
+          <div className="flex w-full flex-col gap-2 sm:w-auto">
+            {canRun ? (
+              <ActionForm action={runCoethaAction.bind(null, clientId)} className="w-full sm:w-auto" idempotent>
+                <button type="submit" className={clsx(goldBtn, "w-full px-6 py-3 text-base sm:w-auto")} data-testid="coetha-run"><Sparkles className="size-5" aria-hidden /> Run Coetha</button>
+              </ActionForm>
+            ) : null}
+            {!optOut && (
+              <Link href={`${base}/coetha/ask`} className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-gold-400 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10 sm:w-auto" data-testid="ask-coetha-link"><MessagesSquare className="size-5 text-gold-400" aria-hidden /> Ask Coetha</Link>
+            )}
+          </div>
         </div>
       </section>
 
