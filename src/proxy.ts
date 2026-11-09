@@ -8,7 +8,7 @@ import { NextResponse, type NextRequest } from "next/server";
  */
 // Public policy pages, the SMS consent form, signed email unsubscribe links, signed payroll-approval links and single-use agreement signing links need no login.
 const PUBLIC_PAGES = ["/sms-consent", "/privacy-policy", "/terms", "/unsubscribe/", "/payroll-approval/", "/agreement-sign/"];
-const PUBLIC_STAFF = ["/welcome", "/staff/login", "/staff/setup", "/staff/invite/", "/staff/forgot-password", "/staff/reset-password/", "/brand/", "/icon.png", "/favicon"];
+const PUBLIC_STAFF = ["/welcome", "/staff/login", "/staff/setup", "/staff/invite/", "/staff/forgot-password", "/staff/reset-password/", "/brand/", "/icon.png", "/favicon", "/apple-icon.png", "/manifest.webmanifest", "/icons/"];
 const PUBLIC_PORTAL = ["/client/login", "/client/signup", "/client/activate", "/client/invite/", "/client/forgot-password", "/client/reset-password/"];
 // Webhooks authenticate themselves (shared secret + provider API verification).
 // One-click unsubscribe (RFC 8058) is authorized by its signed token.
