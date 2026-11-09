@@ -211,3 +211,16 @@ export async function readStatementAction(clientId: string, documentId: string, 
     return statementReadMessage(r);
   });
 }
+
+/** Posts the opening balance from the earliest statement's beginning balance (Tabitha or an Admin; once). */
+export async function postOpeningFromStatementAction(clientId: string, ledgerAccountId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { postOpeningFromStatement } = await import("@/lib/services/cash-proof");
+    const r = await postOpeningFromStatement(actor, clientId, ledgerAccountId);
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/banking/reconciliation`);
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    return `${r.corrected ? "Opening corrected with an adjusting entry (the original stays in the history): " : "Opening balance "}$${(r.cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })} ${r.corrected ? "recorded on the bank account" : "posted"} on ${r.date}.`;
+  });
+}
