@@ -86,7 +86,15 @@ export async function buildCoethaInput(reader: Actor, clientId: string, opts: { 
   const [accounts, rules, toCat, recent, history, recons] = await Promise.all([
     prisma.ledgerAccount.findMany({ where: { clientId, active: true }, orderBy: { code: "asc" } }),
     prisma.categorizationRule.findMany({ where: { clientId, active: true } }),
-    prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED" }, orderBy: [{ date: "asc" }, { id: "asc" }], take: MAX_TO_CATEGORIZE, include: { account: { select: { code: true, name: true } } } }),
+    // Transactions with no open category draft come first, so repeated runs work through the whole list;
+    // already-drafted ones are refreshed only when there's room left.
+    prisma.coethaProposal.findMany({ where: { clientId, status: "PROPOSED", kind: "CATEGORY", bankTransactionId: { not: null } }, select: { bankTransactionId: true } }).then(async (open) => {
+      const drafted = open.map((o) => o.bankTransactionId!);
+      const q = { orderBy: [{ date: "asc" as const }, { id: "asc" as const }], include: { account: { select: { code: true, name: true } } } };
+      const fresh = await prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED", id: { notIn: drafted } }, take: MAX_TO_CATEGORIZE, ...q });
+      const room = MAX_TO_CATEGORIZE - fresh.length;
+      return room > 0 && drafted.length ? [...fresh, ...(await prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED", id: { in: drafted } }, take: room, ...q }))] : fresh;
+    }),
     prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED" }, orderBy: [{ date: "desc" }, { id: "asc" }], take: MAX_RECENT, include: { account: { select: { code: true, name: true } }, journalEntry: { select: { lines: { select: { accountId: true } } } } } }),
     prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED", journalEntryId: { not: null } }, select: { accountId: true, amountCents: true, description: true, journalEntry: { select: { reversedBy: { select: { id: true } }, lines: { select: { accountId: true } } } } }, take: 2000, orderBy: { date: "desc" } }),
     prisma.bankReconciliation.findMany({ where: { clientId }, orderBy: { statementDate: "desc" } }),
@@ -146,6 +154,18 @@ type NewProposal = { kind: ProposalKind; payload: Prisma.InputJsonValue; bankTra
 
 const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0);
 const clip = (s: string, n: number) => s.replace(/\s+/g, " ").trim().slice(0, n);
+
+/**
+ * What a run did, in counts only (no descriptions, names or amounts), so a run that drafts little
+ * explains itself on the Coetha page.
+ */
+export function runDiagnostic(sent: number, returned: number, kept: number, dropped: number, outputTokens: number): string | null {
+  if (!dropped && kept >= sent) return null;
+  const parts = [`Sent ${sent} waiting transaction${sent === 1 ? "" : "s"}; Coetha answered with categories for ${returned}; ${kept} became drafts.`];
+  if (dropped) parts.push(`${dropped} suggestion${dropped === 1 ? " was" : "s were"} dropped (unknown transaction, an account not in the chart, the bank account itself or Opening Balance Equity).`);
+  if (sent && returned < sent / 2) parts.push(`She left most transactions undecided (answer size ${outputTokens} tokens). Use “Prepare from completed statements” when the business has them.`);
+  return parts.join(" ").slice(0, 300);
+}
 
 /** Turns the model's answer into proposals, keeping only what refers to this client's own rows and accounts. */
 export function toProposals(out: CoethaOutputT, b: Built): { proposals: NewProposal[]; dropped: number } {
@@ -251,7 +271,7 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
       }
       await tx.coethaRun.update({
         where: { id: run.id },
-        data: { status: "OK", finishedAt: new Date(), model: res.model, proposals: proposals.length, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, error: dropped ? `${dropped} suggestion${dropped === 1 ? "" : "s"} referred to unknown transactions or accounts and were dropped.` : null },
+        data: { status: "OK", finishedAt: new Date(), model: res.model, proposals: proposals.length, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, error: runDiagnostic(built.toCat.length, res.output.categories.length, proposals.filter((p) => p.kind === "CATEGORY").length, dropped, res.outputTokens) },
       });
     });
     await audit(prisma, { actorId: actor?.id ?? null, action: "coetha.run", entityType: "CoethaRun", entityId: run.id, clientId, details: { trigger: opts.trigger ?? "MANUAL", model: res.model, transactions: built.toCat.length, proposals: proposals.length, dropped, inputHash: built.inputHash } });

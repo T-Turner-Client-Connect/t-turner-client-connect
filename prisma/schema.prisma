@@ -4015,6 +4015,7 @@ model LedgerBook {
   recurringInvoices    RecurringInvoice[]
   coethaRuns           CoethaRun[]
   coethaProposals      CoethaProposal[]
+  coethaReferences     CoethaReference[]
 }
 
 model LedgerAccount {
@@ -6522,4 +6523,24 @@ model AdpRevenueShareSettings {
   fiscalNote  String
   updatedById String?
   updatedAt   DateTime @updatedAt
+}
+
+/// A business's completed financial package (monthly Profit & Loss lines read from the PDF on file),
+/// kept unchanged. Coetha prepares categories from it; the books are compared with it month by month.
+model CoethaReference {
+  id          String     @id @default(cuid())
+  clientId    String
+  book        LedgerBook @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  documentId  String?
+  title       String
+  /// ["2026-01", ...] — the package's month columns.
+  months      Json
+  /// [{ section: "INCOME" | "EXPENSE", label, amounts: cents[] }] — exactly as printed.
+  lines       Json
+  /// { [lineIndex]: { accountId, vendors: string[], flag?: string } } — set when Coetha prepares from it.
+  mapping     Json?
+  createdById String
+  createdAt   DateTime   @default(now())
+
+  @@index([clientId, createdAt])
 }
