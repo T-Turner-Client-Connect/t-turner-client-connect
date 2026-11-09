@@ -147,22 +147,22 @@ function preparedText(p: { drafts: number; waiting: number; needsJudgment: numbe
   return `Coetha drafted ${p.drafts} of ${p.waiting} waiting transactions from the completed statements; ${p.needsJudgment} need your judgment and ${p.notMatched} didn't match.${p.accountsAdded.length ? ` Added ${p.accountsAdded.length} account${p.accountsAdded.length === 1 ? "" : "s"} named like the statement lines.` : ""}${p.linesNotMatched.length ? ` Not explained by the bank activity: ${p.linesNotMatched.slice(0, 4).join("; ")}${p.linesNotMatched.length > 4 ? "…" : ""}.` : ""} Nothing was posted.`;
 }
 
-/** Approves the drafts flagged "Needs your judgment" exactly as the completed statements treated them (Tabitha only). */
-export async function approveJudgmentAction(clientId: string, _prev: ActionState): Promise<ActionState> {
+/**
+ * Approves ONE group of judgment items (one statement line), as the completed statements treated
+ * them, only with a note saying how the treatment was verified (Tabitha only).
+ */
+export async function approveJudgmentGroupAction(clientId: string, line: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
+    const note = str(fd, "verified").trim();
+    if (note.length < 10) throw new ValidationError("Say how this treatment was verified (for example, “Confirmed with Cari: personal transfers to her savings”).");
     const { judgmentDraftIds } = await import("@/lib/services/coetha-records");
-    const ids = await judgmentDraftIds(clientId);
-    if (!ids.length) throw new ValidationError("There are no judgment items waiting.");
-    let done = 0;
-    const problems: string[] = [];
-    for (let i = 0; i < ids.length; i += 200) {
-      const results = await decideCoethaProposals(actor, clientId, "APPROVE", ids.slice(i, i + 200).map((id) => ({ id })), "Approved as the completed financial statements treated it.");
-      done += results.filter((r) => r.result !== "SKIPPED").length;
-      for (const r of results) if (r.result === "SKIPPED" && r.message && !problems.includes(r.message)) problems.push(r.message);
-    }
+    const ids = await judgmentDraftIds(clientId, line);
+    if (!ids.length) throw new ValidationError("Nothing is waiting in that group.");
+    const results = await decideCoethaProposals(actor, clientId, "APPROVE", ids.slice(0, 200).map((id) => ({ id })), `Verified: ${note}`.slice(0, 300));
     refresh(clientId);
-    return `Approved and posted ${done} of ${ids.length}, as the completed statements treated them.${problems.length ? ` Not posted: ${problems.slice(0, 3).join(" ")}` : ""}`;
+    const done = results.filter((r) => r.result !== "SKIPPED").length;
+    return `Approved and posted ${done} of ${ids.length} for “${line}”. Your verification note is recorded on each.`;
   });
 }
 

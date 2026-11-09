@@ -273,9 +273,33 @@ function diagnostic(waiting: number, drafts: number, judgment: number, left: num
 // --- 4. Approve everything that matches ----------------------------------------------------------
 
 /** The open drafts Coetha prepared from the completed statements that need no judgment. */
+type DraftRow = { id: string; reason: string; payload: unknown };
+const pay = (r: DraftRow) => r.payload as { needsJudgment?: boolean; accountName?: string; referenceLine?: string; amountCents?: number };
+/** Routine: matched to the statements to the cent (or the same vendor in later months), with no accounting question. */
+const isRoutine = (r: DraftRow) => !pay(r).needsJudgment && !r.reason.includes("same vendor family");
+
+async function openRecordDrafts(clientId: string): Promise<DraftRow[]> {
+  return prisma.coethaProposal.findMany({ where: { clientId, status: "PROPOSED", kind: "CATEGORY", model: RECORDS_MODEL }, select: { id: true, reason: true, payload: true }, orderBy: { createdAt: "asc" } });
+}
+
+/** The routine drafts "Approve all" posts. Judgment items and family matches are never included. */
 export async function matchingDraftIds(clientId: string) {
-  const rows = await prisma.coethaProposal.findMany({ where: { clientId, status: "PROPOSED", kind: "CATEGORY", model: RECORDS_MODEL }, select: { id: true, payload: true } });
-  return rows.filter((r) => !(r.payload as { needsJudgment?: boolean }).needsJudgment).map((r) => r.id);
+  return (await openRecordDrafts(clientId)).filter(isRoutine).map((r) => r.id);
+}
+
+/** Exactly what "Approve all" would post: per account, how many transactions and their total. */
+export async function routineSummary(clientId: string) {
+  const rows = (await openRecordDrafts(clientId)).filter(isRoutine);
+  const by = new Map<string, { account: string; count: number; inCents: number; outCents: number }>();
+  for (const r of rows) {
+    const k = pay(r).accountName ?? "Account";
+    const x = by.get(k) ?? { account: k, count: 0, inCents: 0, outCents: 0 };
+    x.count++;
+    const c = pay(r).amountCents ?? 0;
+    if (c > 0) x.inCents += c; else x.outCents += -c;
+    by.set(k, x);
+  }
+  return [...by.values()].sort((a, b) => b.inCents + b.outCents - (a.inCents + a.outCents));
 }
 
 // --- 5. Compare with the completed statements ------------------------------------------------------
@@ -306,10 +330,29 @@ export async function compareWithReference(actor: Actor, clientId: string) {
 
 // --- 6. One-step decisions for Tabitha -------------------------------------------------------------
 
-/** The open drafts flagged "Needs your judgment" (each drafted the way the completed statements treated it). */
-export async function judgmentDraftIds(clientId: string) {
-  const rows = await prisma.coethaProposal.findMany({ where: { clientId, status: "PROPOSED", kind: "CATEGORY", model: RECORDS_MODEL }, select: { id: true, payload: true } });
-  return rows.filter((r) => (r.payload as { needsJudgment?: boolean }).needsJudgment).map((r) => r.id);
+/**
+ * Drafts with an open accounting question (and family matches), grouped by the statement line
+ * they were drafted to. They are never approved in bulk by "Approve all"; a group is approved only
+ * when Tabitha records how its treatment was verified.
+ */
+export async function judgmentGroups(clientId: string) {
+  const rows = (await openRecordDrafts(clientId)).filter((r) => !isRoutine(r));
+  const by = new Map<string, { line: string; ids: string[]; inCents: number; outCents: number; family: boolean }>();
+  for (const r of rows) {
+    const line = pay(r).referenceLine ?? pay(r).accountName ?? "Other";
+    const fam = !pay(r).needsJudgment;
+    const key = `${line}|${fam}`;
+    const x = by.get(key) ?? { line, ids: [], inCents: 0, outCents: 0, family: fam };
+    x.ids.push(r.id);
+    const c = pay(r).amountCents ?? 0;
+    if (c > 0) x.inCents += c; else x.outCents += -c;
+    by.set(key, x);
+  }
+  return [...by.values()];
+}
+
+export async function judgmentDraftIds(clientId: string, line?: string) {
+  return (await judgmentGroups(clientId)).filter((g) => !line || g.line === line).flatMap((g) => g.ids);
 }
 
 /**

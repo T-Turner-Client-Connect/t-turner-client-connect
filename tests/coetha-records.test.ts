@@ -6,7 +6,7 @@ import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { registerAccount } from "@/lib/services/bank-accounts";
 import { readPackageTable } from "@/lib/statement-package";
-import { compareWithReference, familyPostingsToUndo, judgmentDraftIds, matchingDraftIds, matchVendors, prepareFromRecords, saveReferenceStatements, undoFamilyPostings, vendorKey } from "@/lib/services/coetha-records";
+import { compareWithReference, familyPostingsToUndo, judgmentDraftIds, judgmentGroups, matchingDraftIds, matchVendors, prepareFromRecords, routineSummary, saveReferenceStatements, undoFamilyPostings, vendorKey } from "@/lib/services/coetha-records";
 import { decideCoethaProposals, runDiagnostic } from "@/lib/services/coetha";
 import { ForbiddenError } from "@/lib/auth/actor";
 
@@ -188,6 +188,21 @@ describe("Coetha prepares the books from a business's completed financial statem
     expect(await undoFamilyPostings(w.tabitha, w.biz.id)).toBe(1);
     expect((await prisma.bankTransaction.findUniqueOrThrow({ where: { id: outlet.id } })).status).toBe("UNREVIEWED");
     expect(await familyPostingsToUndo(w.biz.id)).toHaveLength(0);
+    // History is kept: the original entry and its reversal both remain, with the reason and who did it.
+    const original = await prisma.journalEntry.findUniqueOrThrow({ where: { id: (await prisma.coethaProposal.findUniqueOrThrow({ where: { id: draft.id } })).journalEntryId! }, include: { reversedBy: true } });
+    expect(original.reversedBy).not.toBeNull();
+    expect(await prisma.auditLog.count({ where: { clientId: w.biz.id, action: "ledger.entry_reversed", actorId: w.tabitha.id } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { clientId: w.biz.id, action: "coetha.family_postings_undone" } })).toBe(1);
+    expect((await prisma.coethaProposal.findUniqueOrThrow({ where: { id: draft.id } })).status).toBe("APPROVED");
+    // Undoing again does nothing (no double reversal).
+    expect(await undoFamilyPostings(w.tabitha, w.biz.id)).toBe(0);
+    // Posting the row again leaves exactly one live posting for it: original + reversal + new = net one.
+    const other = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, code: "6300" } });
+    const { categorizeBankTransaction } = await import("@/lib/services/ledger");
+    await categorizeBankTransaction(w.tabitha, w.biz.id, outlet.id, { accountId: other.id });
+    const net = (await prisma.journalLine.findMany({ where: { accountId: { in: [supplies.id, other.id] }, entry: { clientId: w.biz.id, date: new Date("2026-02-14T00:00:00Z") } } })).reduce((t, l) => t + l.debitCents - l.creditCents, 0);
+    expect(net).toBe(1853);
+    expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id, date: new Date("2026-02-14T00:00:00Z"), reversalOfId: null, reversedBy: null } })).toBe(1);
   });
 
   it("judgment items can be approved together, exactly as the statements treated them", async () => {
@@ -196,6 +211,13 @@ describe("Coetha prepares the books from a business's completed financial statem
     await prepareFromRecords(w.tabitha, w.biz.id);
     const ids = await judgmentDraftIds(w.biz.id);
     expect(ids).toHaveLength(3);
+    // Never part of "Approve all"; grouped by statement line; "Approve all" shows exactly what it posts.
+    const routine = await matchingDraftIds(w.biz.id);
+    expect(routine.some((id) => ids.includes(id))).toBe(false);
+    expect((await judgmentGroups(w.biz.id)).map((g) => [g.line, g.ids.length, g.outCents])).toEqual([["Owner Draws & Personal Transfers", 3, 150000]]);
+    const sum = await routineSummary(w.biz.id);
+    expect(sum.reduce((n, r) => n + r.count, 0)).toBe(routine.length);
+    expect(sum.find((r) => r.account === "Catering Sales — Example Events")).toMatchObject({ count: 3, inCents: 1550000, outCents: 0 });
     const res = await decideCoethaProposals(w.tabitha, w.biz.id, "APPROVE", ids.map((id) => ({ id })));
     expect(res.every((r) => r.result === "APPROVED")).toBe(true);
     await decideCoethaProposals(w.tabitha, w.biz.id, "APPROVE", (await matchingDraftIds(w.biz.id)).map((id) => ({ id })));
