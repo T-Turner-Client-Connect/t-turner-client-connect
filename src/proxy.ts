@@ -35,6 +35,8 @@ export function proxy(request: NextRequest) {
     // page re-checks both). Never the /api/client routes — those need a real portal session.
     if (staffCookie && has(request, ["__Host-tcc_vac", "tcc_vac"]) && !pathname.startsWith("/api/")) return NextResponse.next();
     if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
+    // A staff member whose View as Client pass ended goes back to the staff side, not the client sign-in.
+    if (staffCookie) return NextResponse.redirect(new URL("/clients?preview=ended", request.url));
     return NextResponse.redirect(new URL("/client/login", request.url));
   }
   if (staffCookie) return NextResponse.next();

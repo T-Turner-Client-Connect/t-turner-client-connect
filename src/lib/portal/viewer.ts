@@ -34,7 +34,8 @@ import { previewFormAction } from "@/app/actions/preview";
 
 const SECURE = process.env.NODE_ENV === "production";
 export const VAC_COOKIE = SECURE ? "__Host-tcc_vac" : "tcc_vac";
-const PREVIEW_TTL_MS = 2 * 60 * 60 * 1000;
+// A working day: a View as Client tab left open shouldn't end mid-review.
+const PREVIEW_TTL_MS = 10 * 60 * 60 * 1000;
 
 type Payload = { s: string; c: string; l: string | null; e: number };
 

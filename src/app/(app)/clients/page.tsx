@@ -42,6 +42,11 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
 
   return (
     <>
+      {sp.preview === "ended" && (
+        <p className="mb-3 rounded-lg border border-gold-300 bg-gold-50 px-4 py-2 text-sm text-navy-900" role="status" data-testid="preview-ended">
+          Your View as Client session ended. Open the client and click <strong>View as Client</strong> again. No client login is needed.
+        </p>
+      )}
       <PageHeader
         title={filters.archived ? "Archived clients" : "Clients"}
         subtitle={`${count} ${count === 1 ? "client" : "clients"}${filters.archived ? " in the archive" : ""}`}
