@@ -6,6 +6,8 @@ import { createClient } from "@/lib/services/clients";
 import { fileReturn, releaseReturn } from "@/lib/services/tax-returns";
 import { removeFiling } from "@/lib/services/accepted-returns";
 import { canSendReturns } from "@/lib/services/return-senders";
+import { authorizeDownload, downloadToken, portalDocuments } from "@/lib/services/documents";
+import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { createFiling, setFilingStatusByStaff } from "@/lib/services/tax";
 
 // Fictional clients and staff only.
@@ -86,5 +88,53 @@ describe("Authorized staff send tax returns to the client's vault", () => {
 
     const filing = await prisma.filingRecord.findFirstOrThrow({ where: { clientId: s.client.id, jurisdiction: "FEDERAL" } });
     await expect(removeFiling(s.preparer, filing.id, "wrong year entered")).rejects.toBeInstanceOf(ForbiddenError);
+  });
+  it("end to end: authorized staff send federal and state returns; only this client sees and downloads them; every send is audited", async () => {
+    const s = await setup();
+    await setStaffPermissions(s.tabitha, s.officeWide.id, ["tax.all_clients"]);
+    const otherClient = await createClient(s.tabitha, { firstName: "Blake", lastName: "Sample", clientType: "INDIVIDUAL", status: "ACTIVE" });
+    const login = async (clientId: string, email: string) => {
+      const { token } = await invitePortalUser(s.tabitha, clientId, { email, name: email, role: "OWNER" });
+      return acceptPortalInvite(token!, "Portal-Pass-123456");
+    };
+    const avery = await login(s.client.id, "avery@fictional.example");
+    const blake = await login(otherClient.id, "blake@fictional.example");
+    const { fed, al } = await acceptedReturns(s);
+
+    // Before sending, the client sees neither return.
+    expect((await portalDocuments(avery, s.client.id)).filter((d) => d.filingDocType === "RETURN")).toHaveLength(0);
+
+    await releaseReturn(s.preparer, fed.id); // assigned preparer
+    await releaseReturn(s.officeWide, al.id); // office-wide staff (Tax → All clients)
+
+    // The client's vault lists both, under the right year and form, and both download.
+    const vault = (await portalDocuments(avery, s.client.id)).filter((d) => d.filingDocType === "RETURN");
+    expect(vault.map((d) => [d.title, d.year]).sort()).toEqual([["2025 1040 — Federal", 2025], ["2025 40 — AL", 2025]]);
+    for (const d of vault) expect(await authorizeDownload(downloadToken(d.id, { portalUserId: avery.id }), { portalUserId: avery.id })).not.toBeNull();
+    // Another client can't list or download them.
+    await expect(portalDocuments(blake, s.client.id)).rejects.toThrow();
+    for (const d of vault) expect(await authorizeDownload(downloadToken(d.id, { portalUserId: blake.id }), { portalUserId: blake.id })).toBeNull();
+
+    // Each delivery is audited with who sent it, why they were allowed, the client and the tax year.
+    const logs = await prisma.auditLog.findMany({ where: { action: "tax.return_released" }, orderBy: { createdAt: "asc" } });
+    expect(logs.map((l) => { const d = l.details as { sentBy: string; taxYear: number; jurisdiction: string }; return [l.actorId, l.clientId, d.sentBy, d.taxYear, d.jurisdiction]; })).toEqual([
+      [s.preparer.id, s.client.id, "ASSIGNED", 2025, "FEDERAL"],
+      [s.officeWide.id, s.client.id, "TAX_ALL_CLIENTS", 2025, "AL"],
+    ]);
+
+    // A return already sent can't be sent again, and only Tabitha removes a filing.
+    await expect(releaseReturn(s.preparer, fed.id)).rejects.toThrow(/already sent/);
+    const otherAdmin = await makeUser("ADMIN", "Second Admin");
+    const filing = await prisma.filingRecord.findFirstOrThrow({ where: { clientId: s.client.id, jurisdiction: "FEDERAL" } });
+    for (const who of [s.preparer, s.officeWide, otherAdmin]) await expect(removeFiling(who, filing.id, "wrong year entered")).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("nothing goes to the client until the filing is accepted, and Form 8879 must be confirmed to record it as submitted", async () => {
+    const s = await setup();
+    const f = await createFiling(s.preparer, { clientId: s.client.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    await expect(setFilingStatusByStaff(s.preparer, f.id, { status: "SUBMITTED", submission: { form8879Confirmed: false, overrideReason: "Filed in TaxAct (fictional)" } })).rejects.toThrow(/8879/);
+    // A return can't even be filed for delivery until its acceptance is recorded.
+    await expect(fileReturn(s.preparer, { clientId: s.client.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes: pdf("early"), originalName: "1040.pdf" })).rejects.toThrow(/hasn't been accepted yet/);
+    expect(await prisma.document.count({ where: { clientId: s.client.id, filingDocType: "RETURN" } })).toBe(0);
   });
 });
