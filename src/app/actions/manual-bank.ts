@@ -9,6 +9,7 @@ import { usd } from "@/lib/services/ledger";
 import { fmtChicago } from "@/lib/tz";
 import { RepeatedSubmission } from "@/lib/services/office-actions";
 import { fileStatement } from "@/lib/services/office-statements";
+import { readAfterUpload } from "@/lib/services/statement-import";
 
 /** A double-click or retry of the same form: report it as already saved, not an error. */
 async function onceOk(fn: () => Promise<string>) {
@@ -120,6 +121,9 @@ export async function fileStatementAction(clientId: string, manualAccountId: str
     refresh(clientId);
     revalidatePath(`/clients/${clientId}/documents`);
     if (r.status === "ALREADY_ON_FILE") return "This statement is already on file for that account and period.";
-    return r.document.scanStatus === "CLEAN" ? "Statement filed in the client's Document Vault (staff only)." : "Statement filed (staff only). It counts as on file once the malware scan passes.";
+    const read = await readAfterUpload(actor, clientId, r.id);
+    revalidatePath(`/bookkeeping/${clientId}/banking/reconciliation`);
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    return `${r.document.scanStatus === "CLEAN" ? "Statement filed in the client's Document Vault (staff only)." : "Statement filed (staff only). It counts as on file once the malware scan passes."}${read ? ` ${read}` : ""}`;
   }));
 }

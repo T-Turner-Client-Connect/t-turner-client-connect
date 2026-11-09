@@ -10,7 +10,6 @@ import { DEFAULT_VERIFICATION } from "@/lib/tax/accepted";
 import { SUMMARY_STATUS } from "@/lib/services/tax-summary";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
-import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { filingLabel, RETURN_COPY_STATUS, returnsQueue } from "@/lib/services/tax-returns";
 import { fmtDateTime } from "@/lib/format";
 
@@ -20,10 +19,12 @@ const STATES = "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD M
 
 export default async function TaxReturnsPage() {
   await connection();
-  const user = await requireUser();
+  await requireUser();
   const [q, approver, clients, summaries] = await Promise.all([
     returnsQueue(),
-    isReportApprover(user),
+    // Every staff member sees the send buttons; the server checks each return's client
+    // (Tabitha, an Admin or the client's assigned preparer may send it).
+    Promise.resolve(true),
     prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, businessName: true }, orderBy: { displayName: "asc" } }),
     prisma.taxReturnSummary.findMany({ where: { status: { in: ["SENT", "CHANGES_REQUESTED", "CLIENT_APPROVED"] } }, include: { client: { select: { id: true, displayName: true } } }, orderBy: [{ status: "asc" }, { updatedAt: "desc" }], take: 100 }),
   ]);

@@ -53,7 +53,7 @@ export async function coethaStatus() {
 // --- What Coetha sees ---------------------------------------------------------------------------
 
 /** Removes anything that could identify a person or an account: long numbers, SSN/EIN shapes, emails, phone numbers. */
-export function scrub(s: string): string {
+export function scrub(s: string, max = 200): string {
   return s
     .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "[email]")
     .replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[id]")
@@ -62,7 +62,7 @@ export function scrub(s: string): string {
     .replace(/\d{5,}/g, (m) => `…${m.slice(-4)}`)
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 200);
+    .slice(0, max);
 }
 
 const dollars = (c: number) => Math.round(c) / 100;

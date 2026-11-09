@@ -13,7 +13,7 @@ import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { usd } from "@/lib/services/ledger";
 import { workMonth } from "@/lib/services/bookkeeping-clients";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
-import { approveReconciliationAction, runMonitorAction, statementBalancesAction } from "@/app/actions/bk-workflow";
+import { approveReconciliationAction, readStatementAction, runMonitorAction, statementBalancesAction } from "@/app/actions/bk-workflow";
 
 export const metadata = { title: "Monthly Reconciliation" };
 
@@ -91,6 +91,11 @@ export default async function ReconciliationPage({ params, searchParams }: { par
                       {rec.beginningBalanceCents == null && <label className="text-xs">Beginning<input className="input w-28 py-1" name="beginning" inputMode="decimal" /></label>}
                       <label className="text-xs">Statement ending balance<input className="input w-32 py-1" name="ending" inputMode="decimal" defaultValue={rec.endingBalanceCents != null ? (rec.endingBalanceCents / 100).toFixed(2) : ""} required /></label>
                       <button type="submit" className={outlineBtn}>Save</button>
+                    </ActionForm>
+                  )}
+                  {manage && rec?.statementDocumentId && rec.status !== "APPROVED" && (
+                    <ActionForm action={readStatementAction.bind(null, clientId, rec.statementDocumentId)} className="w-full sm:w-auto">
+                      <button type="submit" className={goldBtn} data-testid="read-statement"><Sparkles className="size-4" aria-hidden /> Read transactions from statement</button>
                     </ActionForm>
                   )}
                   {owner && rec?.status === "READY" && (

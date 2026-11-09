@@ -125,3 +125,47 @@ export async function callCoethaModel(input: unknown): Promise<CoethaCallResult>
   if (!msg.parsed_output) throw new CoethaModelError("Coetha's answer wasn't in the expected format.", "PARSE");
   return { output: msg.parsed_output, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0, requestId, model: msg.model || model };
 }
+// --- Reading a statement's transactions when the layout isn't recognized -------------------------
+
+export const StatementOutput = z.object({
+  beginningBalance: z.number().nullable().describe("dollars, as printed; null if not shown"),
+  endingBalance: z.number().nullable().describe("dollars, as printed; null if not shown"),
+  transactions: z.array(
+    z.object({
+      date: z.string().describe("YYYY-MM-DD"),
+      description: z.string(),
+      amount: z.number().describe("dollars: positive for money in (deposits, credits, card payments), negative for money out (withdrawals, checks, fees, card purchases, interest)"),
+      section: z.enum(["DEPOSITS", "WITHDRAWALS", "CHECKS", "FEES", "TRANSFERS", "PAYMENTS", "PURCHASES"]),
+    }),
+  ),
+});
+export type StatementOutputT = z.infer<typeof StatementOutput>;
+
+const STATEMENT_SYSTEM = `You read the transaction lines of ONE bank or credit card statement for a bookkeeping firm. You receive the statement's text lines (personal details and account numbers were removed). List every transaction exactly as printed: date (use the statement period to supply the year), description and amount, with money in positive and money out negative, and the section it is printed in. Include every check, fee and interest charge. Do not include daily balance listings, running balances, summaries or totals. Never invent, merge or skip a transaction; copy amounts exactly.`;
+
+/** Asks Claude to list a statement's transactions (text only, de-identified). The caller verifies the result reconciles to the cent. */
+export async function callStatementReader(lines: string[], period: string | null): Promise<{ output: StatementOutputT; model: string; inputTokens: number; outputTokens: number }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
+  const model = coethaModel();
+  const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 120_000 });
+  let msg;
+  try {
+    msg = await client.beta.messages.parse({
+      model,
+      max_tokens: 16000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low", format: betaZodOutputFormat(StatementOutput) },
+      system: STATEMENT_SYSTEM,
+      messages: [{ role: "user", content: `Statement period: ${period ?? "not found"}\n\nStatement text:\n${lines.join("\n")}` }],
+    });
+  } catch (err) {
+    if (err instanceof Anthropic.APIError) throw new CoethaModelError(`Anthropic's API returned an error${err.status ? ` (${err.status})` : ""}.`, "API");
+    throw new CoethaModelError("The statement couldn't be read.", "PARSE");
+  }
+  if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to read this statement.", "REFUSAL");
+  if (msg.stop_reason === "max_tokens") throw new CoethaModelError("The statement has too many transactions to read at once.", "MAX_TOKENS");
+  if (!msg.parsed_output) throw new CoethaModelError("The statement's transactions weren't returned in the expected format.", "PARSE");
+  return { output: msg.parsed_output, model: msg.model || model, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0 };
+}

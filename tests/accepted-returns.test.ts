@@ -175,10 +175,10 @@ describe("Deliver an already-accepted return in one step", () => {
     await expect(releaseReturn(tabitha, docs[0].id)).rejects.toThrow(/isn't recorded as accepted/);
     expect((await retrieveFilings(rosalindLogin, rosalind.id, 2025)).total).toBe(0);
 
-    // Only Tabitha confirms (not staff, not another admin), with her 8879 checkbox and the preset reason.
+    // Staff not assigned to this client can't confirm; Tabitha (or an Admin, or the assigned preparer) does, with the 8879 checkbox.
+    void otherAdmin;
     const fed = filings.find((f) => f.jurisdiction === "FEDERAL")!;
     await expect(confirmAcceptance(daria, fed.id, { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON })).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(confirmAcceptance(otherAdmin, fed.id, { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(confirmAcceptance(tabitha, fed.id, { form8879Confirmed: false })).rejects.toThrow(/Form 8879/);
     const res = await confirmAcceptances(tabitha, filings.map((f) => f.id), { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON });
     expect(res.done).toHaveLength(2);
@@ -402,7 +402,7 @@ describe("Deliver an already-accepted return in one step", () => {
     expect(err.message).toMatch(/Taxes tab → Finish & Send a Return \(federal and state together\)/);
     expect(err.message).not.toMatch(/send it for review|Tabitha releases/);
     expect(err.next.href).toBe(`/clients/${rosalind.id}?tab=taxes&deliver=1&year=2025#finish-send`);
-    await expect(staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "STATE_RETURN", bytes: pdf(), originalName: "y.pdf" })).rejects.toThrow(/Tabitha releases it/);
+    await expect(staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "STATE_RETURN", bytes: pdf(), originalName: "y.pdf" })).rejects.toThrow(/Only Tabitha, an Admin or the staff member assigned/);
     const ctx = await deliveryContext(rosalind.id, tabitha);
     expect([ctx.owner, ctx.clientType]).toEqual([true, "INDIVIDUAL"]);
     expect((await deliveryContext(rosalind.id, daria)).owner).toBe(false);

@@ -10,8 +10,8 @@ import { appUrl } from "@/lib/integrations";
 import { BUSINESS } from "@/lib/business";
 import { normalizeJurisdiction, normalizeReturnType } from "@/lib/tax/normalize";
 import { ValidationError } from "./clients";
-import { isReportApprover } from "./bookkeeping-clients";
 import { clientMayReceive, notifyClientUsers, readDocumentBytes, sha256Of, staffUploadDocument, storeDocumentFile } from "./documents";
+import { canSendReturns, NOT_RETURN_SENDER } from "./return-senders";
 
 /**
  * Accepted Return Delivery — the stage AFTER filing. Clients don't review
@@ -171,7 +171,7 @@ export async function discardIntake(actor: Actor, intakeId: string, reason: stri
 
 /** Tabitha releases several returns at once (each one checked like a single release). */
 export async function releaseReturns(actor: Actor, documentIds: string[]) {
-  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can release tax returns to clients.");
+  // Each return is checked for this person and its client, like a single release.
   const done: string[] = [];
   const skipped: { id: string; reason: string }[] = [];
   for (const id of Array.from(new Set(documentIds)).slice(0, 100)) {
@@ -214,8 +214,8 @@ export async function submitReturnForRelease(actor: Actor, documentId: string) {
  * version replaces older ones in the portal.
  */
 export async function releaseReturn(actor: Actor, documentId: string, opts: { notify?: boolean; allowPendingScan?: boolean } = {}) {
-  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can release a tax return to the client. Ask her to release it.");
   const d = await loadReturn(documentId);
+  if (!(await canSendReturns(actor, d.clientId))) throw new ForbiddenError(NOT_RETURN_SENDER);
   if (d.reviewStatus !== "AWAITING_REVIEW" && d.reviewStatus !== "DRAFT") throw new ValidationError("This return was already sent to the client.");
   // Tabitha's one-step delivery may release a file whose scan is still running: the portal shows it only once the scan passes.
   const pendingOk = opts.allowPendingScan && (d.scanStatus === "NOT_SCANNED" || d.scanStatus === "PENDING");
