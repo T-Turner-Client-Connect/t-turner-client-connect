@@ -10,7 +10,7 @@ import { readDocumentBytes } from "./documents";
 import { coethaOn } from "./owner-switches";
 import { coethaOptOutView } from "./coetha-opt-out";
 import { scrub } from "./coetha";
-import { enterStatementBalances, prepareReconciliation } from "./bank-accounts";
+import { ensureGlLink, enterStatementBalances, prepareReconciliation } from "./bank-accounts";
 import { STATEMENT_DOC_TYPES } from "./client-request-scope";
 
 /**
@@ -27,7 +27,7 @@ import { STATEMENT_DOC_TYPES } from "./client-request-scope";
  */
 
 export type StatementReadResult =
-  | { ok: true; read: number; added: number; duplicates: number; beginningCents: number; endingCents: number; via: "PDF" | "COETHA" }
+  | { ok: true; read: number; added: number; duplicates: number; beginningCents: number; endingCents: number; via: "PDF" | "COETHA"; periodStart: string | null }
   | { ok: false; read: number; problems: string[] };
 
 export async function readStatementTransactions(actor: Actor, clientId: string, documentId: string): Promise<StatementReadResult> {
@@ -38,7 +38,9 @@ export async function readStatementTransactions(actor: Actor, clientId: string, 
   });
   if (!doc?.file) throw new ValidationError("Statement not found.");
   if (doc.scanStatus === "INFECTED") throw new ValidationError("This file failed the malware scan and can't be read.");
-  const ledgerAccountId = doc.bookkeepingAccount?.ledgerAccountId ?? doc.manualBankAccount?.ledgerAccountId ?? null;
+  let ledgerAccountId = doc.bookkeepingAccount?.ledgerAccountId ?? doc.manualBankAccount?.ledgerAccountId ?? null;
+  // A registered account without a GL account (e.g. registered before the books were set up) is linked now.
+  if (!ledgerAccountId && doc.bookkeepingAccount) ledgerAccountId = await ensureGlLink(clientId, doc.bookkeepingAccount.id, actor.id);
   if (!ledgerAccountId) throw new ValidationError("Link this account to its General Ledger account first (Banking → Manage Accounts).");
   const ledger = await prisma.ledgerAccount.findFirst({ where: { id: ledgerAccountId, clientId } });
   if (!ledger) throw new ValidationError("This account's General Ledger account wasn't found.");
@@ -99,7 +101,7 @@ export async function readStatementTransactions(actor: Actor, clientId: string, 
     }
   }
   await audit(prisma, { actorId: actor.id, action: "bookkeeping.statement_read", entityType: "Document", entityId: doc.id, clientId, details: { via, read: txns.length, added: imp.added, duplicates: imp.duplicates, importId: imp.id } });
-  return { ok: true, read: txns.length, added: imp.added, duplicates: imp.duplicates, beginningCents: parsed.summary.beginningCents!, endingCents: parsed.summary.endingCents!, via };
+  return { ok: true, read: txns.length, added: imp.added, duplicates: imp.duplicates, beginningCents: parsed.summary.beginningCents!, endingCents: parsed.summary.endingCents!, via, periodStart: parsed.summary.periodStart };
 }
 
 /** One line for the person who uploaded or pressed "Read transactions". */
@@ -127,4 +129,45 @@ export async function readAfterUpload(actor: Actor, clientId: string, documentId
     console.error("Statement read failed:", err instanceof Error ? err.name : "unknown error");
     return "Its transactions couldn't be read automatically; use “Read transactions from statement” on the reconciliation page to try again.";
   }
+}
+
+/**
+ * Reads every statement already on file for one registered account, oldest month first (nothing
+ * is uploaded again; rows already imported are skipped). Optionally posts the books' opening cash
+ * from the earliest statement's beginning balance, when the books have no opening entry yet.
+ */
+export async function readStatementsOnFile(actor: Actor, clientId: string, registryId: string, opts: { postOpening?: boolean } = {}) {
+  await assertLedger(actor, clientId, "banking", "edit");
+  const docs = await prisma.document.findMany({
+    where: { clientId, deletedAt: null, bookkeepingAccountId: registryId, docType: { in: STATEMENT_DOC_TYPES } },
+    orderBy: [{ year: "asc" }, { month: "asc" }, { createdAt: "desc" }],
+    select: { id: true, year: true, month: true, title: true },
+  });
+  // The newest file for each month.
+  const seen = new Set<string>();
+  const months = docs.filter((d) => { const k = `${d.year}-${d.month}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  const results: { month: string; title: string; ok: boolean; message: string; added: number; beginningCents?: number; endingCents?: number; periodStart?: string | null }[] = [];
+  for (const d of months) {
+    const month = d.year && d.month ? `${d.year}-${String(d.month).padStart(2, "0")}` : "no month";
+    try {
+      const r = await readStatementTransactions(actor, clientId, d.id);
+      results.push({ month, title: d.title, ok: r.ok, message: statementReadMessage(r), added: r.ok ? r.added : 0, ...(r.ok ? { beginningCents: r.beginningCents, endingCents: r.endingCents, periodStart: r.periodStart } : {}) });
+    } catch (err) {
+      if (!(err instanceof ValidationError)) throw err;
+      results.push({ month, title: d.title, ok: false, message: err.message, added: 0 });
+    }
+  }
+  let opening: string | null = null;
+  const first = results.find((r) => r.ok && r.periodStart && r.beginningCents != null);
+  if (opts.postOpening && first) {
+    const book = await prisma.ledgerBook.findUnique({ where: { clientId } });
+    const lid = (await prisma.bookkeepingAccount.findUnique({ where: { id: registryId }, select: { ledgerAccountId: true } }))?.ledgerAccountId;
+    if (book && !book.openingDate && lid) {
+      const { postOpeningBalances } = await import("./ledger");
+      await postOpeningBalances(actor, clientId, { date: first.periodStart!, balances: [{ accountId: lid, amount: (first.beginningCents! / 100).toFixed(2) }] });
+      opening = `Opening cash ${usd(first.beginningCents!)} posted on ${first.periodStart} (the ${first.month} statement's beginning balance).`;
+    } else if (book?.openingDate) opening = "Opening balances were already posted, so none was added.";
+  }
+  await audit(prisma, { actorId: actor.id, action: "bookkeeping.statements_reread", entityType: "BookkeepingAccount", entityId: registryId, clientId, details: { months: results.map((r) => ({ month: r.month, ok: r.ok, added: r.added })), opening: !!opening } });
+  return { results, opening };
 }

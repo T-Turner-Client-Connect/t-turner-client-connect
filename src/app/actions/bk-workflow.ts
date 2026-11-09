@@ -184,6 +184,22 @@ export async function uploadStatementAction(clientId: string, _prev: ActionState
   });
 }
 
+/** Reads every statement already on file for one account (no re-upload), oldest month first. */
+export async function readAllStatementsAction(clientId: string, registryId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { readStatementsOnFile } = await import("@/lib/services/statement-import");
+    const r = await readStatementsOnFile(actor, clientId, registryId, { postOpening: fd.get("postOpening") === "on" });
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    revalidatePath(`/bookkeeping/${clientId}/banking/reconciliation`);
+    if (!r.results.length) throw new ValidationError("There are no statements on file for this account yet.");
+    const ok = r.results.filter((x) => x.ok);
+    const lines = r.results.map((x) => `${x.month}: ${x.ok ? `${x.added} added` : `not imported (${x.message.replace(/^The statement was filed, but /, "")})`}`);
+    return `${ok.length} of ${r.results.length} statements read. ${lines.join(" · ")}${r.opening ? ` ${r.opening}` : ""}`;
+  });
+}
+
 /** "Read transactions from statement": reads a statement PDF already on file. */
 export async function readStatementAction(clientId: string, documentId: string, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();

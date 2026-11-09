@@ -124,3 +124,52 @@ describe("Reading a statement that's on file into the books", () => {
     expect(await prisma.bankTransaction.count({ where: { clientId: w.biz.id } })).toBe(0);
   });
 });
+
+describe("An account registered before the books were set up (the statements still import)", () => {
+  beforeEach(resetDb);
+
+  async function world(linkFirst: boolean) {
+    const tabitha = await makeUser("ADMIN", "Tabitha");
+    await prisma.ownerAccess.create({ data: { userId: tabitha.id, isPrimary: true } });
+    const biz = await createClient(tabitha, { businessName: "Willow Example LLC (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
+    await saveProfile(tabitha, biz.id, { active: true, frequency: "MONTHLY", payroll: false, payrollFrequency: null, payrollProvider: null });
+    return { tabitha, biz, linkFirst };
+  }
+
+  it("setting up the books links the already-registered account to the unused 1000 Business Checking", async () => {
+    const w = await world(true);
+    const chk = await registerAccount(w.tabitha, w.biz.id, { institution: "Example Community Bank", accountType: "CHECKING", last4: "3456" });
+    expect((await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: chk.id } })).ledgerAccountId).toBeNull();
+    await setupLedger(w.tabitha, w.biz.id, { basis: "CASH" });
+    const linked = await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: chk.id }, include: { ledgerAccount: true } });
+    expect(linked.ledgerAccount?.code).toBe("1000");
+    expect(await prisma.ledgerAccount.count({ where: { clientId: w.biz.id, subtype: "BANK" } })).toBe(1);
+  });
+
+  it("a statement already on file for an unlinked account is read: the account is linked, nothing is uploaded again, and the opening cash can be posted", async () => {
+    const w = await world(false);
+    // The state found in production: books set up after the account, account left without a GL account.
+    const chk = await registerAccount(w.tabitha, w.biz.id, { institution: "Example Community Bank", accountType: "CHECKING", last4: "3456" });
+    await prisma.ledgerBook.create({ data: { clientId: w.biz.id, basis: "CASH", fiscalYearStartMonth: 1, createdById: w.tabitha.id } });
+    const { DEFAULT_CHART } = await import("@/lib/services/ledger");
+    await prisma.ledgerAccount.createMany({ data: DEFAULT_CHART.map((a) => ({ clientId: w.biz.id, code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null })) });
+    await staffUploadStatement(w.tabitha, w.biz.id, { accountId: chk.id, month: "2026-10", bytes: await statementPdf(LINES), originalName: "october.pdf" });
+    expect(await prisma.bankTransaction.count({ where: { clientId: w.biz.id } })).toBe(0);
+
+    const { readStatementsOnFile } = await import("@/lib/services/statement-import");
+    const r = await readStatementsOnFile(w.tabitha, w.biz.id, chk.id, { postOpening: true });
+    expect(r.results).toMatchObject([{ month: "2026-10", ok: true, added: 8 }]);
+    expect(r.opening).toMatch(/\$1,000\.00 posted on 2026-10-01/);
+    expect((await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: chk.id }, include: { ledgerAccount: true } })).ledgerAccount?.code).toBe("1000");
+    // Transactions wait for review; nothing is posted except the opening entry, which balances on its own.
+    expect(await prisma.bankTransaction.count({ where: { clientId: w.biz.id, status: "UNREVIEWED" } })).toBe(8);
+    const entries = await prisma.journalEntry.findMany({ where: { clientId: w.biz.id }, include: { lines: true } });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].lines.reduce((n, l) => n + l.debitCents - l.creditCents, 0)).toBe(0);
+
+    // Reading again adds nothing and posts no second opening.
+    const again = await readStatementsOnFile(w.tabitha, w.biz.id, chk.id, { postOpening: true });
+    expect(again.results[0]).toMatchObject({ ok: true, added: 0 });
+    expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id } })).toBe(1);
+  });
+});

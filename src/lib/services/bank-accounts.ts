@@ -90,6 +90,40 @@ async function assignGl(clientId: string, type: RegistryType, gl: string | null 
   return a.id;
 }
 
+/**
+ * Gives a registered account its General Ledger account when it has none (for example, it was
+ * registered before the books were set up). An unused GL account of the right kind that belongs to
+ * no other registered account is used first (e.g. the standard "1000 Business Checking"); otherwise
+ * a new one is created. Returns the GL account id, or null when the books aren't set up or the
+ * account type has no GL account (merchant, other).
+ */
+export async function ensureGlLink(clientId: string, registryId: string, actorId: string | null = null): Promise<string | null> {
+  const r = await prisma.bookkeepingAccount.findFirst({ where: { id: registryId, clientId } });
+  if (!r) return null;
+  if (r.ledgerAccountId) return r.ledgerAccountId;
+  if (r.parentAccountId) return (await prisma.bookkeepingAccount.findUnique({ where: { id: r.parentAccountId }, select: { ledgerAccountId: true } }))?.ledgerAccountId ?? null;
+  const def = REGISTRY_TYPES[r.accountType as RegistryType];
+  if (!def?.gl) return null;
+  if (!(await prisma.ledgerBook.count({ where: { clientId } }))) return null;
+  const candidates = await prisma.ledgerAccount.findMany({ where: { clientId, subtype: def.gl, active: true, registryAccount: null }, orderBy: { code: "asc" } });
+  let glId: string | null = null;
+  for (const c of candidates) {
+    const used = (await prisma.journalLine.count({ where: { accountId: c.id } })) + (await prisma.bankTransaction.count({ where: { accountId: c.id } }));
+    if (!used) { glId = c.id; break; }
+  }
+  if (!glId) glId = await assignGl(clientId, r.accountType as RegistryType, "NEW", registryLabel(r), r.institution, r.last4);
+  if (!glId) return null;
+  await prisma.bookkeepingAccount.update({ where: { id: r.id }, data: { ledgerAccountId: glId } });
+  await audit(prisma, { actorId, action: "banking.account_gl_linked", entityType: "BookkeepingAccount", entityId: r.id, clientId, details: { ledgerAccountId: glId, reason: "registered account had no GL account" } });
+  return glId;
+}
+
+/** Links every registered account that has no GL account yet (run when the books are set up). */
+export async function linkRegisteredAccounts(clientId: string, actorId: string | null = null) {
+  const rows = await prisma.bookkeepingAccount.findMany({ where: { clientId, ledgerAccountId: null, parentAccountId: null, active: true }, orderBy: { createdAt: "asc" }, select: { id: true } });
+  for (const r of rows) await ensureGlLink(clientId, r.id, actorId);
+}
+
 /** Registers one account (unlimited per business). Authorized staff only. */
 export async function registerAccount(actor: Actor, clientId: string, input: RegisterInput) {
   await assertCanManageBanking(actor, clientId);
