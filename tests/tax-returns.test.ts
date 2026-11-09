@@ -16,8 +16,6 @@ async function accepted(actor: Actor, clientId: string, taxYear: number, returnT
 }
 import { createAndLinkBusiness, grantOwnerPortalAccess } from "@/lib/services/related-businesses";
 import { bulkUploadReturns, confirmIntake, discardIntake, emailMyCopy, fileReturn, filingLabel, releaseReturn, returnsQueue, submitReturnForRelease } from "@/lib/services/tax-returns";
-// These tests cover the "waiting for Tabitha" path under the earlier sending rule (see the helper).
-vi.mock("@/lib/services/return-senders", async (orig) => (await import("./helpers/legacy-return-senders")).legacyReturnSenders(orig));
 
 const pdf = (tag: string | number = Math.random()) => new TextEncoder().encode(`%PDF-1.4\n% fictional return ${tag}\n`);
 const sent: { to: string; text: string; html: string }[] = [];
@@ -76,7 +74,7 @@ describe("Tax Return Delivery", () => {
     await expect(fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes, originalName: "again.pdf" })).rejects.toThrow(/already saved/);
     await expect(setVisibility(tabitha, v1.id, "PUBLISHED")).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
     await expect(staffUploadDocument(tabitha, { clientId: energy.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
-    await expect(setVisibility(daria, v1.id, "PUBLISHED")).rejects.toThrow(/Any staff member can send one|Only office staff/);
+    await expect(setVisibility(daria, v1.id, "PUBLISHED")).rejects.toThrow(/assigned preparer|staff member assigned to this client/);
     // Release: staff not assigned to the client can't send it; Tabitha, an Admin or the assigned preparer can.
     await expect(releaseReturn(daria, v1.id)).rejects.toBeInstanceOf(ForbiddenError);
     await submitReturnForRelease(daria, v1.id);
