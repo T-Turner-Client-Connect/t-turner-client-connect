@@ -13,7 +13,7 @@ import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { usd } from "@/lib/services/ledger";
 import { workMonth } from "@/lib/services/bookkeeping-clients";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
-import { approveReconciliationAction, readStatementAction, runMonitorAction, statementBalancesAction } from "@/app/actions/bk-workflow";
+import { approveReconciliationAction, readAllStatementsAction, readStatementAction, runMonitorAction, statementBalancesAction } from "@/app/actions/bk-workflow";
 
 export const metadata = { title: "Monthly Reconciliation" };
 
@@ -96,6 +96,12 @@ export default async function ReconciliationPage({ params, searchParams }: { par
                   {manage && rec?.statementDocumentId && rec.status !== "APPROVED" && (
                     <ActionForm action={readStatementAction.bind(null, clientId, rec.statementDocumentId)} className="w-full sm:w-auto">
                       <button type="submit" className={goldBtn} data-testid="read-statement"><Sparkles className="size-4" aria-hidden /> Read transactions from statement</button>
+                    </ActionForm>
+                  )}
+                  {manage && (
+                    <ActionForm action={readAllStatementsAction.bind(null, clientId, a.id)} className="flex flex-wrap items-center gap-2" confirm="Read every statement already on file for this account? Transactions already imported are skipped; nothing is posted until it's categorized.">
+                      <button type="submit" className={outlineBtn} data-testid="read-all-statements">Read every statement on file</button>
+                      <label className="flex items-center gap-1 text-xs text-slate-700"><input type="checkbox" name="postOpening" /> Also post opening cash from the earliest statement (only if no opening balance is posted yet)</label>
                     </ActionForm>
                   )}
                   {owner && rec?.status === "READY" && (
