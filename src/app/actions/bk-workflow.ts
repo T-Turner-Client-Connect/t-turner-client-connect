@@ -184,6 +184,23 @@ export async function uploadStatementAction(clientId: string, _prev: ActionState
   });
 }
 
+/** "Upload bank statements": one or more PDFs; the account and month are found on each statement. */
+export async function uploadStatementsAutoAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const files: { bytes: Uint8Array; originalName: string }[] = [];
+    for (const f of fd.getAll("files")) if (f instanceof File && f.size > 0) files.push({ bytes: new Uint8Array(await f.arrayBuffer()), originalName: f.name });
+    if (!files.length) throw new ValidationError("Choose the statement files.");
+    const { uploadStatementsAuto } = await import("@/lib/services/statement-import");
+    const r = await uploadStatementsAuto(actor, clientId, files, { postOpening: fd.get("postOpening") === "on" });
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    revalidatePath(`/bookkeeping/${clientId}/banking/reconciliation`);
+    const ok = r.results.filter((x) => x.ok).length;
+    return `${ok} of ${r.results.length} statement${r.results.length === 1 ? "" : "s"} imported. ${r.results.map((x) => `${x.month ?? x.file}${x.account ? ` ${x.account}` : ""}: ${x.message}`).join(" · ")}${r.opening ? ` ${r.opening}` : ""}`;
+  });
+}
+
 /** Reads every statement already on file for one account (no re-upload), oldest month first. */
 export async function readAllStatementsAction(clientId: string, registryId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();

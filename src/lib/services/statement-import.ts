@@ -171,3 +171,68 @@ export async function readStatementsOnFile(actor: Actor, clientId: string, regis
   await audit(prisma, { actorId: actor.id, action: "bookkeeping.statements_reread", entityType: "BookkeepingAccount", entityId: registryId, clientId, details: { months: results.map((r) => ({ month: r.month, ok: r.ok, added: r.added })), opening: !!opening } });
   return { results, opening };
 }
+
+/** The account's last 4 digits as printed on a statement ("ACCOUNT # 0361359432" → "9432"). */
+export function statementLast4(lines: string[]): string | null {
+  for (const l of lines) {
+    const m = /\b(?:account|acct)\b[^0-9]{0,25}([0-9][0-9 -]{3,24}[0-9])/i.exec(l);
+    if (m) { const d = m[1].replace(/\D/g, ""); if (d.length >= 4) return d.slice(-4); }
+  }
+  return null;
+}
+
+/**
+ * "Upload bank statements": one or more statement PDFs, no account or month to choose. For each file
+ * the account is found from the last 4 digits printed on it (or the business's only registered
+ * account) and the month from the statement period; it's filed there and its transactions are
+ * imported when they reconcile to the cent. A statement for an account that isn't registered to this
+ * business is refused, never filed. Optionally the books' opening cash is taken from the earliest
+ * statement when no opening balance is posted yet.
+ */
+export async function uploadStatementsAuto(actor: Actor, clientId: string, files: { bytes: Uint8Array; originalName: string }[], opts: { postOpening?: boolean } = {}) {
+  await assertLedger(actor, clientId, "banking", "edit");
+  if (!files.length) throw new ValidationError("Choose the statement files.");
+  if (files.length > 24) throw new ValidationError("Upload up to 24 statements at a time.");
+  const accounts = await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null } });
+  const { staffUploadStatement } = await import("./client-requests");
+  const results: { file: string; ok: boolean; month?: string; account?: string; message: string; periodStart?: string | null; beginningCents?: number; registryId?: string }[] = [];
+  for (const f of files) {
+    if (!/\.pdf$/i.test(f.originalName)) { results.push({ file: f.originalName, ok: false, message: "Only statement PDFs can be read here. Use Import CSV in Books & Ledger for a CSV file." }); continue; }
+    const lines = await pdfLines(f.bytes).catch(() => null);
+    if (!lines?.length) { results.push({ file: f.originalName, ok: false, message: "This looks like a scanned image, so it can't be read yet. Nothing was filed." }); continue; }
+    const parsed = parseStatementLines(lines);
+    const end = parsed.summary.periodEnd;
+    if (!end) { results.push({ file: f.originalName, ok: false, message: "The statement period couldn't be found on it. Use “Choose the account and month myself.” Nothing was filed." }); continue; }
+    const last4 = statementLast4(lines);
+    const byLast4 = last4 ? accounts.filter((a) => a.last4 === last4) : [];
+    const acct = byLast4.length === 1 ? byLast4[0] : !last4 && accounts.length === 1 ? accounts[0] : null;
+    if (!acct) {
+      results.push({ file: f.originalName, ok: false, message: last4 ? `It's for an account ending ${last4}, which isn't registered for this business. Nothing was filed.` : "Which account it belongs to couldn't be told. Use “Choose the account and month myself.” Nothing was filed." });
+      continue;
+    }
+    const month = end.slice(0, 7);
+    const doc = await staffUploadStatement(actor, clientId, { accountId: acct.id, month, bytes: f.bytes, originalName: f.originalName });
+    try {
+      const r = await readStatementTransactions(actor, clientId, doc.id);
+      results.push({ file: f.originalName, ok: r.ok, month, account: acct.last4 ? `••${acct.last4}` : acct.institution, message: r.ok ? `${r.added} transaction${r.added === 1 ? "" : "s"} added${r.duplicates ? ` (${r.duplicates} already in)` : ""}, matches the statement to the cent` : `filed, but not imported: ${r.problems.slice(0, 1).join(" ")}`, ...(r.ok ? { periodStart: r.periodStart, beginningCents: r.beginningCents, registryId: acct.id } : {}) });
+    } catch (err) {
+      if (!(err instanceof ValidationError)) throw err;
+      results.push({ file: f.originalName, ok: false, month, account: acct.last4 ? `••${acct.last4}` : acct.institution, message: `filed, but not imported: ${err.message}` });
+    }
+  }
+  let opening: string | null = null;
+  if (opts.postOpening) {
+    const first = results.filter((r) => r.ok && r.periodStart && r.beginningCents != null).sort((a, b) => a.periodStart!.localeCompare(b.periodStart!))[0];
+    const book = await prisma.ledgerBook.findUnique({ where: { clientId } });
+    if (first && book && !book.openingDate) {
+      const lid = (await prisma.bookkeepingAccount.findUnique({ where: { id: first.registryId! }, select: { ledgerAccountId: true } }))?.ledgerAccountId;
+      if (lid) {
+        const { postOpeningBalances } = await import("./ledger");
+        await postOpeningBalances(actor, clientId, { date: first.periodStart!, balances: [{ accountId: lid, amount: (first.beginningCents! / 100).toFixed(2) }] });
+        opening = `Opening cash ${usd(first.beginningCents!)} posted on ${first.periodStart} from the ${first.month} statement.`;
+      }
+    } else if (book?.openingDate) opening = "Opening balances were already posted, so none was added.";
+  }
+  await audit(prisma, { actorId: actor.id, action: "bookkeeping.statements_uploaded_auto", entityType: "LedgerBook", entityId: clientId, clientId, details: { files: results.map((r) => ({ month: r.month ?? null, ok: r.ok })), opening: !!opening } });
+  return { results: results.map(({ periodStart: _p, beginningCents: _b, registryId: _r, ...r }) => r), opening };
+}

@@ -17,7 +17,7 @@ import { accountBalance, todayCentral, usd } from "@/lib/services/ledger";
 import { workMonth } from "@/lib/services/bookkeeping-clients";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
 import { retrieveNowAction } from "@/app/actions/ledger";
-import { uploadForRequestAction, uploadStatementAction } from "@/app/actions/bk-workflow";
+import { uploadForRequestAction, uploadStatementAction, uploadStatementsAutoAction } from "@/app/actions/bk-workflow";
 import { canSetCoethaOptOut, coethaOptOutView } from "@/lib/services/coetha-opt-out";
 import { CoethaOptOutPanel } from "@/components/bk/coetha-opt-out-panel";
 
@@ -318,8 +318,19 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
             <p className="flex items-center gap-2 text-sm text-navy-800"><CheckCircle2 className="size-4 text-emerald-600" aria-hidden /> Coetha isn&apos;t waiting on any statements.</p>
           )}
           {rows.length > 0 && (
+            <div className="mt-3 rounded-xl border border-gold-200 bg-white p-3" data-testid="upload-statements-auto">
+              <p className="flex items-center gap-2 text-sm font-semibold text-navy-900"><Upload className="size-4 text-gold-600" aria-hidden /> Upload bank statements</p>
+              <p className="mt-0.5 text-xs text-slate-600">Choose one or more statement PDFs (as many months as you have). Client Connect finds the account and month on each one, files it, and imports its transactions when they match the statement to the cent. Nothing is posted until it&apos;s categorized.</p>
+              <ActionForm action={uploadStatementsAutoAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-center gap-2" resetOnSuccess idempotent>
+                <input className="input max-w-80" type="file" name="files" accept="application/pdf" multiple required aria-label="Statement PDFs" />
+                <button type="submit" className={smallBtn}><Upload className="size-4" aria-hidden /> Upload</button>
+                <label className="flex w-full items-center gap-1.5 text-xs text-slate-700"><input type="checkbox" name="postOpening" /> Start the books with the earliest statement&apos;s beginning balance (only if no opening balance is posted yet)</label>
+              </ActionForm>
+            </div>
+          )}
+          {rows.length > 0 && (
             <details className="mt-2 text-sm">
-              <summary className="cursor-pointer text-navy-900 underline decoration-gold-500">Upload a bank statement</summary>
+              <summary className="cursor-pointer text-navy-900 underline decoration-gold-500">Choose the account and month myself</summary>
               <ActionForm action={uploadStatementAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-end gap-2" resetOnSuccess idempotent>
                 <label className="text-xs">Account<select className="input mt-1" name="accountId" required defaultValue="">{[<option key="" value="" disabled>Choose…</option>, ...rows.map((r) => <option key={r.id} value={r.id}>{registryLabel(r)}</option>)]}</select></label>
                 <label className="text-xs">Month<input className="input mt-1" type="month" name="month" required defaultValue={ym} /></label>

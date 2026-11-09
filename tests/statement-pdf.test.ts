@@ -173,3 +173,37 @@ describe("An account registered before the books were set up (the statements sti
     expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id } })).toBe(1);
   });
 });
+
+describe("Upload bank statements (no account or month to choose)", () => {
+  beforeEach(resetDb);
+
+  it("finds the account and month on each statement, imports it, refuses another business's statement, and can start the books", async () => {
+    const tabitha = await makeUser("ADMIN", "Tabitha");
+    await prisma.ownerAccess.create({ data: { userId: tabitha.id, isPrimary: true } });
+    const biz = await createClient(tabitha, { businessName: "Aspen Example LLC (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
+    await saveProfile(tabitha, biz.id, { active: true, frequency: "MONTHLY", payroll: false, payrollFrequency: null, payrollProvider: null });
+    await setupLedger(tabitha, biz.id, { basis: "CASH" });
+    const chk = await registerAccount(tabitha, biz.id, { institution: "Example Community Bank", accountType: "CHECKING", last4: "3456" });
+    await registerAccount(tabitha, biz.id, { institution: "Example Savings Bank", accountType: "SAVINGS", last4: "7777" });
+
+    const { uploadStatementsAuto } = await import("@/lib/services/statement-import");
+    const otherBusiness = LINES.map((l) => l.replace("0000123456", "0000555511"));
+    const r = await uploadStatementsAuto(tabitha, biz.id, [
+      { bytes: await statementPdf(LINES), originalName: "october.pdf" },
+      { bytes: await statementPdf(otherBusiness), originalName: "someone-else.pdf" },
+      { bytes: new TextEncoder().encode("Date,Description,Amount\n"), originalName: "export.csv" },
+    ], { postOpening: true });
+
+    expect(r.results[0]).toMatchObject({ ok: true, month: "2026-10", account: "••3456" });
+    expect(r.results[0].message).toMatch(/8 transactions added/);
+    expect(r.results[1]).toMatchObject({ ok: false });
+    expect(r.results[1].message).toMatch(/ending 5511, which isn't registered/);
+    expect(r.results[2].message).toMatch(/Only statement PDFs/);
+    expect(r.opening).toMatch(/\$1,000\.00 posted on 2026-10-01/);
+
+    // Filed to the right account and month; the other business's statement was never filed.
+    const docs = await prisma.document.findMany({ where: { clientId: biz.id, bookkeepingAccountId: { not: null } } });
+    expect(docs.map((d) => [d.bookkeepingAccountId, d.year, d.month])).toEqual([[chk.id, 2026, 10]]);
+    expect(await prisma.bankTransaction.count({ where: { clientId: biz.id, status: "UNREVIEWED" } })).toBe(8);
+  });
+});
