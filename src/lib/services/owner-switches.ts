@@ -11,11 +11,11 @@ import { isReportApprover } from "./bookkeeping-clients";
  * written to both the office audit log and the Owner's Office log.
  */
 
-export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend" | "portalInvites";
+export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend" | "portalInvites" | "taxSummaryAutoSend" | "clientRollout" | "clientBankBalances";
 
-export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", portalInvites: "Portal invitations authorized" };
+export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", portalInvites: "Portal invitations authorized", taxSummaryAutoSend: "Send tax summaries automatically", clientRollout: "Client rollout authorized", clientBankBalances: "Show office-entered bank balances to clients" };
 const LABEL = SWITCH_LABEL;
-const ACTION: Record<OwnerSwitch, string> = { liveBanking: "banking.live_connections", coetha: "coetha.enabled", coethaAutoSend: "coetha.auto_send_requests", portalInvites: "portal_invites.authorized" };
+const ACTION: Record<OwnerSwitch, string> = { liveBanking: "banking.live_connections", coetha: "coetha.enabled", coethaAutoSend: "coetha.auto_send_requests", portalInvites: "portal_invites.authorized", taxSummaryAutoSend: "tax.summary_auto_send", clientRollout: "client_letters.rollout_authorized", clientBankBalances: "banking.client_balances_visible" };
 
 export async function ownerSwitches() {
   const s = await prisma.integrationSettings.findUnique({ where: { id: "default" } });
@@ -24,6 +24,9 @@ export async function ownerSwitches() {
     coetha: { on: s?.coethaEnabled ?? false, changedAt: s?.coethaChangedAt ?? null, changedById: s?.coethaChangedById ?? null },
     coethaAutoSend: { on: s?.coethaAutoSendRequests ?? true, changedAt: s?.coethaAutoSendChangedAt ?? null, changedById: s?.coethaAutoSendChangedById ?? null },
     portalInvites: { on: s?.portalInvitesAuthorized === true, changedAt: s?.portalInvitesChangedAt ?? null, changedById: s?.portalInvitesChangedById ?? null },
+    taxSummaryAutoSend: { on: s?.taxSummaryAutoSend === true, changedAt: s?.taxSummaryAutoSendAt ?? null, changedById: s?.taxSummaryAutoSendById ?? null },
+    clientRollout: { on: s?.clientRolloutAuthorized === true, changedAt: s?.clientRolloutChangedAt ?? null, changedById: s?.clientRolloutChangedById ?? null },
+    clientBankBalances: { on: s?.clientBankBalancesVisible === true, changedAt: s?.clientBankBalancesChangedAt ?? null, changedById: s?.clientBankBalancesChangedById ?? null },
   };
 }
 
@@ -41,6 +44,21 @@ export async function portalInvitesAuthorized(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { portalInvitesAuthorized: true } }))?.portalInvitesAuthorized === true;
 }
 
+/** Tabitha's switch "Send tax summaries automatically". Off by default (null or false). */
+export async function taxSummaryAutoSendOn(): Promise<boolean> {
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { taxSummaryAutoSend: true } }))?.taxSummaryAutoSend === true;
+}
+
+/** Tabitha's safety lock on Client Letters: sending is refused until she authorizes the client rollout. Off by default. */
+export async function clientRolloutAuthorized(): Promise<boolean> {
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { clientRolloutAuthorized: true } }))?.clientRolloutAuthorized === true;
+}
+
+/** Tabitha's switch: clients see balances entered by our office. Off by default (null or false). */
+export async function clientBankBalancesVisible(): Promise<boolean> {
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { clientBankBalancesVisible: true } }))?.clientBankBalancesVisible === true;
+}
+
 export async function coethaOn(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaEnabled: true } }))?.coethaEnabled ?? false;
 }
@@ -56,7 +74,13 @@ export async function setOwnerSwitch(actor: Actor, which: OwnerSwitch, on: boole
         ? { coethaEnabled: on, coethaChangedById: actor.id, coethaChangedAt: now, updatedById: actor.id }
         : which === "coethaAutoSend"
           ? { coethaAutoSendRequests: on, coethaAutoSendChangedById: actor.id, coethaAutoSendChangedAt: now, updatedById: actor.id }
-          : { portalInvitesAuthorized: on, portalInvitesChangedById: actor.id, portalInvitesChangedAt: now, updatedById: actor.id };
+          : which === "portalInvites"
+            ? { portalInvitesAuthorized: on, portalInvitesChangedById: actor.id, portalInvitesChangedAt: now, updatedById: actor.id }
+            : which === "taxSummaryAutoSend"
+              ? { taxSummaryAutoSend: on, taxSummaryAutoSendById: actor.id, taxSummaryAutoSendAt: now, updatedById: actor.id }
+              : which === "clientRollout"
+                ? { clientRolloutAuthorized: on, clientRolloutChangedById: actor.id, clientRolloutChangedAt: now, updatedById: actor.id }
+                : { clientBankBalancesVisible: on, clientBankBalancesChangedById: actor.id, clientBankBalancesChangedAt: now, updatedById: actor.id };
   const before = await ownerSwitches();
   await prisma.integrationSettings.upsert({ where: { id: "default" }, create: { id: "default", ...data }, update: data });
   const action = `${ACTION[which]}_${on ? "on" : "off"}`;

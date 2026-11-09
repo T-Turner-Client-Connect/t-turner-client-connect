@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { createContext, useContext, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
 import { ActionForm } from "@/components/action-form";
@@ -25,6 +25,9 @@ export type ResourceItem = {
 };
 
 type Faq = { id: string; question: string; answer: string; tags: string[] };
+type FormAction = (prev: { error?: string; ok?: string; at?: number } | null, fd: FormData) => Promise<{ error?: string; ok?: string; at?: number } | null>;
+/** View as Client: the stand-in every help request posts to (shown disabled); null in the portal. */
+const PreviewAction = createContext<FormAction | null>(null);
 
 const SECTION_REQUESTS: Partial<Record<SectionKey, RequestTopic[]>> = {
   BUSINESS: ["BUSINESS_SETUP", "LICENSING"],
@@ -41,8 +44,10 @@ function matches(r: ResourceItem, q: string) {
 
 function HelpForm({ clientId, state, topic, area, onDone }: { clientId: string; state: string; topic: RequestTopic; area?: string; onDone?: () => void }) {
   const year = new Date().getFullYear();
+  const preview = useContext(PreviewAction);
   return (
-    <ActionForm action={resourceHelpAction.bind(null, clientId)} className="mt-3 space-y-3 rounded-xl bg-white p-4 text-left shadow-inner" resetOnSuccess idempotent>
+    <ActionForm action={preview ?? resourceHelpAction.bind(null, clientId)} className="mt-3 space-y-3 rounded-xl bg-white p-4 text-left shadow-inner" resetOnSuccess idempotent>
+      <fieldset disabled={!!preview} className="min-w-0 space-y-3">
       <input type="hidden" name="topic" value={topic} />
       <input type="hidden" name="state" value={state} />
       {area && <input type="hidden" name="area" value={area} />}
@@ -62,6 +67,8 @@ function HelpForm({ clientId, state, topic, area, onDone }: { clientId: string; 
         <Button type="submit">Send securely</Button>
         {onDone && <Button type="button" variant="ghost" onClick={onDone}>Close</Button>}
       </div>
+      {preview && <p className="text-xs font-semibold text-gold-700" data-testid="preview-off">Turned off in View as Client</p>}
+      </fieldset>
     </ActionForm>
   );
 }
@@ -127,7 +134,10 @@ export function ResourceCenter({
   resources,
   faqs,
   coverage,
+  previewAction = null,
 }: {
+  /** View as Client: help requests show disabled and post here; choosing a state isn't saved. */
+  previewAction?: FormAction | null;
   clientId: string;
   initialState: string;
   resources: ResourceItem[];
@@ -140,7 +150,7 @@ export function ResourceCenter({
   const [local, setLocal] = useState("");
   const state = initialState;
   const changeState = (s: string) => start(async () => {
-    await setStateAction(s);
+    if (!previewAction) await setStateAction(s);
     router.push(`/client/resources?state=${s}`);
   });
   const filtered = useMemo(() => resources.filter((r) => matches(r, q)), [resources, q]);
@@ -148,6 +158,7 @@ export function ResourceCenter({
   const faqHits = faqs.filter((f) => !q || `${f.question} ${f.answer} ${f.tags.join(" ")}`.toLowerCase().includes(q.toLowerCase()));
 
   return (
+    <PreviewAction.Provider value={previewAction}>
     <div className="space-y-6">
       <section className="overflow-hidden rounded-2xl bg-gradient-to-br from-navy-900 to-navy-950 p-5 text-white shadow-lg sm:p-8">
         <p className="text-xs font-bold uppercase tracking-[0.2em] text-gold-500">TTurner Resource Center</p>
@@ -248,5 +259,6 @@ export function ResourceCenter({
         Clicking a link doesn&apos;t record a payment or filing with us. Pay and file directly on the official site, then let us know through Messages if you&apos;d like us to keep a copy.
       </p>
     </div>
+    </PreviewAction.Provider>
   );
 }

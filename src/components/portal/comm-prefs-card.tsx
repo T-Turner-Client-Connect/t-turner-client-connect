@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import { ActionForm } from "@/components/action-form";
 import { Button, Card } from "@/components/ui";
 import { portalCommPrefsAction } from "@/app/actions/portal";
+import { previewFormAction } from "@/app/actions/preview";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import { SMS_CONSENT_TEXT } from "@/lib/business";
 import { formatPhone } from "@/lib/normalize";
 import type { PreferenceState } from "@/lib/services/comm-prefs";
@@ -28,12 +30,14 @@ function Toggle({ name, label, description, checked, disabled, icon, children }:
 }
 
 /** Portal Account → Communication Preferences: three choices, each saved separately to the client's profile. */
-export function CommPrefsCard({ prefs }: { prefs: PreferenceState }) {
+/** `readOnly` (View as Client): the same choices, disabled, posting only to the preview stand-in. */
+export function CommPrefsCard({ prefs, readOnly }: { prefs: PreferenceState; readOnly?: boolean }) {
   const phone = prefs.phones[0];
   return (
     <Card title="Communication Preferences" className="border-t-4 border-t-gold-500">
       <p className="mb-4 text-sm text-slate-600">Choose which optional messages you&apos;d like from us. You can change these anytime, and changes take effect right away.</p>
-      <ActionForm action={portalCommPrefsAction}>
+      <PreviewDisabled readOnly={readOnly}>
+      <ActionForm action={readOnly ? previewFormAction : portalCommPrefsAction}>
         <div className="divide-y divide-ivory-200">
           <Toggle
             name="promoSms"
@@ -82,6 +86,7 @@ export function CommPrefsCard({ prefs }: { prefs: PreferenceState }) {
           <span className="text-xs text-slate-500">You can also unsubscribe from any promotional email with its link, or reply STOP to a text.</span>
         </div>
       </ActionForm>
+      </PreviewDisabled>
     </Card>
   );
 }

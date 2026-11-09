@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { businessDaysBefore, cycleDates, federalHolidays, isBusinessDay, nominalPayDates, onOrBeforeBusinessDay, planCycles, scheduleProblems, type ScheduleRule } from "@/lib/payroll/schedule";
-import { DEFAULT_PLAN, isOverdue, normalizePlan, queueStatus, sortQueue, toQueueRow, type CycleFacts } from "@/lib/payroll/queue";
+import { DEFAULT_PLAN, isOverdue, QUEUE_STATUS, normalizePlan, queueStatus, sortQueue, toQueueRow, type CycleFacts } from "@/lib/payroll/queue";
 
 const base = { periodEndLagDays: 5, hoursRequestLeadDays: 5, hoursDueDays: 3, approvalDueDays: 2, adpCutoffDays: 2 };
 const rule = (r: Partial<ScheduleRule>): ScheduleRule => ({ frequency: "WEEKLY", anchorPayDate: "2026-11-06", ...base, ...r });
@@ -86,7 +86,16 @@ describe("queue status mapping", () => {
     expect(queueStatus(f({ hoursSubmittedAt: new Date() }), "2026-11-06")).toBe("PREVIEW_TO_PREPARE");
     expect(queueStatus(f({ run: run("DRAFT") }), "2026-11-06")).toBe("PREVIEW_TO_PREPARE");
     expect(queueStatus(f({ run: run("AWAITING_APPROVAL") }), "2026-11-06")).toBe("AWAITING_CLIENT_APPROVAL");
-    expect(queueStatus(f({ run: run("DENIED") }), "2026-11-06")).toBe("NEEDS_CORRECTION");
+    expect(queueStatus(f({ run: run("DENIED") }), "2026-11-06")).toBe("CHANGES_REQUESTED");
+    // PAY-1: a waiting run reads by what happened to its approval email.
+    expect(queueStatus(f({ run: { ...run("AWAITING_APPROVAL"), approvalDelivery: "NOT_SENT" } }), "2026-11-06")).toBe("APPROVAL_NOT_SENT");
+    expect(queueStatus(f({ run: { ...run("AWAITING_APPROVAL"), approvalDelivery: "FAILED" } }), "2026-11-06")).toBe("DELIVERY_FAILED");
+    expect(queueStatus(f({ run: { ...run("AWAITING_APPROVAL"), approvalDelivery: "SENT" } }), "2026-11-06")).toBe("AWAITING_CLIENT_APPROVAL");
+    expect(QUEUE_STATUS.APPROVAL_NOT_SENT.label).toBe("Approval Prepared — Not Sent");
+    expect(QUEUE_STATUS.DELIVERY_FAILED.label).toBe("Delivery Failed — Needs Attention");
+    expect(QUEUE_STATUS.AWAITING_CLIENT_APPROVAL.label).toBe("Awaiting Client Approval");
+    expect(QUEUE_STATUS.CHANGES_REQUESTED.label).toBe("Changes Requested");
+    expect(QUEUE_STATUS.READY_TO_PROCESS.label).toBe("Client Approved");
     expect(queueStatus(f({ run: run("DRAFT"), errorFlaggedAt: new Date() }), "2026-11-06")).toBe("NEEDS_CORRECTION");
     expect(queueStatus(f({ run: run("FULLY_APPROVED") }), "2026-11-06")).toBe("READY_TO_PROCESS");
     expect(queueStatus(f({ run: run("SUBMITTED") }), "2026-11-06")).toBe("SUBMITTED_IN_ADP");

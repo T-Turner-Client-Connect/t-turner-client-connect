@@ -1,3 +1,4 @@
+import { splitFlyer } from "@/lib/news/flyers";
 import type { Announcement } from "@prisma/client";
 import { CalendarClock, Newspaper } from "lucide-react";
 import { countdownText, fmtIso, PAY_NOTE, type CountdownCard, type CountdownLine } from "@/lib/tax/deadlines";
@@ -59,7 +60,7 @@ function Line({ l }: { l: CountdownLine }) {
  */
 export function NewsAndCountdowns({ cards, news, showAll, allHref }: { cards: CountdownCard[]; news: Announcement[]; personalized?: boolean; showAll?: boolean; allHref?: string }) {
   const lines = cards.flatMap((c) => c.lines);
-  const items = news.map((a) => ({ id: a.id, title: a.title, body: a.body, topic: a.topic, clientId: a.clientId, pinned: a.pinned, at: a.publishedAt ?? a.createdAt }));
+  const items = news.map((a) => { const f = splitFlyer(a.body); return { id: a.id, title: a.title, body: f.text, flyer: f.flyer, topic: a.topic, clientId: a.clientId, pinned: a.pinned, at: a.publishedAt ?? a.createdAt }; });
   const taxYear = lines.find((l) => l.key === "individual")?.taxYear;
   return (
     <div className="space-y-6" data-testid="news-countdowns">

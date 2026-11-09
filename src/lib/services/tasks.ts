@@ -1,9 +1,10 @@
 import "server-only";
 import { z } from "zod";
-import type { TaskPriority } from "@prisma/client";
+import type { Prisma, TaskPriority } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import type { Actor } from "@/lib/auth/actor";
+import { ForbiddenError, type Actor } from "@/lib/auth/actor";
+import { primaryOwnerAccess } from "@/lib/auth/owner";
 import { ValidationError } from "./clients";
 import { recordStaffAppointmentCreated, staffCancelAppointment } from "./appointments";
 
@@ -19,6 +20,23 @@ const taskSchema = z.object({
 
 export type TaskInput = z.input<typeof taskSchema>;
 
+/**
+ * Which tasks this staff member may see. Owner-only tasks (the access-review reminder) are shown
+ * to the primary owner alone — checked against the database, not the role — so every Tasks list,
+ * the Calendar and the Dashboard add this filter. Everything else stays visible to all staff.
+ */
+export async function visibleTasksWhere(userId: string): Promise<Prisma.TaskWhereInput> {
+  return (await primaryOwnerAccess(userId)) ? {} : { ownerOnly: false };
+}
+
+/** An owner-only task looks like it doesn't exist to anyone but the owner. */
+async function assertTaskVisible(actor: Actor, taskId: string) {
+  const t = await prisma.task.findUnique({ where: { id: taskId }, select: { ownerOnly: true, reminderKey: true } });
+  if (!t) throw new ValidationError("Task not found.");
+  if (t.ownerOnly && !(await primaryOwnerAccess(actor.id))) throw new ForbiddenError("Not found.");
+  return t;
+}
+
 export async function saveTask(actor: Actor, taskId: string | null, input: TaskInput) {
   const parsed = taskSchema.safeParse(input);
   if (!parsed.success) throw new ValidationError(parsed.error.issues[0]?.message ?? "Check the form.");
@@ -27,6 +45,7 @@ export async function saveTask(actor: Actor, taskId: string | null, input: TaskI
     throw new ValidationError("Choose an active staff member.");
   }
   if (v.clientId && !(await prisma.client.count({ where: { id: v.clientId } }))) throw new ValidationError("Client not found.");
+  if (taskId) await assertTaskVisible(actor, taskId);
   const data = {
     title: v.title,
     details: v.details || null,
@@ -44,6 +63,9 @@ export async function saveTask(actor: Actor, taskId: string | null, input: TaskI
 }
 
 export async function setTaskDone(actor: Actor, taskId: string, done: boolean) {
+  const t = await assertTaskVisible(actor, taskId);
+  // The access-review reminder closes only when a new review is completed (Owner's Office).
+  if (done && t.reminderKey?.startsWith("access-review:")) throw new ValidationError("This reminder closes when you complete the access review in Owner's Office → Access review.");
   // A Tax & Compliance preparation task stays open until its filing period is completed
   // (filed with evidence, or not required with evidence) — it closes itself then.
   if (done) {

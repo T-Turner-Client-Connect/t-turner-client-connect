@@ -21,11 +21,10 @@ export async function BookkeepingTab({ clientId }: { clientId: string }) {
     },
     orderBy: [{ year: "desc" }, { month: "desc" }],
   });
-  const looseRequests = await prisma.documentRequest.findMany({ where: { clientId, periodId: null }, orderBy: { createdAt: "desc" }, include: { _count: { select: { documents: true } } } });
   const now = new Date();
   const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
-  const requestRow = (r: (typeof looseRequests)[number]) => (
+  const requestRow = (r: (typeof periods)[number]["requests"][number]) => (
     <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
       <span>
         <span className="font-medium">{r.title}</span>
@@ -166,19 +165,7 @@ export async function BookkeepingTab({ clientId }: { clientId: string }) {
         );
       })}
 
-      <Card title="Other document requests">
-        {looseRequests.length ? <ul className="divide-y divide-navy-100">{looseRequests.map(requestRow)}</ul> : <p className="text-sm text-slate-600">None.</p>}
-        <details className="mt-2">
-          <summary className="cursor-pointer text-sm underline">Request a document (not tied to a month)</summary>
-          <ActionForm action={requestDocumentAction.bind(null, clientId)} className="mt-2 grid gap-2 sm:grid-cols-2" resetOnSuccess>
-            <input className="input sm:col-span-2" name="title" required placeholder="e.g. 2025 W-2 from your employer" aria-label="What you need" />
-            <textarea className="input sm:col-span-2" name="instructions" rows={2} placeholder="Instructions (optional)" aria-label="Instructions" />
-            <Field label="Due"><input className="input" type="date" name="dueAt" /></Field>
-            <Field label="Reminder"><input className="input" type="date" name="remindAt" /></Field>
-            <div><Button type="submit">Request</Button></div>
-          </ActionForm>
-        </details>
-      </Card>
+      <p className="text-sm text-slate-600">Document requests not tied to a month are on the <Link className="underline" href={`/clients/${clientId}?tab=documents#requests`}>Documents tab</Link>.</p>
     </div>
   );
 }

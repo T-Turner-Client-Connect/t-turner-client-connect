@@ -11,7 +11,11 @@ import { AGING_BUCKETS, money } from "@/lib/billing/pricing";
 import { nameOf, paymentStatus, squareRevenueSummary } from "@/lib/services/square-billing";
 import { squareHealth } from "@/lib/services/square-health";
 import { fmtDate, fmtDateTime } from "@/lib/format";
-
+import { accessReviewBanner } from "@/lib/services/access-review";
+import { AccessReviewBanner } from "@/components/owner/access-review-banner";
+import { isReportApprover } from "@/lib/services/bookkeeping-clients";
+import { ownerQueue } from "@/lib/services/agreements";
+import { pendingAcceptances } from "@/lib/services/accepted-returns";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export default async function OwnerOverview({ searchParams }: { searchParams: Promise<{ year?: string }> }) {
@@ -22,9 +26,22 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
   const mayAr = access.can("receivables", "view");
   const maySq = access.can("square", "view");
   const [{ months, total }, r, sq, health, other, clientChoices] = await Promise.all([monthlySummary(actor, year), mayAr ? receivables(actor) : null, maySq ? squareRevenueSummary() : null, maySq ? squareHealth() : null, maySq ? nonSquareRecurring(actor) : null, prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, businessName: true }, orderBy: { displayName: "asc" } })]);
+  // Agreements staff asked Tabitha to send, and recent signatures/declines (Tabitha only).
+  const queue = (await isReportApprover(actor)) ? await ownerQueue() : null;
   const month = year === thisYear ? months[Number(todayYmd().slice(5, 7)) - 1] : null;
+  // Owner only: returns null for staff (even with every grant) and while the review is 14+ days away.
+  const reviewBanner = await accessReviewBanner(actor);
+  // Returns staff delivered that wait for Tabitha's one-click acceptance confirmation.
+  const toConfirm = (await isReportApprover(actor)) ? (await pendingAcceptances()).length : 0;
   return (
     <>
+      {toConfirm > 0 && (
+        <div className="mb-4" data-testid="owner-acceptance-notice">
+          <Notice tone="warn" title={`${toConfirm} return${toConfirm === 1 ? "" : "s"} ready for you to confirm acceptance`}>
+            Staff delivered {toConfirm === 1 ? "an accepted return" : "accepted returns"} that only you can record as submitted and accepted. <Link className="font-semibold underline" href="/taxes/returns#confirm-acceptance">Confirm them on Tax returns</Link>.
+          </Notice>
+        </div>
+      )}
       <PageHeader
         title="Overview"
         subtitle="Invoiced revenue and cash collected are tracked separately. Unpaid invoices never count as cash."
@@ -36,6 +53,19 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
           </>
         }
       />
+      {reviewBanner && <AccessReviewBanner banner={reviewBanner} />}
+      {queue && (queue.waiting.length > 0 || queue.recent.length > 0) && (
+        <Card className="mb-4" title="Agreements for you" actions={<Link className="text-sm underline" href="/agreements">All agreements</Link>}>
+          <ul className="divide-y divide-navy-100 text-sm" data-testid="owner-agreements">
+            {queue.waiting.map((a) => (
+              <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 py-2"><span><Badge tone="gold">Waiting for you to send</Badge> <Link className="font-semibold underline" href={`/agreements/${a.id}`}>{a.title}</Link> · {a.clientLabel}</span><span className="text-slate-600">asked {fmtDateTime(a.requestedAt)}</span></li>
+            ))}
+            {queue.recent.map((a) => (
+              <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 py-2"><span><Badge tone={a.status === "SIGNED" ? "green" : "red"}>{a.status === "SIGNED" ? "Signed" : "Declined"}</Badge> <Link className="font-semibold underline" href={`/agreements/${a.id}`}>{a.title}</Link> · {a.clientLabel}</span><span className="text-slate-600">{fmtDateTime(a.signedAt ?? a.declinedAt)}</span></li>
+            ))}
+          </ul>
+        </Card>
+      )}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label={`Collected ${year}`} value={money(total.collectedCents - total.refundedCents)} hint={month ? `${money(month.collectedCents - month.refundedCents)} this month` : "Cash received, less refunds"} />
         <Stat label={`Invoiced ${year}`} value={money(total.invoicedCents)} hint="Accepted quotes and issued invoices" />

@@ -63,6 +63,68 @@ export function reviewStatus(lastCompletedAt: Date | null | undefined, now = new
 /** Title of the owner's reminder task (also its dedupe key: one open task at a time). */
 export const REVIEW_TASK_TITLE = "Quarterly access review due";
 
+/** Where every reminder (task, banner, email) sends the owner. */
+export const ACCESS_REVIEW_PATH = "/owner/access-review";
+
+/** The reminder task appears (as "upcoming") this many days before the due date. */
+export const UPCOMING_WINDOW_DAYS = 14;
+
+/**
+ * One review cycle = the time between two completed reviews. Its key is the latest review's id
+ * ("none" before the first review); a correction (Edit Review) never creates a review, so it never
+ * starts a new cycle.
+ */
+export const reviewCycleKey = (lastReviewId: string | null | undefined) => lastReviewId ?? "none";
+export const reminderTaskKey = (cycle: string) => `access-review:${cycle}`;
+export const dueEmailKey = (cycle: string) => `access-review-due-email:${cycle}`;
+
+/** Days since 1970-01-01 of the America/Chicago calendar date of this instant. */
+function chicagoDay(d: Date): number {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(d).map((x) => [x.type, x.value]),
+  );
+  return Math.round(Date.UTC(+p.year, +p.month - 1, +p.day) / DAY);
+}
+
+/** A due date as the office reads it: "Wednesday, February 3, 2027" (America/Chicago). */
+export function fmtDueDate(d: Date): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(d);
+}
+
+export type ReminderStage =
+  | { stage: "quiet"; dueAt: Date; daysUntil: number }
+  | { stage: "upcoming"; dueAt: Date; daysUntil: number }
+  | { stage: "due"; dueAt: Date | null; daysUntil: 0 }
+  | { stage: "overdue"; dueAt: Date; daysOverdue: number };
+
+/**
+ * Where the owner is in the reminder schedule, counted in America/Chicago calendar days:
+ * quiet (more than 14 days left) → upcoming (14…1 days left: the task exists, labelled upcoming)
+ * → due (the due date itself, or never reviewed) → overdue (every day after, until a new review).
+ */
+export function reminderStage(lastCompletedAt: Date | null | undefined, now = new Date()): ReminderStage {
+  return stageForDue(nextReviewDue(lastCompletedAt), now);
+}
+
+/** The same schedule from a due date (null = never reviewed, so due now). */
+export function stageForDue(dueAt: Date | null, now = new Date()): ReminderStage {
+  if (!dueAt) return { stage: "due", dueAt: null, daysUntil: 0 };
+  const days = chicagoDay(dueAt) - chicagoDay(now);
+  if (days > UPCOMING_WINDOW_DAYS) return { stage: "quiet", dueAt, daysUntil: days };
+  if (days > 0) return { stage: "upcoming", dueAt, daysUntil: days };
+  if (days === 0) return { stage: "due", dueAt, daysUntil: 0 };
+  return { stage: "overdue", dueAt, daysOverdue: -days };
+}
+
+/** The Owner's Office banner line for a stage (null while quiet). */
+export function reminderBannerText(s: ReminderStage): { title: string; detail: string } | null {
+  const plural = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
+  if (s.stage === "quiet") return null;
+  if (s.stage === "upcoming") return { title: `Access review upcoming in ${plural(s.daysUntil)}`, detail: `Due ${fmtDueDate(s.dueAt)}.` };
+  if (s.stage === "overdue") return { title: `Access review overdue by ${plural(s.daysOverdue)}`, detail: `It was due ${fmtDueDate(s.dueAt)}. The reminder stays open until you complete a new review.` };
+  return { title: "Access review due", detail: s.dueAt ? `Due today, ${fmtDueDate(s.dueAt)}.` : "No access review has been completed yet." };
+}
+
 /** The only parts of a completed review that can ever be corrected (summary, findings, vendor answers). */
 export type EditableReview = { summary: string; findings: string | null; vendorAnswers: VendorAnswer[] };
 

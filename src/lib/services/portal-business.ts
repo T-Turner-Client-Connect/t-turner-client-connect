@@ -2,7 +2,8 @@ import "server-only";
 import type { PortalAccess } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { requireClientAccess } from "@/lib/portal/access";
+import { ForbiddenError } from "@/lib/auth/actor";
+import { hasBookkeepingService, requireClientAccess } from "@/lib/portal/access";
 import type { PortalActor } from "@/lib/portal/session";
 import { currentPlaidMode, envOfMode } from "@/lib/plaid";
 import { isStateCode } from "@/lib/resources/catalog";
@@ -38,8 +39,15 @@ export function homeKind(access: Pick<PortalAccess, "canViewBookkeeping">): "BUS
 
 // --- Live bank feed (JSON route) ---------------------------------------------------------------
 
+/** Banking information reaches a client only when the office keeps their books (hasBookkeepingService). */
+async function assertBankingVisible(clientId: string) {
+  const c = await prisma.client.findUnique({ where: { id: clientId }, select: { bookkeepingProfile: { select: { active: true } } } });
+  if (!c || !hasBookkeepingService(c)) throw new ForbiddenError("Bank balances are shown once our office keeps your books.");
+}
+
 export async function portalBankFeed(user: PortalActor, clientId: string) {
   await requireClientAccess(user.id, clientId, "bookkeeping");
+  await assertBankingVisible(clientId);
   return bankFeed(clientId);
 }
 
@@ -56,6 +64,7 @@ export class RateLimitedError extends Error {
  */
 export async function portalRefreshBank(user: PortalActor, clientId: string, now = new Date()) {
   await requireClientAccess(user.id, clientId, "bookkeeping");
+  await assertBankingVisible(clientId);
   // Honors Tabitha's "Live bank connections" switch: production keys alone never reach a bank.
   const environment = envOfMode(await currentPlaidMode());
   if (!environment) throw new ValidationError("Refreshing from your bank isn't turned on yet. Balances update automatically as your bank reports them.");
@@ -111,7 +120,7 @@ export async function booksStatus(clientId: string) {
   const [accounts, recs, openRequests, questions, toCategorize] = await Promise.all([
     prisma.ledgerAccount.findMany({ where: { clientId, active: true, subtype: { in: ["BANK", "CREDIT_CARD"] } }, orderBy: { code: "asc" }, select: { id: true, name: true, last4: true } }),
     prisma.bankReconciliation.groupBy({ by: ["accountId"], where: { clientId }, _max: { statementDate: true } }),
-    prisma.documentRequest.count({ where: { clientId, status: "OPEN", AND: [clientFacingRequestWhere(true)] } }),
+    prisma.documentRequest.count({ where: { clientId, status: "OPEN", kind: { not: "OWNER_PERSONAL" }, AND: [clientFacingRequestWhere(true)] } }),
     prisma.conversation.findMany({ where: { clientId, questionStatus: "OPEN" }, orderBy: { createdAt: "asc" }, take: 5, select: { id: true, subject: true, responseDueAt: true } }),
     prisma.bankTransaction.count({ where: { clientId, status: "UNREVIEWED" } }),
   ]);
@@ -303,7 +312,9 @@ export async function businessDashboardFor(clientId: string, month: string | nul
   const yearEndDocs = await yearEndChecklist(clientId, today);
   const [books, feed] = await Promise.all([
     booksStatus(clientId),
-    bankFeed(clientId),
+    // Banking information only for a client on the Bookkeeping Clients list (never a Managed
+    // Business alone, a paused profile or a sign-up service choice). View as Client uses this too.
+    hasBookkeepingService(client) ? bankFeed(clientId) : Promise.resolve(null),
   ]);
 
   return {

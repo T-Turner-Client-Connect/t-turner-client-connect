@@ -7,11 +7,13 @@ import {
   addItemAction, addOfficerAction, applyTemplateAction, assignPackageAction, irsEventAction, itemStatusAction, itemUploadAction, openPortfolioAction, releaseFileAction, removeOfficerAction, resendNoticeAction, savePortfolioAction,
 } from "@/app/actions/nonprofit-portfolio";
 import { requireUser } from "@/lib/auth/session";
+import { sendAgreementAction } from "@/app/actions/service-agreements";
+import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { prisma } from "@/lib/prisma";
 import { downloadToken } from "@/lib/services/documents";
 import { AG_STATUS, annualDeadline, CATEGORIES, classifications, DONE, packagePrice, packages, SECTIONS, type Section, IRS_EVENTS, irsStatus, ITEM_STATUS, ORIGINS, portfolio, releaseNotices, SAM_STATUS, stateTemplate, type ItemStatus } from "@/lib/services/nonprofit-portfolio";
 import { FILING_SERVICE } from "@/lib/services/nonprofits";
-import { SERVICE_STATUS, startGate } from "@/lib/services/service-agreements";
+import { SERVICE_STATUS, serviceGate } from "@/lib/services/service-agreements";
 import { STATES } from "@/lib/resources/catalog";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 
@@ -55,7 +57,9 @@ export default async function NonprofitPortfolioPage({ params, searchParams }: {
   const pkgs = await packages();
   const assigned = p.packageKey ? await prisma.nonprofitPackage.findUnique({ where: { key: p.packageKey } }) : null;
   const svc = p.serviceId ? await prisma.clientService.findUnique({ where: { id: p.serviceId }, include: { agreements: true } }) : null;
-  const gate = svc ? startGate(svc) : null;
+  const gate = svc ? await serviceGate(svc) : null;
+  const packageDraft = svc?.agreements.filter((a) => a.status === "DRAFT").sort((a, b) => b.version - a.version)[0] ?? null;
+  const approver = await isReportApprover(user);
   const usd = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
 
   return (
@@ -76,6 +80,10 @@ export default async function NonprofitPortfolioPage({ params, searchParams }: {
             <p className="mb-2">
               <strong>{assigned.name}</strong> · government filing fees {p.govFeesMode === "INCLUDED" ? "included in the price" : "added to the price"}
               {svc && <> · <Link className="underline" href={`/clients/${orgId}?tab=services`}>agreement: {SERVICE_STATUS[svc.status]}</Link></>}
+              {/* The package's pricing agreement is sent from here (the client page shows earlier pricing agreements read-only). */}
+              {packageDraft && (approver
+                ? <ActionForm action={sendAgreementAction.bind(null, orgId, packageDraft.id)} className="mt-2"><Button type="submit" variant="gold">Send package agreement to the client</Button></ActionForm>
+                : <span className="mt-1 block text-xs text-slate-600">Tabitha sends the package agreement to the client.</span>)}
               {assigned.grantDisclaimer && <> · <Badge tone="gold">Includes grant disclaimer</Badge></>}
             </p>
           ) : <p className="mb-2 text-slate-700">No package assigned. Assigning one adds its documents to the checklist and prepares the pricing agreement.</p>}

@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Archive, ChevronDown, CloudUpload, FileText, FolderOpen, IdCard, Infinity as InfinityIcon, Info, Layers, Mail, MoreHorizontal, ShieldCheck, Upload, Users, UsersRound } from "lucide-react";
+import { PreviewDisabled } from "@/components/portal/preview-off";
+import { Archive, Briefcase, ChevronDown, CloudUpload, FileBadge, FileText, FolderOpen, IdCard, Receipt, UserRound, Infinity as InfinityIcon, Info, Layers, Mail, MoreHorizontal, ShieldCheck, Upload, Users, UsersRound } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { CLIENT_DOC_TYPES, ALL_DOC_TYPES } from "@/lib/document-types";
 import { CATEGORY_LABELS } from "@/lib/services/documents";
@@ -77,6 +78,42 @@ const docRow = (d: Doc): Row => ({
   doc: d,
 });
 
+/**
+ * A business-only account's vault, in the owner's categories. Presentation only — the same
+ * documents, categories and access rules (portalDocumentScope) as before:
+ * - Business Tax Documents: TAXES and released BOOKKEEPING documents, and IRS/state notices.
+ * - Personal Tax Documents: OWNER_PERSONAL — the signed-in owner's own (never another owner's).
+ * - Payroll Documents: PAYROLL (or docType PAYROLL_REPORT); shown when payroll applies to this login.
+ * - K-1 Documents: OWNER_K1 (the existing K-1 rules) and K-1s the business received (docType FORM_K1).
+ * - Other Supporting Documents: everything else (CLIENT_UPLOADS, OTHER, CONTRACTS).
+ */
+export const BUSINESS_VAULT_CATEGORIES = [
+  { key: "all", label: "All Documents", note: null, icon: Layers },
+  { key: "business-tax", label: "Business Tax Documents", note: null, icon: Briefcase },
+  { key: "personal-tax", label: "Personal Tax Documents", note: "(only you and our office)", icon: UserRound },
+  { key: "payroll", label: "Payroll Documents", note: null, icon: Receipt },
+  { key: "k1", label: "K-1 Documents", note: null, icon: FileBadge },
+  { key: "other", label: "Other Supporting Documents", note: null, icon: FolderOpen },
+] as const;
+export type BusinessVaultCat = (typeof BUSINESS_VAULT_CATEGORIES)[number]["key"];
+export const isBusinessVaultCat = (v: string | undefined): v is BusinessVaultCat => BUSINESS_VAULT_CATEGORIES.some((c) => c.key === v);
+
+export function businessBucketOf(d: Pick<Doc, "category" | "docType" | "filingDocType">): Exclude<BusinessVaultCat, "all"> {
+  if (d.category === "OWNER_PERSONAL") return "personal-tax";
+  if (d.category === "OWNER_K1" || d.docType === "FORM_K1") return "k1";
+  if (d.category === "PAYROLL" || d.docType === "PAYROLL_REPORT") return "payroll";
+  if (d.category === "TAXES" || d.category === "BOOKKEEPING" || NOTICE_TYPES.has(d.docType ?? "") || d.filingDocType === "AGENCY_NOTICE" || d.filingDocType === "CORRESPONDENCE") return "business-tax";
+  return "other";
+}
+
+const BIZ_LABEL = Object.fromEntries(BUSINESS_VAULT_CATEGORIES.map((c) => [c.key, c.label.replace(/ Documents$/, " Document")]));
+
+export function businessVaultData(docs: Docs) {
+  const row = (d: Doc): Row => ({ ...docRow(d), category: BIZ_LABEL[businessBucketOf(d)] });
+  const by = (k: Exclude<BusinessVaultCat, "all">) => docs.filter((d) => businessBucketOf(d) === k).map(row);
+  return { all: docs.map(row), "business-tax": by("business-tax"), "personal-tax": by("personal-tax"), payroll: by("payroll"), k1: by("k1"), other: by("other") } satisfies Record<BusinessVaultCat, Row[]>;
+}
+
 export function vaultData(docs: Docs, overview: Overview | null) {
   const ov = overview ?? [];
   const byCat: Record<VaultCat, Row[]> = {
@@ -128,11 +165,11 @@ function HeadCard({ icon: Icon, title, children, testId }: { icon?: React.Compon
   );
 }
 
-export function CategorySidebar({ active, href }: { active: VaultCat; href: (c: VaultCat) => string }) {
+export function CategorySidebar<K extends string = VaultCat>({ active, href, categories = VAULT_CATEGORIES as unknown as readonly { key: K; label: string; note: string | null; icon: React.ComponentType<{ className?: string }> }[] }: { active: K; href: (c: K) => string; categories?: readonly { key: K; label: string; note: string | null; icon: React.ComponentType<{ className?: string }> }[] }) {
   return (
     <HeadCard title="Document Categories">
       <nav aria-label="Document categories" data-testid="vault-categories">
-        {VAULT_CATEGORIES.map((c) => (
+        {categories.map((c) => (
           <Link
             key={c.key}
             href={href(c.key)}
@@ -200,7 +237,7 @@ function PdfIcon() {
   );
 }
 
-export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityHref }: { rows: Row[]; years: { year: number | null; count: number }[]; year: number | "none" | null; yearHref: (y: string | null) => string; linkFor: (id: string) => string; identityHref: string }) {
+export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityHref, uploadHref }: { rows: Row[]; years: { year: number | null; count: number }[]; year: number | "none" | null; yearHref: (y: string | null) => string; linkFor: (id: string) => string; identityHref: string; uploadHref?: string }) {
   return (
     <section className="min-w-0 rounded-2xl border border-ivory-200 bg-white p-4 shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)] sm:p-5" data-testid="vault-table">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -214,7 +251,10 @@ export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityH
         <YearFilter years={years} current={year} href={yearHref} />
       </div>
       {rows.length === 0 ? (
-        <p className="rounded-xl border border-ivory-200 px-5 py-10 text-center text-slate-600">No documents here yet.</p>
+        <div className="rounded-xl border border-ivory-200 px-5 py-8 text-center text-slate-600" data-testid="vault-empty">
+          <p className="font-semibold text-navy-900">No documents here yet.</p>
+          <p className="mt-1 text-sm">To add one, use <strong>Upload a Document</strong> on this page{uploadHref ? <>, or go to <Link className="font-semibold text-navy-900 underline decoration-gold-500" href={uploadHref}>Upload Documents →</Link></> : "."}</p>
+        </div>
       ) : (
         <div className="relative overflow-x-auto rounded-xl border border-ivory-200">
           <table className="w-full min-w-[34rem] text-sm">
@@ -255,10 +295,12 @@ export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityH
 
 type State = { error?: string; ok?: string; at?: number } | null;
 
-export function UploadPanel({ action, defaultYear }: { action: (prev: State, fd: FormData) => Promise<State>; defaultYear: string }) {
+/** `readOnly`: View as Client — the same upload area, disabled, posting only to the preview stand-in. */
+export function UploadPanel({ action, defaultYear, readOnly }: { action: (prev: State, fd: FormData) => Promise<State>; defaultYear: string; readOnly?: boolean }) {
   const thisYear = new Date().getFullYear();
   return (
     <HeadCard icon={CloudUpload} title="Upload a Document" testId="vault-upload">
+      <PreviewDisabled readOnly={readOnly}>
       <ActionForm action={action} className="space-y-3" resetOnSuccess>
         <label className="block">
           <span className="mb-1 block text-sm font-semibold text-navy-900">Document Category</span>
@@ -289,6 +331,7 @@ export function UploadPanel({ action, defaultYear }: { action: (prev: State, fd:
           <Upload className="size-4" aria-hidden /> Upload Document
         </button>
       </ActionForm>
+      </PreviewDisabled>
     </HeadCard>
   );
 }

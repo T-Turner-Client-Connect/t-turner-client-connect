@@ -6,9 +6,9 @@ import { NextResponse, type NextRequest } from "next/server";
  * verifies the session, MFA state and permissions against the database — a
  * URL is never treated as protection.
  */
-// Public policy pages, the SMS consent form, signed email unsubscribe links and signed payroll-approval links need no login.
-const PUBLIC_PAGES = ["/sms-consent", "/privacy-policy", "/terms", "/unsubscribe/", "/payroll-approval/"];
-const PUBLIC_STAFF = ["/welcome", "/staff/login", "/staff/setup", "/staff/invite/", "/staff/forgot-password", "/staff/reset-password/", "/brand/", "/icon.png", "/favicon"];
+// Public policy pages, the SMS consent form, signed email unsubscribe links, signed payroll-approval links and single-use agreement signing links need no login.
+const PUBLIC_PAGES = ["/sms-consent", "/privacy-policy", "/terms", "/unsubscribe/", "/payroll-approval/", "/agreement-sign/"];
+const PUBLIC_STAFF = ["/welcome", "/staff/login", "/staff/setup", "/staff/invite/", "/staff/forgot-password", "/staff/reset-password/", "/brand/", "/icon.png", "/favicon", "/apple-icon.png", "/manifest.webmanifest", "/icons/"];
 const PUBLIC_PORTAL = ["/client/login", "/client/signup", "/client/activate", "/client/invite/", "/client/forgot-password", "/client/reset-password/"];
 // Webhooks authenticate themselves (shared secret + provider API verification).
 // One-click unsubscribe (RFC 8058) is authorized by its signed token.
@@ -31,6 +31,9 @@ export function proxy(request: NextRequest) {
   }
   if (portalArea) {
     if (portalCookie) return NextResponse.next();
+    // View as Client: a staff session with a preview cookie may open portal pages (read-only; each
+    // page re-checks both). Never the /api/client routes — those need a real portal session.
+    if (staffCookie && has(request, ["__Host-tcc_vac", "tcc_vac"]) && !pathname.startsWith("/api/")) return NextResponse.next();
     if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
     return NextResponse.redirect(new URL("/client/login", request.url));
   }

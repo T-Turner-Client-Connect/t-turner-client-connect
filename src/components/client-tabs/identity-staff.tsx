@@ -2,7 +2,8 @@ import type { Actor } from "@/lib/auth/actor";
 import { Card, Notice } from "@/components/ui";
 import { IdentitySection } from "@/components/identity-section";
 import { downloadToken } from "@/lib/services/documents";
-import { canStaffViewIdentity, staffIdentityOverview } from "@/lib/services/identity";
+import { canStaffViewIdentity, staffIdentityOverview, unassignedBusinessIdentity } from "@/lib/services/identity";
+import { IdentityAssignPanel } from "./identity-assign";
 
 /** Staff view of a client's Identity Documents (Admins and the assigned staff member only). */
 export async function IdentityStaff({ clientId, user }: { clientId: string; user: Actor }) {
@@ -13,11 +14,12 @@ export async function IdentityStaff({ clientId, user }: { clientId: string; user
       </div>
     );
   }
-  const overview = await staffIdentityOverview(user, clientId);
+  const [overview, unassigned] = await Promise.all([staffIdentityOverview(user, clientId), unassignedBusinessIdentity(user, clientId)]);
   const pending = overview.reduce((n, o) => n + o.slots.reduce((m, s) => m + s.pending.length, 0), 0);
   return (
     <div id="identity" className="scroll-mt-6">
       <Card title={<>Identity Documents{pending > 0 && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">{pending} pending verification</span>}</>}>
+        {unassigned && <IdentityAssignPanel clientId={clientId} data={unassigned} viewerIsAdmin={user.role === "ADMIN"} />}
         <IdentitySection overview={overview} mode="staff" clientId={clientId} viewerIsAdmin={user.role === "ADMIN"} linkFor={(id) => `/api/documents/${downloadToken(id, { staffId: user.id })}`} />
       </Card>
     </div>

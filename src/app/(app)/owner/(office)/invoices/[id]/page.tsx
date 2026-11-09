@@ -25,7 +25,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   const { id } = await params;
   const inv = await prisma.invoice.findUnique({
     where: { id },
-    include: { lines: { orderBy: { sortOrder: "asc" } }, payments: { orderBy: { createdAt: "asc" } }, client: { select: { id: true, displayName: true } } },
+    include: { lines: { orderBy: { sortOrder: "asc" } }, payments: { orderBy: { createdAt: "asc" } }, client: { select: { id: true, displayName: true } }, agreement: { select: { id: true, title: true } } },
   });
   if (!inv) notFound();
   const breakdown = breakdownOf(inv);
@@ -74,7 +74,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
     <>
       <PageHeader
         title={`${inv.number} · ${inv.title}`}
-        subtitle={<><Link className="underline" href={`/clients/${inv.client.id}?tab=invoices`}>{inv.client.displayName}</Link> · <Badge tone={status.badge}>{status.label}</Badge></>}
+        subtitle={<><Link className="underline" href={`/clients/${inv.client.id}?tab=invoices`}>{inv.client.displayName}</Link> · <Badge tone={status.badge}>{status.label}</Badge>{inv.agreement && <> · From agreement <Link className="underline" href={`/agreements/${inv.agreement.id}`} data-testid="invoice-agreement">{inv.agreement.title}</Link></>}</>}
         actions={editable && may.edit ? <LinkButton variant="secondary" href={`/owner/invoices/${inv.id}/edit`}>Edit draft</LinkButton> : undefined}
       />
       {inv.state === "PENDING_APPROVAL" && (

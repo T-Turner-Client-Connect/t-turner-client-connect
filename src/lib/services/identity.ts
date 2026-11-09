@@ -29,7 +29,9 @@ export const ID_TYPES = {
 export type IdType = keyof typeof ID_TYPES;
 export const isIdType = (t: string): t is IdType => t in ID_TYPES;
 
-export const ID_ROLES = { CLIENT: "Client", SPOUSE: "Spouse", DEPENDENT: "Dependent" } as const;
+// OWNER: one business owner on a business account (IdentityPerson.businessOwnerId). Their identity
+// documents are sent only when our office asks, and open only for that owner's login (plus staff).
+export const ID_ROLES = { CLIENT: "Client", SPOUSE: "Spouse", DEPENDENT: "Dependent", OWNER: "Business owner" } as const;
 export type IdRole = keyof typeof ID_ROLES;
 
 export const ID_STATUS = {
@@ -106,11 +108,50 @@ async function requirePortal(user: PortalActor, clientId: string, upload = false
   return access;
 }
 
-/** Download check used by the document link route (portal side). */
-export async function portalMayOpenIdentity(portalUserId: string, clientId: string) {
-  const access = await prisma.portalAccess.findFirst({ where: { portalUserId, clientId, revokedAt: null, client: { archivedAt: null } } });
-  return !!access?.canViewIdentity;
+/** The business-owner record(s) this login is, on this client. */
+async function ownerIdsOf(portalUserId: string, clientId: string) {
+  return (await prisma.businessOwner.findMany({ where: { clientId, portalUserId, archivedAt: null }, select: { id: true } })).map((o) => o.id);
 }
+
+/**
+ * An owner's identity documents on a business-only account: only while our office has an open
+ * identity request for that owner (DocumentRequest kind OWNER_PERSONAL, an identity docType,
+ * DocumentRequest.businessOwnerId), and only by that owner's own login.
+ */
+async function requireOwnerIdentity(user: PortalActor, clientId: string, person: { businessOwnerId: string | null }, type: string) {
+  // The office asked this owner for it: answering needs no upload access to the business's files.
+  await requireClientAccess(user.id, clientId);
+  if (!person.businessOwnerId || !(await ownerIdsOf(user.id, clientId)).includes(person.businessOwnerId)) throw new ForbiddenError("That person's documents aren't yours to send.");
+  const open = await prisma.documentRequest.count({ where: { clientId, businessOwnerId: person.businessOwnerId, kind: "OWNER_PERSONAL", status: "OPEN", docType: type } });
+  if (!open) throw new ForbiddenError("Our office hasn't asked for this document. Please message us first.");
+}
+
+/**
+ * Download check used by the document link route (portal side) for identity files NOT tied to a
+ * business owner. On a business account there are none a login may open: an identity file there
+ * opens only for the owner it's assigned to (Document.businessOwnerId, checked in authorizeDownload).
+ */
+export async function portalMayOpenIdentity(portalUserId: string, clientId: string) {
+  const access = await prisma.portalAccess.findFirst({ where: { portalUserId, clientId, revokedAt: null, client: { archivedAt: null } }, include: { client: { select: { clientType: true } } } });
+  if (!access || access.client.clientType === "BUSINESS") return false;
+  return access.canViewIdentity;
+}
+
+// --- Business accounts ----------------------------------------------------------------
+//
+// On a BUSINESS client, identity documents belong to one owner each (IdentityPerson.businessOwnerId,
+// and Document.businessOwnerId on the file) and appear in the portal only for that owner's own login.
+// Anything filed on the business's own record (the CLIENT/SPOUSE/DEPENDENT people, from before owner
+// records existed) is staff-only until a staff member assigns it to an owner. Portal logins can't
+// upload to, add people to, or remove people from the business's own record.
+
+/** Whether this client is a business account (identity documents are per-owner there). */
+export async function isBusinessClient(clientId: string) {
+  const c = await prisma.client.findUnique({ where: { id: clientId }, select: { clientType: true } });
+  return c?.clientType === "BUSINESS";
+}
+
+const BUSINESS_RECORD_REFUSED = "On a business account, identity documents are kept for each owner separately. Our office will ask you if we need yours.";
 
 // --- People ---------------------------------------------------------------------
 
@@ -124,7 +165,10 @@ export async function ensureClientPerson(clientId: string) {
 
 export async function addPerson(who: { staff: Actor } | { portal: PortalActor }, clientId: string, input: { role: string; name: string }) {
   if ("staff" in who) await requireStaff(who.staff, clientId);
-  else await requirePortal(who.portal, clientId, true);
+  else {
+    await requirePortal(who.portal, clientId, true);
+    if (await isBusinessClient(clientId)) throw new ForbiddenError(BUSINESS_RECORD_REFUSED);
+  }
   if (input.role !== "SPOUSE" && input.role !== "DEPENDENT") throw new ValidationError("Choose spouse or dependent.");
   const name = input.name.trim().slice(0, 120);
   if (!name) throw new ValidationError("Enter their name.");
@@ -141,7 +185,10 @@ export async function addPerson(who: { staff: Actor } | { portal: PortalActor },
  */
 export async function removePerson(who: { staff: Actor } | { portal: PortalActor }, clientId: string, personId: string, reason?: string) {
   if ("staff" in who) await requireStaff(who.staff, clientId);
-  else await requirePortal(who.portal, clientId, true);
+  else {
+    await requirePortal(who.portal, clientId, true);
+    if (await isBusinessClient(clientId)) throw new ForbiddenError(BUSINESS_RECORD_REFUSED);
+  }
   const person = await prisma.identityPerson.findFirst({ where: { id: personId, clientId, archivedAt: null } });
   if (!person) throw new ValidationError("That person isn't listed.");
   if (person.role === "CLIENT") throw new ValidationError("The account holder can't be removed.");
@@ -156,10 +203,16 @@ export async function removePerson(who: { staff: Actor } | { portal: PortalActor
 export type IdUploadInput = { clientId: string; personId: string; type: string; expiresOn?: string | null; replacementReason?: string | null; bytes: Uint8Array; originalName: string };
 
 export async function uploadIdentityDocument(who: { staff: Actor } | { portal: PortalActor }, input: IdUploadInput) {
-  if ("staff" in who) await requireStaff(who.staff, input.clientId);
-  else await requirePortal(who.portal, input.clientId, true);
   if (!isIdType(input.type)) throw new ValidationError("Choose the kind of document.");
   const person = await prisma.identityPerson.findFirst({ where: { id: input.personId, clientId: input.clientId, archivedAt: null } });
+  if ("staff" in who) await requireStaff(who.staff, input.clientId);
+  // A business owner's own identity document: only on our office's request, only by that owner.
+  else if (person?.businessOwnerId) await requireOwnerIdentity(who.portal, input.clientId, person, input.type);
+  else {
+    await requirePortal(who.portal, input.clientId, true);
+    // Never to a business account's own record: identity documents there are filed per owner.
+    if (await isBusinessClient(input.clientId)) throw new ForbiddenError(BUSINESS_RECORD_REFUSED);
+  }
   if (!person) throw new ValidationError("Choose whose document this is.");
   const t = ID_TYPES[input.type];
   let expiresOn: string | null = null;
@@ -194,6 +247,8 @@ export async function uploadIdentityDocument(who: { staff: Actor } | { portal: P
           uploadedByPortalId: "portal" in who ? who.portal.id : null,
           needsReview: true,
           docType: input.type,
+          // A business owner's identity document belongs to that owner only.
+          businessOwnerId: person.businessOwnerId,
           retainUntil: await retentionDate("IDENTITY"),
         },
       });
@@ -211,6 +266,14 @@ export async function uploadIdentityDocument(who: { staff: Actor } | { portal: P
         },
       });
       await audit(tx, { actorId: "staff" in who ? who.staff.id : null, action: "identity.uploaded", entityType: "IdentityDocument", entityId: rec.id, clientId: input.clientId, details: { type: input.type, role: person.role, replacement: !!existing } });
+      // Answers our office's open request for this owner's document.
+      if (person.businessOwnerId) {
+        const req = await tx.documentRequest.findFirst({ where: { clientId: input.clientId, businessOwnerId: person.businessOwnerId, kind: "OWNER_PERSONAL", status: "OPEN", docType: input.type }, select: { id: true } });
+        if (req) {
+          await tx.documentRequest.update({ where: { id: req.id }, data: { status: "SUBMITTED" } });
+          await tx.document.update({ where: { id: doc.id }, data: { requestId: req.id } });
+        }
+      }
       return rec;
     });
     await openVerificationTask(rec.id, "staff" in who ? who.staff.id : null);
@@ -268,7 +331,7 @@ export async function rejectIdentityDocument(actor: Actor, id: string, reason: s
     await tx.document.update({ where: { id: rec.documentId }, data: { needsReview: false, reviewedAt: now, reviewedById: actor.id } });
     await audit(tx, { actorId: actor.id, action: "identity.rejected", entityType: "IdentityDocument", entityId: id, clientId: rec.clientId, details: { type: rec.type } });
   });
-  await notifyHolders(rec.clientId, "ID_NEEDS_ATTENTION", `id-rejected:${id}`);
+  await notifyHolders(rec.clientId, "ID_NEEDS_ATTENTION", `id-rejected:${id}`, rec.personId);
 }
 
 /**
@@ -293,7 +356,17 @@ async function openVerificationTask(recordId: string, uploaderStaffId: string | 
   await prisma.identityDocument.update({ where: { id: recordId }, data: { verificationTaskId: task.id } });
 }
 
-async function notifyHolders(clientId: string, kind: string, refKey: string) {
+/**
+ * Generic notices to the logins that may see this person's documents. On a business account that
+ * is only the owner the person is (none for the business's own, unassigned record).
+ */
+async function notifyHolders(clientId: string, kind: string, refKey: string, personId: string) {
+  if (await isBusinessClient(clientId)) {
+    const person = await prisma.identityPerson.findUnique({ where: { id: personId }, select: { businessOwner: { select: { portalUserId: true, archivedAt: true } } } });
+    const login = person?.businessOwner && !person.businessOwner.archivedAt ? person.businessOwner.portalUserId : null;
+    if (login && (await prisma.portalAccess.count({ where: { clientId, portalUserId: login, revokedAt: null } }))) await queuePortalNotification(login, kind, refKey);
+    return;
+  }
   const grants = await prisma.portalAccess.findMany({ where: { clientId, revokedAt: null, canViewIdentity: true } });
   for (const g of grants) await queuePortalNotification(g.portalUserId, kind, refKey);
 }
@@ -318,7 +391,7 @@ export async function identityOverview(clientId: string) {
     prisma.identityPerson.findMany({ where: { clientId, archivedAt: null }, orderBy: [{ createdAt: "asc" }] }),
     prisma.identityDocument.findMany({ where: { clientId }, orderBy: { createdAt: "desc" } }),
   ]);
-  const order = { CLIENT: 0, SPOUSE: 1, DEPENDENT: 2 } as Record<string, number>;
+  const order = { CLIENT: 0, SPOUSE: 1, DEPENDENT: 2, OWNER: 3 } as Record<string, number>;
   return people
     .sort((a, b) => order[a.role] - order[b.role])
     .map((p) => ({
@@ -327,9 +400,103 @@ export async function identityOverview(clientId: string) {
     }));
 }
 
+/**
+ * What one portal viewer may see of an account's identity documents (no access check; callers
+ * check access). Individuals: the account's people (never a business-owner record). Business
+ * accounts: only the viewer's OWN owner record(s) — never the business's own record (unassigned,
+ * staff-only) and never another owner's. No viewer (View as Client): nothing on a business account.
+ */
+export async function identityOverviewForViewer(clientId: string, portalUserId: string | null) {
+  if (await isBusinessClient(clientId)) {
+    if (!portalUserId) return [];
+    const mine = await ownerIdsOf(portalUserId, clientId);
+    if (!mine.length) return [];
+    const [people, docs] = await Promise.all([
+      prisma.identityPerson.findMany({ where: { clientId, archivedAt: null, businessOwnerId: { in: mine } }, orderBy: [{ createdAt: "asc" }] }),
+      // Belt and braces: only files tagged to this login's owner record (Document.businessOwnerId).
+      prisma.document.findMany({ where: { clientId, category: "IDENTITY", businessOwnerId: { in: mine } }, select: { id: true } }),
+    ]);
+    if (!people.length) return [];
+    const tagged = new Set(docs.map((d) => d.id));
+    const records = (await prisma.identityDocument.findMany({ where: { clientId, personId: { in: people.map((p) => p.id) } }, orderBy: { createdAt: "desc" } })).filter((r) => tagged.has(r.documentId));
+    return people.map((p) => ({ person: p, slots: (Object.keys(ID_TYPES) as IdType[]).map((type) => ({ type, ...summarizeSlot(records.filter((r) => r.personId === p.id && r.type === type)) })) }));
+  }
+  return (await identityOverview(clientId)).filter((e) => !e.person.businessOwnerId);
+}
+
+/**
+ * A login's identity overview. Individuals: needs identity access. Business accounts: only the
+ * login's own owner record (its own documents need no access to the business's files).
+ */
 export async function portalIdentityOverview(user: PortalActor, clientId: string) {
-  await requirePortal(user, clientId);
-  return identityOverview(clientId);
+  if (await isBusinessClient(clientId)) await requireClientAccess(user.id, clientId);
+  else await requirePortal(user, clientId);
+  return identityOverviewForViewer(clientId, user.id);
+}
+
+/**
+ * A business-only account's Identity Documents page: only the signed-in owner's own record, and
+ * only while our office has an open identity request for that owner. Null when there's none.
+ */
+export async function ownerIdentityOverview(user: PortalActor, clientId: string) {
+  await requireClientAccess(user.id, clientId);
+  const req = await prisma.documentRequest.findFirst({ where: { clientId, kind: "OWNER_PERSONAL", status: "OPEN", docType: { in: Object.keys(ID_TYPES) }, businessOwner: { portalUserId: user.id, archivedAt: null } }, select: { businessOwnerId: true, docType: true } });
+  if (req?.businessOwnerId) {
+    const { ensureOwnerPerson } = await import("./owner-personal-docs");
+    await ensureOwnerPerson(clientId, req.businessOwnerId);
+  }
+  // The login's own owner record(s): an open request, or documents already assigned to them.
+  const mine = await identityOverviewForViewer(clientId, user.id);
+  return mine.length ? mine : null;
+}
+
+// --- Staff: assign a business record's identity document to one owner ------------------
+
+/**
+ * Identity documents on a business account that aren't tied to an owner (Document.businessOwnerId
+ * null): filed on the business's own record before owner records existed. Staff-only — no portal
+ * login sees or opens them — until a staff member assigns each to the owner it belongs to.
+ */
+export async function unassignedBusinessIdentity(actor: Actor, clientId: string) {
+  await requireStaff(actor, clientId);
+  if (!(await isBusinessClient(clientId))) return null;
+  const [untagged, owners] = await Promise.all([
+    prisma.document.findMany({ where: { clientId, category: "IDENTITY", businessOwnerId: null }, select: { id: true } }),
+    prisma.businessOwner.findMany({ where: { clientId, archivedAt: null }, include: { contact: { select: { name: true } } }, orderBy: { createdAt: "asc" } }),
+  ]);
+  const records = await prisma.identityDocument.findMany({ where: { clientId, documentId: { in: untagged.map((d) => d.id) } }, include: { person: { select: { name: true, role: true } } }, orderBy: { createdAt: "asc" } });
+  return { records, owners: owners.map((o) => ({ id: o.id, name: o.contact.name })) };
+}
+
+/**
+ * "Assign to owner": ties one identity document on a business account to the owner it belongs to.
+ * The record moves to that owner's identity person and the file gets Document.businessOwnerId, so it
+ * opens in the portal only for that owner's login (Admin-only types still never open in the portal).
+ * The stored file is never deleted, moved or re-encrypted. Audited. Admin-only types need an Admin
+ * (assigning means looking at the image).
+ */
+export async function assignIdentityToOwner(actor: Actor, identityDocumentId: string, businessOwnerId: string) {
+  const rec = await prisma.identityDocument.findUnique({ where: { id: identityDocumentId }, include: { person: true } });
+  if (!rec) throw new ValidationError("That identity document wasn't found.");
+  const file = await prisma.document.findUniqueOrThrow({ where: { id: rec.documentId }, select: { businessOwnerId: true } });
+  await requireStaff(actor, rec.clientId);
+  if (isAdminOnlyType(rec.type)) assertAdmin(actor);
+  if (!(await isBusinessClient(rec.clientId))) throw new ValidationError("Only identity documents on a business account are assigned to an owner.");
+  if (file.businessOwnerId) throw new ValidationError("This document is already assigned to an owner.");
+  const owner = await prisma.businessOwner.findFirst({ where: { id: businessOwnerId, clientId: rec.clientId, archivedAt: null }, select: { id: true } });
+  if (!owner) throw new ValidationError("Choose one of this business's owners.");
+  const { ensureOwnerPerson } = await import("./owner-personal-docs");
+  const person = await ensureOwnerPerson(rec.clientId, owner.id);
+  await prisma.$transaction(async (tx) => {
+    // Guarded: two staff assigning at once can't both win.
+    const moved = await tx.document.updateMany({ where: { id: rec.documentId, businessOwnerId: null }, data: { businessOwnerId: owner.id } });
+    if (!moved.count) throw new ValidationError("This document is already assigned to an owner.");
+    await tx.identityDocument.update({ where: { id: rec.id }, data: { personId: person.id } });
+    await audit(tx, {
+      actorId: actor.id, action: "identity.assigned_to_owner", entityType: "IdentityDocument", entityId: rec.id, clientId: rec.clientId,
+      details: { type: rec.type, businessOwnerId: owner.id, fromPersonId: rec.personId, fromRole: rec.person.role, toPersonId: person.id, documentId: rec.documentId },
+    });
+  });
 }
 
 export async function staffIdentityOverview(actor: Actor, clientId: string) {
@@ -368,7 +535,7 @@ export async function runIdentityReminders(now = new Date()) {
     if (days < 0) {
       await prisma.identityDocument.update({ where: { id: l.id }, data: { status: "EXPIRED", remindersSent: { push: "EXPIRED" } } });
       await audit(prisma, { actorId: null, action: "identity.expired", entityType: "IdentityDocument", entityId: l.id, clientId: l.clientId });
-      if (!pending) await notifyHolders(l.clientId, "ID_EXPIRED", `id-expired:${l.id}`);
+      if (!pending) await notifyHolders(l.clientId, "ID_EXPIRED", `id-expired:${l.id}`, l.personId);
       expired++;
       continue;
     }
@@ -378,7 +545,7 @@ export async function runIdentityReminders(now = new Date()) {
     // Mark this and any larger thresholds as sent so a late upload gets one reminder, not three.
     const mark = REMINDER_DAYS.filter((t) => t >= due).map(String).filter((t) => !l.remindersSent.includes(t));
     await prisma.identityDocument.update({ where: { id: l.id }, data: { remindersSent: { push: mark } } });
-    await notifyHolders(l.clientId, "ID_EXPIRING", `id-expiring-${due}:${l.id}`);
+    await notifyHolders(l.clientId, "ID_EXPIRING", `id-expiring-${due}:${l.id}`, l.personId);
     reminded++;
   }
   return { reminded, expired };
@@ -386,7 +553,11 @@ export async function runIdentityReminders(now = new Date()) {
 
 /** For annual tax checklists: what's on file, by reference (never another copy). */
 export async function identityChecklist(clientId: string) {
-  const overview = await identityOverview(clientId);
+  return identityChecklistFor(await identityOverview(clientId));
+}
+
+/** The checklist for an overview already narrowed to what a viewer may see (see identityOverviewForViewer). */
+export function identityChecklistFor(overview: Awaited<ReturnType<typeof identityOverview>>) {
   return overview.map(({ person, slots }) => ({
     person,
     items: slots

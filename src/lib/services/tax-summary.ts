@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
+import { BUSINESS_RETURN } from "@/lib/tax/accepted";
 import { ValidationError } from "./clients";
 import { isReportApprover } from "./bookkeeping-clients";
 import { queuePortalNotification } from "./notifications";
@@ -345,7 +346,6 @@ export async function requestSummaryChanges(user: PortalActor, clientId: string,
 
 // --- Owner filing gate ----------------------------------------------------------------
 
-const BUSINESS_RETURN = /^(1120|1065|990|1041|706|709|940|941|943|944|945|W-?2|1099)/i;
 
 /**
  * Whether a filing needs an approved summary before Tabitha records it as
@@ -379,7 +379,8 @@ export async function assertOwnerMaySubmit(
 ) {
   if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can authorize and submit a tax return. Record Submitted after she files it in TaxAct.");
   if (filing.filingType === "EXTENSION") return { summaryId: null, override: null };
-  if (filing.method === "ELECTRONIC" && !input.form8879Confirmed) {
+  // A signed 8879 on file that matches the approved summary satisfies this; the checkbox is the fallback.
+  if (filing.method === "ELECTRONIC" && !input.form8879Confirmed && !(await (await import("./auto-tax-summary")).signed8879OnFile(filing))) {
     throw new ValidationError("Confirm the signed IRS Form 8879 (or the state e-file authorization) is on file. The client's summary approval does not replace it.");
   }
   const req = await summaryRequirement(filing);

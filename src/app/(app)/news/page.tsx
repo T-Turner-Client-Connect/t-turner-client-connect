@@ -11,6 +11,7 @@ import { DEADLINE_KIND_LABELS, fmtIso, officeToday } from "@/lib/tax/deadlines";
 import { STATES } from "@/lib/resources/catalog";
 import { jotformStatus } from "@/lib/services/contracts";
 import { utcToChicagoLocal, fmtChicago } from "@/lib/tz";
+import { FLYERS, splitFlyer } from "@/lib/news/flyers";
 
 export const metadata = { title: "News & Countdowns" };
 
@@ -21,7 +22,13 @@ function AnnouncementFields({ a }: { a?: Ann }) {
   return (
     <div className="grid gap-2 sm:grid-cols-2">
       <Field label="Title" className="sm:col-span-2"><input className="input" name="title" defaultValue={a?.title} required /></Field>
-      <Field label="Message" className="sm:col-span-2"><textarea className="input min-h-24" name="body" defaultValue={a?.body} required /></Field>
+      <Field label="Message" className="sm:col-span-2"><textarea className="input min-h-24" name="body" defaultValue={a ? splitFlyer(a.body).text : undefined} required /></Field>
+      <Field label="Flyer image (optional)" className="sm:col-span-2" hint="Shown full width under the message in the client portal.">
+        <select className="input" name="flyer" defaultValue={a ? (splitFlyer(a.body).flyer?.key ?? "") : ""}>
+          <option value="">No flyer</option>
+          {Object.entries(FLYERS).map(([k, f]) => <option key={k} value={k}>{f.label}</option>)}
+        </select>
+      </Field>
       <Field label="Who sees it">
         <select className="input" name="audience" defaultValue={a?.audience ?? "ALL"}>{Object.entries(AUDIENCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
       </Field>
@@ -111,6 +118,7 @@ export default async function NewsPage() {
                         {a.pinned && "📌 "}{a.title}{" "}
                         <Badge tone={state === "Live" ? "green" : state === "Scheduled" ? "gold" : "gray"}>{state}</Badge>{" "}
                         <Badge tone="navy">{a.audience ? AUDIENCES[a.audience as keyof typeof AUDIENCES] : `Groups: ${a.groups.map((g) => g.group.name).join(", ") || "—"}`}</Badge>
+                        {splitFlyer(a.body).flyer && <> <Badge tone="gold">Flyer</Badge></>}
                       </p>
                       {admin && (
                         <span className="flex gap-1">

@@ -5,10 +5,11 @@ import { SignAgreementForm } from "@/components/portal/sign-agreement-form";
 import { PageBanner } from "@/components/portal/luxury";
 import { GoldNote, luxPanel, navyTable, NoteBar, PanelTitle, pillButton, StatusPill, type Tone } from "@/components/portal/billing-pages";
 import { signAgreementAction } from "@/app/actions/service-agreements";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
-import { downloadToken } from "@/lib/services/documents";
+import { portalViewer, type PortalViewer } from "@/lib/portal/viewer";
+import { PreviewDisabled } from "@/components/portal/preview-off";
+import { prisma } from "@/lib/prisma";
 import { portalAgreements, signingHash, viewAgreement } from "@/lib/services/service-agreements";
+import { portalAgreementList } from "@/lib/services/agreements";
 import { CONSENT_TEXT, type AgreementTerms } from "@/lib/billing/agreement-terms";
 import { usd } from "@/lib/billing/payment-fees";
 import { fmtDate } from "@/lib/format";
@@ -31,29 +32,37 @@ const STATUS: Record<string, [string, Tone]> = {
 
 /** Pricing & Agreements, built to Tabitha's design: standard pricing, pricing notice, the client's agreements. */
 export default async function PortalAgreements({ searchParams }: { searchParams: Promise<{ account?: string; sign?: string }> }) {
-  const user = await requirePortalUser();
   const sp = await searchParams;
-  const { current } = await resolveAccount(user.id, sp.account);
+  const v = await portalViewer("agreements", sp.account);
+  const { user, current } = v;
   if (!current) return null;
   const banner = <PageBanner icon={FileSignature} title="Pricing & Agreements" subtitle="Review our tax preparation pricing and access your agreements in one place." />;
+  // Agreements & contracts from the Agreements center (Contracts access): to sign, and signed copies.
+  // View as Client with no portal login: the same records, read directly for this client.
+  const mine = !current.canViewContracts ? [] : user ? await portalAgreementList(user, current.clientId) : await prisma.clientAgreement.findMany({ where: { clientId: current.clientId, status: { in: ["SENT", "SIGNED", "DECLINED", "EXPIRED"] } }, orderBy: { sentAt: "desc" }, select: { id: true, title: true, status: true, sentAt: true, signedAt: true, declinedAt: true, pdfDocumentId: true, signBy: true } });
+  const section = current.canViewContracts ? <ClientAgreementsSection list={mine} account={current.clientId} linkFor={v.linkFor} /> : null;
   if (!current.canViewBilling) {
     return (
       <>
         {banner}
-        <Notice>Billing isn&apos;t included in your access to this account.</Notice>
+        {section}
+        <Notice>Pricing and billing aren&apos;t included in your access to this account.</Notice>
       </>
     );
   }
-  let list = await portalAgreements(user, current.clientId);
-  // Opening the page marks newly sent agreements as viewed.
-  for (const a of list.filter((x) => x.status === "SENT")) await viewAgreement(user, a.id);
-  if (list.some((x) => x.status === "SENT")) list = await portalAgreements(user, current.clientId);
+  let list = user ? await portalAgreements(user, current.clientId) : await prisma.pricingAgreement.findMany({ where: { clientId: current.clientId, status: { not: "DRAFT" } }, include: { service: { select: { title: true, taxYear: true, periodLabel: true } } }, orderBy: [{ createdAt: "desc" }] });
+  // Opening the page marks newly sent agreements as viewed (the client's own login only — never View as Client).
+  if (user && !v.readOnly) {
+    for (const a of list.filter((x) => x.status === "SENT")) await viewAgreement(user, a.id);
+    if (list.some((x) => x.status === "SENT")) list = await portalAgreements(user, current.clientId);
+  }
   const q = `account=${current.clientId}`;
   const signing = list.find((a) => a.id === sp.sign && (a.status === "SENT" || a.status === "VIEWED"));
 
   return (
     <div className="space-y-6" data-testid="pricing-agreements">
       {banner}
+      {section}
 
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_1.2fr]">
         <section className={`${luxPanel} overflow-hidden`} data-testid="tax-pricing-card">
@@ -111,7 +120,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
                             {open ? (
                               <Link href={`/client/agreements?${q}&sign=${a.id}#sign`} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-navy-900 px-4 py-1.5 text-[13px] font-semibold text-white hover:bg-navy-950"><PenLine className="size-4" aria-hidden /> Review &amp; Sign</Link>
                             ) : a.pdfDocumentId ? (
-                              <a className={pillButton} href={`/api/documents/${downloadToken(a.pdfDocumentId, { portalUserId: user.id })}`} target="_blank" rel="noopener">
+                              <a className={pillButton} href={v.linkFor(a.pdfDocumentId)} target="_blank" rel="noopener">
                                 <Download className="size-4" aria-hidden /> Download
                               </a>
                             ) : (
@@ -129,7 +138,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
         </div>
       </div>
 
-      {signing && <SignCard a={signing} />}
+      {signing && <SignCard a={signing} v={v} />}
 
       <NoteBar icon={FileText} title="Important" testId="agreements-important">
         <p>This page displays our standard tax preparation pricing and your personalized pricing agreement. It is not a contract and does not automatically charge your account.</p>
@@ -139,7 +148,7 @@ export default async function PortalAgreements({ searchParams }: { searchParams:
 }
 
 /** The existing review-and-sign flow for one open agreement (opened from "Review & Sign"). */
-function SignCard({ a }: { a: Awaited<ReturnType<typeof portalAgreements>>[number] }) {
+function SignCard({ a, v }: { a: Awaited<ReturnType<typeof portalAgreements>>[number]; v: PortalViewer }) {
   const t = a.terms as unknown as AgreementTerms;
   const options = t.options.filter((o) => o.available);
   const hashes = Object.fromEntries(options.map((o) => [o.method, signingHash(t, o.method)]));
@@ -167,8 +176,53 @@ function SignCard({ a }: { a: Awaited<ReturnType<typeof portalAgreements>>[numbe
             <p className="mt-2 text-xs text-slate-600">Signing this agreement acknowledges this disclaimer.</p>
           </div>
         ))}
-        <SignAgreementForm action={signAgreementAction.bind(null, a.id)} baseCents={t.baseCents} options={options} hashes={hashes} consentText={CONSENT_TEXT} />
+        <PreviewDisabled readOnly={v.readOnly}>
+          <SignAgreementForm action={v.act(signAgreementAction, a.id)} baseCents={t.baseCents} options={options} hashes={hashes} consentText={CONSENT_TEXT} />
+        </PreviewDisabled>
       </Card>
     </div>
+  );
+}
+
+const NEW_STATUS: Record<string, [string, Tone]> = {
+  SENT: ["Waiting for your signature", "pending"],
+  SIGNED: ["Signed", "paid"],
+  DECLINED: ["Declined", "muted"],
+  EXPIRED: ["Expired", "muted"],
+};
+
+/** Agreements & contracts: open ones to sign, signed copies to view or download. */
+function ClientAgreementsSection({ list, account, linkFor }: { list: Awaited<ReturnType<typeof portalAgreementList>>; account: string; linkFor: (id: string) => string }) {
+  const open = list.filter((a) => a.status === "SENT");
+  return (
+    <section className={`${luxPanel} p-4 sm:p-5`} data-testid="client-agreements">
+      <PanelTitle icon={FileSignature} title="Agreements & Contracts" sub="Agreements waiting for your signature, and copies of the ones you've signed." />
+      {list.length === 0 ? (
+        <p className="mt-4 rounded-xl bg-white px-4 py-5 text-base text-slate-700 ring-1 ring-ivory-200">When we send you an agreement to sign, it will appear here.</p>
+      ) : (
+        <ul className="mt-4 space-y-3">
+          {list.map((a) => {
+            const [label, tone] = NEW_STATUS[a.status] ?? ["—", "muted" as Tone];
+            return (
+              <li key={a.id} className="flex flex-col gap-3 rounded-xl bg-white p-4 ring-1 ring-ivory-200 sm:flex-row sm:items-center sm:justify-between" data-testid={a.status === "SENT" ? "agreement-to-sign" : "agreement-signed"}>
+                <span className="min-w-0">
+                  <span className="flex items-center gap-2 text-base font-semibold text-navy-900"><FileText className="size-5 shrink-0 text-gold-600" aria-hidden />{a.title}</span>
+                  <span className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-700"><StatusPill tone={tone}>{label}</StatusPill>{a.signedAt ? `Signed ${fmtDate(a.signedAt)}` : a.sentAt ? `Sent ${fmtDate(a.sentAt)}` : ""}</span>
+                </span>
+                {a.status === "SENT" ? (
+                  <Link href={`/client/agreements/${a.id}?account=${account}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-navy-900 px-5 text-base font-semibold text-white hover:bg-navy-950"><PenLine className="size-5" aria-hidden /> Review &amp; Sign</Link>
+                ) : a.pdfDocumentId ? (
+                  <span className="flex gap-2">
+                    <Link href={`/client/agreements/${a.id}?account=${account}`} className={`${pillButton} min-h-11`}>View</Link>
+                    <a className={`${pillButton} min-h-11`} href={linkFor(a.pdfDocumentId)} target="_blank" rel="noopener"><Download className="size-4" aria-hidden /> Download</a>
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {open.length > 0 && <p className="mt-3 text-sm text-slate-700">{open.length} agreement{open.length === 1 ? " is" : "s are"} waiting for your signature.</p>}
+    </section>
   );
 }

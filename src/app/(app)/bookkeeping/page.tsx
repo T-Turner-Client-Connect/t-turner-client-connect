@@ -42,6 +42,8 @@ export default async function BookkeepingClientsPage({ searchParams }: { searchP
         actions={
           <div className="flex flex-wrap items-start gap-2">
             <LinkButton href="/bookkeeping/new" data-testid="add-bk-client">+ Add Bookkeeping Client</LinkButton>
+            <LinkButton href="/bookkeeping/morning-pull" variant="secondary" data-testid="morning-pull-link">Morning bank pull</LinkButton>
+            <LinkButton href="/bookkeeping/balances" variant="secondary" data-testid="todays-balances-link">Enter today&apos;s balances</LinkButton>
             {billingAccess && <LinkButton href="/bookkeeping/square-billing" variant="secondary" data-testid="square-billing-link">Square billing</LinkButton>}
             <ActionForm action={openAllPeriodsAction} showSuccess>
               <Button type="submit" variant="secondary">Open this month for all clients</Button>

@@ -8,9 +8,8 @@ import { PrintButton } from "@/components/print-button";
 import { VerifyEmailCard } from "@/components/verification";
 import { requestCopyAction } from "@/app/actions/tax-center";
 import { confirmVerifyEmailAction, sendVerifyEmailAction } from "@/app/actions/verification";
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
-import { downloadToken } from "@/lib/services/documents";
+import { portalViewer } from "@/lib/portal/viewer";
+import { NoPortalLoginNotice, PreviewDisabled } from "@/components/portal/preview-off";
 import { isPortalVerified, retrieveFilings, retrieveYears } from "@/lib/services/tax-center";
 import { emailProviderConfigured } from "@/lib/auth/client-auth";
 import { maskEmail } from "@/lib/services/mfa";
@@ -29,14 +28,15 @@ const GROUPS = [
 
 export default async function RetrieveFilings({ searchParams }: { searchParams: Promise<{ account?: string; year?: string }> }) {
   await connection();
-  const user = await requirePortalUser();
   const sp = await searchParams;
-  const { current } = await resolveAccount(user.id, sp.account);
+  const v = await portalViewer("filings", sp.account);
+  const { user, current } = v;
   if (!current) return null;
   const q = `?account=${current.clientId}`;
   const header = <PageHeader title="Retrieve Tax Filings" subtitle={<>Returns and records for <strong>{current.client.businessName || current.client.displayName}</strong>, released by our office. This doesn&apos;t pull anything from TaxAct or the IRS.</>} />;
   if (!current.canViewTax) return <>{header}<Notice>Tax records aren&apos;t included in your access to this account.</Notice></>;
 
+  if (!user) return <>{header}<NoPortalLoginNotice /></>;
   if (!(await isPortalVerified(user.id))) {
     return (
       <>
@@ -44,7 +44,7 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
         <Card title="Verify your account to open past tax records" className="max-w-2xl">
           <p className="mb-3 text-sm text-slate-700">For your protection, past-year returns open only after we&apos;ve confirmed this login belongs to you.</p>
           {emailProviderConfigured() ? (
-            <VerifyEmailCard verified={false} masked={maskEmail(user.email)} emailReady sendAction={sendVerifyEmailAction.bind(null, "portal")} confirmAction={confirmVerifyEmailAction.bind(null, "portal")} />
+            <PreviewDisabled readOnly={v.readOnly}><VerifyEmailCard verified={false} masked={maskEmail(user.email)} emailReady sendAction={v.act(sendVerifyEmailAction, "portal")} confirmAction={v.act(confirmVerifyEmailAction, "portal")} /></PreviewDisabled>
           ) : (
             <p className="text-sm text-slate-700" data-testid="verify-by-office">Please call or message our office — we&apos;ll confirm your identity and unlock your records.</p>
           )}
@@ -58,7 +58,7 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
   const year = years.includes(Number(sp.year)) ? Number(sp.year) : years[1] ?? years[0];
   const r = await retrieveFilings(user, current.clientId, year);
   const emails = await lastCopyEmails(user.id);
-  const link = (id: string) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`;
+  const link = v.linkFor;
 
   return (
     <>
@@ -78,10 +78,12 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
           {r.openRequest ? (
             <Notice tone="success">You asked for a copy on {fmtDate(r.openRequest.createdAt)}. Our office is working on it and will reply in Messages.</Notice>
           ) : (
-            <ActionForm action={requestCopyAction.bind(null, current.clientId, year)} className="max-w-lg space-y-2">
-              <Field label="Anything we should know? (optional)"><input className="input" name="note" placeholder="e.g. I need the state return too" /></Field>
-              <Button type="submit" variant="gold">Request a Copy</Button>
-            </ActionForm>
+            <PreviewDisabled readOnly={v.readOnly}>
+              <ActionForm action={v.act(requestCopyAction, current.clientId, year)} className="max-w-lg space-y-2">
+                <Field label="Anything we should know? (optional)"><input className="input" name="note" placeholder="e.g. I need the state return too" /></Field>
+                <Button type="submit" variant="gold">Request a Copy</Button>
+              </ActionForm>
+            </PreviewDisabled>
           )}
         </Card>
       ) : (
@@ -109,9 +111,11 @@ export default async function RetrieveFilings({ searchParams }: { searchParams: 
                         <a href={href} target="_blank" rel="noopener" className="rounded-lg bg-navy-900 px-3 py-1.5 text-sm font-semibold text-white">View</a>
                         <a href={`${href}?download=1`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-semibold text-navy-900">Download</a>
                         <PrintButton href={href} />
-                        <ActionForm action={emailMyCopyAction.bind(null, current.clientId, d.id)} className="inline">
-                          <Button type="submit" variant="ghost">Email My Copy</Button>
-                        </ActionForm>
+                        <PreviewDisabled readOnly={v.readOnly} className="inline-block">
+                          <ActionForm action={v.act(emailMyCopyAction, current.clientId, d.id)} className="inline">
+                            <Button type="submit" variant="ghost">Email My Copy</Button>
+                          </ActionForm>
+                        </PreviewDisabled>
                       </span>
                     </li>
                   );

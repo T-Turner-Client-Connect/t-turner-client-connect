@@ -1,17 +1,16 @@
-import { requirePortalUser } from "@/lib/portal/session";
-import { resolveAccount } from "@/lib/portal/account";
-import { downloadToken } from "@/lib/services/documents";
-import { portalLicensesPage } from "@/lib/services/portal-business-pages";
+import { portalViewer } from "@/lib/portal/viewer";
+import { OWNER_PREVIEW_PERMS } from "@/lib/portal/views";
+import { licensesPageFor, portalLicensesPage } from "@/lib/services/portal-business-pages";
 import { LicensesPageView, NotBusinessNotice } from "@/components/portal/business-pages";
 
 export const metadata = { title: "Business Licenses" };
 
 /** The licenses and permits the office tracks for this business, with renewal dates and released copies. */
 export default async function PortalLicenses({ searchParams }: { searchParams: Promise<{ account?: string }> }) {
-  const user = await requirePortalUser();
-  const { current } = await resolveAccount(user.id, (await searchParams).account);
+  const v = await portalViewer("licenses", (await searchParams).account);
+  const { user, current } = v;
   if (!current) return null;
   if (!current.canViewBookkeeping) return <NotBusinessNotice />;
-  const d = await portalLicensesPage(user, current.clientId);
-  return <LicensesPageView d={d} back={`/client?account=${current.clientId}`} linkFor={(id) => `/api/documents/${downloadToken(id, { portalUserId: user.id })}`} />;
+  const d = user ? await portalLicensesPage(user, current.clientId) : await licensesPageFor(current.clientId, { ...OWNER_PREVIEW_PERMS, ...current }, null);
+  return <LicensesPageView d={d} back={`/client?account=${current.clientId}`} linkFor={v.linkFor} />;
 }

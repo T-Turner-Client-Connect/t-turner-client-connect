@@ -21,8 +21,9 @@ import { DocumentsTab } from "@/components/client-tabs/documents";
 import { BookkeepingTab } from "@/components/client-tabs/bookkeeping";
 import { PortalTab } from "@/components/client-tabs/portal";
 import { TaxesTab } from "@/components/client-tabs/taxes";
+import { TaxDetails } from "@/components/client-tabs/tax-details";
 import { returnTypeLabel } from "@/lib/tax/return-types";
-import { ServicesTab } from "@/components/client-tabs/services";
+import { AgreementsInvoicesTab } from "@/components/client-tabs/agreements-invoices";
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
 import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { can } from "@/lib/auth/permissions";
@@ -47,7 +48,7 @@ const TABS = [
   { key: "taxes", label: "Taxes" },
   // Tax & Compliance Center: only for staff with compliance access.
   { key: "compliance", label: "Tax & Compliance" },
-  { key: "services", label: "Services & Agreements" },
+  { key: "services", label: "Agreements & Invoices" },
   { key: "appointments", label: "Appointments" },
   // Owner's Office invoices: only for staff holding Billing and invoicing → View.
   { key: "invoices", label: "Invoices" },
@@ -153,21 +154,20 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
             )}
           </Link>
         ))}
-        <Link href={`/clients/${id}/portal-preview`} data-testid="view-as-client" className="ml-auto whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold text-gold-700 hover:bg-gold-100">
+        <a href={`/view-as-client/${id}`} data-testid="view-as-client" className="ml-auto whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold text-gold-700 hover:bg-gold-100">
           View as Client ↗
-        </Link>
+        </a>
       </nav>
 
       {tab === "messages" && <MessagesTab clientId={id} conversationId={sp.c} user={user} />}
       {tab === "documents" && <DocumentsTab clientId={id} user={user} />}
       {tab === "bookkeeping" && <BookkeepingTab clientId={id} />}
-      {tab === "taxes" && <TaxesTab clientId={id} user={user} />}
-      {tab === "services" && <ServicesTab clientId={id} user={user} />}
+      {tab === "taxes" && <TaxesTab clientId={id} user={user} taxYear={Number(sp.taxYear) || undefined} deliver={sp.deliver ? { year: Number(sp.year) || undefined, state: sp.jur === "state", amended: sp.amended === "1" } : undefined} />}
+      {tab === "services" && <AgreementsInvoicesTab clientId={id} user={user} />}
       {tab === "appointments" && <AppointmentsTab clientId={id} />}
       {tab === "compliance" && seesCompliance && <ComplianceTab clientId={id} actor={user} />}
       {tab === "invoices" && seesInvoices && <InvoicesTab clientId={id} actor={user} />}
       {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} actor={user} />}
-
       {tab === "overview" && (
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
@@ -193,6 +193,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
               <div><dt className="font-semibold text-slate-600">Groups</dt><dd className="flex flex-wrap gap-1">{client.groups.length ? client.groups.map((g) => <Badge key={g.groupId} tone="gold">{g.group.name}</Badge>) : "—"}</dd></div>
               <div><dt className="font-semibold text-slate-600">Tags</dt><dd className="flex flex-wrap gap-1">{client.tags.length ? client.tags.map((t) => <Badge key={t} tone="gray">{t}</Badge>) : "—"}</dd></div>
               <div className="sm:col-span-2"><dt className="font-semibold text-slate-600">Source</dt><dd>{client.source ?? "—"}</dd></div>
+              <TaxDetails client={client} />
               {client.notes && <div className="sm:col-span-2"><dt className="font-semibold text-slate-600">Notes</dt><dd className="whitespace-pre-wrap">{client.notes}</dd></div>}
             </dl>
           </Card>

@@ -1,4 +1,5 @@
 import { ActionForm } from "@/components/action-form";
+import { previewFormAction } from "@/app/actions/preview";
 import { Badge, Button } from "@/components/ui";
 import { portalAcceptPlanAction, portalChooseMethodAction, portalRequestPlanAction } from "@/app/actions/installment-plans";
 import { prisma } from "@/lib/prisma";
@@ -13,7 +14,9 @@ type Inst = { seq: number; dueDate: string; amountCents: number };
  * plan showing only the terms the amount qualifies for — fee shown
  * separately, then the deposit and every installment — before accepting.
  */
-export async function PaymentPanel({ clientId, invoice }: { clientId: string; invoice: { id: string; serviceCents: number; paymentMethod: string | null } }) {
+/** `readOnly` (View as Client): the same choices, disabled, posting only to the preview stand-in. */
+export async function PaymentPanel({ clientId, invoice, readOnly }: { clientId: string; invoice: { id: string; serviceCents: number; paymentMethod: string | null }; readOnly?: boolean }) {
+  const off = readOnly ? previewFormAction : null;
   const [instructions, plan, pending] = await Promise.all([
     prisma.paymentInstruction.findMany({ where: { active: true } }),
     prisma.installmentPlan.findFirst({ where: { invoiceId: invoice.id, status: { notIn: ["DECLINED", "CANCELLED"] } }, orderBy: { createdAt: "desc" } }),
@@ -38,7 +41,7 @@ export async function PaymentPanel({ clientId, invoice }: { clientId: string; in
           </tbody>
         </table>
         {plan.status === "REQUESTED" ? (
-          <ActionForm action={portalAcceptPlanAction.bind(null, plan.id)} className="space-y-2">
+          <ActionForm action={off ?? portalAcceptPlanAction.bind(null, plan.id)} className="space-y-2">
             <input type="hidden" name="termsHash" value={plan.termsHash} />
             <label className="flex items-start gap-2"><input type="checkbox" name="agree" className="mt-1" required /><span>{PLAN_CONSENT}</span></label>
             <label className="block"><span className="mb-1 block font-semibold">Type your full name</span><input className="input" name="name" autoComplete="name" required /></label>
@@ -70,7 +73,7 @@ export async function PaymentPanel({ clientId, invoice }: { clientId: string; in
         </div>
       )}
       {shown.length > 0 && !pending && (
-        <ActionForm action={portalChooseMethodAction.bind(null, invoice.id)} className="mb-3 flex flex-wrap items-end gap-2">
+        <ActionForm action={off ?? portalChooseMethodAction.bind(null, invoice.id)} className="mb-3 flex flex-wrap items-end gap-2">
           <label className="block"><span className="mb-1 block text-xs font-semibold">{current ? "Request a different method" : "Choose your payment method"}</span>
             <select className="input" name="method" defaultValue="" required><option value="" disabled>Choose</option>{shown.filter((i) => i.method !== current).map((i) => <option key={i.method} value={i.method}>{i.label}</option>)}</select>
           </label>
@@ -86,7 +89,7 @@ export async function PaymentPanel({ clientId, invoice }: { clientId: string; in
             <div key={card} className="rounded-lg bg-ivory-50 p-3" data-testid={`plan-options-${card}`}>
               <p className="mb-1 font-semibold">{label}</p>
               {opts.map((o) => (
-                <ActionForm key={o.months} action={portalRequestPlanAction.bind(null, clientId, invoice.id)} className="mb-2 border-b border-ivory-200 pb-2">
+                <ActionForm key={o.months} action={off ?? portalRequestPlanAction.bind(null, clientId, invoice.id)} className="mb-2 border-b border-ivory-200 pb-2">
                   <input type="hidden" name="months" value={o.months} />
                   <input type="hidden" name="card" value={card} />
                   <p className="text-xs">{o.months} months · fee {usd(o.feeCents)} · total {usd(o.totalCents)} · deposit {usd(o.depositCents)} · {o.installments.map((i) => usd(i.amountCents)).join(" / ")}</p>

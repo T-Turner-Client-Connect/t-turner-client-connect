@@ -49,6 +49,13 @@ export async function requireOffice(area?: Area, action: PermAction = "view"): P
   return { actor, access };
 }
 
+/** Page gate for the owner's own pages (not grantable): a plain 404 for everyone but the owner. */
+export async function requireOwnerPage(): Promise<Actor> {
+  const { actor, access } = await requireOffice();
+  if (!access.isOwner) notFound();
+  return actor;
+}
+
 /** For API routes: the signed-in staff member holding the permission, or null. */
 export async function officeFromSession(area: Area, action: PermAction = "view"): Promise<Actor | null> {
   const actor = await getCurrentUser();
@@ -84,6 +91,12 @@ export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: str
     { href: "/owner/access-review", label: "Access review", show: access.isOwner },
     // Client Letters: Tabitha prepares, reviews and sends approved letters (owner only, not grantable).
     { href: "/owner/client-letters", label: "Client Letters", show: access.isOwner },
+    // Document security: owner only (not grantable).
+    { href: "/owner/backups", label: "Backups", show: access.isOwner },
+    { href: "/owner/recently-deleted", label: "Recently deleted", show: access.isOwner },
+    { href: "/owner/file-encryption", label: "File encryption", show: access.isOwner },
+    // ADP Revenue Share: Tabitha's own referral earnings from ADP (owner only, not grantable).
+    { href: "/owner/adp-revenue-share", label: "ADP Revenue Share", show: access.isOwner },
     { href: billingSettingsVisible(access) ? "/owner/settings" : "/owner/settings/staff-access", label: "Settings", show: settingsVisible(access) },
   ];
   return tabs.filter((t) => t.show).map(({ href, label }) => ({ href, label }));

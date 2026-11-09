@@ -8,9 +8,13 @@ import { ConfirmButton } from "@/components/confirm-button";
 import { Badge, Button, Card, EmptyState, Notice } from "@/components/ui";
 import { acknowledgeDocumentsAction, deleteDocumentAction, setVisibilityAction } from "@/app/actions/workspace";
 import { UploadDocumentForm } from "@/components/upload-document-form";
+import { deliveryContext } from "@/lib/services/accepted-returns";
+import { convertToReturnCopyAction } from "@/app/actions/accepted-returns";
 import { IdentityStaff } from "./identity-staff";
+import { DocumentRequestsCard } from "./document-requests";
 import { prisma } from "@/lib/prisma";
-import { CATEGORY_LABELS, downloadToken, REPORT_LABELS } from "@/lib/services/documents";
+import { downloadToken, REPORT_LABELS, STAFF_CATEGORY_LABELS } from "@/lib/services/documents";
+import Link from "next/link";
 import { MONTHS } from "@/lib/services/bookkeeping";
 import { scanConfigured } from "@/lib/scan";
 import { formatBytes } from "@/lib/files";
@@ -19,7 +23,7 @@ import { fmtDate, fmtDateTime } from "@/lib/format";
 
 
 export async function DocumentsTab({ clientId, user }: { clientId: string; user: Actor }) {
-  const health = await scanHealth();
+  const [health, delivery] = await Promise.all([scanHealth(), deliveryContext(clientId, user)]);
   const docs = await prisma.document.findMany({
     // Identity documents have their own section with stricter access.
     where: { clientId, category: { not: "IDENTITY" } },
@@ -48,6 +52,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <div className="space-y-4 lg:col-span-2">
+        <DocumentRequestsCard clientId={clientId} />
         <IdentityStaff clientId={clientId} user={user} />
         {!scanConfigured() && (
           <Notice tone="warn" title="Malware scanning: setup required">
@@ -70,10 +75,10 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
           </Card>
         )}
         {live.length === 0 && <EmptyState title="No documents yet">Upload reports, tax documents or contracts on the right.</EmptyState>}
-        {(Object.keys(CATEGORY_LABELS) as DocumentCategory[]).filter((c) => tree.has(c)).map((cat) => (
-          <Card key={cat} title={CATEGORY_LABELS[cat]}>
+        {(Object.keys(STAFF_CATEGORY_LABELS) as DocumentCategory[]).filter((c) => tree.has(c)).map((cat) => (
+          <Card key={cat} title={STAFF_CATEGORY_LABELS[cat]}>
             {[...tree.get(cat)!.entries()].map(([folder, items]) => (
-              <details key={folder} open className="mb-3">
+              <details key={folder} id={`docs-${cat}-${folder}`} open className="mb-3">
                 <summary className="cursor-pointer font-semibold text-navy-800">📁 {folder} <span className="font-normal text-slate-500">({items.length})</span></summary>
                 <ul className="mt-2 divide-y divide-navy-100">
                   {items.map((d) => {
@@ -98,10 +103,18 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
                               </Badge>
                               {d.docType && <Badge tone="navy">{TAX_DOC_TYPES[d.docType as keyof typeof TAX_DOC_TYPES] ?? d.docType}</Badge>}
                               {d.reportType && <Badge tone="navy">{REPORT_LABELS[d.reportType]}</Badge>}
+                              {d.filingId && d.filingDocType === "RETURN" && <Badge tone="gold">Sent from Taxes tab</Badge>}
+                              {d.filingId && d.filingDocType === "OFFICIAL_ACK" && <Badge tone="gold">Acceptance confirmation · from Taxes tab</Badge>}
                               <ScanStatus doc={d} health={health} />
                             </div>
+                            {d.filingId && (d.filingDocType === "RETURN" || d.filingDocType === "OFFICIAL_ACK") && (
+                              <Link className="mt-1 inline-block text-xs font-semibold text-navy-900 underline" href={`/clients/${clientId}?tab=taxes${d.year ? `&taxYear=${d.year}` : ""}`} data-testid="open-on-taxes">Open on Taxes tab</Link>
+                            )}
                           </div>
                           <div className="flex flex-wrap gap-1">
+                            {d.filingId && d.filingDocType === "OFFICIAL_ACK" && (d.visibility !== "PUBLISHED" || delivery.owner) && (
+                              <ActionForm action={convertToReturnCopyAction.bind(null, d.id)} confirm={`Use “${d.title}” as the return copy? It's re-labeled in place (audited).`}><Button type="submit" variant="secondary">This is the return, not the acknowledgment</Button></ActionForm>
+                            )}
                             {d.scanStatus === "CLEAN" ? (
                               <a className="rounded-lg px-3 py-2 text-sm font-semibold text-navy-900 hover:bg-navy-100" href={`${link}?download=1`}>Download</a>
                             ) : (
@@ -145,7 +158,7 @@ export async function DocumentsTab({ clientId, user }: { clientId: string; user:
         )}
       </div>
       <Card title="Upload a document">
-        <UploadDocumentForm clientId={clientId} />
+        <UploadDocumentForm clientId={clientId} delivery={delivery} />
       </Card>
     </div>
   );

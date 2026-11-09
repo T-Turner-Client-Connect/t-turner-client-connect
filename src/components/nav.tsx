@@ -43,6 +43,7 @@ import {
   History,
   ChevronRight,
   Banknote,
+  FileSignature,
 } from "lucide-react";
 
 const LINKS = [
@@ -54,8 +55,10 @@ const LINKS = [
   { href: "/social", label: "Social media", icon: Share2, also: [] },
   { href: "/workflows", label: "Workflows", icon: GitBranch, also: [] },
   { href: "/documents", label: "Documents", icon: FolderLock, also: [] },
+  { href: "/agreements", label: "Agreements", icon: FileSignature, also: [] },
   { href: "/notices", label: "Audits & Notices", icon: MailWarning, also: [] },
   { href: "/taxes/returns", label: "Tax returns", icon: FileCheck2, also: ["/taxes/questionnaires"] },
+  { href: "/taxes/8879", label: "8879 Signatures", icon: FileSignature, also: [] },
   { href: "/nonprofits", label: "Nonprofit filings", icon: HeartHandshake, also: [] },
   // Shown only to staff with Tax & Compliance access (the page itself re-checks).
   { href: "/compliance", label: "Tax & Compliance", icon: ClipboardList, also: [] },
@@ -99,7 +102,7 @@ function OwnerLink({ owner, onNavigate }: { owner: OwnerNav; onNavigate?: () => 
 /** The bookkeeping client's own menu, shown in place of the main menu inside /bookkeeping/<client>. */
 export function workspaceClientId(pathname: string) {
   const m = /^\/bookkeeping\/([^/]+)/.exec(pathname);
-  return m && !["new", "square-billing", "plaid-oauth"].includes(m[1]) ? m[1] : null;
+  return m && !["new", "square-billing", "plaid-oauth", "balances", "morning-pull"].includes(m[1]) ? m[1] : null;
 }
 
 function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => void }) {

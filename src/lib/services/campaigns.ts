@@ -1,4 +1,5 @@
 import "server-only";
+import { splitFlyer } from "@/lib/news/flyers";
 import { z } from "zod";
 import type { CampaignChannel, CampaignPurpose } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -233,7 +234,7 @@ export async function campaignFromAnnouncement(actor: Actor, announcementId: str
   const a = await prisma.announcement.findUnique({ where: { id: announcementId } });
   if (!a || a.clientId) throw new ValidationError("Announcement not found.");
   return prisma.$transaction(async (tx) => {
-    const c = await tx.campaign.create({ data: { title: a.title.slice(0, 150), purpose: "GENERAL_UPDATE", channel: "EMAIL", emailSubject: a.title.slice(0, 200), body: a.body, createdById: actor.id } });
+    const c = await tx.campaign.create({ data: { title: a.title.slice(0, 150), purpose: "GENERAL_UPDATE", channel: "EMAIL", emailSubject: a.title.slice(0, 200), body: splitFlyer(a.body).text, createdById: actor.id } });
     await audit(tx, { actorId: actor.id, action: "campaign.created_from_announcement", entityType: "Campaign", entityId: c.id, details: { announcementId } });
     return c;
   });

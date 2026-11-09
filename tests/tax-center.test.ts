@@ -141,7 +141,7 @@ describe("Retrieve Tax Filings", () => {
     expect(r.groups.STATE).toHaveLength(1);
     expect(r.groups.AMENDED).toHaveLength(1);
     expect(r.total).toBe(3); // staff-only draft hidden
-    await expect(setVisibility(tab, draft.id, "PUBLISHED")).rejects.toThrow(/Tabitha releases/);
+    await expect(setVisibility(tab, draft.id, "PUBLISHED")).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
     await submitReturnForRelease(tab, draft.id);
     await releaseReturn(tab, draft.id);
     expect((await retrieveFilings(user, client.id, 2024)).total).toBe(4);

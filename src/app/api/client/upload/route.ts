@@ -27,12 +27,15 @@ export async function POST(req: Request) {
   const docType = String(fd.get("docType") ?? "");
   const file = fd.get("file");
   try {
-    await requireClientAccess(user.id, clientId, "upload");
+    // portalUploadDocument checks the upload permission (a business owner's own personal documents excepted).
+    await requireClientAccess(user.id, clientId);
     if (!(file instanceof File) || file.size === 0) throw new ValidationError("Choose a file to upload.");
     if (file.size > MAX_UPLOAD_BYTES) throw new ValidationError(`“${file.name}” is larger than ${MAX_UPLOAD_LABEL}.`);
     if (!year) throw new ValidationError("Choose the tax year, or “Not sure”.");
     if (!isClientDocType(docType)) throw new ValidationError("Choose what kind of document this is.");
-    const doc = await portalUploadDocument(user, { clientId, year: year === "unsure" ? "unsure" : Number(year), docType, title: String(fd.get("title") ?? ""), bytes: new Uint8Array(await file.arrayBuffer()), originalName: file.name });
+    // On a business-only account these are the owner's own personal documents (portalUploadDocument
+    // files them privately to that owner and tax year); on a personal account, ordinary uploads.
+    const doc = await portalUploadDocument(user, { clientId, year: year === "unsure" ? "unsure" : Number(year), docType, title: String(fd.get("title") ?? ""), bytes: new Uint8Array(await file.arrayBuffer()), originalName: file.name, personal: true });
     return Response.json({ ok: true, name: file.name, year: doc.year, scanStatus: doc.scanStatus });
   } catch (err) {
     if (err instanceof ValidationError || err instanceof ForbiddenError) return Response.json({ error: err.message }, { status: err instanceof ForbiddenError ? 403 : 400 });

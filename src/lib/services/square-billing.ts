@@ -805,10 +805,18 @@ export async function squareRevenueSummary(now = new Date()) {
 /** What the client sees: every current Square series for this account. Authorization is mentioned only once Tabitha has verified it. */
 export async function portalSquareBilling(user: PortalActor, clientId: string) {
   await requireClientAccess(user.id, clientId, "billing");
+  const mine = await prisma.portalAccess.findMany({ where: { portalUserId: user.id, revokedAt: null }, select: { clientId: true } });
+  return squareBillingViewsFor(clientId, new Set(mine.map((m) => m.clientId)));
+}
+
+/**
+ * What portalSquareBilling returns, without a portal login (View as Client). Callers check access
+ * first. `visible` names the accounts whose names may be shown for a shared series; the preview
+ * passes only the previewed client, so another client's name never appears.
+ */
+export async function squareBillingViewsFor(clientId: string, visible: ReadonlySet<string>) {
   const { arrangements, state } = await squareBillingFor(clientId);
   if (!arrangements.length) return { state, view: null, views: [], unsynced: 0 };
-  const mine = await prisma.portalAccess.findMany({ where: { portalUserId: user.id, revokedAt: null }, select: { clientId: true } });
-  const visible = new Set(mine.map((m) => m.clientId));
   const views = arrangements.filter((a) => a.syncedAt).map((a) => {
     const others = a.members.filter((m) => m.clientId !== clientId);
     return {

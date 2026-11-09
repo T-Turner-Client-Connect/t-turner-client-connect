@@ -13,6 +13,7 @@ import { renderAgreementPdf } from "@/lib/billing/agreement-pdf";
 import { ValidationError } from "./clients";
 import { retentionDate, storeDocumentFile } from "./documents";
 import { queuePortalNotification } from "./notifications";
+import { coveringAgreement } from "./agreements";
 
 /**
  * Billable services and their pricing agreements. Each service (a tax return
@@ -128,14 +129,24 @@ export async function clientServices(clientId: string) {
 const latest = (agreements: PricingAgreement[]) => [...agreements].sort((a, b) => b.version - a.version)[0] ?? null;
 const signedCurrent = (agreements: PricingAgreement[]) => agreements.find((a) => a.status === "SIGNED") ?? null;
 
-/** Whether work may begin, and why not. */
-export function startGate(s: ClientService & { agreements: PricingAgreement[] }) {
+/**
+ * Whether work may begin, and why not. A signed agreement from the Agreements center
+ * that covers this service (and tax year) counts the same as a signed pricing agreement;
+ * pass it as `covered` (see serviceGate()).
+ */
+export function startGate(s: ClientService & { agreements: PricingAgreement[] }, covered?: { title: string } | null) {
   if (s.overrideAt) return { ok: true as const, reason: `Owner override: ${s.overrideReason}` };
   const pending = latest(s.agreements);
-  if (!signedCurrent(s.agreements)) return { ok: false as const, reason: "The client hasn't signed the pricing agreement." };
-  if (pending && pending.status !== "SIGNED" && pending.status !== "SUPERSEDED" && pending.status !== "VOID") return { ok: false as const, reason: `A revised agreement (version ${pending.version}) is waiting for the client's signature.` };
+  if (!signedCurrent(s.agreements) && !covered) return { ok: false as const, reason: "The client hasn't signed the pricing agreement." };
+  if (!covered && pending && pending.status !== "SIGNED" && pending.status !== "SUPERSEDED" && pending.status !== "VOID") return { ok: false as const, reason: `A revised agreement (version ${pending.version}) is waiting for the client's signature.` };
   if (s.requiresPaymentAuth && !s.paymentAuthAt) return { ok: false as const, reason: "The required payment authorization hasn't been recorded." };
-  return { ok: true as const, reason: "Agreement signed." };
+  return { ok: true as const, reason: covered && !signedCurrent(s.agreements) ? `Signed agreement: ${covered.title}.` : "Agreement signed." };
+}
+
+/** startGate() with the Agreements center checked: a signed agreement covering this service and year also opens the gate. */
+export async function serviceGate(s: ClientService & { agreements: PricingAgreement[] }) {
+  const covered = signedCurrent(s.agreements) || s.overrideAt ? null : await coveringAgreement(s.clientId, s.type, s.taxYear);
+  return startGate(s, covered);
 }
 
 /** Status changes staff may make. In Progress is gated; agreement statuses are set by the agreement itself. */
@@ -150,7 +161,7 @@ export async function setServiceStatus(actor: Actor, serviceId: string, status: 
   if (!(status in allowed)) throw new ValidationError("Choose In Progress, Completed or Closed.");
   const to = status as ServiceStatus;
   if (to === "IN_PROGRESS") {
-    const gate = startGate(s);
+    const gate = await serviceGate(s);
     if (!gate.ok) throw new ValidationError(`Work can't begin yet: ${gate.reason} The owner can override with a documented reason.`);
   } else if (!allowed[to]!.includes(s.status)) {
     throw new ValidationError(`A service that's ${SERVICE_STATUS[s.status]} can't be marked ${SERVICE_STATUS[to]}.`);

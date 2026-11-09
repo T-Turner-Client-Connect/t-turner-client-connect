@@ -6,9 +6,9 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
-import { allowedCategories, effectiveGrantsFor, k1VisibleWhere, portalDocumentScope, requireClientAccess } from "@/lib/portal/access";
+import { allowedCategories, effectiveGrantsFor, k1VisibleWhere, ownerPersonalVisibleWhere, portalDocumentScope, requireClientAccess } from "@/lib/portal/access";
 import { storage } from "@/lib/storage";
-import { decryptBytes, encryptBytes, sign, verifySignature } from "@/lib/crypto";
+import { currentFileKeyVersion, decryptBytes, encryptBytes, sign, verifySignature } from "@/lib/crypto";
 import { imageSize, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, sniffType } from "@/lib/files";
 import { scanBytesDetailed, scanConfigured } from "@/lib/scan";
 import { queueStaffAlert } from "./staff-alerts";
@@ -63,6 +63,16 @@ export const clientReceivableWhere = {
 /** Return copies are released by Tabitha (Tax returns), never published directly. */
 export const RETURN_DOC_TYPES = ["FEDERAL_RETURN", "STATE_RETURN", "AMENDED_RETURN", "TAX_RETURN"];
 const RETURN_GATE = "Completed tax returns go through Tax returns: file the return, send it for review, and Tabitha releases it to the client.";
+/** Tabitha files every return: for her the way through is the one-step delivery, never "send it for review". */
+const OWNER_RETURN_GATE = "Returns are sent from this client's Taxes tab → Finish & Send a Return (federal and state together). It marks them Accepted and sends them to the client in one step.";
+
+/** The refusal for publishing a return outside the delivery path, worded for who is asking. */
+async function returnGate(actor: Actor, clientId: string, f: { year?: number | null; docType?: string | null } = {}) {
+  const { isReportApprover } = await import("./bookkeeping-clients");
+  if (!(await isReportApprover(actor))) return new ValidationError(RETURN_GATE);
+  const q = new URLSearchParams({ tab: "taxes", deliver: "1", ...(f.year ? { year: String(f.year) } : {}), ...(f.docType === "STATE_RETURN" ? { jur: "state" } : f.docType === "AMENDED_RETURN" ? { amended: "1" } : {}) });
+  return Object.assign(new ValidationError(OWNER_RETURN_GATE), { next: { href: `/clients/${clientId}?${q.toString()}#finish-send`, label: "Open Finish & Send a Return" } });
+}
 
 export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   BOOKKEEPING: "Bookkeeping",
@@ -73,7 +83,11 @@ export const CATEGORY_LABELS: Record<DocumentCategory, string> = {
   IDENTITY: "Identity document",
   OWNER_K1: "K-1 (owner)",
   PAYROLL: "Payroll",
+  OWNER_PERSONAL: "Personal tax document (owner)",
 };
+
+/** Staff-side folder names: the Taxes folder also holds the return copies and acceptance confirmations sent from the Taxes tab (one stored copy, shown in both places). */
+export const STAFF_CATEGORY_LABELS: Record<DocumentCategory, string> = { ...CATEGORY_LABELS, TAXES: "Taxes (returns & tax documents)" };
 
 export const REPORT_LABELS: Record<ReportType, string> = {
   FINANCIAL_PACKET: "Complete financial packet",
@@ -88,12 +102,20 @@ export const REPORT_LABELS: Record<ReportType, string> = {
 // "system": files received from an integration (e.g. a Jotform submission).
 type Uploader = { staff: Actor } | { portal: PortalActor } | { system: string };
 
-/** The original bytes of a stored document (decrypted when the app encrypted them). */
-export async function readDocumentBytes(file: { storageKey: string; encrypted: boolean }) {
-  const bytes = await storage.get(file.storageKey);
+/**
+ * The original bytes of a stored document. Files written since the document-security release are
+ * encrypted (AES-256-GCM, the app key); older plaintext files still read as they are until the
+ * owner's encryption job moves them. A file encrypted with the previous key still opens during a
+ * key rotation (APP_ENCRYPTION_KEY_PREVIOUS).
+ */
+export async function readDocumentBytes(file: { storageKey: string; encrypted: boolean }, store: { get(key: string): Promise<Uint8Array | null> } = storage) {
+  const bytes = await store.get(file.storageKey);
   if (!bytes) return null;
   return file.encrypted ? decryptBytes(bytes) : bytes;
 }
+
+/** How long a deleted document stays in the owner's "Recently deleted" list before its bytes may be purged. */
+export const RECOVERY_DAYS = 30;
 
 export const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -120,8 +142,10 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
   if (scan === "INFECTED") throw new ValidationError("This file was flagged by the virus scanner and was not saved.");
   const size = type.mime.startsWith("image/") ? imageSize(bytes, type.mime) : null;
   const storageKey = `client_document/${randomUUID()}`;
-  // Identity documents are encrypted by the app before they reach storage.
-  await storage.put(storageKey, opts.encrypt ? encryptBytes(bytes) : bytes);
+  // Every client document (all categories) is encrypted by the app before it reaches storage.
+  // `opts.encrypt` is kept for callers written before this was the rule; it no longer changes anything.
+  void opts.encrypt;
+  await storage.put(storageKey, encryptBytes(bytes));
   const name = originalName.replace(/[^\w.\- ()]/g, "_").slice(0, 150) || `document.${type.ext}`;
   return {
     storageKey,
@@ -140,7 +164,8 @@ export async function storeDocumentFile(bytes: Uint8Array, originalName: string,
       uploadedById: "staff" in uploader ? uploader.staff.id : null,
       uploadedByPortalUserId: "portal" in uploader ? uploader.portal.id : null,
       sha256,
-      encrypted: !!opts.encrypt,
+      encrypted: true,
+      keyVersion: currentFileKeyVersion(),
     },
   };
 }
@@ -173,9 +198,14 @@ export type StaffUploadInput = {
   allowOffice?: boolean;
   // CSV/XLSX are accepted only for payroll register imports (docType PAYROLL_REPORT).
   allowSpreadsheet?: boolean;
-  // K-1 (owner): the business owner this K-1 belongs to. Required for OWNER_K1, not allowed otherwise.
+  // The business owner the document belongs to: required for OWNER_K1 and OWNER_PERSONAL, not allowed otherwise.
   businessOwnerId?: string | null;
+  // The caller already checked duplicates (a combined federal + state return PDF filed once per filing).
+  duplicateChecked?: boolean;
 };
+
+/** Categories that belong to one business owner (Document.businessOwnerId) and open only for them (plus staff). */
+export const OWNER_CATEGORIES: DocumentCategory[] = ["OWNER_K1", "OWNER_PERSONAL"];
 
 // Nonprofit portfolio files reach the client only through Release in the portfolio (drafts never do).
 const NONPROFIT_GATE = "Nonprofit portfolio documents are released from the organization's Nonprofit Portfolio, which keeps drafts private and notifies the client.";
@@ -188,18 +218,19 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   // Any bookkeeping file — with or without a report type — reaches the client only through the
   // Tabitha-approved delivery path, so a financial statement can't be published by accident.
   if (input.category === "BOOKKEEPING" && input.visibility === "PUBLISHED") throw new ValidationError(FINANCIAL_GATE);
-  if (input.visibility === "PUBLISHED" && input.docType && RETURN_DOC_TYPES.includes(input.docType)) throw new ValidationError(RETURN_GATE);
+  if (input.visibility === "PUBLISHED" && input.docType && RETURN_DOC_TYPES.includes(input.docType)) throw await returnGate(actor, input.clientId, { year: input.year, docType: input.docType });
   if (input.visibility === "PUBLISHED" && input.docType === "NONPROFIT_ITEM") throw new ValidationError(NONPROFIT_GATE);
   const client = await prisma.client.findUnique({ where: { id: input.clientId } });
   if (!client) throw new ValidationError("Client not found.");
   if (input.month && (input.month < 1 || input.month > 12)) throw new ValidationError("Month must be 1–12.");
   if (input.periodId && !(await prisma.bookkeepingPeriod.count({ where: { id: input.periodId, clientId: input.clientId } }))) throw new ValidationError("Bookkeeping month not found.");
-  if (input.category === "OWNER_K1") {
-    if (!input.businessOwnerId || !(await prisma.businessOwner.count({ where: { id: input.businessOwnerId, clientId: input.clientId, archivedAt: null } }))) throw new ValidationError("Choose the owner this K-1 belongs to.");
+  if (OWNER_CATEGORIES.includes(input.category)) {
+    if (!input.businessOwnerId || !(await prisma.businessOwner.count({ where: { id: input.businessOwnerId, clientId: input.clientId, archivedAt: null } }))) throw new ValidationError(input.category === "OWNER_K1" ? "Choose the owner this K-1 belongs to." : "Choose the owner this document belongs to.");
+    if (input.category === "OWNER_PERSONAL" && !input.year) throw new ValidationError("Choose the tax year this document is for.");
   } else if (input.businessOwnerId) {
-    throw new ValidationError("Only a K-1 (owner) document is linked to an owner.");
+    throw new ValidationError("Only a K-1 (owner) or an owner's personal document is linked to an owner.");
   }
-  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT" });
+  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.duplicateChecked ? undefined : input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT" });
   try {
     const doc = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });
@@ -216,7 +247,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
           reportType: input.reportType ?? null,
           periodId: input.periodId ?? null,
           docType: input.docType ?? null,
-          businessOwnerId: input.category === "OWNER_K1" ? input.businessOwnerId : null,
+          businessOwnerId: OWNER_CATEGORIES.includes(input.category) ? input.businessOwnerId : null,
           ...coverageData(input.coverage, input.asOf),
           reviewStatus: isFinancialReport ? "DRAFT" : null,
           fileId: file.id,
@@ -248,7 +279,7 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
   if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && !doc.reportType) throw new ValidationError(FINANCIAL_GATE);
   // Financial statements by category label, wherever they were filed, also need the report workflow.
   if (visibility === "PUBLISHED" && !doc.reportType && doc.docType && STATEMENT_TYPES.includes(doc.docType)) throw new ValidationError(FINANCIAL_GATE);
-  if (visibility === "PUBLISHED" && (doc.filingDocType === "RETURN" || (doc.docType && RETURN_DOC_TYPES.includes(doc.docType) && !doc.publishedAt))) throw new ValidationError(RETURN_GATE);
+  if (visibility === "PUBLISHED" && (doc.filingDocType === "RETURN" || (doc.docType && RETURN_DOC_TYPES.includes(doc.docType) && !doc.publishedAt))) throw await returnGate(actor, doc.clientId, { year: doc.year, docType: doc.docType });
   if (visibility === "PUBLISHED" && doc.category === "IDENTITY") throw new ValidationError("Identity documents aren't published.");
   if (visibility === "PUBLISHED" && doc.docType === "NONPROFIT_ITEM") throw new ValidationError(NONPROFIT_GATE);
   if (visibility === "PUBLISHED" && doc.supersededAt) throw new ValidationError("A newer version of this report exists. Deliver the newest version instead.");
@@ -263,20 +294,28 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
 /** Client upload, optionally answering a document request. */
 export async function portalUploadDocument(
   user: PortalActor,
-  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; docType?: string | null; coverage?: Coverage | null; asOf?: Date | null; bytes: Uint8Array; originalName: string; payroll?: boolean },
+  input: { clientId: string; requestId?: string | null; periodId?: string | null; title?: string; year?: number | "unsure" | null; docType?: string | null; coverage?: Coverage | null; asOf?: Date | null; bytes: Uint8Array; originalName: string; payroll?: boolean; personal?: boolean },
 ) {
-  // Payroll files need the payroll upload permission; everything else the general upload permission.
-  const uploadGrant = await requireClientAccess(user.id, input.clientId, input.payroll ? "payrollUpload" : "upload");
+  // Payroll files need the payroll upload permission; everything else the general upload permission —
+  // except a business owner's OWN personal documents (below), which never touch the business's files.
+  const uploadGrant = await requireClientAccess(user.id, input.clientId, input.payroll ? "payrollUpload" : undefined);
   if (input.payroll && (input.requestId || input.periodId)) throw new ValidationError("Send payroll files on their own.");
   const thisYear = new Date().getFullYear();
   if (typeof input.year === "number" && (input.year < thisYear - 15 || input.year > thisYear + 1)) throw new ValidationError("Choose a tax year from the list.");
   let periodId = input.periodId ?? null;
   // A targeted request names the document, account and period: the upload is filed with them.
   let linked: { docType: string | null; bookkeepingAccountId: string | null; coverage: Coverage | null } = { docType: null, bookkeepingAccountId: null, coverage: null };
+  // A business owner's own personal document (OWNER_PERSONAL): who it belongs to, and its tax year.
+  let owner: { personal: boolean; businessOwnerId: string | null; year: number | null } = { personal: false, businessOwnerId: null, year: null };
   if (input.requestId) {
     const req = await prisma.documentRequest.findFirst({ where: { id: input.requestId, clientId: input.clientId } });
     // A draft was never sent, so the client can't answer it.
     if (!req || req.status === "CANCELLED" || req.status === "ACCEPTED" || req.status === "DRAFT") throw new ValidationError("That request is closed.");
+    // A request for one owner's personal documents is answered by that owner's login only.
+    if (req.businessOwnerId) {
+      if (!(await prisma.businessOwner.count({ where: { id: req.businessOwnerId, clientId: input.clientId, portalUserId: user.id, archivedAt: null } }))) throw new ForbiddenError("That request isn't yours to answer.");
+      owner = { personal: true, businessOwnerId: req.businessOwnerId, year: req.taxYear };
+    }
     periodId = req.periodId;
     const sameMonth = req.periodStart && req.periodEnd && req.periodStart.getUTCFullYear() === req.periodEnd.getUTCFullYear() && req.periodStart.getUTCMonth() === req.periodEnd.getUTCMonth();
     linked = {
@@ -289,6 +328,24 @@ export async function portalUploadDocument(
   }
   // A bookkeeping month belongs to the Managed Business side: no business access, no upload into it.
   if (periodId && !uploadGrant.canViewBookkeeping) throw new ForbiddenError("Your access to this account doesn't include that.");
+  // Personal supporting documents sent on a business-only account (the Tax Center upload): filed to
+  // this login's own owner record (or, with none, kept to this login) and a tax year, never shared
+  // with the business's other owners or contacts. Requesting or sending them never adds personal
+  // tax preparation to the account.
+  if (input.personal && !owner.personal && !input.requestId && !periodId && !input.payroll) {
+    const { serviceProfile } = await import("./service-profile");
+    if ((await serviceProfile(input.clientId)).businessOnly) {
+      if (typeof input.year !== "number") throw new ValidationError("Choose the tax year this document is for.");
+      const mine = await prisma.businessOwner.findFirst({ where: { clientId: input.clientId, portalUserId: user.id, archivedAt: null }, select: { id: true } });
+      owner = { personal: true, businessOwnerId: mine?.id ?? null, year: input.year };
+    }
+  }
+  // Everything except an owner's own personal documents needs the general upload permission. An
+  // owner's personal documents need that permission or this login being a business owner on the account.
+  if (!input.payroll && !uploadGrant.canUpload) {
+    const isOwner = owner.personal && (owner.businessOwnerId ? await prisma.businessOwner.count({ where: { id: owner.businessOwnerId, portalUserId: user.id, archivedAt: null } }) : 0);
+    if (!isOwner) throw new ForbiddenError("Your access to this account doesn't include that.");
+  }
   const period = periodId ? await prisma.bookkeepingPeriod.findUnique({ where: { id: periodId } }) : null;
   const stored = await storeDocumentFile(input.bytes, input.originalName, { portal: user }, input.clientId);
   try {
@@ -297,10 +354,11 @@ export async function portalUploadDocument(
       const doc = await tx.document.create({
         data: {
           clientId: input.clientId,
-          category: input.payroll ? "PAYROLL" : "CLIENT_UPLOADS",
+          category: owner.personal ? "OWNER_PERSONAL" : input.payroll ? "PAYROLL" : "CLIENT_UPLOADS",
+          businessOwnerId: owner.businessOwnerId,
           title: input.title?.trim().slice(0, 200) || file.title,
           // The client confirms the year; "Not sure" stays empty for staff to classify.
-          year: period?.year ?? linked.coverage?.year ?? input.coverage?.year ?? (typeof input.year === "number" ? input.year : null),
+          year: owner.personal && owner.year ? owner.year : period?.year ?? linked.coverage?.year ?? input.coverage?.year ?? (typeof input.year === "number" ? input.year : null),
           month: period?.month ?? linked.coverage?.month ?? input.coverage?.month ?? null,
           ...coverageData(linked.coverage ?? input.coverage, input.asOf),
           bookkeepingAccountId: linked.bookkeepingAccountId,
@@ -316,7 +374,7 @@ export async function portalUploadDocument(
           periodId,
           requestId: input.requestId ?? null,
           docType: linked.docType ?? input.docType ?? null,
-          retainUntil: await retentionDate(input.payroll ? "PAYROLL" : "CLIENT_UPLOADS"),
+          retainUntil: await retentionDate(owner.personal ? "OWNER_PERSONAL" : input.payroll ? "PAYROLL" : "CLIENT_UPLOADS"),
         },
       });
       if (input.requestId) await tx.documentRequest.update({ where: { id: input.requestId }, data: { status: "SUBMITTED" } });
@@ -388,7 +446,21 @@ export async function authorizeDownload(token: string, viewer: { staffId?: strin
       return staff?.active && (await canStaffOpenIdentityFile(staff, doc.clientId, doc.docType)) ? doc : null;
     }
     // Social Security cards and birth certificates never open for portal users.
-    return viewer.portalUserId && (await portalMayOpenIdentityFile(viewer.portalUserId, doc.clientId, doc.docType)) ? doc : null;
+    if (!viewer.portalUserId) return null;
+    // A business owner's identity document opens only for that owner's own login.
+    if (doc.businessOwnerId) {
+      const { isAdminOnlyType } = await import("./identity");
+      if (isAdminOnlyType(doc.docType)) return null;
+      const mine = await prisma.businessOwner.count({ where: { id: doc.businessOwnerId, clientId: doc.clientId, portalUserId: viewer.portalUserId, archivedAt: null } });
+      if (!mine) return null;
+      try {
+        await requireClientAccess(viewer.portalUserId, doc.clientId);
+      } catch {
+        return null;
+      }
+      return doc;
+    }
+    return (await portalMayOpenIdentityFile(viewer.portalUserId, doc.clientId, doc.docType)) ? doc : null;
   }
   if (viewer.portalUserId) {
     if (doc.visibility !== "PUBLISHED") return null;
@@ -429,7 +501,12 @@ export async function setRetention(actor: Actor, category: DocumentCategory, yea
   await audit(prisma, { actorId: actor.id, action: "retention.updated", entityType: "RetentionPolicy", entityId: category, details: { years } });
 }
 
-/** Admin-only. Destroys the stored file, keeps a tombstone and audit trail. */
+/**
+ * Admin-only, and recoverable. The document leaves every staff and client list at once and moves to
+ * the owner's "Recently deleted" list (Owner's Office). Its bytes are NOT removed here: the nightly
+ * purge removes them only after RECOVERY_DAYS and once a successful backup holds them
+ * (src/lib/services/recently-deleted.ts). The owner can restore it until then.
+ */
 export async function deleteDocument(actor: Actor, documentId: string, reason: string) {
   assertAdmin(actor);
   if (!reason.trim()) throw new ValidationError("Record why this document is being deleted.");
@@ -437,20 +514,25 @@ export async function deleteDocument(actor: Actor, documentId: string, reason: s
   if (!doc || doc.deletedAt) throw new ValidationError("Document not found.");
   const pinned = await prisma.signatureRequest.count({ where: { OR: [{ signedDocumentId: documentId }, { auditTrailDocumentId: documentId }] } });
   if (pinned) throw new ValidationError("Signed documents and signature audit trails can't be deleted here.");
-  await storage.remove(doc.file.storageKey);
+  const now = new Date();
+  const purgeAfter = new Date(now.getTime() + RECOVERY_DAYS * 24 * 60 * 60 * 1000);
   await prisma.$transaction([
-    prisma.document.update({ where: { id: documentId }, data: { deletedAt: new Date(), deletedById: actor.id, deletionReason: reason.trim().slice(0, 500), visibility: "STAFF_ONLY" } }),
+    // The visibility before deletion is kept in the audit entry so a restore can put it back.
+    prisma.document.update({ where: { id: documentId }, data: { deletedAt: now, deletedById: actor.id, deletionReason: reason.trim().slice(0, 500), visibility: "STAFF_ONLY", purgeAfter, restoredAt: null, restoredById: null } }),
     prisma.documentAccessLog.create({ data: { documentId, action: "DELETE", staffUserId: actor.id } }),
-    prisma.auditLog.create({ data: { actorId: actor.id, action: "document.deleted", entityType: "Document", entityId: documentId, clientId: doc.clientId, details: { reason: reason.trim().slice(0, 500), title: doc.title } } }),
+    prisma.auditLog.create({ data: { actorId: actor.id, action: "document.deleted", entityType: "Document", entityId: documentId, clientId: doc.clientId, details: { reason: reason.trim().slice(0, 500), title: doc.title, visibilityBefore: doc.visibility, purgeAfter: purgeAfter.toISOString(), recoverable: true } } }),
   ]);
 }
 
 async function notifyClientUsers(clientId: string, kind: string, refId: string, category?: DocumentCategory) {
   const grants = await effectiveGrantsFor(clientId);
   for (const g of grants) {
-    // A K-1 notice goes only to the owner it belongs to (and owners Tabitha shared it with).
+    // A K-1 notice goes only to the owner it belongs to (and owners Tabitha shared it with); an
+    // owner's personal document only to that owner.
     if (category === "OWNER_K1") {
       if (!(await prisma.document.count({ where: { id: refId, ...k1VisibleWhere(g.portalUserId) } }))) continue;
+    } else if (category === "OWNER_PERSONAL") {
+      if (!(await prisma.document.count({ where: { id: refId, ...ownerPersonalVisibleWhere(g.portalUserId) } }))) continue;
     } else if (category && !allowedCategories(g).includes(category as never)) continue;
 
     await queuePortalNotification(g.portalUserId, kind, `${kind}:${refId}`);
@@ -493,7 +575,8 @@ export async function scanQuarantined(limit = 25, source: "scheduled" | "manual"
       if (res.count === 1) {
         clean++;
         await prisma.auditLog.create({ data: { action: "document.scan_clean", entityType: "Document", entityId: d.id, clientId: d.clientId } });
-        if (d.visibility === "PUBLISHED" && d.uploadedByStaffId) await notifyClientUsers(d.clientId, "NEW_DOCUMENT", d.id, d.category);
+        // A delivered tax return never triggers a notice by itself: Tabitha's "notify the client" is opt-in.
+        if (d.visibility === "PUBLISHED" && d.uploadedByStaffId && d.filingDocType !== "RETURN") await notifyClientUsers(d.clientId, "NEW_DOCUMENT", d.id, d.category);
       }
     } else if (result === "INFECTED") {
       await storage.remove(d.file.storageKey).catch(() => {});

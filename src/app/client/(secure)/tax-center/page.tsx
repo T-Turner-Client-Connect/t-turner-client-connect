@@ -5,10 +5,12 @@ import { ActionForm } from "@/components/action-form";
 import { portalJointFilingAction } from "@/app/actions/portal";
 import { currentTaxYear, jointFilingNeeded } from "@/lib/services/clients";
 import { QuestionnaireStart } from "@/components/portal/tax-pages";
-import { requirePortalUser } from "@/lib/portal/session";
-import { requirePersonalTaxAccount, resolveAccount } from "@/lib/portal/account";
+import { portalViewer } from "@/lib/portal/viewer";
+import { requirePersonalTaxAccount } from "@/lib/portal/account";
+import { PreviewDisabled } from "@/components/portal/preview-off";
 import { loadPortalHome } from "@/lib/portal/views";
-import { identityChecklist } from "@/lib/services/identity";
+import { identityChecklistFor, identityOverviewForViewer } from "@/lib/services/identity";
+import { serviceProfile } from "@/lib/services/service-profile";
 
 export const metadata = { title: "My Tax Center" };
 
@@ -34,26 +36,28 @@ function ActionCard({ tone, icon: I, title, sub, children, testId }: { tone: "cr
 }
 
 export default async function TaxCenter({ searchParams }: { searchParams: Promise<{ account?: string; year?: string }> }) {
-  const user = await requirePortalUser();
   const sp = await searchParams;
-  const { current } = await resolveAccount(user.id, sp.account);
+  const v = await portalViewer("tax-center", sp.account);
+  const { user, current } = v;
   if (!current) return null;
   await requirePersonalTaxAccount(current.clientId);
   if (!current.canViewTax) return <Notice>Tax information isn&apos;t included in your access to this account.</Notice>;
-  const data = await loadPortalHome(current.clientId, current, user.id);
+  const data = await loadPortalHome(current.clientId, current, user?.id ?? null);
   const jointYear = currentTaxYear();
   const jointNeeded = await jointFilingNeeded(current.clientId, jointYear);
 
   const q = `?account=${current.clientId}`;
   const yq = sp.year ? `&year=${sp.year}` : "";
-  const idList = current.canViewIdentity ? await identityChecklist(current.clientId) : [];
+  // Business accounts: only this login's own owner record (needs no access to the business's files).
+  const { business } = await serviceProfile(current.clientId);
+  const idList = current.canViewIdentity || business ? identityChecklistFor(await identityOverviewForViewer(current.clientId, user?.id ?? null)) : [];
   const group = (roles: string[]) => {
     const people = idList.filter((p) => roles.includes(p.person.role));
     const items = people.flatMap((p) => p.items);
     return { people: people.length, onFile: items.filter((i) => i.state === "ON_FILE").length, total: items.length };
   };
   const idRows = [
-    { label: "You (Taxpayer)", icon: User, ...group(["CLIENT"]) },
+    { label: "You (Taxpayer)", icon: User, ...group(["CLIENT", "OWNER"]) },
     { label: "Spouse", icon: UsersRound, ...group(["SPOUSE"]) },
     { label: "Dependents (Children)", icon: Users, ...group(["DEPENDENT"]) },
   ];
@@ -79,12 +83,14 @@ export default async function TaxCenter({ searchParams }: { searchParams: Promis
 
       {current.role === "OWNER" && current.client.clientType === "INDIVIDUAL" && (
         <section className="mb-5 rounded-2xl border border-gold-300 bg-gold-50/60 px-4 py-3" data-testid="joint-filing-question">
-          <ActionForm action={portalJointFilingAction.bind(null, current.clientId, jointYear)} className="flex flex-wrap items-center gap-3 text-sm">
+          <PreviewDisabled readOnly={v.readOnly}>
+          <ActionForm action={v.act(portalJointFilingAction, current.clientId, jointYear)} className="flex flex-wrap items-center gap-3 text-sm">
             <span className="font-semibold text-navy-900">Filing jointly with a spouse for {jointYear}?</span>
             <label className="flex items-center gap-1.5"><input type="radio" name="needed" value="yes" defaultChecked={jointNeeded} className="accent-navy-900" /> Yes, add my spouse</label>
             <label className="flex items-center gap-1.5"><input type="radio" name="needed" value="no" defaultChecked={!jointNeeded} className="accent-navy-900" /> No</label>
             <Button type="submit" variant="secondary">Save</Button>
           </ActionForm>
+          </PreviewDisabled>
         </section>
       )}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" data-testid="tax-center">

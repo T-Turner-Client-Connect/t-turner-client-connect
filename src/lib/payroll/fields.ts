@@ -49,9 +49,9 @@ export type PayrollPreset = keyof typeof PAYROLL_PRESETS;
 /** Pay run statuses, as the office and owners see them. */
 export const RUN_STATUS = {
   DRAFT: "Draft — office review",
-  AWAITING_APPROVAL: "Awaiting Approval",
-  DENIED: "Denied — Needs Review",
-  FULLY_APPROVED: "Fully Approved",
+  AWAITING_APPROVAL: "Awaiting Client Approval",
+  DENIED: "Changes Requested",
+  FULLY_APPROVED: "Client Approved",
   SUBMITTED: "Submitted for Processing",
   // Future (provider API): the provider acknowledged the pay data. Not processed yet.
   PROVIDER_ACCEPTED: "Accepted by provider — awaiting processing",

@@ -133,9 +133,11 @@ describe("financial statements reach clients only through Tabitha's approval", (
     // A download link minted for one viewer doesn't work for another.
     const staffToken = downloadToken(mine.id, { staffId: daria.id });
     expect(await authorizeDownload(staffToken, { portalUserId: client.id })).toBeNull();
-    // Identity: a client-uploaded SS card stays Admin-only after a clean scan.
+    // Identity: a business account's own record no longer takes portal uploads (identity documents
+    // there are per owner). One filed there by staff stays Admin-only after a clean scan.
     const person = await ensureClientPerson(biz.id);
-    await uploadIdentityDocument({ portal: client }, { clientId: biz.id, personId: person.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf(), originalName: "ss.pdf" });
+    await expect(uploadIdentityDocument({ portal: client }, { clientId: biz.id, personId: person.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf(), originalName: "ss.pdf" })).rejects.toThrow(/each owner separately/);
+    await uploadIdentityDocument({ staff: tabitha }, { clientId: biz.id, personId: person.id, type: "SOCIAL_SECURITY_CARD", bytes: pdf(), originalName: "ss.pdf" });
     const ss = await prisma.document.findFirstOrThrow({ where: { clientId: biz.id, category: "IDENTITY" } });
     expect(ss.scanStatus).toBe("CLEAN");
     expect(await canOpen(ss.id)).toBe(false);

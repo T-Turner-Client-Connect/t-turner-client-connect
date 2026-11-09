@@ -11,7 +11,7 @@ import { STATES } from "@/lib/resources/catalog";
 import { officeToday, daysBetween } from "@/lib/tax/deadlines";
 import { assertOffice } from "@/lib/auth/owner";
 import { ValidationError } from "./clients";
-import { createService, prepareAgreement, startGate } from "./service-agreements";
+import { createService, prepareAgreement, serviceGate } from "./service-agreements";
 import { staffUploadDocument } from "./documents";
 import { latestEndedTaxYear, nonprofitDueDate, NONPROFIT_FORMS } from "./nonprofits";
 
@@ -457,7 +457,7 @@ async function assertWorkMayBegin(orgId: string) {
   if (!p?.serviceId) return;
   const s = await prisma.clientService.findUnique({ where: { id: p.serviceId }, include: { agreements: true } });
   if (!s) return;
-  const gate = startGate(s);
+  const gate = await serviceGate(s);
   if (!gate.ok) throw new ValidationError(`Package work can't begin yet: ${gate.reason}`);
 }
 

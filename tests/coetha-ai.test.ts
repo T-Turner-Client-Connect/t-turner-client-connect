@@ -83,7 +83,10 @@ describe("Coetha switch and API key", () => {
     expect(await prisma.ownerAuditLog.count({ where: { action: "coetha.enabled_on" } })).toBe(1);
     await runCoetha(s.daria, s.vessel.id, opts);
     expect(sent).toHaveLength(1);
-    expect((await runDailyCoetha()).ran).toBe(0); // CSV rows only: the daily run waits for retrieved bank rows
+    // CSV-imported rows count: Harbor (never run) is picked; Vessel ran just now and waits 20 hours.
+    expect((await runDailyCoetha()).ran).toBe(1);
+    expect(await prisma.coethaRun.count({ where: { clientId: s.harbor.id, trigger: "DAILY" } })).toBe(1);
+    expect(await prisma.coethaRun.count({ where: { clientId: s.vessel.id, trigger: "DAILY" } })).toBe(0);
   });
 
   it("without ANTHROPIC_API_KEY it says so, sends nothing, and the books keep working", async () => {

@@ -100,8 +100,8 @@ export async function requireClientAccess(portalUserId: string, clientId: string
 type CategoryFlags = Pick<PortalAccess, "canViewBookkeeping" | "canViewTax" | "canViewContracts"> & Partial<Pick<PortalAccess, "canViewDocuments" | "canViewPayroll">>;
 
 /**
- * Document categories a login may list. OWNER_K1 is never here: a K-1 opens only
- * through `portalDocumentScope` for its owner (or an owner Tabitha shared it with).
+ * Document categories a login may list. OWNER_K1 and OWNER_PERSONAL are never here: they open
+ * only through `portalDocumentScope` for their owner (a K-1 also for owners Tabitha shared it with).
  * Business documents and payroll default to on (ordinary client logins); a
  * business owner's login has them off until granted.
  */
@@ -140,8 +140,31 @@ export function portalDocumentScope(access: CategoryFlags, portalUserId: string 
       { category: { in: categories } },
       { category: "CLIENT_UPLOADS", uploadedByPortalId: portalUserId },
       k1VisibleWhere(portalUserId),
+      ownerPersonalVisibleWhere(portalUserId),
     ],
   };
+}
+
+/**
+ * A business owner's own personal tax documents (OWNER_PERSONAL) on a business account: only that
+ * owner's login (Document.businessOwnerId → BusinessOwner.portalUserId), or — when the uploader
+ * isn't linked to an owner record — the uploading login. Never other owners, authorized contacts,
+ * or anyone a K-1 was shared with; never in View as Client (no viewer). Staff see them as usual.
+ */
+export function ownerPersonalVisibleWhere(portalUserId: string): Prisma.DocumentWhereInput {
+  return {
+    category: "OWNER_PERSONAL",
+    OR: [{ businessOwner: { portalUserId, archivedAt: null } }, { businessOwnerId: null, uploadedByPortalId: portalUserId }],
+  };
+}
+
+/**
+ * Document requests a login may see and answer: the account's ordinary requests, plus requests for
+ * this login's own owner record (personal or identity documents). A request for one owner is never
+ * shown to another owner or contact, nor in View as Client (no viewer).
+ */
+export function requestVisibleWhere(portalUserId: string | null): Prisma.DocumentRequestWhereInput {
+  return { OR: [{ businessOwnerId: null }, ...(portalUserId ? [{ businessOwner: { portalUserId, archivedAt: null } }] : [])] };
 }
 
 /** Message threads a login may see: shared threads, and private threads that are theirs. */
