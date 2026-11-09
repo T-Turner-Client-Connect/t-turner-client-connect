@@ -146,6 +146,7 @@ export const AREAS = [
     actions: [
       { key: "view", description: "See tax preparation and compliance status.", reserved: true },
       { key: "edit", description: "Prepare tax work.", reserved: true },
+      { key: "all_clients", description: "Send completed tax returns to any client's vault (office-wide), not only the clients assigned to them. Granted by Tabitha only." },
       { key: "approve", description: "Authorize and submit returns and release returns to clients. Tabitha only.", ownerOnly: true },
     ],
   },
@@ -211,7 +212,7 @@ export const ALL_KEYS = ALL.map((x) => keyOf(x.area, x.def.key));
 export const OWNER_ONLY_KEYS = ALL.filter((x) => x.def.ownerOnly).map((x) => keyOf(x.area, x.def.key));
 export const GRANTABLE_KEYS = ALL_KEYS.filter((k) => !OWNER_ONLY_KEYS.includes(k));
 /** Only the owner can give these, even to someone a delegated staff manager could otherwise change. */
-export const OWNER_GRANTS_ONLY: PermKey[] = ["staff.manage", "payroll_taxes.view", "payroll_taxes.manage", "payroll_taxes.all_clients"];
+export const OWNER_GRANTS_ONLY: PermKey[] = ["staff.manage", "payroll_taxes.view", "payroll_taxes.manage", "payroll_taxes.all_clients", "tax.all_clients"];
 
 export function isKnownKey(k: string): k is PermKey {
   return (ALL_KEYS as string[]).includes(k);

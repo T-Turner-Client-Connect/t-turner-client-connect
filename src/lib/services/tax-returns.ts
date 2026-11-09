@@ -11,7 +11,7 @@ import { BUSINESS } from "@/lib/business";
 import { normalizeJurisdiction, normalizeReturnType } from "@/lib/tax/normalize";
 import { ValidationError } from "./clients";
 import { clientMayReceive, notifyClientUsers, readDocumentBytes, sha256Of, staffUploadDocument, storeDocumentFile } from "./documents";
-import { canSendReturns, NOT_RETURN_SENDER } from "./return-senders";
+import { canSendReturns, NOT_RETURN_SENDER, senderBasis } from "./return-senders";
 
 /**
  * Accepted Return Delivery — the stage AFTER filing. Clients don't review
@@ -192,10 +192,16 @@ async function loadReturn(documentId: string) {
 }
 
 /** Nothing reaches the client as a completed filing unless its acceptance is recorded. */
-async function assertAccepted(d: { filingId: string | null }) {
-  if (!d.filingId) return;
-  const f = await prisma.filingRecord.findUnique({ where: { id: d.filingId }, select: { filingStatus: true } });
-  if (f && f.filingStatus !== "ACCEPTED") throw new ValidationError("This return's filing isn't recorded as accepted yet. It's waiting for Tabitha to confirm acceptance.");
+async function assertAccepted(d: { filingId: string | null; clientId: string; year: number | null }) {
+  if (!d.filingId) return null;
+  const f = await prisma.filingRecord.findUnique({ where: { id: d.filingId }, select: { id: true, clientId: true, taxYear: true, returnType: true, jurisdiction: true, filingType: true, filingStatus: true } });
+  if (!f) return null;
+  // The file must belong to the same client and tax year as the filing it is sent under.
+  if (f.clientId !== d.clientId || (d.year != null && d.year !== f.taxYear)) {
+    throw new ValidationError("This return's client or tax year doesn't match its filing. Fix the year (or remove the file and upload it again) before sending.");
+  }
+  if (f.filingStatus !== "ACCEPTED") throw new ValidationError("This return's filing isn't recorded as accepted yet. It's waiting for Tabitha to confirm acceptance.");
+  return f;
 }
 
 export async function submitReturnForRelease(actor: Actor, documentId: string) {
@@ -220,14 +226,14 @@ export async function releaseReturn(actor: Actor, documentId: string, opts: { no
   // Tabitha's one-step delivery may release a file whose scan is still running: the portal shows it only once the scan passes.
   const pendingOk = opts.allowPendingScan && (d.scanStatus === "NOT_SCANNED" || d.scanStatus === "PENDING");
   if (d.scanStatus !== "CLEAN" && !pendingOk) throw new ValidationError("This file hasn't passed the malware scan, so it can't be released.");
-  await assertAccepted(d);
+  const filing = await assertAccepted(d);
   const older = d.filingId ? await prisma.document.findMany({ where: { filingId: d.filingId, filingDocType: "RETURN", id: { not: d.id }, visibility: "PUBLISHED" } }) : [];
   await prisma.$transaction([
     prisma.document.update({ where: { id: d.id }, data: { reviewStatus: "APPROVED", approvedAt: new Date(), approvedById: actor.id, visibility: "PUBLISHED", publishedAt: new Date() } }),
     ...older.map((o) => prisma.document.update({ where: { id: o.id }, data: { visibility: "STAFF_ONLY", supersededAt: new Date() } })),
     prisma.documentAccessLog.create({ data: { documentId: d.id, action: "PUBLISH", staffUserId: actor.id } }),
   ]);
-  await audit(prisma, { actorId: actor.id, action: "tax.return_released", entityType: "Document", entityId: d.id, clientId: d.clientId, details: { replaced: older.map((o) => o.id), scan: d.scanStatus } });
+  await audit(prisma, { actorId: actor.id, action: "tax.return_released", entityType: "Document", entityId: d.id, clientId: d.clientId, details: { replaced: older.map((o) => o.id), scan: d.scanStatus, filingId: filing?.id ?? null, taxYear: filing?.taxYear ?? d.year, returnType: filing?.returnType ?? null, jurisdiction: filing?.jurisdiction ?? null, filingType: filing?.filingType ?? null, sentBy: await senderBasis(actor, d.clientId) } });
   if (opts.notify !== false && d.scanStatus === "CLEAN") await notifyClientUsers(d.clientId, "FILING_UPDATE", d.id, d.category);
 }
 

@@ -74,7 +74,7 @@ describe("Tax Return Delivery", () => {
     await expect(fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes, originalName: "again.pdf" })).rejects.toThrow(/already saved/);
     await expect(setVisibility(tabitha, v1.id, "PUBLISHED")).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
     await expect(staffUploadDocument(tabitha, { clientId: energy.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
-    await expect(setVisibility(daria, v1.id, "PUBLISHED")).rejects.toThrow(/Only Tabitha, an Admin or the staff member assigned/);
+    await expect(setVisibility(daria, v1.id, "PUBLISHED")).rejects.toThrow(/assigned preparer|staff member assigned to this client/);
     // Release: staff not assigned to the client can't send it; Tabitha, an Admin or the assigned preparer can.
     await expect(releaseReturn(daria, v1.id)).rejects.toBeInstanceOf(ForbiddenError);
     await submitReturnForRelease(daria, v1.id);
