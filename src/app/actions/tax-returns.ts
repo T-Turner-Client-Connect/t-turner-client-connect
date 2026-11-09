@@ -8,7 +8,6 @@ import { ValidationError } from "@/lib/services/clients";
 import { bulkUploadReturns, confirmIntake, discardIntake, emailMyCopy, fileReturn, releaseReturn, releaseReturns, submitReturnForRelease } from "@/lib/services/tax-returns";
 import { staffUploadDocument } from "@/lib/services/documents";
 import { attachFilingDocument } from "@/lib/services/tax";
-import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 
 const refresh = () => {
   revalidatePath("/taxes/returns");
@@ -35,7 +34,7 @@ export async function fileReturnAction(clientId: string, _prev: ActionState, fd:
       await attachFilingDocument(actor, doc.filingId, a.id, "OFFICIAL_ACK");
     }
     refresh();
-    return (await isReportApprover(actor)) ? "Accepted return uploaded. Use “Send to client” to deliver it to their vault." : "Accepted return uploaded. Tabitha approves it before the client sees it — use “Ask Tabitha to release”.";
+    return (await (await import("@/lib/services/return-senders")).canSendReturns(actor, clientId)) ? "Accepted return uploaded. Use “Send to client” to deliver it to their vault." : "Accepted return uploaded. Tabitha approves it before the client sees it — use “Ask Tabitha to release”.";
   });
 }
 

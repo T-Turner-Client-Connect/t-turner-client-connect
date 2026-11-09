@@ -74,13 +74,13 @@ describe("Tax Return Delivery", () => {
     await expect(fileReturn(daria, { clientId: energy.id, taxYear: 2025, returnType: "1120-S", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes, originalName: "again.pdf" })).rejects.toThrow(/already saved/);
     await expect(setVisibility(tabitha, v1.id, "PUBLISHED")).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
     await expect(staffUploadDocument(tabitha, { clientId: energy.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "FEDERAL_RETURN", bytes: pdf(), originalName: "x.pdf" })).rejects.toThrow(/Taxes tab → Finish & Send a Return/);
-    await expect(setVisibility(daria, v1.id, "PUBLISHED")).rejects.toThrow(/Tabitha releases/);
-    // Release: only Tabitha (staff ask her; she can also send a draft directly).
+    await expect(setVisibility(daria, v1.id, "PUBLISHED")).rejects.toThrow(/Only Tabitha, an Admin or the staff member assigned/);
+    // Release: staff not assigned to the client can't send it; Tabitha, an Admin or the assigned preparer can.
     await expect(releaseReturn(daria, v1.id)).rejects.toBeInstanceOf(ForbiddenError);
     await submitReturnForRelease(daria, v1.id);
     await expect(releaseReturn(daria, v1.id)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(releaseReturn(otherAdmin, v1.id)).rejects.toBeInstanceOf(ForbiddenError);
-    await releaseReturn(tabitha, v1.id);
+    // An Admin (like the assigned preparer) may send it too.
+    await releaseReturn(otherAdmin, v1.id);
     let r = await retrieveFilings(steven, energy.id, 2025);
     expect(r.groups.FEDERAL.map((d) => d.id)).toEqual([v1.id]);
     // A corrected copy becomes version 2; the client sees only the newest released version.

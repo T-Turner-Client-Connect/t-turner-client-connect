@@ -209,20 +209,22 @@ function YearFilter({ years, current, href }: { years: { year: number | null; co
 }
 
 function RowActions({ row, linkFor, identityHref }: { row: Row; linkFor: (id: string) => string; identityHref: string }) {
+  // Documents: two plain buttons on every row (a drop-down menu in the last rows was cut off by the table).
+  if (row.kind === "doc") {
+    return (
+      <span className="inline-flex flex-wrap justify-end gap-1.5">
+        <a className="inline-flex min-h-9 items-center rounded-lg border border-navy-900 px-3 py-1.5 text-xs font-semibold text-navy-900 hover:bg-gold-100" href={linkFor(row.id)} target="_blank" rel="noopener" data-testid="vault-view">View</a>
+        <a className="inline-flex min-h-9 items-center rounded-lg bg-navy-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-navy-800" href={`${linkFor(row.id)}?download=1`} data-testid="vault-download">Download</a>
+      </span>
+    );
+  }
   return (
     <details className="relative inline-block text-left">
       <summary className="flex size-9 cursor-pointer list-none items-center justify-center rounded-full text-navy-900 hover:bg-gold-100 [&::-webkit-details-marker]:hidden" aria-label={`Actions for ${row.name}`}>
         <MoreHorizontal className="size-5" aria-hidden />
       </summary>
       <div className="absolute right-0 z-20 mt-1 w-56 rounded-xl border border-ivory-200 bg-white p-1.5 text-sm shadow-xl">
-        {row.kind === "doc" ? (
-          <>
-            <a className="block rounded-lg px-3 py-2 text-navy-900 hover:bg-gold-100" href={linkFor(row.id)} target="_blank" rel="noopener">View</a>
-            <a className="block rounded-lg px-3 py-2 text-navy-900 hover:bg-gold-100" href={`${linkFor(row.id)}?download=1`}>Download</a>
-          </>
-        ) : (
-          <Link className="block rounded-lg px-3 py-2 text-navy-900 hover:bg-gold-100" href={identityHref}>Open in Identity Documents</Link>
-        )}
+        <Link className="block rounded-lg px-3 py-2 text-navy-900 hover:bg-gold-100" href={identityHref}>Open in Identity Documents</Link>
       </div>
     </details>
   );
@@ -274,7 +276,12 @@ export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityH
                     <span className="flex items-center gap-3">
                       <PdfIcon />
                       <span className="min-w-0">
-                        <span className="block text-navy-900 [overflow-wrap:anywhere]">{r.name}</span>
+                        {r.kind === "doc" ? (
+                          // Clicking the name opens the document (View), like the ••• menu.
+                          <a className="block font-semibold text-navy-900 underline decoration-gold-500 underline-offset-2 [overflow-wrap:anywhere] hover:text-gold-700" href={linkFor(r.id)} target="_blank" rel="noopener" data-testid="vault-open">{r.name}</a>
+                        ) : (
+                          <span className="block text-navy-900 [overflow-wrap:anywhere]">{r.name}</span>
+                        )}
                         {r.kind === "id" && <span className="block text-xs text-slate-600">{r.status}</span>}
                       </span>
                     </span>

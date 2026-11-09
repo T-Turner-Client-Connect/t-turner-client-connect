@@ -62,14 +62,14 @@ export const clientReceivableWhere = {
 
 /** Return copies are released by Tabitha (Tax returns), never published directly. */
 export const RETURN_DOC_TYPES = ["FEDERAL_RETURN", "STATE_RETURN", "AMENDED_RETURN", "TAX_RETURN"];
-const RETURN_GATE = "Completed tax returns go through Tax returns: file the return, send it for review, and Tabitha releases it to the client.";
+const RETURN_GATE = "Completed tax returns go through the client's Taxes tab → Finish & Send a Return. Only Tabitha, an Admin or the staff member assigned to this client can send one.";
 /** Tabitha files every return: for her the way through is the one-step delivery, never "send it for review". */
 const OWNER_RETURN_GATE = "Returns are sent from this client's Taxes tab → Finish & Send a Return (federal and state together). It marks them Accepted and sends them to the client in one step.";
 
 /** The refusal for publishing a return outside the delivery path, worded for who is asking. */
 async function returnGate(actor: Actor, clientId: string, f: { year?: number | null; docType?: string | null } = {}) {
-  const { isReportApprover } = await import("./bookkeeping-clients");
-  if (!(await isReportApprover(actor))) return new ValidationError(RETURN_GATE);
+  const { canSendReturns } = await import("./return-senders");
+  if (!(await canSendReturns(actor, clientId))) return new ValidationError(RETURN_GATE);
   const q = new URLSearchParams({ tab: "taxes", deliver: "1", ...(f.year ? { year: String(f.year) } : {}), ...(f.docType === "STATE_RETURN" ? { jur: "state" } : f.docType === "AMENDED_RETURN" ? { amended: "1" } : {}) });
   return Object.assign(new ValidationError(OWNER_RETURN_GATE), { next: { href: `/clients/${clientId}?${q.toString()}#finish-send`, label: "Open Finish & Send a Return" } });
 }

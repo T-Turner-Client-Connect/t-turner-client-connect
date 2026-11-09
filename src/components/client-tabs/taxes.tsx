@@ -8,6 +8,7 @@ import { PresetReason } from "@/components/preset-reason";
 import { deliveryContext } from "@/lib/services/accepted-returns";
 import { nextFilingStatus } from "@/lib/services/tax";
 import { utcToChicagoLocal } from "@/lib/tz";
+import { canSendReturns } from "@/lib/services/return-senders";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Field, Notice } from "@/components/ui";
@@ -51,7 +52,10 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
     }),
     prisma.document.findMany({ where: { clientId, deletedAt: null, category: "TAXES" }, select: { id: true, title: true }, orderBy: { createdAt: "desc" } }),
   ]);
-  const approver = await isReportApprover(user);
+  // Tabitha, an Admin or the client's assigned preparer can mark a return Accepted and send it.
+  const approver = await canSendReturns(user, clientId);
+  // Changing what the client already sees, and editing/moving/removing a filing, stay with Tabitha.
+  const owner = await isReportApprover(user);
   const requirements = new Map(await Promise.all(filings.map(async (f) => [f.id, await summaryRequirement(f)] as const)));
   const staffNames = new Map((await prisma.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const years = Array.from(new Set(filings.map((f) => f.taxYear)));
@@ -96,7 +100,7 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
                 <li key={d.id} className="flex flex-wrap items-center gap-2">
                   <span>{d.title}</span>
                   <Badge tone={d.visibility === "PUBLISHED" ? "green" : "gray"}>{d.visibility === "PUBLISHED" ? "Published" : "Staff only"}</Badge>
-                  {(d.visibility !== "PUBLISHED" || approver) && (
+                  {(d.visibility !== "PUBLISHED" || owner) && (
                     <ActionForm action={convertToReturnCopyAction.bind(null, d.id)}><Button type="submit" variant="secondary" className="px-2 py-1 text-xs">Use this file as the return copy</Button></ActionForm>
                   )}
                 </li>
@@ -174,12 +178,12 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
                               {d.filingDocType === "RETURN" && accepted && approver && (d.reviewStatus === "DRAFT" || d.reviewStatus === "AWAITING_REVIEW") && (
                                 <ActionForm action={returnStepAction.bind(null, d.id, "release")} className="ml-1 inline-block"><Button type="submit" variant="gold" className="px-2 py-0.5 text-xs" disabled={d.scanStatus === "INFECTED"}>Send to client</Button></ActionForm>
                               )}
-                              {d.filingDocType && d.filingDocType !== "RETURN" && d.filingDocType !== "FIRM_SUMMARY" && (d.visibility !== "PUBLISHED" || approver) && (
+                              {d.filingDocType && d.filingDocType !== "RETURN" && d.filingDocType !== "FIRM_SUMMARY" && (d.visibility !== "PUBLISHED" || owner) && (
                                 <ActionForm action={convertToReturnCopyAction.bind(null, d.id)} className="ml-1 inline-block" confirm={`Use “${d.title}” as the ${f.taxYear} return copy? It's re-labeled in place (audited).`}>
                                   <Button type="submit" variant="ghost" className="px-2 py-0.5 text-xs" data-testid="ack-is-return">This is the return, not the acknowledgment</Button>
                                 </ActionForm>
                               )}
-                              {(d.visibility !== "PUBLISHED" || approver) && (
+                              {(d.visibility !== "PUBLISHED" || owner) && (
                                 <details className="ml-1 inline-block align-top text-xs" data-testid="fix-filing-doc">
                                   <summary className="cursor-pointer text-slate-600 underline">Misfiled? Fix</summary>
                                   <div className="mt-1 space-y-1 rounded-lg border border-ivory-200 bg-white p-2">
@@ -193,7 +197,7 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
                                       <input className="input w-48" name="reason" placeholder="Why remove it? (e.g. wrong file)" aria-label="Why remove it?" />
                                       <Button type="submit" variant="ghost">Remove</Button>
                                     </ActionForm>
-                                    {approver && filings.length > 1 && (
+                                    {owner && filings.length > 1 && (
                                       <ActionForm action={moveFilingDocAction.bind(null, d.id)} className="flex flex-wrap items-end gap-1">
                                         <select className="input w-auto" name="filingId" defaultValue="" aria-label="Move to filing" required>
                                           <option value="">Move to another filing…</option>
@@ -251,7 +255,7 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
                             <p className="text-xs text-slate-700">{req.approved ? `Client approved the ${f.taxYear} summary (version ${req.approved.version}) — ready for owner filing.` : `No client-approved ${f.taxYear} summary yet. Send the summary for approval first.`}</p>
                             {f.method === "ELECTRONIC" && <label className="mt-2 flex items-start gap-2"><input type="checkbox" name="form8879" className="mt-1 accent-navy-900" /> Signed IRS Form 8879 (and any state e-file authorization) is on file. The summary approval does not replace it.</label>}
                             {!req.approved && <PresetReason className="mt-2" />}
-                            {!approver && <p className="mt-1 text-xs font-semibold text-red-800">Only Tabitha can record a return as submitted.</p>}
+                            {!approver && <p className="mt-1 text-xs font-semibold text-red-800">Only Tabitha, an Admin or the staff member assigned to this client can record a return as submitted.</p>}
                           </div>
                         )}
                         <Field label="Submission ID / reference"><input className="input" name="filingReference" defaultValue={f.filingReference ?? ""} /></Field>
@@ -297,7 +301,7 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
                       <Button type="submit" variant="secondary">Publish status & documents</Button>
                     </ActionForm>
 
-                    {approver && (
+                    {owner && (
                       <details className="text-sm" data-testid="fix-filing">
                         <summary className="cursor-pointer font-semibold underline">Edit filing details (form number, year, state) or remove this filing — Tabitha only</summary>
                         <ActionForm action={editFilingDetailsAction.bind(null, f.id)} className="mt-2 grid gap-2 sm:grid-cols-2" confirm="Save the corrected filing details? The client's portal and document names will show the new details.">

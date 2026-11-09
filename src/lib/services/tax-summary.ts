@@ -8,7 +8,6 @@ import type { PortalActor } from "@/lib/portal/session";
 import { requireClientAccess } from "@/lib/portal/access";
 import { BUSINESS_RETURN } from "@/lib/tax/accepted";
 import { ValidationError } from "./clients";
-import { isReportApprover } from "./bookkeeping-clients";
 import { queuePortalNotification } from "./notifications";
 
 /**
@@ -377,7 +376,8 @@ export async function assertOwnerMaySubmit(
   filing: { clientId: string; taxYear: number; returnType: string; jurisdiction: string; filingType: string; method: string },
   input: { form8879Confirmed: boolean; overrideReason?: string | null },
 ) {
-  if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can authorize and submit a tax return. Record Submitted after she files it in TaxAct.");
+  const { canSendReturns } = await import("./return-senders");
+  if (!(await canSendReturns(actor, filing.clientId))) throw new ForbiddenError("Only Tabitha, an Admin or the staff member assigned to this client can record a return as submitted.");
   if (filing.filingType === "EXTENSION") return { summaryId: null, override: null };
   // A signed 8879 on file that matches the approved summary satisfies this; the checkbox is the fallback.
   if (filing.method === "ELECTRONIC" && !input.form8879Confirmed && !(await (await import("./auto-tax-summary")).signed8879OnFile(filing))) {
