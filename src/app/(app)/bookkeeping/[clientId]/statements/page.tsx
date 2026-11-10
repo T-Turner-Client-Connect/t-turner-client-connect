@@ -14,7 +14,8 @@ import {
 } from "@/app/actions/bookkeeping-clients";
 import { releaseInterimAction, revokeInterimAction, taxClassificationAction } from "@/app/actions/bk-workflow";
 import { clientInterimStatements } from "@/lib/services/client-statements";
-import { BK_DOC_TYPES, bookkeepingWorkspace, FREQUENCIES, isReportApprover, PAYROLL_FREQUENCIES, periodLabel, reportCaption, REVIEW_LABELS, workMonth } from "@/lib/services/bookkeeping-clients";
+import { BK_DOC_TYPES, bookkeepingWorkspace, FREQUENCIES, isReportApprover, PAYROLL_FREQUENCIES, periodLabel, reportCaption, REVIEW_LABELS, STAGES, workMonth } from "@/lib/services/bookkeeping-clients";
+import { chicagoMonth, earlierMonth, statementMonth, statementTabMonths } from "@/lib/bookkeeping-months";
 import { BASIS, PERIOD_TYPES, type PeriodType } from "@/lib/bookkeeping-periods";
 import { accountLabel } from "@/lib/services/bookkeeping-profile";
 import { MONTHS } from "@/lib/services/bookkeeping";
@@ -37,47 +38,76 @@ export default async function StatementsPage({ params, searchParams }: { params:
   const { clientId } = await params;
   const sp = await searchParams;
   if (!(await prisma.client.count({ where: { id: clientId } }))) notFound();
-  const picked = sp.year && sp.month ? await prisma.bookkeepingPeriod.findUnique({ where: { clientId_year_month: { clientId, year: Number(sp.year), month: Number(sp.month) } }, select: { id: true } }).catch(() => null) : null;
+  // ?year&month picks a month; a month with no record yet is shown empty (nothing is created by viewing it).
+  const askedYm = sp.year && sp.month && /^\d{4}$/.test(sp.year) && Number(sp.month) >= 1 && Number(sp.month) <= 12 && Number.isInteger(Number(sp.month)) ? { year: Number(sp.year), month: Number(sp.month) } : null;
+  const picked = askedYm ? await prisma.bookkeepingPeriod.findUnique({ where: { clientId_year_month: { clientId, ...askedYm } }, select: { id: true } }).catch(() => null) : null;
   const [ws, approver, staff] = await Promise.all([
     bookkeepingWorkspace(clientId, picked?.id ?? sp.period),
     isReportApprover(user),
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
   ]);
-  const { client, profile, period, summary } = ws;
+  const { client, profile } = ws;
+  const emptyMonth = askedYm && !picked ? askedYm : null;
+  const period = emptyMonth ? null : ws.period;
+  const summary = emptyMonth ? null : ws.summary;
   const heading = await recordHeading(clientId);
   const biz = heading?.title ?? client.displayName;
   const freq = profile?.frequency ?? "MONTHLY";
   const base = `/bookkeeping/${clientId}`;
-  const target = period ? { year: period.year, month: period.month } : workMonth(freq);
+  const target = period ? { year: period.year, month: period.month } : emptyMonth ?? workMonth(freq);
   const label = periodLabel(freq, target.year, target.month);
   const link = (id: string) => `/api/documents/${downloadToken(id, { staffId: user.id })}`;
   const thisYear = new Date().getFullYear();
-  const [tp, regAccounts, fiscal, interims] = await Promise.all([
+  const [tp, regAccounts, fiscal, interims, book] = await Promise.all([
     taxProfile(clientId),
     prisma.bookkeepingAccount.findMany({ where: { clientId, active: true }, orderBy: { institution: "asc" } }),
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { fiscalYearEnd: true } }),
     clientInterimStatements(clientId),
+    prisma.ledgerBook.findUnique({ where: { clientId }, select: { openingDate: true } }),
   ]);
+  // Every month of the year being viewed, newest first, from January (or the books' first month) through
+  // this month: months with no record yet are listed as empty instead of being skipped.
+  const byYm = new Map(ws.periods.map((p) => [`${p.year}-${p.month}`, p]));
+  const oldest = ws.periods.at(-1);
+  const first = earlierMonth(book?.openingDate ? statementMonth(book.openingDate) : null, oldest ? { year: oldest.year, month: oldest.month } : null);
+  const tabs = statementTabMonths(target.year, { first, records: ws.periods });
+  const years = [...new Set([chicagoMonth().year, target.year, ...ws.periods.map((p) => p.year)])].sort((a, b) => b - a);
+  const lastTab = (y: number) => statementTabMonths(y, { first, records: ws.periods })[0] ?? { year: y, month: 12 };
   const reports = summary?.reports ?? [];
   const waitingTabitha = reports.filter((d) => d.reviewStatus === "AWAITING_REVIEW");
   const files = period?.documents.filter((d) => !(d.category === "BOOKKEEPING" && d.reportType)) ?? [];
 
   return (
     <div className="space-y-5" data-testid="bk-statements">
-      <p className="text-sm"><Link className="underline" href={`${base}${period ? `?period=${period.id}` : ""}`}>← Bookkeeping dashboard</Link></p>
+      <p className="text-sm"><Link className="underline" href={`${base}${period ? `?period=${period.id}` : emptyMonth ? `?year=${emptyMonth.year}&month=${emptyMonth.month}` : ""}`}>← Bookkeeping dashboard</Link></p>
       <section className="rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-5 py-5 text-white ring-1 ring-gold-500/40 sm:px-7">
         <p className="text-xs uppercase tracking-[0.2em] text-gold-300">{biz}</p>
         <h1 className="mt-1 font-serif text-2xl font-bold text-white">Statements &amp; approvals — {label}</h1>
         <p className="mt-1 text-sm text-navy-100">Statements are drafts until Tabitha approves them; nothing reaches the client before she does. Interim statements for lenders are released here too.</p>
-        {ws.periods.length > 0 && (
-          <p className="mt-2 flex flex-wrap gap-2 text-xs">{ws.periods.slice(0, 8).map((p) => <Link key={p.id} href={`${base}/statements?period=${p.id}`} className={clsx("rounded-full px-3 py-1 font-semibold", p.id === period?.id ? "bg-gold-400 text-navy-950" : "bg-white/10 text-white")}>{periodLabel(freq, p.year, p.month)}</Link>)}</p>
+        {years.length > 1 && (
+          <p className="mt-3 flex flex-wrap gap-2 text-xs" data-testid="statement-years">{years.map((y) => { const t = lastTab(y); return <Link key={y} href={`${base}/statements?year=${t.year}&month=${t.month}`} className={clsx("rounded-full px-3 py-1 font-semibold ring-1 ring-white/30", y === target.year ? "bg-white text-navy-950" : "text-white")}>{y}</Link>; })}</p>
+        )}
+        {tabs.length > 0 && (
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-6" data-testid="statement-months">
+            {tabs.map((t) => {
+              const p = byYm.get(`${t.year}-${t.month}`);
+              const n = p?.summary.reports.length ?? 0;
+              const selected = t.year === target.year && t.month === target.month;
+              return (
+                <Link key={`${t.year}-${t.month}`} href={`${base}/statements?year=${t.year}&month=${t.month}`} className={clsx("rounded-lg px-3 py-1.5", selected ? "bg-gold-400 text-navy-950" : "bg-white/10 text-white hover:bg-white/20")} data-testid="statement-month" data-month={`${t.year}-${String(t.month).padStart(2, "0")}`} data-empty={n === 0 ? "true" : undefined} aria-current={selected ? "page" : undefined}>
+                  <span className="block font-semibold">{periodLabel(freq, t.year, t.month)}</span>
+                  <span className={clsx("block", selected ? "text-navy-900" : "text-navy-100")}>{n ? `${n} statement${n === 1 ? "" : "s"} · ${STAGES[p!.summary.stage].label}` : "No statements yet"}</span>
+                </Link>
+              );
+            })}
+          </div>
         )}
       </section>
 
       {/* Statements awaiting Tabitha */}
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="statements-approval">
         <h2 className={h2}><BadgeCheck className="size-5 text-gold-600" aria-hidden /> Financial statements {waitingTabitha.length > 0 && <span className="rounded-full bg-gold-100 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-800">{waitingTabitha.length} awaiting Tabitha</span>}</h2>
-        {!period ? <p className="mt-2 text-sm text-slate-600">Open the month to prepare statements.</p> : !reports.length ? <p className="mt-2 text-sm text-slate-600">No statements uploaded for {label} yet.</p> : (
+        {!period ? <p className="mt-2 text-sm text-slate-600">No statements yet for {label}.</p> : !reports.length ? <p className="mt-2 text-sm text-slate-600">No statements uploaded for {label} yet.</p> : (
           <ul className="mt-2 divide-y divide-ivory-200" data-testid="reports">
             {reports.map((d) => {
               const status = d.visibility === "PUBLISHED" ? "DELIVERED" : d.reviewStatus ?? "DRAFT";
