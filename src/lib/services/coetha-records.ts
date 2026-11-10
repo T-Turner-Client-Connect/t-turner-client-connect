@@ -169,17 +169,14 @@ async function accountForLine(clientId: string, line: PackageLine) {
 }
 
 /**
- * "Prepare from completed statements": drafts a category for every waiting transaction Coetha can
- * match to the completed package. Nothing is posted. Returns what was matched and what wasn't.
+ * The matching itself, read-only: every bank transaction in the statement months (posted or not)
+ * grouped by vendor and month, and the vendors that equal a statement line to the cent. Used by
+ * "Prepare from completed statements" and to show what a reversed row would be prepared as.
  */
-export async function prepareFromRecords(actor: Actor, clientId: string) {
-  await assertLedgerWrite(actor, clientId);
-  await assertCoethaAllowed(clientId);
-  const ref = await latestReference(clientId);
-  if (!ref) throw new ValidationError("Add the business's completed financial statements first.");
+async function matchingState(clientId: string, ref: NonNullable<Awaited<ReturnType<typeof latestReference>>>) {
   const banks = await prisma.ledgerAccount.findMany({ where: { clientId, subtype: { in: ["BANK", "CREDIT_CARD"] }, active: true }, select: { id: true } });
   const bankIds = banks.map((b) => b.id);
-  if (!bankIds.length) throw new ValidationError("This business has no bank account in its books yet.");
+  if (!bankIds.length) return null;
   const periods = await statementMonths(clientId, bankIds, ref.months);
   const n = ref.months.length;
   const monthOf = (d: string) => periods.findIndex((p) => d >= p.from && d <= p.to);
@@ -205,6 +202,21 @@ export async function prepareFromRecords(actor: Actor, clientId: string) {
   for (const [i, keys] of matched) for (const k of keys) lineOfVendor.set(`${ref.lines[i].section === "INCOME" ? "IN" : "OUT"}|${k}`, i);
   const byFirst = new Map<string, Set<number>>();
   for (const [vk, i] of lineOfVendor) { const [dir, k] = vk.split("|"); const f = `${dir}|${firstWord(k)}`; if (!GENERIC_FIRST.has(firstWord(k))) byFirst.set(f, (byFirst.get(f) ?? new Set()).add(i)); }
+  return { bankIds, periods, n, monthOf, all, active, matched, lineOfVendor, byFirst };
+}
+
+/**
+ * "Prepare from completed statements": drafts a category for every waiting transaction Coetha can
+ * match to the completed package. Nothing is posted. Returns what was matched and what wasn't.
+ */
+export async function prepareFromRecords(actor: Actor, clientId: string) {
+  await assertLedgerWrite(actor, clientId);
+  await assertCoethaAllowed(clientId);
+  const ref = await latestReference(clientId);
+  if (!ref) throw new ValidationError("Add the business's completed financial statements first.");
+  const st = await matchingState(clientId, ref);
+  if (!st) throw new ValidationError("This business has no bank account in its books yet.");
+  const { bankIds, n, monthOf, all, active, matched, lineOfVendor, byFirst } = st;
 
   const mapping: Mapping = {};
   const accountOf = new Map<number, string>();
@@ -357,33 +369,80 @@ export async function judgmentDraftIds(clientId: string, line?: string) {
 
 /**
  * Transactions an earlier version posted inside the statement months by the "same vendor family"
- * shortcut (which now only applies after those months). Their entries can be reversed so the rows
- * go back to waiting and are prepared again correctly.
+ * shortcut (which now only applies after those months). Read-only: each is listed with its date,
+ * bank description, amount, the account it is on now, and what Coetha would prepare it as if it
+ * were reversed (the account matching the completed statements to the cent, or "Needs your
+ * judgment" when there is no exact match or the matching line has an accounting question).
+ * Nothing changes until Tabitha approves the reversal of exactly these entries.
  */
-export async function familyPostingsToUndo(clientId: string) {
+export type FamilyPosting = {
+  entryId: string; date: string; description: string; amountCents: number; bankAccount: string;
+  currentAccount: string; proposedAccount: string | null; needsJudgment: boolean; why: string;
+};
+
+export async function familyPostingsToUndo(clientId: string): Promise<FamilyPosting[]> {
   const ref = await latestReference(clientId);
   if (!ref) return [];
   const banks = await prisma.ledgerAccount.findMany({ where: { clientId, subtype: { in: ["BANK", "CREDIT_CARD"] } }, select: { id: true } });
   const periods = await statementMonths(clientId, banks.map((b) => b.id), ref.months);
   const first = periods[0]?.from, last = periods[periods.length - 1]?.to;
-  const rows = await prisma.coethaProposal.findMany({ where: { clientId, status: "APPROVED", kind: "CATEGORY", model: RECORDS_MODEL, reason: { contains: "same vendor family" }, journalEntryId: { not: null } }, select: { id: true, journalEntryId: true, payload: true } });
-  const ids = rows.filter((r) => { const d = (r.payload as { date?: string }).date ?? ""; return first && d >= first && d <= last; }).map((r) => r.journalEntryId!);
-  if (!ids.length) return [];
-  const live = await prisma.journalEntry.findMany({ where: { clientId, id: { in: ids }, reversedBy: null }, select: { id: true, date: true } });
-  return live.map((e) => ({ entryId: e.id, date: ymdOf(e.date) }));
+  const rows = await prisma.coethaProposal.findMany({ where: { clientId, status: "APPROVED", kind: "CATEGORY", model: RECORDS_MODEL, reason: { contains: "same vendor family" }, journalEntryId: { not: null } }, select: { id: true, journalEntryId: true, payload: true, bankTransactionId: true } });
+  const inMonths = rows.filter((r) => { const d = (r.payload as { date?: string }).date ?? ""; return first && d >= first && d <= last; });
+  if (!inMonths.length) return [];
+  const live = await prisma.journalEntry.findMany({
+    where: { clientId, id: { in: inMonths.map((r) => r.journalEntryId!) }, reversedBy: null },
+    select: { id: true, date: true, lines: { select: { accountId: true, account: { select: { code: true, name: true } } } } },
+    orderBy: [{ date: "asc" }, { id: "asc" }],
+  });
+  if (!live.length) return [];
+  const bankSet = new Set(banks.map((b) => b.id));
+  const byEntry = new Map(inMonths.map((r) => [r.journalEntryId!, r]));
+  const txns = new Map((await prisma.bankTransaction.findMany({ where: { clientId, id: { in: inMonths.map((r) => r.bankTransactionId).filter((x): x is string => !!x) } }, select: { id: true, description: true, amountCents: true, account: { select: { name: true } } } })).map((t) => [t.id, t]));
+  const st = await matchingState(clientId, ref);
+  const out: FamilyPosting[] = [];
+  for (const e of live) {
+    const r = byEntry.get(e.id)!;
+    const pl = r.payload as { description?: string; amountCents?: number; bankAccountName?: string };
+    const t = r.bankTransactionId ? txns.get(r.bankTransactionId) : undefined;
+    const description = t?.description ?? pl.description ?? "";
+    const amountCents = t?.amountCents ?? pl.amountCents ?? 0;
+    const currentAccount = e.lines.filter((l) => !bankSet.has(l.accountId)).map((l) => `${l.account.code} ${l.account.name}`).join(", ");
+    // What "Prepare from completed statements" would do with this row once it is waiting again.
+    const i = st?.lineOfVendor.get(`${amountCents > 0 ? "IN" : "OUT"}|${vendorKey(description)}`);
+    let proposedAccount: string | null = null, needsJudgment = true, why: string;
+    if (i === undefined) {
+      why = "No vendor in the completed statements matches it to the cent, so it would wait for your decision.";
+    } else {
+      const line = ref.lines[i];
+      const acct = await prisma.ledgerAccount.findFirst({ where: { clientId, type: line.section === "INCOME" ? "INCOME" : "EXPENSE", name: { equals: line.label, mode: "insensitive" } }, select: { code: true, name: true } });
+      proposedAccount = acct ? `${acct.code} ${acct.name}` : `${line.label} (new account named like the statement line)`;
+      needsJudgment = JUDGMENT.test(line.label);
+      why = needsJudgment ? `Matches “${line.label}” to the cent, but that line's treatment needs your confirmation.` : `Matches “${line.label}” in your completed statements to the cent.`;
+    }
+    out.push({ entryId: e.id, date: ymdOf(e.date), description, amountCents, bankAccount: t?.account.name ?? pl.bankAccountName ?? "Bank", currentAccount, proposedAccount, needsJudgment, why });
+  }
+  return out;
 }
 
-export async function undoFamilyPostings(actor: Actor, clientId: string) {
+/**
+ * Reverses exactly the family postings Tabitha reviewed (their entry ids, as listed). If the list
+ * has changed since she looked, nothing is reversed. Each reversal is a new entry; the original,
+ * its approval and the audit history stay as they were.
+ */
+export async function undoFamilyPostings(actor: Actor, clientId: string, reviewedEntryIds: string[]) {
   const { assertCanApproveCoethaWork } = await import("@/lib/auth/permissions");
   await assertCanApproveCoethaWork(actor);
   await assertLedgerWrite(actor, clientId);
   const { reverseEntry } = await import("./ledger");
   const list = await familyPostingsToUndo(clientId);
+  const reviewed = new Set(reviewedEntryIds);
+  if (!list.length) return 0;
+  if (list.length !== reviewed.size || list.some((e) => !reviewed.has(e.entryId))) throw new ValidationError("The list of postings changed since it was shown. Review it again before reversing.");
   let done = 0;
   for (const e of list) {
     await reverseEntry(actor, clientId, e.entryId, { date: e.date, reason: "Coetha matched this by vendor family inside the statement months; reversed so it is prepared again correctly." });
     done++;
   }
-  await audit(prisma, { actorId: actor.id, action: "coetha.family_postings_undone", entityType: "LedgerBook", entityId: clientId, clientId, details: { reversed: done } });
+  await audit(prisma, { actorId: actor.id, action: "coetha.family_postings_undone", entityType: "LedgerBook", entityId: clientId, clientId, details: { reversed: done, entries: list.map((e) => ({ entryId: e.entryId, date: e.date, amountCents: e.amountCents, from: e.currentAccount, proposed: e.proposedAccount, needsJudgment: e.needsJudgment })) } });
   return done;
 }

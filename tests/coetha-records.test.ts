@@ -183,9 +183,20 @@ describe("Coetha prepares the books from a business's completed financial statem
     const run = await prisma.coethaRun.findFirstOrThrow({ where: { clientId: w.biz.id, model: "records" } });
     const draft = await prisma.coethaProposal.create({ data: { clientId: w.biz.id, runId: run.id, kind: "CATEGORY", bankTransactionId: outlet.id, confidence: 0.9, reason: "“Supplies — Flour & Sugar” — same vendor family as in your completed statements (2026-01 to 2026-03).", model: "records", inputHash: "x", payload: { bankTransactionId: outlet.id, date: "2026-02-14", amountCents: -1853, description: outlet.description, bankAccountName: "Bank", accountId: supplies.id, accountCode: supplies.code, accountName: supplies.name, fromRecords: true, needsJudgment: false, referenceLine: supplies.name } } });
     await decideCoethaProposals(w.tabitha, w.biz.id, "APPROVE", [{ id: draft.id }]);
-    expect(await familyPostingsToUndo(w.biz.id)).toHaveLength(1);
-    await expect(undoFamilyPostings(w.staff, w.biz.id)).rejects.toBeInstanceOf(ForbiddenError);
-    expect(await undoFamilyPostings(w.tabitha, w.biz.id)).toBe(1);
+    // Read-only detail for review: date, bank description, amount, account now, proposed account.
+    const before = { entries: await prisma.journalEntry.count(), lines: await prisma.journalLine.count(), proposals: await prisma.coethaProposal.count({ where: { status: "APPROVED" } }), audits: await prisma.auditLog.count() };
+    const list = await familyPostingsToUndo(w.biz.id);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ date: "2026-02-14", description: "MILL OUTLET STORE", amountCents: -1853, currentAccount: `${supplies.code} Supplies — Flour & Sugar`, proposedAccount: null, needsJudgment: true });
+    expect(list[0].why).toMatch(/No vendor in the completed statements matches it/);
+    // Showing it changes nothing.
+    expect({ entries: await prisma.journalEntry.count(), lines: await prisma.journalLine.count(), proposals: await prisma.coethaProposal.count({ where: { status: "APPROVED" } }), audits: await prisma.auditLog.count() }).toEqual(before);
+    await expect(undoFamilyPostings(w.staff, w.biz.id, [list[0].entryId])).rejects.toBeInstanceOf(ForbiddenError);
+    // Only exactly the entries that were reviewed: a missing or different list reverses nothing.
+    await expect(undoFamilyPostings(w.tabitha, w.biz.id, [])).rejects.toThrow(/changed since it was shown/);
+    await expect(undoFamilyPostings(w.tabitha, w.biz.id, ["some-other-entry"])).rejects.toThrow(/changed since it was shown/);
+    expect(await prisma.journalEntry.count()).toBe(before.entries);
+    expect(await undoFamilyPostings(w.tabitha, w.biz.id, [list[0].entryId])).toBe(1);
     expect((await prisma.bankTransaction.findUniqueOrThrow({ where: { id: outlet.id } })).status).toBe("UNREVIEWED");
     expect(await familyPostingsToUndo(w.biz.id)).toHaveLength(0);
     // History is kept: the original entry and its reversal both remain, with the reason and who did it.
@@ -195,7 +206,7 @@ describe("Coetha prepares the books from a business's completed financial statem
     expect(await prisma.auditLog.count({ where: { clientId: w.biz.id, action: "coetha.family_postings_undone" } })).toBe(1);
     expect((await prisma.coethaProposal.findUniqueOrThrow({ where: { id: draft.id } })).status).toBe("APPROVED");
     // Undoing again does nothing (no double reversal).
-    expect(await undoFamilyPostings(w.tabitha, w.biz.id)).toBe(0);
+    expect(await undoFamilyPostings(w.tabitha, w.biz.id, [list[0].entryId])).toBe(0);
     // Posting the row again leaves exactly one live posting for it: original + reversal + new = net one.
     const other = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, code: "6300" } });
     const { categorizeBankTransaction } = await import("@/lib/services/ledger");
@@ -223,5 +234,21 @@ describe("Coetha prepares the books from a business's completed financial statem
     await decideCoethaProposals(w.tabitha, w.biz.id, "APPROVE", (await matchingDraftIds(w.biz.id)).map((id) => ({ id })));
     const cmp = (await compareWithReference(w.tabitha, w.biz.id))!;
     expect(cmp.months.map((m) => m.agrees)).toEqual([true, true, true]);
+  });
+
+  it("a family posting whose vendor matches a statement line to the cent shows that account as the proposal", async () => {
+    const w = await world();
+    await saveReferenceStatements(w.tabitha, w.biz.id, { bytes: await pdf(PACKAGE), originalName: "willow-q1.pdf" });
+    await prepareFromRecords(w.tabitha, w.biz.id);
+    // A row of a matched vendor (Bank Service Charges) that an earlier version posted elsewhere by vendor family.
+    const fee = await prisma.bankTransaction.findFirstOrThrow({ where: { clientId: w.biz.id, description: "MONTHLY SERVICE FEE", date: new Date("2026-01-31T00:00:00Z") } });
+    const supplies = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, name: "Supplies — Flour & Sugar" } });
+    const bankFees = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, name: "Bank Service Charges" } });
+    await prisma.coethaProposal.updateMany({ where: { bankTransactionId: fee.id, status: "PROPOSED" }, data: { status: "SUPERSEDED" } });
+    const run = await prisma.coethaRun.findFirstOrThrow({ where: { clientId: w.biz.id, model: "records" } });
+    const d = await prisma.coethaProposal.create({ data: { clientId: w.biz.id, runId: run.id, kind: "CATEGORY", bankTransactionId: fee.id, confidence: 0.9, reason: "“Supplies — Flour & Sugar” — same vendor family as in your completed statements (2026-01 to 2026-03).", model: "records", inputHash: "x", payload: { bankTransactionId: fee.id, date: "2026-01-31", amountCents: -1000, description: fee.description, bankAccountName: "Bank", accountId: supplies.id, accountCode: supplies.code, accountName: supplies.name, fromRecords: true, needsJudgment: false, referenceLine: supplies.name } } });
+    await decideCoethaProposals(w.tabitha, w.biz.id, "APPROVE", [{ id: d.id }]);
+    const [f] = await familyPostingsToUndo(w.biz.id);
+    expect(f).toMatchObject({ date: "2026-01-31", amountCents: -1000, currentAccount: `${supplies.code} Supplies — Flour & Sugar`, proposedAccount: `${bankFees.code} Bank Service Charges`, needsJudgment: false });
   });
 });
