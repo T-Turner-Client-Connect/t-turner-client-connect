@@ -160,8 +160,11 @@ const CHAT_SEARCH_BUDGET_MS = 35_000;
 
 /** An API failure as the plain-language error staff see. */
 function chatError(err: unknown, model: string): CoethaModelError {
+  // The service's own reason goes to the server log (no client data is in it) so a refusal can be traced.
+  if (err instanceof Anthropic.APIError) console.error(`coetha: AI service HTTP ${err.status ?? "?"}: ${String(err.message).slice(0, 300)}`);
   if (err instanceof Anthropic.AuthenticationError) return new CoethaModelError("The Anthropic API key was refused. Check ANTHROPIC_API_KEY in Netlify.", "AUTH");
-  if (err instanceof Anthropic.PermissionDeniedError) return new CoethaModelError("The Anthropic API key isn't allowed to use this model.", "PERMISSION");
+  // On this site requests go through Netlify's AI Gateway, which also answers 403 when it refuses a request (for example a usage limit).
+  if (err instanceof Anthropic.PermissionDeniedError) return new CoethaModelError("The AI service refused the request (403). If it keeps happening, check the AI Gateway usage and limits in Netlify; the reason is in the site's function log.", "PERMISSION");
   if (err instanceof Anthropic.NotFoundError) return new CoethaModelError(`The model "${model}" wasn't found. Check COETHA_MODEL.`, "MODEL");
   if (err instanceof Anthropic.RateLimitError) return new CoethaModelError("Anthropic's rate limit was reached. Try again in a few minutes.", "RATE_LIMIT");
   if (err instanceof Anthropic.BadRequestError) return new CoethaModelError("Anthropic rejected the request.", "BAD_REQUEST");
@@ -223,7 +226,7 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], to
         output_config: { effort: "low" },
         system,
         messages,
-        ...(tools ? { tools: tools.defs, tool_choice: mayUseTools ? { type: "auto" as const } : { type: "none" as const } } : {}),
+        ...(tools?.defs.length ? { tools: tools.defs, tool_choice: mayUseTools ? { type: "auto" as const } : { type: "none" as const } } : {}),
       });
     } catch (err) {
       throw chatError(err, model);
@@ -293,4 +296,107 @@ export async function callStatementReader(lines: string[], period: string | null
   if (msg.stop_reason === "max_tokens") throw new CoethaModelError("The statement has too many transactions to read at once.", "MAX_TOKENS");
   if (!msg.parsed_output) throw new CoethaModelError("The statement's transactions weren't returned in the expected format.", "PARSE");
   return { output: msg.parsed_output, model: msg.model || model, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0 };
+}
+
+// --- Reading documents (background) -------------------------------------------------------------
+
+export const DocumentFindings = z.object({
+  items: z.array(z.object({
+    page: z.number().int().describe("Page number within the pages sent, starting at 1"),
+    kind: z.enum(["CHECK", "DEPOSIT", "RECEIPT", "INVOICE", "STATEMENT", "OTHER"]),
+    checkNumber: z.string().nullable().describe("Check number as printed, digits only; null if not a check"),
+    date: z.string().nullable().describe("Date written on the item, YYYY-MM-DD; null if none"),
+    payee: z.string().nullable().describe("Pay to the order of / vendor / from whom; null if none"),
+    amount: z.number().nullable().describe("Amount in dollars as written; null if unreadable"),
+    memo: z.string().nullable().describe("Memo or purpose line; null if blank"),
+    details: z.string().nullable().describe("Anything else useful: endorsement or deposit stamp (bank and date), void, blank page, unreadable parts. Never account or routing numbers."),
+  })),
+});
+export type DocumentFindingsT = z.infer<typeof DocumentFindings>;
+
+const DOCUMENT_SYSTEM = `You read scanned pages for a bookkeeping firm: check images (front and back), deposit slips, receipts, invoices and statements. For every item on every page, return one entry with its page number (1 = the first page you were sent), the kind of item, and what is written: check number, date, payee, amount, memo, and other useful details such as an endorsement or a bank deposit stamp with its date, "void", or "blank page".
+Rules:
+- Copy numbers and names exactly as written; if something is unreadable, use null and say so in details. Never guess.
+- Never output a full bank account number or routing number. If one matters, give only its last 4 digits (for example "account ending 9432").
+- Never describe or transcribe signatures beyond "signed" or "not signed". Never output Social Security or tax ID numbers.
+- A blank page gets one entry: kind OTHER, details "blank page".`;
+
+/**
+ * Reads one small batch of pages (a PDF of a few pages, or one picture) and returns what is on
+ * them as structured items. Read-only: no tools. Tests replace global fetch.
+ */
+export async function callDocumentReader(file: CoethaChatFile & { mediaType: string; base64: string }, opts: { timeoutMs?: number } = {}): Promise<{ output: DocumentFindingsT; inputTokens: number; outputTokens: number; model: string }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
+  const model = coethaModel();
+  const client = new Anthropic({ apiKey, maxRetries: 0, timeout: opts.timeoutMs ?? 120_000 });
+  const block: Anthropic.Beta.BetaContentBlockParam = file.mediaType === "application/pdf"
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: file.base64 } }
+    : { type: "image", source: { type: "base64", media_type: file.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: file.base64 } };
+  let msg;
+  try {
+    msg = await client.beta.messages.parse({
+      model,
+      max_tokens: 8000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low", format: betaZodOutputFormat(DocumentFindings) },
+      system: DOCUMENT_SYSTEM,
+      messages: [{ role: "user", content: [block, { type: "text", text: "List every item on these pages." }] }],
+    });
+  } catch (err) {
+    throw chatError(err, model);
+  }
+  if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to read these pages.", "REFUSAL");
+  if (msg.stop_reason === "max_tokens") throw new CoethaModelError("These pages hold too many items to read at once.", "MAX_TOKENS");
+  if (!msg.parsed_output) throw new CoethaModelError("The pages weren't returned in the expected format.", "PARSE");
+  return { output: msg.parsed_output, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0, model: msg.model || model };
+}
+
+// --- Reviewing what was read (groups and proposed accounts; proposals only) -------------------------
+
+export const FindingsReview = z.object({
+  items: z.array(z.object({
+    ref: z.string().describe("The item's ref (F1, F2, ...) exactly as given"),
+    group: z.enum(["ROUTINE", "NEEDS_DOCS", "OWNER_PERSONAL"]),
+    proposedAccount: z.string().nullable().describe("Account code from the chart of accounts, or null if you can't propose one"),
+    reason: z.string().describe("One or two short sentences: why this account and group, and what is uncertain"),
+    evidenceNeeded: z.string().nullable().describe("What would settle it (for example: invoice, receipt, owner confirmation); null when nothing is needed"),
+    confidence: z.number().describe("0 to 1"),
+  })),
+});
+export type FindingsReviewT = z.infer<typeof FindingsReview>;
+
+const REVIEW_SYSTEM = `You are Coetha, the Senior Accountant AI of a bookkeeping firm. You review items read from one small business's documents (mostly checks), each already matched (or not) to the business's bank rows. For EVERY item, return its ref with:
+- group: ROUTINE (an ordinary business payment whose payee and purpose make the account clear), NEEDS_DOCS (purpose or account can't be confirmed without an invoice, receipt or explanation), or OWNER_PERSONAL (paid to or for an owner or a family member, or otherwise personal: draws, distributions, loans to or from owners or family).
+- proposedAccount: one account code from the chart of accounts (or null).
+- reason: short and specific; say plainly what is uncertain. Never invent facts.
+- evidenceNeeded: what would settle it, or null.
+- confidence: 0 to 1.
+The owners' names are listed; a payee sharing an owner's last name may be family and belongs in OWNER_PERSONAL unless the item clearly shows a business purpose. You propose only; nothing is posted or approved. Use only the data given.`;
+
+/** Reviews up to ~25 items at a time (small enough never to be cut off). Read-only: no tools. */
+export async function callFindingsReviewer(input: unknown, opts: { timeoutMs?: number } = {}): Promise<{ output: FindingsReviewT; inputTokens: number; outputTokens: number }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
+  const model = coethaModel();
+  const client = new Anthropic({ apiKey, maxRetries: 0, timeout: opts.timeoutMs ?? 120_000 });
+  let msg;
+  try {
+    msg = await client.beta.messages.parse({
+      model,
+      max_tokens: 8000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low", format: betaZodOutputFormat(FindingsReview) },
+      system: REVIEW_SYSTEM,
+      messages: [{ role: "user", content: `Items to review (JSON):\n${JSON.stringify(input)}` }],
+    });
+  } catch (err) {
+    throw chatError(err, model);
+  }
+  if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to review these items.", "REFUSAL");
+  if (msg.stop_reason === "max_tokens") throw new CoethaModelError("The review was too long for one step.", "MAX_TOKENS");
+  if (!msg.parsed_output) throw new CoethaModelError("The review wasn't returned in the expected format.", "PARSE");
+  return { output: msg.parsed_output, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0 };
 }

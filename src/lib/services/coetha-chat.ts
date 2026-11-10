@@ -72,7 +72,7 @@ const SHOWN = 60;
 export const COETHA_CHAT_PRIVACY =
   "When you ask Coetha a question, your question and this business's bookkeeping data (transaction dates, amounts, shortened descriptions and account names) are sent to Anthropic's API (Claude) under the firm's own API key. Long numbers are shortened to the last 4 digits, and SSNs, EINs, emails and phone numbers are removed first. From a PDF with text (a bank statement, an invoice), its text is sent with long numbers shortened to the last 4 digits; a picture or a scanned PDF is sent as it is (a check image shows the account and routing numbers printed on it). Every file is kept as a staff-only document for this business. The conversation is saved in Client Connect for this business only.";
 
-async function takeLock(name: string, seconds: number) {
+export async function takeLock(name: string, seconds: number) {
   const now = new Date();
   const until = new Date(now.getTime() + seconds * 1000);
   const got = await prisma.jobLock.updateMany({ where: { name, lockedUntil: { lt: now } }, data: { lockedUntil: until, runId: randomUUID() } });
@@ -84,7 +84,7 @@ async function takeLock(name: string, seconds: number) {
     return false;
   }
 }
-const releaseLock = (name: string) => prisma.jobLock.update({ where: { name }, data: { lockedUntil: new Date(0), runId: null } }).catch(() => {});
+export const releaseLock = (name: string) => prisma.jobLock.update({ where: { name }, data: { lockedUntil: new Date(0), runId: null } }).catch(() => {});
 
 /** The question as it is stored and sent: trimmed, length-checked and de-identified. */
 export function cleanQuestion(q: string): string {
@@ -160,6 +160,39 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
   }
 }
 
+/** The same switches as a question: Coetha on, the API key present, and the client hasn't opted out. */
+export async function assertCanAsk(clientId: string) {
+  await assertCoethaAllowed(clientId);
+  if (!(await coethaOn())) throw new ValidationError(COETHA_OFF);
+  if (!coethaKeyPresent()) throw new ValidationError(COETHA_NO_KEY);
+}
+
+/**
+ * Answers a question that waited for its documents to be read in the background (coetha-reading):
+ * the same books, records and read-only search as any question, plus what Coetha read from the
+ * documents. The answer is placed right after the question in the thread. With quick: true (a
+ * worker with little time left) Coetha answers without searching.
+ */
+export async function answerQuestion(asker: Actor, clientId: string, questionId: string, documentsRead: string, opts: { quick?: boolean } = {}) {
+  await assertLedger(asker, clientId);
+  await assertCanAsk(clientId);
+  const question = await prisma.coethaChatMessage.findFirstOrThrow({ where: { id: questionId, clientId, role: "USER" } });
+  const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId, createdAt: { lt: question.createdAt } }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true, attachmentName: true, attachments: true } })).reverse();
+  const built = await buildCoethaInput(asker, clientId);
+  const { toCategorize: _batch, recentPosted: _recent, ...books } = built.input;
+  void _batch; void _recent;
+  const records = await recordsSnapshot(asker, clientId);
+  const names = (m: { attachmentName: string | null; attachments: unknown }) => (Array.isArray(m.attachments) ? (m.attachments as { name: string }[]).map((a) => a.name) : m.attachmentName ? [m.attachmentName] : []);
+  const turns: CoethaChatTurn[] = [
+    ...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })),
+    { role: "user", text: `${question.text}\n\nWhat you read from the attached documents (read page by page; each item is matched to the bank rows where possible):\n${documentsRead}` },
+  ];
+  const res = await callCoethaChat(books, turns, opts.quick ? { defs: [], run: async () => ({}), records } : { defs: RECORDS_TOOLS, run: (name, input) => runRecordsTool(clientId, name, input), records });
+  const answered = await prisma.coethaChatMessage.create({ data: { clientId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(question.createdAt.getTime() + 1) } });
+  await audit(prisma, { actorId: asker.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId, background: true, searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
+  return answered;
+}
+
 /** The conversation for one business (newest SHOWN messages, oldest first), for staff who can open its books. */
 export async function coethaChatView(actor: Actor, clientId: string) {
   await assertLedger(actor, clientId);
@@ -171,6 +204,6 @@ export async function coethaChatView(actor: Actor, clientId: string) {
   ]);
   const people = await prisma.user.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.authorId).filter((x): x is string => !!x))] } }, select: { id: true, name: true } });
   const nameOf = new Map(people.map((u) => [u.id, u.name]));
-  const messages = rows.reverse().map((m) => ({ id: m.id, role: m.role as "USER" | "COETHA", text: m.text, createdAt: m.createdAt, author: m.role === "USER" ? (m.authorId ? nameOf.get(m.authorId) ?? "Staff" : "Staff") : "Coetha", attachments: Array.isArray(m.attachments) ? (m.attachments as { documentId: string; name: string }[]) : m.attachmentName ? [{ documentId: m.documentId ?? "", name: m.attachmentName }] : [] }));
+  const messages = rows.reverse().map((m) => ({ id: m.id, role: m.role as "USER" | "COETHA", text: m.text, createdAt: m.createdAt, author: m.role === "USER" ? (m.authorId ? nameOf.get(m.authorId) ?? "Staff" : "Staff") : "Coetha", attachments: Array.isArray(m.attachments) ? (m.attachments as { documentId: string; name: string }[]) : m.attachmentName ? [{ documentId: m.documentId ?? "", name: m.attachmentName }] : [], status: m.status, jobIds: Array.isArray(m.jobIds) ? (m.jobIds as string[]) : [] }));
   return { status, hasBook: !!book, optedOut: !!optOut, messages, canAsk: status.ready && !!book && !optOut };
 }
