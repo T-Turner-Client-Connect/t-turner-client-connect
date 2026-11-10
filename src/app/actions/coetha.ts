@@ -129,6 +129,18 @@ export async function retryReadingAction(clientId: string, jobId: string, _prev:
   });
 }
 
+/** "Summarize again": a new short answer from what Coetha already read. Nothing is uploaded or read again. */
+export async function summarizeAgainAction(clientId: string, messageId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { summarizeAgain, kickBackgroundReading } = await import("@/lib/services/coetha-reading");
+    await summarizeAgain(actor, clientId, messageId);
+    await kickBackgroundReading();
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    return "Coetha is writing a new summary from what she already read.";
+  });
+}
+
 // --- Preparing from the business's completed financial statements ----------------------------------
 
 /** Keeps the completed financial statements on file and reads their monthly P&L lines. */

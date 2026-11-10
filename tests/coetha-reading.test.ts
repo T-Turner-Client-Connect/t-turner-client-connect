@@ -6,7 +6,8 @@ import { createClient } from "@/lib/services/clients";
 import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { coethaChatView } from "@/lib/services/coetha-chat";
-import { askAboutDocuments, finishUpload, MAX_ATTEMPTS, putChunk, readingView, retryJob, startUpload, workOnce, workReading } from "@/lib/services/coetha-reading";
+import { askAboutDocuments, findingsSheet, finishUpload, MAX_ATTEMPTS, putChunk, readingView, retryJob, startUpload, summarizeAgain, workOnce, workReading } from "@/lib/services/coetha-reading";
+import { ValidationError } from "@/lib/services/clients";
 
 // Fictional businesses, checks and scans only. A local stand-in for Anthropic's Messages API:
 // the document reader reports one check per page, numbered from the page's own width (each
@@ -15,12 +16,14 @@ type Req = { system: unknown; messages: { role: string; content: unknown }[] };
 let readerCalls: number[][] = [];
 let chatCalls: Req[] = [];
 let failReads = 0;
+let reviewCalls: string[][] = [];
+let failReviews = 0;
 const PNG = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
 const reply = (body: unknown) => new Response(JSON.stringify({ id: "msg_f", type: "message", role: "assistant", model: "claude-test", stop_sequence: null, usage: { input_tokens: 500, output_tokens: 80 }, ...(body as object) }), { status: 200, headers: { "content-type": "application/json", "request-id": "req_f" } });
 
 beforeEach(async () => {
   await resetDb();
-  readerCalls = []; chatCalls = []; failReads = 0;
+  readerCalls = []; chatCalls = []; failReads = 0; reviewCalls = []; failReviews = 0;
   process.env.ANTHROPIC_API_KEY = "sk-ant-test-fictional-key";
   process.env.COETHA_TEST_CHUNK = "512";
   vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -34,6 +37,21 @@ beforeEach(async () => {
       const pages = pdf.getPages().map((p) => Math.round(p.getWidth()) - 600);
       readerCalls.push(pages);
       const items = pages.map((n, i) => ({ page: i + 1, kind: "CHECK", checkNumber: String(1040 + n), date: "2026-10-05", payee: `Fictional Payee ${n}`, amount: n === 3 ? 580.85 : 100 + n, memo: n === 1 ? "pay back" : null, details: n === 2 ? "account 0000123456789, routing 062000019, deposited 10/23/26" : null }));
+      return reply({ content: [{ type: "text", text: JSON.stringify({ items }) }], stop_reason: "end_turn" });
+    }
+    if (String(JSON.stringify(req.system)).includes("You review items read")) {
+      // The reviewer: a "pay back" memo is an owner/family item, the $580.85 check needs documents,
+      // everything else is routine office supplies.
+      if (failReviews > 0) { failReviews--; return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "overloaded" } }), { status: 529, headers: { "content-type": "application/json" } }); }
+      const text = String(req.messages[0].content);
+      const input = JSON.parse(text.slice(text.indexOf("{"))) as { chartOfAccounts: string[]; owners: string[]; items: { ref: string; amount: number | null; memo: string | null }[] };
+      reviewCalls.push(input.items.map((i) => i.ref));
+      const draw = input.chartOfAccounts.find((a) => /draw/i.test(a))?.split(" ")[0] ?? null;
+      const items = input.items.map((i) => i.memo === "pay back"
+        ? { ref: i.ref, group: "OWNER_PERSONAL", proposedAccount: draw, reason: "Memo says pay back; looks like a repayment to a family member.", evidenceNeeded: "Owner confirmation of who was repaid", confidence: 0.6 }
+        : i.amount === 580.85
+          ? { ref: i.ref, group: "NEEDS_DOCS", proposedAccount: null, reason: "The payee's purpose isn't clear from the check.", evidenceNeeded: "Receipt or invoice", confidence: 0.3 }
+          : { ref: i.ref, group: "ROUTINE", proposedAccount: "6300", reason: "Regular supplier.", evidenceNeeded: null, confidence: 0.9 });
       return reply({ content: [{ type: "text", text: JSON.stringify({ items }) }], stop_reason: "end_turn" });
     }
     chatCalls.push(req);
@@ -108,7 +126,8 @@ describe("Coetha reads documents in the background", () => {
     const v = await coethaChatView(s.daria, s.willow.id);
     expect(v.messages.map((m) => m.role)).toEqual(["USER", "COETHA"]);
     expect(v.messages[0].status).toBe("ANSWERED");
-    expect(JSON.stringify(chatCalls[0].messages)).toContain("p3 CHECK #1043 2026-10-05 payee: Fictional Payee 3 $580.85");
+    expect(JSON.stringify(chatCalls[0].messages)).toContain("#1043 2026-10-05 Fictional Payee 3 $580.85");
+    expect(JSON.stringify(chatCalls[0].messages)).toContain("Do NOT list every check");
     expect(JSON.stringify(chatCalls[0].messages)).not.toContain("0000123456789");
     expect(await books()).toEqual(before);
   });
@@ -215,5 +234,94 @@ describe("Coetha reads documents in the background", () => {
     const txt = new TextEncoder().encode("hello, not a pdf");
     await expect(upload(s.daria, s.willow.id, txt, "notes.pdf")).rejects.toThrow(/isn't a PDF or a picture/);
     expect(await prisma.document.count({ where: { clientId: s.willow.id } })).toBe(1);
+  });
+
+  it("every check is saved in one of the five groups with its proposal; the answer is a short summary; nothing is posted", async () => {
+    const s = await setup();
+    const gl = (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: s.willow.id, code: "1000" } })).id;
+    await importBankCsv(s.tabitha, s.willow.id, gl, { fileName: "nov.csv", text: "Date,Description,Amount\n10/20/2026,CHECK 1042,-102.00\n10/21/2026,CHECK 1044,-104.00\n10/22/2026,CHECK 1045,-105.00" });
+    // Fixture: check 1045's bank row was already posted earlier (set directly; the test posts nothing).
+    await prisma.bankTransaction.updateMany({ where: { clientId: s.willow.id, description: "CHECK 1045" }, data: { status: "POSTED" } });
+    const before = await books();
+    const up = await upload(s.daria, s.willow.id, await scannedPdf(6), "checks.pdf");
+    const q = await askAboutDocuments(s.daria, s.willow.id, "Here are the checks", [up.jobId]);
+    await workReading(60_000);
+    // Reviewed once, in one small batch.
+    expect(reviewCalls).toEqual([["F1", "F2", "F3", "F4", "F5", "F6"]]);
+    const f = await prisma.coethaDocFinding.findMany({ where: { jobId: up.jobId }, orderBy: { page: "asc" } });
+    expect(f.every((x) => x.reviewedAt)).toBe(true);
+    expect(f[1]).toMatchObject({ reviewGroup: "ROUTINE", proposedAccount: "6300 Office Supplies", reason: "Regular supplier." });
+    expect(f[2]).toMatchObject({ reviewGroup: "NEEDS_DOCS", proposedAccount: null, evidenceNeeded: "Receipt or invoice" });
+
+    const v = await readingView(s.daria, s.willow.id);
+    const j = v.jobs[0];
+    const by = Object.fromEntries(j.groups.map((g) => [g.key, g.items.map((x) => x.checkNumber)]));
+    expect(by).toEqual({ ROUTINE: ["1042", "1044"], NEEDS_DOCS: ["1043"], OWNER_PERSONAL: ["1041"], UNMATCHED: ["1046"], POSTED: ["1045"] });
+    // Every identified check is accounted for.
+    expect(j.groups.reduce((n, g) => n + g.items.length, 0)).toBe(j.checks);
+    expect(j.checks).toBe(6);
+    expect(v.active).toBe(false);
+
+    // The answer waited for the review and was asked for a short summary built from the groups.
+    expect(chatCalls).toHaveLength(1);
+    const sent = JSON.stringify(chatCalls[0].messages);
+    expect(sent).toContain("Owner and personal transactions: 1");
+    expect(sent).toContain("Unmatched checks: 1");
+    expect(sent).toContain("Transactions already posted: 1");
+    expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: q.id } })).status).toBe("ANSWERED");
+
+    // Summarize Again: a new answer from what is saved. Nothing is uploaded, read or reviewed again.
+    const reads = readerCalls.length;
+    const again = await summarizeAgain(s.tabitha, s.willow.id, q.id);
+    expect(again).toMatchObject({ status: "WAITING", jobIds: [up.jobId] });
+    await workReading(60_000);
+    expect(readerCalls.length).toBe(reads);
+    expect(reviewCalls).toHaveLength(1);
+    expect(chatCalls).toHaveLength(2);
+    expect(await prisma.coethaDocJob.count()).toBe(1);
+    const chat = await coethaChatView(s.daria, s.willow.id);
+    expect(chat.messages.map((m) => m.role)).toEqual(["USER", "COETHA", "USER", "COETHA"]);
+    await expect(summarizeAgain(s.tabitha, s.harbor.id, q.id)).rejects.toBeInstanceOf(ValidationError);
+    expect(await books()).toEqual(before);
+  });
+
+  it("Download as Spreadsheet: every finding with its group and proposal; formulas neutralized; staff with the books only", async () => {
+    const s = await setup();
+    const up = await upload(s.daria, s.willow.id, await scannedPdf(3), "checks.pdf");
+    await workReading(60_000);
+    await prisma.coethaDocFinding.updateMany({ where: { jobId: up.jobId, page: 2 }, data: { payee: '=HYPERLINK("http://x.example","click")' } });
+    const csv = await findingsSheet(s.daria, s.willow.id);
+    const lines = csv.trim().split("\r\n");
+    expect(lines[0]).toBe("Document,Page,Group,Item,Check #,Date,Payee / from,Amount,Memo,Details,Bank match,Proposed account,Why,Evidence needed,Confidence");
+    expect(lines).toHaveLength(4);
+    expect(lines[1]).toContain("Owner and personal transactions");
+    expect(lines[3]).toContain("Checks requiring additional documentation");
+    expect(lines[3]).toContain("580.85");
+    expect(lines[2]).toContain("Unmatched checks");
+    expect(lines[2]).toContain(`"'=HYPERLINK(""http://x.example"",""click"")"`);
+    expect(csv).not.toContain("0000123456789");
+    expect(await findingsSheet(s.daria, s.willow.id, up.jobId)).toBe(csv);
+    await expect(findingsSheet(s.stranger, s.willow.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(findingsSheet(s.tabitha, s.harbor.id, up.jobId)).rejects.toBeInstanceOf(ValidationError);
+    expect(await prisma.auditLog.count({ where: { action: "coetha.findings_download" } })).toBe(2);
+  });
+
+  it("a long scan is reviewed in small batches, a failed review is retried, and a review that keeps failing still accounts for every check", async () => {
+    const s = await setup();
+    const up = await upload(s.daria, s.willow.id, await scannedPdf(20), "year.pdf");
+    failReviews = 1;
+    await workReading(120_000);
+    expect(reviewCalls.map((r) => r.length)).toEqual([15, 5]);
+    expect(await prisma.coethaDocFinding.count({ where: { jobId: up.jobId, reviewedAt: null } })).toBe(0);
+    const v = await readingView(s.daria, s.willow.id);
+    expect(v.jobs[0].groups.reduce((n, g) => n + g.items.length, 0)).toBe(20);
+
+    const up2 = await upload(s.daria, s.willow.id, await scannedPdf(2).then((b) => { const c = new Uint8Array(b.length + 1); c.set(b); return c; }), "other.pdf");
+    failReviews = 99;
+    await workReading(60_000);
+    const f = await prisma.coethaDocFinding.findMany({ where: { jobId: up2.jobId } });
+    expect(f).toHaveLength(2);
+    expect(f.every((x) => x.reviewedAt && x.reviewGroup === "NEEDS_DOCS" && /couldn't review/.test(x.reason ?? ""))).toBe(true);
+    expect(await prisma.auditLog.count({ where: { action: "coetha.review_failed", entityId: up2.jobId } })).toBe(3);
   });
 });

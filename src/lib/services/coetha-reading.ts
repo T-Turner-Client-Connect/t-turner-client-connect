@@ -4,7 +4,7 @@ import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { storage } from "@/lib/storage";
 import { decryptBytes, encryptBytes } from "@/lib/crypto";
-import { callDocumentReader, CoethaModelError } from "@/lib/coetha-model";
+import { callDocumentReader, callFindingsReviewer, CoethaModelError } from "@/lib/coetha-model";
 import { ValidationError } from "./clients";
 import { assertLedger, assertManagedBusiness, ymdOf } from "./ledger";
 import { scrub } from "./coetha";
@@ -31,6 +31,13 @@ import { scrub } from "./coetha";
  *    page; after MAX_ATTEMPTS the job stops as FAILED with "Try again".
  * 4. Each finding (check number, date, payee, amount, memo, details) is de-identified and
  *    matched to this business's bank rows. Nothing is posted, approved or changed.
+ * 5. Review: once a document is read, Coetha reviews its checks REVIEW_BATCH at a time (each
+ *    batch is one short step) and saves, per check, a group (routine / needs documentation /
+ *    owner or personal), a proposed account, why, and the evidence that would settle it. Each
+ *    check is reviewed once. The page shows every check in one of five groups (adding "already
+ *    posted" and "unmatched", decided from the bank row at the time). Her written answer is a
+ *    short summary that points to these saved groups, so a long document never has to be read
+ *    again; "Summarize again" writes a new summary from what is saved.
  */
 
 /** Piece size (tests use a smaller one so a multi-piece file stays small). */
@@ -334,6 +341,94 @@ export async function matchFindings(jobId: string) {
   }
 }
 
+// --- 3b. Review: groups and proposed accounts (proposals only) ------------------------------------
+
+const REVIEW_BATCH = 15;
+const REVIEW_TIMEOUT_MS = 22_000;
+const MAX_REVIEW_FAILURES = 3;
+export const GROUPS = ["ROUTINE", "NEEDS_DOCS", "OWNER_PERSONAL", "UNMATCHED", "POSTED"] as const;
+export type GroupKey = (typeof GROUPS)[number] | "PENDING" | "OTHER";
+export const GROUP_LABEL: Record<GroupKey, string> = {
+  ROUTINE: "Routine checks with strong supporting evidence",
+  NEEDS_DOCS: "Checks requiring additional documentation",
+  OWNER_PERSONAL: "Owner and personal transactions",
+  UNMATCHED: "Unmatched checks",
+  POSTED: "Transactions already posted",
+  PENDING: "Checks Coetha is still reviewing",
+  OTHER: "Other items (deposits, receipts, invoices, statements)",
+};
+
+/** Which of the five groups a finding is in, from its saved review and its bank row's status now. */
+export function groupOf(f: { kind: string; bankTransactionId: string | null; reviewGroup: string | null }, bankStatus: string | undefined): GroupKey {
+  if (f.kind !== "CHECK") return "OTHER";
+  if (f.bankTransactionId && bankStatus === "POSTED") return "POSTED";
+  if (!f.bankTransactionId) return "UNMATCHED";
+  if (f.reviewGroup === "ROUTINE" || f.reviewGroup === "NEEDS_DOCS" || f.reviewGroup === "OWNER_PERSONAL") return f.reviewGroup;
+  return "PENDING";
+}
+
+/**
+ * One review step: the next REVIEW_BATCH checks of a read document that haven't been reviewed.
+ * Saves only Coetha's proposals on the findings themselves; the books are not touched.
+ */
+export async function reviewOnce(clientId?: string) {
+  const next = await prisma.coethaDocFinding.findFirst({ where: { ...(clientId ? { clientId } : {}), kind: "CHECK", reviewedAt: null, job: { status: "DONE" } }, orderBy: { createdAt: "asc" }, select: { jobId: true, clientId: true } });
+  if (!next) return false;
+  const { takeLock, releaseLock } = await import("./coetha-chat");
+  const hold = `coetha-review:${next.jobId}`;
+  if (!(await takeLock(hold, 60))) return false;
+  try {
+    const batch = await prisma.coethaDocFinding.findMany({ where: { jobId: next.jobId, kind: "CHECK", reviewedAt: null }, orderBy: [{ page: "asc" }, { seq: "asc" }], take: REVIEW_BATCH });
+    if (!batch.length) return false;
+    const failures = await prisma.auditLog.count({ where: { action: "coetha.review_failed", entityId: next.jobId } });
+    if (failures >= MAX_REVIEW_FAILURES) {
+      // Never stuck: after repeated failures the rest are listed for Tabitha's decision without a proposal.
+      await prisma.coethaDocFinding.updateMany({ where: { id: { in: batch.map((f) => f.id) } }, data: { reviewedAt: new Date(), reviewGroup: "NEEDS_DOCS", reason: "Coetha couldn't review this check; decide it from the check details and the bank row.", evidenceNeeded: "Invoice, receipt or an explanation of the payment" } });
+      return true;
+    }
+    const accounts = await prisma.ledgerAccount.findMany({ where: { clientId: next.clientId, active: true }, orderBy: { code: "asc" }, select: { code: true, name: true, type: true }, take: 300 });
+    const owners = await prisma.businessOwner.findMany({ where: { clientId: next.clientId }, select: { contact: { select: { name: true } } } });
+    const rows = await prisma.bankTransaction.findMany({ where: { id: { in: batch.map((f) => f.bankTransactionId).filter((x): x is string => !!x) } }, select: { id: true, status: true } });
+    const statusOf = new Map(rows.map((r) => [r.id, r.status]));
+    const refs = new Map(batch.map((f, i) => [`F${i + 1}`, f]));
+    const input = {
+      owners: owners.map((o) => scrub(o.contact.name, 80)).filter(Boolean),
+      chartOfAccounts: accounts.map((a) => `${a.code} ${a.name} (${a.type.toLowerCase()})`),
+      items: [...refs].map(([ref, f]) => ({
+        ref, checkNumber: f.checkNumber, date: f.date, payee: f.payee, amount: f.amountCents == null ? null : f.amountCents / 100,
+        memo: f.memo, details: f.details,
+        bankMatch: f.bankTransactionId ? `${f.matchNote ?? "matched"} (bank row ${(statusOf.get(f.bankTransactionId) ?? "").toLowerCase() || "unknown"})` : (f.matchNote ?? "not matched"),
+      })),
+    };
+    let r;
+    try {
+      r = await callFindingsReviewer(input, { timeoutMs: REVIEW_TIMEOUT_MS });
+    } catch (err) {
+      await audit(prisma, { actorId: null, action: "coetha.review_failed", entityType: "CoethaDocJob", entityId: next.jobId, clientId: next.clientId, details: { code: err instanceof CoethaModelError ? err.code : "ERROR" } });
+      return true;
+    }
+    const codes = new Map(accounts.map((a) => [a.code, `${a.code} ${a.name}`]));
+    const now = new Date();
+    const got = new Map(r.output.items.map((x) => [x.ref.trim(), x]));
+    await prisma.$transaction([...refs].map(([ref, f]) => {
+      const x = got.get(ref);
+      const data = x
+        ? { reviewGroup: x.group, proposedAccount: x.proposedAccount ? codes.get(x.proposedAccount.trim().split(/\s+/)[0]) ?? null : null, reason: clean(x.reason, 400), evidenceNeeded: clean(x.evidenceNeeded, 300), confidence: Math.max(0, Math.min(1, Number(x.confidence) || 0)), reviewedAt: now }
+        : { reviewGroup: "NEEDS_DOCS", proposedAccount: null, reason: "Coetha didn't return a review for this check; decide it from the check details.", evidenceNeeded: "Invoice, receipt or an explanation of the payment", confidence: null, reviewedAt: now };
+      return prisma.coethaDocFinding.update({ where: { id: f.id }, data });
+    }));
+    await prisma.coethaDocJob.update({ where: { id: next.jobId }, data: { inputTokens: { increment: r.inputTokens }, outputTokens: { increment: r.outputTokens } } });
+    return true;
+  } finally {
+    await releaseLock(hold);
+  }
+}
+
+/** Checks in these jobs that Coetha hasn't reviewed yet (her answer waits for them). */
+async function unreviewed(jobIds: string[]) {
+  return prisma.coethaDocFinding.count({ where: { jobId: { in: jobIds }, kind: "CHECK", reviewedAt: null, job: { status: "DONE" } } });
+}
+
 // --- 4. The workers --------------------------------------------------------------------------------
 
 /**
@@ -345,24 +440,27 @@ export async function matchFindings(jobId: string) {
 export async function workOnce(opts: { clientId?: string; now?: Date } = {}) {
   const now = opts.now ?? new Date();
   const job = await claimJob(now, opts.clientId);
-  let did: "read" | "answer" | null = null;
+  let did: "read" | "review" | "answer" | null = null;
   if (job) {
     try { await stepJob(job, PAGES_PER_STEP); } catch (err) { await failStep(job.id, err); }
     did = "read";
+  } else if (await reviewOnce(opts.clientId)) {
+    did = "review";
   } else if (await answerReadyQuestions(1, true, opts.clientId)) {
     did = "answer";
   }
   const where = opts.clientId ? { clientId: opts.clientId } : {};
   const left = await prisma.coethaDocJob.count({ where: { ...where, status: { in: ["QUEUED", "READING"] } } });
+  const toReview = await prisma.coethaDocFinding.count({ where: { ...where, kind: "CHECK", reviewedAt: null, job: { status: "DONE" } } });
   const waiting = await prisma.coethaChatMessage.count({ where: { ...where, status: "WAITING" } });
-  return { did, more: left > 0 || waiting > 0 };
+  return { did, more: left > 0 || toReview > 0 || waiting > 0 };
 }
 
 /** Units of work until the budget is used (tests and local runs; the hosting calls workOnce per request). */
 export async function workReading(budgetMs = 20_000, opts: { clientId?: string; now?: () => Date } = {}) {
   const started = Date.now();
   let units = 0;
-  let r = { did: null as "read" | "answer" | null, more: true };
+  let r = { did: null as "read" | "review" | "answer" | null, more: true };
   while (Date.now() - started < budgetMs) {
     r = await workOnce({ clientId: opts.clientId, now: opts.now?.() });
     if (!r.did) break;
@@ -412,6 +510,7 @@ export async function answerReadyQuestions(limit = 1, quick = true, clientId?: s
     const ids = (m.jobIds as string[]) ?? [];
     const jobs = await prisma.coethaDocJob.findMany({ where: { id: { in: ids } } });
     if (jobs.some((j) => j.status === "QUEUED" || j.status === "READING")) continue;
+    if (await unreviewed(ids)) continue;
     // Only one worker answers it at a time. If that worker is cut off, the hold runs out and the
     // question is answered on a later try; after three tries it stops as FAILED (it can be asked again).
     const { takeLock, releaseLock } = await import("./coetha-chat");
@@ -441,12 +540,20 @@ export async function answerReadyQuestions(limit = 1, quick = true, clientId?: s
   return n;
 }
 
-/** What Coetha read, as compact text for her answer (findings per file; text PDFs' text). */
+const money = (c: number | null) => (c == null ? "" : ` $${(c / 100).toFixed(2)}`);
+
+/**
+ * What Coetha read, for her written answer: the counts in each of the five groups and the checks
+ * that need a decision. Every check is saved in its group on the page (and in the spreadsheet), so
+ * the answer stays short and is never the only record of what she read.
+ */
 export async function documentsText(jobs: { id: string; name: string; status: string; kind: string | null; pages: number; error: string | null; text: string | null }[]) {
-  const out: string[] = [];
-  let room = 150_000;
+  const out: string[] = [
+    "HOW TO ANSWER: Every check is already saved and shown on the page in five groups (with check details, bank match, proposed account, why, and evidence needed), and staff can download it as a spreadsheet. Do NOT list every check. Write a short summary (under 300 words): the totals per group, then the few decisions Tabitha must make (owner/personal items, checks needing documentation, unmatched checks), naming the check number and amount for each. Propose; never say anything was posted or approved.",
+  ];
+  let room = 120_000;
   for (const j of jobs) {
-    out.push(`Document “${j.name}” (${j.pages} page${j.pages === 1 ? "" : "s"}): ${j.status === "DONE" ? "read" : `not read — ${j.error ?? "failed"}`}.`);
+    out.push(`\nDocument “${j.name}” (${j.pages} page${j.pages === 1 ? "" : "s"}): ${j.status === "DONE" ? "read" : `not read — ${j.error ?? "failed"}`}.`);
     if (j.kind === "PDF_TEXT" && j.text) {
       const t = j.text.slice(0, Math.max(0, room));
       room -= t.length;
@@ -454,14 +561,59 @@ export async function documentsText(jobs: { id: string; name: string; status: st
       continue;
     }
     const f = await prisma.coethaDocFinding.findMany({ where: { jobId: j.id }, orderBy: [{ page: "asc" }, { seq: "asc" }] });
-    for (const x of f) {
-      const line = `p${x.page} ${x.kind}${x.checkNumber ? ` #${x.checkNumber}` : ""}${x.date ? ` ${x.date}` : ""}${x.payee ? ` payee: ${x.payee}` : ""}${x.amountCents != null ? ` $${(x.amountCents / 100).toFixed(2)}` : ""}${x.memo ? ` memo: ${x.memo}` : ""}${x.details ? ` (${x.details})` : ""}${x.matchNote ? ` — bank match: ${x.matchNote}` : ""}`;
-      if (room - line.length < 0) { out.push("(more items not listed)"); break; }
-      room -= line.length;
-      out.push(line);
+    const rows = await prisma.bankTransaction.findMany({ where: { id: { in: f.map((x) => x.bankTransactionId).filter((x): x is string => !!x) } }, select: { id: true, status: true } });
+    const st = new Map(rows.map((r) => [r.id, r.status]));
+    const by = new Map<GroupKey, typeof f>();
+    for (const x of f) { const g = groupOf(x, x.bankTransactionId ? st.get(x.bankTransactionId) : undefined); by.set(g, [...(by.get(g) ?? []), x]); }
+    const checks = f.filter((x) => x.kind === "CHECK");
+    out.push(`${checks.length} check${checks.length === 1 ? "" : "s"} found: ${(["ROUTINE", "NEEDS_DOCS", "OWNER_PERSONAL", "UNMATCHED", "POSTED", "PENDING"] as GroupKey[]).filter((g) => by.get(g)?.length).map((g) => `${GROUP_LABEL[g]}: ${by.get(g)!.length}`).join("; ") || "none"}.`);
+    if (by.get("OTHER")?.length) out.push(`Other items (not checks): ${by.get("OTHER")!.length}.`);
+    for (const g of ["OWNER_PERSONAL", "NEEDS_DOCS", "UNMATCHED", "ROUTINE", "OTHER"] as GroupKey[]) {
+      const xs = by.get(g);
+      if (!xs?.length) continue;
+      out.push(`${GROUP_LABEL[g]}:`);
+      for (const x of xs) {
+        const line = `- ${x.kind === "CHECK" ? `#${x.checkNumber ?? "?"}` : x.kind.toLowerCase()}${x.date ? ` ${x.date}` : ""}${x.payee ? ` ${x.payee}` : ""}${money(x.amountCents)}${x.memo ? ` memo: ${x.memo}` : ""}${x.proposedAccount ? ` → proposed ${x.proposedAccount}` : ""}${x.reason ? ` (${x.reason})` : ""}${x.evidenceNeeded ? ` needs: ${x.evidenceNeeded}` : ""}${g === "UNMATCHED" && x.matchNote ? ` [${x.matchNote}]` : ""}`;
+        if (room - line.length < 0) { out.push("(more items not listed here; all are on the page)"); break; }
+        room -= line.length;
+        out.push(line);
+      }
     }
   }
   return out.join("\n");
+}
+
+/** "Summarize again": a new short answer from what Coetha already read and reviewed. Nothing is read again. */
+export async function summarizeAgain(actor: Actor, clientId: string, messageId: string) {
+  const m = await prisma.coethaChatMessage.findFirst({ where: { id: messageId, clientId, role: "USER" } });
+  const ids = (m?.jobIds as string[] | null) ?? [];
+  if (!m || !ids.length) throw new ValidationError("That question has no documents to summarize.");
+  return askAboutDocuments(actor, clientId, "Summarize again what you read from these documents: the totals in each group and the decisions I need to make.", ids);
+}
+
+/** Every finding for the spreadsheet, with its group, proposal and bank match (staff with the books only). */
+export async function findingsSheet(actor: Actor, clientId: string, jobId?: string) {
+  await assertLedger(actor, clientId);
+  const jobs = await prisma.coethaDocJob.findMany({ where: { clientId, ...(jobId ? { id: jobId } : {}) }, select: { id: true, name: true } });
+  if (jobId && !jobs.length) throw new ValidationError("That document isn't on file for this business.");
+  const name = new Map(jobs.map((j) => [j.id, j.name]));
+  const f = await prisma.coethaDocFinding.findMany({ where: { clientId, jobId: { in: jobs.map((j) => j.id) } }, orderBy: [{ jobId: "asc" }, { page: "asc" }, { seq: "asc" }] });
+  const rows = await prisma.bankTransaction.findMany({ where: { clientId, id: { in: f.map((x) => x.bankTransactionId).filter((x): x is string => !!x) } }, select: { id: true, status: true } });
+  const st = new Map(rows.map((r) => [r.id, r.status]));
+  // A cell starting with = + - @ (or a tab/return) would run as a formula in a spreadsheet.
+  const cell = (v: unknown) => {
+    let t = v == null ? "" : String(v);
+    if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`;
+    return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const head = ["Document", "Page", "Group", "Item", "Check #", "Date", "Payee / from", "Amount", "Memo", "Details", "Bank match", "Proposed account", "Why", "Evidence needed", "Confidence"];
+  const lines = [head.map(cell).join(",")];
+  for (const x of f) {
+    const g = groupOf(x, x.bankTransactionId ? st.get(x.bankTransactionId) : undefined);
+    lines.push([name.get(x.jobId), x.page, GROUP_LABEL[g], x.kind.toLowerCase(), x.checkNumber, x.date, x.payee, x.amountCents == null ? "" : (x.amountCents / 100).toFixed(2), x.memo, x.details, x.matchNote, x.proposedAccount, x.reason, x.evidenceNeeded, x.confidence == null ? "" : x.confidence.toFixed(2)].map(cell).join(","));
+  }
+  await audit(prisma, { actorId: actor.id, action: "coetha.findings_download", entityType: "Client", entityId: clientId, clientId, details: { jobId: jobId ?? null, rows: f.length } });
+  return lines.join("\r\n") + "\r\n";
 }
 
 // --- 6. What the page shows ------------------------------------------------------------------------
@@ -469,9 +621,16 @@ export async function documentsText(jobs: { id: string; name: string; status: st
 export async function readingView(actor: Actor, clientId: string) {
   await assertLedger(actor, clientId);
   const jobs = await prisma.coethaDocJob.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: 100, select: { id: true, documentId: true, name: true, status: true, kind: true, pages: true, pagesDone: true, attempts: true, error: true, notBefore: true, createdAt: true, _count: { select: { findings: true } } } });
-  const findings = await prisma.coethaDocFinding.findMany({ where: { clientId, jobId: { in: jobs.map((j) => j.id) } }, orderBy: [{ page: "asc" }, { seq: "asc" }] });
+  const raw = await prisma.coethaDocFinding.findMany({ where: { clientId, jobId: { in: jobs.map((j) => j.id) } }, orderBy: [{ page: "asc" }, { seq: "asc" }] });
+  const rows = await prisma.bankTransaction.findMany({ where: { clientId, id: { in: raw.map((x) => x.bankTransactionId).filter((x): x is string => !!x) } }, select: { id: true, status: true } });
+  const st = new Map(rows.map((r) => [r.id, r.status]));
+  const findings = raw.map((f) => ({ ...f, group: groupOf(f, f.bankTransactionId ? st.get(f.bankTransactionId) : undefined) }));
+  const order: GroupKey[] = ["ROUTINE", "NEEDS_DOCS", "OWNER_PERSONAL", "UNMATCHED", "POSTED", "PENDING", "OTHER"];
   return {
-    jobs: jobs.map((j) => ({ ...j, findings: findings.filter((f) => f.jobId === j.id) })),
-    active: jobs.some((j) => j.status === "QUEUED" || j.status === "READING"),
+    jobs: jobs.map((j) => {
+      const mine = findings.filter((f) => f.jobId === j.id);
+      return { ...j, findings: mine, checks: mine.filter((f) => f.kind === "CHECK").length, groups: order.map((g) => ({ key: g, label: GROUP_LABEL[g], items: mine.filter((f) => f.group === g) })).filter((g) => g.items.length) };
+    }),
+    active: jobs.some((j) => j.status === "QUEUED" || j.status === "READING") || findings.some((f) => f.group === "PENDING" && !f.reviewedAt),
   };
 }

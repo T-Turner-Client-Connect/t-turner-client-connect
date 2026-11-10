@@ -2,7 +2,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { FileSearch, KeyRound, Loader2, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
+import { Download, FileSearch, KeyRound, Loader2, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { BusinessTabs } from "@/components/business-tabs";
@@ -10,7 +10,7 @@ import { ActionForm } from "@/components/action-form";
 import { canUseLedger } from "@/lib/services/ledger";
 import { COETHA_NO_KEY } from "@/lib/services/coetha";
 import { COETHA_CHAT_PRIVACY, coethaChatView, MAX_QUESTION } from "@/lib/services/coetha-chat";
-import { askCoethaAction, retryReadingAction } from "@/app/actions/coetha";
+import { askCoethaAction, retryReadingAction, summarizeAgainAction } from "@/app/actions/coetha";
 import { readingView } from "@/lib/services/coetha-reading";
 import { CoethaReadingPoller } from "@/components/coetha-reading-poller";
 import { fmtDateTime } from "@/lib/format";
@@ -121,6 +121,11 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
                     <div className="mt-2 space-y-1 rounded-lg bg-white/10 p-2 text-xs" data-testid="chat-reading">
                       {m.status === "WAITING" && <p className="flex items-center gap-1 font-semibold"><Loader2 className="size-3.5 animate-spin" aria-hidden /> Coetha is reading. You can leave this page; her answer will appear here.</p>}
                       {m.status === "FAILED" && <p className="font-semibold">Coetha couldn&apos;t finish this answer. What she read is below; ask again to get her answer.</p>}
+                      {m.role === "USER" && m.status !== "WAITING" && m.jobIds.every((id) => jobOf.get(id)?.status === "DONE" || jobOf.get(id)?.status === "FAILED") && (
+                        <ActionForm action={summarizeAgainAction.bind(null, clientId, m.id)} className="mb-1" showSuccess={false}>
+                          <button type="submit" className="rounded border border-current px-2 py-0.5 font-semibold" data-testid="summarize-again">Summarize Again</button>
+                        </ActionForm>
+                      )}
                       {m.jobIds.map((id) => {
                         const j = jobOf.get(id);
                         if (!j) return null;
@@ -155,30 +160,44 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
 
       {reading.jobs.some((j) => j.findings.length > 0) && (
         <section className={clsx(card, "p-4 sm:p-5")} data-testid="coetha-findings">
-          <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><FileSearch className="size-5 text-gold-600" aria-hidden /> What Coetha read from the documents</h2>
-          <p className="mt-1 text-xs text-slate-600">Read-only: each item is matched to this business&apos;s bank rows where possible. Account and routing numbers are never kept (last 4 digits at most).</p>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><FileSearch className="size-5 text-gold-600" aria-hidden /> What Coetha read from the documents</h2>
+            <a href={`/api/coetha/findings?clientId=${encodeURIComponent(clientId)}`} className="inline-flex items-center gap-1 rounded-lg border-2 border-navy-900 bg-white px-3 py-1.5 text-xs font-semibold text-navy-900 hover:bg-ivory-100" data-testid="findings-download-all"><Download className="size-3.5" aria-hidden /> Download as Spreadsheet</a>
+          </div>
+          <p className="mt-1 text-xs text-slate-600">Every check is saved here in one of five groups, with its bank match, the account Coetha proposes, why, and the evidence that would settle it. These are proposals only: nothing is posted, approved or changed until you decide. Account and routing numbers are never kept (last 4 digits at most).</p>
           {reading.jobs.filter((j) => j.findings.length > 0).map((j) => (
-            <details key={j.id} className="mt-3 text-sm" open={reading.jobs.length === 1}>
-              <summary className="cursor-pointer font-semibold text-navy-900">{j.name} — {j.findings.length} item{j.findings.length === 1 ? "" : "s"}</summary>
-              <div className="mt-1 overflow-x-auto">
-                <table className="w-full min-w-[760px] text-xs">
-                  <thead><tr className="text-left text-slate-600"><th className="py-1 pr-2">Page</th><th className="pr-2">Item</th><th className="pr-2">Check #</th><th className="pr-2">Date</th><th className="pr-2">Payee / from</th><th className="pr-2 text-right">Amount</th><th className="pr-2">Memo / details</th><th>Bank match</th></tr></thead>
-                  <tbody>
-                    {j.findings.map((f) => (
-                      <tr key={f.id} className="border-t border-ivory-200 align-top" data-testid="finding">
-                        <td className="py-1 pr-2">{f.page}</td>
-                        <td className="pr-2">{f.kind.toLowerCase()}</td>
-                        <td className="pr-2">{f.checkNumber ?? ""}</td>
-                        <td className="pr-2 whitespace-nowrap">{f.date ?? ""}</td>
-                        <td className="pr-2">{f.payee ?? ""}</td>
-                        <td className="pr-2 text-right tabular-nums">{usd(f.amountCents)}</td>
-                        <td className="pr-2">{[f.memo, f.details].filter(Boolean).join(" · ")}</td>
-                        <td className={clsx(f.bankTransactionId ? "text-emerald-700" : "text-slate-600")}>{f.matchNote ?? ""}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            <details key={j.id} className="mt-3 text-sm" open={reading.jobs.filter((x) => x.findings.length > 0).length === 1} data-testid="findings-doc">
+              <summary className="cursor-pointer font-semibold text-navy-900">{j.name}: {j.checks} check{j.checks === 1 ? "" : "s"}{j.findings.length > j.checks ? `, ${j.findings.length - j.checks} other item${j.findings.length - j.checks === 1 ? "" : "s"}` : ""}</summary>
+              <p className="mt-1 text-xs text-slate-700" data-testid="findings-totals">
+                {j.groups.map((g) => `${g.label}: ${g.items.length}`).join(" · ")}
+                {" "}<a className="ml-1 font-semibold text-navy-900 underline" href={`/api/coetha/findings?clientId=${encodeURIComponent(clientId)}&jobId=${encodeURIComponent(j.id)}`} data-testid="findings-download">Download this document as a spreadsheet</a>
+              </p>
+              {j.groups.map((g) => (
+                <details key={g.key} className="mt-2 rounded-lg bg-ivory-100 p-2 ring-1 ring-ivory-200" data-testid="findings-group" data-group={g.key}>
+                  <summary className="cursor-pointer text-sm font-semibold text-navy-900">{g.label} ({g.items.length})</summary>
+                  <div className="mt-1 overflow-x-auto">
+                    <table className="w-full min-w-[980px] text-xs">
+                      <thead><tr className="text-left text-slate-600"><th className="py-1 pr-2">Page</th><th className="pr-2">{g.key === "OTHER" ? "Item" : "Check #"}</th><th className="pr-2">Date</th><th className="pr-2">Payee / from</th><th className="pr-2 text-right">Amount</th><th className="pr-2">Memo / details</th><th className="pr-2">Bank match</th><th className="pr-2">Proposed account</th><th className="pr-2">Why</th><th>Evidence needed</th></tr></thead>
+                      <tbody>
+                        {g.items.map((f) => (
+                          <tr key={f.id} className="border-t border-ivory-200 align-top" data-testid="finding">
+                            <td className="py-1 pr-2">{f.page}</td>
+                            <td className="pr-2">{g.key === "OTHER" ? f.kind.toLowerCase() : (f.checkNumber ?? "")}</td>
+                            <td className="pr-2 whitespace-nowrap">{f.date ?? ""}</td>
+                            <td className="pr-2">{f.payee ?? ""}</td>
+                            <td className="pr-2 text-right tabular-nums">{usd(f.amountCents)}</td>
+                            <td className="pr-2">{[f.memo, f.details].filter(Boolean).join(" · ")}</td>
+                            <td className={clsx("pr-2", f.bankTransactionId ? "text-emerald-700" : "text-slate-600")}>{f.matchNote ?? ""}</td>
+                            <td className="pr-2">{f.proposedAccount ?? ""}</td>
+                            <td className="pr-2">{f.reason ?? ""}{f.confidence != null ? ` (confidence ${Math.round(f.confidence * 100)}%)` : ""}</td>
+                            <td>{f.evidenceNeeded ?? ""}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              ))}
             </details>
           ))}
         </section>

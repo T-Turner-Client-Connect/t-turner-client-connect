@@ -352,3 +352,51 @@ export async function callDocumentReader(file: CoethaChatFile & { mediaType: str
   if (!msg.parsed_output) throw new CoethaModelError("The pages weren't returned in the expected format.", "PARSE");
   return { output: msg.parsed_output, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0, model: msg.model || model };
 }
+
+// --- Reviewing what was read (groups and proposed accounts; proposals only) -------------------------
+
+export const FindingsReview = z.object({
+  items: z.array(z.object({
+    ref: z.string().describe("The item's ref (F1, F2, ...) exactly as given"),
+    group: z.enum(["ROUTINE", "NEEDS_DOCS", "OWNER_PERSONAL"]),
+    proposedAccount: z.string().nullable().describe("Account code from the chart of accounts, or null if you can't propose one"),
+    reason: z.string().describe("One or two short sentences: why this account and group, and what is uncertain"),
+    evidenceNeeded: z.string().nullable().describe("What would settle it (for example: invoice, receipt, owner confirmation); null when nothing is needed"),
+    confidence: z.number().describe("0 to 1"),
+  })),
+});
+export type FindingsReviewT = z.infer<typeof FindingsReview>;
+
+const REVIEW_SYSTEM = `You are Coetha, the Senior Accountant AI of a bookkeeping firm. You review items read from one small business's documents (mostly checks), each already matched (or not) to the business's bank rows. For EVERY item, return its ref with:
+- group: ROUTINE (an ordinary business payment whose payee and purpose make the account clear), NEEDS_DOCS (purpose or account can't be confirmed without an invoice, receipt or explanation), or OWNER_PERSONAL (paid to or for an owner or a family member, or otherwise personal: draws, distributions, loans to or from owners or family).
+- proposedAccount: one account code from the chart of accounts (or null).
+- reason: short and specific; say plainly what is uncertain. Never invent facts.
+- evidenceNeeded: what would settle it, or null.
+- confidence: 0 to 1.
+The owners' names are listed; a payee sharing an owner's last name may be family and belongs in OWNER_PERSONAL unless the item clearly shows a business purpose. You propose only; nothing is posted or approved. Use only the data given.`;
+
+/** Reviews up to ~25 items at a time (small enough never to be cut off). Read-only: no tools. */
+export async function callFindingsReviewer(input: unknown, opts: { timeoutMs?: number } = {}): Promise<{ output: FindingsReviewT; inputTokens: number; outputTokens: number }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
+  const model = coethaModel();
+  const client = new Anthropic({ apiKey, maxRetries: 0, timeout: opts.timeoutMs ?? 120_000 });
+  let msg;
+  try {
+    msg = await client.beta.messages.parse({
+      model,
+      max_tokens: 8000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low", format: betaZodOutputFormat(FindingsReview) },
+      system: REVIEW_SYSTEM,
+      messages: [{ role: "user", content: `Items to review (JSON):\n${JSON.stringify(input)}` }],
+    });
+  } catch (err) {
+    throw chatError(err, model);
+  }
+  if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to review these items.", "REFUSAL");
+  if (msg.stop_reason === "max_tokens") throw new CoethaModelError("The review was too long for one step.", "MAX_TOKENS");
+  if (!msg.parsed_output) throw new CoethaModelError("The review wasn't returned in the expected format.", "PARSE");
+  return { output: msg.parsed_output, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0 };
+}

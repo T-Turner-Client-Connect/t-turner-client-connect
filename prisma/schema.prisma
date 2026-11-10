@@ -5011,10 +5011,20 @@ model CoethaDocFinding {
   details           String?
   bankTransactionId String?
   matchNote         String?
+  /// Coetha's review (proposals only): ROUTINE | NEEDS_DOCS | OWNER_PERSONAL. "Already posted" and
+  /// "Unmatched" are decided from the bank match when the page is shown.
+  reviewGroup       String?
+  /// "code name" of the account she proposes (nothing is posted).
+  proposedAccount   String?
+  reason            String?
+  evidenceNeeded    String?
+  confidence        Float?
+  reviewedAt        DateTime?
   createdAt         DateTime     @default(now())
 
   @@unique([jobId, page, seq])
   @@index([clientId])
+  @@index([jobId, reviewedAt])
 }
 
 model CoethaRun {
