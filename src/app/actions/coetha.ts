@@ -7,6 +7,7 @@ import { ValidationError } from "@/lib/services/clients";
 import { approveCoethaProposal, decideCoethaProposals, rejectCoethaProposal, runCoetha } from "@/lib/services/coetha";
 import { setOwnerSwitch, SWITCH_LABEL, type OwnerSwitch } from "@/lib/services/owner-switches";
 import { clearCoethaOptOut, setCoethaOptOut } from "@/lib/services/coetha-opt-out";
+import { askCoetha } from "@/lib/services/coetha-chat";
 
 const refresh = (clientId: string) => {
   revalidatePath(`/bookkeeping/${clientId}/coetha`);
@@ -93,6 +94,16 @@ export async function clearCoethaOptOutAction(clientId: string, _prev: ActionSta
     refresh(clientId);
     revalidatePath("/bookkeeping");
     return "Cleared. Coetha can work on this client's books again.";
+  });
+}
+
+/** "Ask Coetha": one question about this client's books (books access enforced in the service). */
+export async function askCoethaAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await askCoetha(actor, clientId, str(fd, "question"));
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    return "Coetha answered below. Nothing in the books was changed.";
   });
 }
 

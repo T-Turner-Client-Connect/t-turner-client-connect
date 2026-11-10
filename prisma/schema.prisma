@@ -4015,6 +4015,7 @@ model LedgerBook {
   recurringInvoices    RecurringInvoice[]
   coethaRuns           CoethaRun[]
   coethaProposals      CoethaProposal[]
+  coethaChat           CoethaChatMessage[]
   coethaReferences     CoethaReference[]
 }
 
@@ -4907,6 +4908,28 @@ model YearEndFiling {
 // one, and approving is the only path that posts (through the ledger's own
 // posting rules). Every approval and rejection is audited.
 // ====================================================================
+/// "Ask Coetha": the office's back-and-forth conversation with Coetha about ONE client's books.
+/// Coetha answers from that client's de-identified books only; a reply never changes anything.
+model CoethaChatMessage {
+  id           String     @id @default(cuid())
+  clientId     String
+  book         LedgerBook @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  // USER (a staff member's question) | COETHA (her answer)
+  role         String
+  text         String
+  // The staff member who asked (USER rows only).
+  authorId     String?
+  // COETHA rows: the model that answered, tokens used, Anthropic's request id and the hash of the books data sent.
+  model        String?
+  inputTokens  Int        @default(0)
+  outputTokens Int        @default(0)
+  requestId    String?
+  inputHash    String?
+  createdAt    DateTime   @default(now())
+
+  @@index([clientId, createdAt])
+}
+
 model CoethaRun {
   id           String           @id @default(cuid())
   clientId     String

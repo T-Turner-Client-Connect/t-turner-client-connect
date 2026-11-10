@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import {
-  ArrowRight, Ban, BarChart3, CalendarDays, CheckCircle2, ChevronRight, Clock, Coins, CreditCard, FileText, Info, Landmark, Lightbulb, Link2, ListChecks, MonitorCheck, Percent, RefreshCw, Scale, Settings, SquareCheckBig, TrendingDown, TrendingUp, Upload,
+  ArrowRight, Ban, BarChart3, CalendarDays, CheckCircle2, ChevronRight, Clock, Coins, CreditCard, FileText, Info, Landmark, Lightbulb, Link2, ListChecks, MessagesSquare, MonitorCheck, Percent, RefreshCw, Scale, Settings, SquareCheckBig, TrendingDown, TrendingUp, Upload,
 } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { requireUser } from "@/lib/auth/session";
@@ -217,6 +217,13 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
                 </Link>
               ))}
             </div>
+            {!optOut && (
+              <div className="border-t border-ivory-200 bg-white px-3 pb-3">
+                <Link href={`${base}/coetha/ask`} className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-navy-800" data-testid="ask-coetha-link">
+                  <MessagesSquare className="size-5 text-gold-400" aria-hidden /> Ask Coetha about these books
+                </Link>
+              </div>
+            )}
           </div>
           <CoethaOptOutPanel clientId={clientId} optOut={optOut} canSet={canSetOptOut} />
 
