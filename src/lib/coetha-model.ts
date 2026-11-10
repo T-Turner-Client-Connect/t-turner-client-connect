@@ -135,6 +135,7 @@ You receive two JSON blocks below.
 2. "Records": the complete list of what is still open, read fresh for this question:
    - waitingRows (W1, W2, ...): EVERY bank and card row not yet posted or excluded, each with the draft already prepared for it (proposed account, where the draft came from, whether it needs Tabitha's judgment, the completed-statement line it matched) or null when nothing is drafted.
    - counts: totals by account and status, and waiting rows by account and month. "definitions" says exactly how each screen counts, so you can explain why two numbers differ (for example the ledger warning vs. the cash proof).
+   - readFromDocuments: every check and item the document reader already read from uploaded scans (payee, memo, amount, group, proposed account, evidence needed) with the waiting row it matches (bankRow W-reference). These scans are saved: use them; never ask for a document to be uploaded again because it isn't attached to this question.
    - excludedRows, cashProof (per bank account: statement balance to books, line by line), draftsReadyToApprove, judgmentGroups, comparisonWithCompletedStatements (books minus statements, by line and month), vendorFamilyPostingsToReview and documentsOnFile (titles only; you can't read their contents unless a file is attached to the question).
 Amounts are in dollars; money into a bank account is positive and money out is negative. On a credit card account a negative amount is a charge and a positive amount is a payment or refund. Descriptions were shortened and de-identified before they reached you.
 
@@ -146,14 +147,16 @@ How to answer:
 - Plain language, short paragraphs or short lists, specific dates, amounts and account codes. Cite rows by their W-reference.
 - Use only this client's data. If something isn't in the data, say so plainly and what would be needed.
 - Never invent transactions, balances, accounts or facts. If you estimate, say so and show how.
-- You cannot post, change, approve, reverse, reconcile, close, send or delete anything, and you can't contact the client. When something should change, describe the correction (accounts, debit/credit, amount, date) and say it needs Tabitha's approval.
+- You cannot post, approve, reverse, reconcile, close, send or delete anything, and you can't contact the client. Only Tabitha's Approve & Post changes the books.
+- Preparing entries (prepare_entries tool, offered only when Tabitha herself is asking): when she gives an accounting decision ("#178 goes to 3100", "move the 14 card payments from 6140 to 2100"), PREPARE the entries yourself with prepare_entries instead of telling her to enter them. Use post_bank_row for each waiting row the decision covers (its W-reference, date and amount exactly as in the records) and journal_entry for reclassifications of entries already posted (search the journal entries first to get the original dates, accounts and amounts; date the correction in an open month). Prepare only what she decided; anything uncertain or not yet decided stays on hold and you ask her about it. Then tell her briefly what you prepared (and anything you couldn't, with why) and that it is on her Apply These Decisions card for her to tick and Approve & Post. Never say anything was posted.
+- When the tool is not offered (a staff member is asking), describe the correction (accounts, debit/credit, amount, date) and say Tabitha prepares and approves it.
 - Apply the business's tax classification rules (taxProfile.rules) to owner draws, distributions, guaranteed payments and payroll questions.
 - This is bookkeeping help, not a final tax or legal opinion; flag anything that needs Tabitha's professional judgment.`;
 
 export type CoethaChatTurn = { role: "user" | "assistant"; text: string };
 export type CoethaChatResult = { text: string; inputTokens: number; outputTokens: number; requestId: string | null; model: string; searches: number };
 /** Read-only tools for one answer: their definitions and the function that runs them for ONE business. */
-export type CoethaChatTools = { defs: Anthropic.Beta.BetaTool[]; run: (name: string, input: unknown) => Promise<unknown>; records?: unknown };
+export type CoethaChatTools = { defs: Anthropic.Beta.BetaTool[]; run: (name: string, input: unknown) => Promise<unknown>; records?: unknown; asker?: "owner" | "staff" };
 /** At most this many search rounds per answer, and no new round after this long (the page waits). */
 export const CHAT_MAX_SEARCH_ROUNDS = 3;
 const CHAT_SEARCH_BUDGET_MS = 35_000;
@@ -210,6 +213,7 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], to
     { type: "text", text: COETHA_CHAT_SYSTEM },
     { type: "text", text: `Books (JSON):\n${JSON.stringify(books)}` },
     ...(tools?.records !== undefined ? [{ type: "text" as const, text: `Records (JSON):\n${JSON.stringify(tools.records)}` }] : []),
+    ...(tools?.asker ? [{ type: "text" as const, text: tools.asker === "owner" ? "The person asking is Tabitha, the owner. prepare_entries is available for decisions she states." : "The person asking is a staff member, not Tabitha. You can't prepare entries; describe corrections for Tabitha." }] : []),
   ];
   const started = Date.now();
   let inputTokens = 0, outputTokens = 0, searches = 0;

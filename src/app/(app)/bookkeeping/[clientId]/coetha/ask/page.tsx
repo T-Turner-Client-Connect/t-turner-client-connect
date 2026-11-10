@@ -2,7 +2,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { Download, FileSearch, KeyRound, Loader2, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
+import { ClipboardCheck, Download, FileSearch, KeyRound, Loader2, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { BusinessTabs } from "@/components/business-tabs";
@@ -10,7 +10,8 @@ import { ActionForm } from "@/components/action-form";
 import { canUseLedger } from "@/lib/services/ledger";
 import { COETHA_NO_KEY } from "@/lib/services/coetha";
 import { COETHA_CHAT_PRIVACY, coethaChatView, MAX_QUESTION } from "@/lib/services/coetha-chat";
-import { askCoethaAction, retryReadingAction, summarizeAgainAction } from "@/app/actions/coetha";
+import { applyDecisionsAction, askCoethaAction, prepareFromDocumentAction, retryReadingAction, summarizeAgainAction } from "@/app/actions/coetha";
+import { applyDecisionsView } from "@/lib/services/coetha-decisions";
 import { readingView } from "@/lib/services/coetha-reading";
 import { CoethaReadingPoller } from "@/components/coetha-reading-poller";
 import { fmtDateTime } from "@/lib/format";
@@ -48,6 +49,7 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
 
   const v = await coethaChatView(user, clientId);
   const reading = await readingView(user, clientId);
+  const apply = await applyDecisionsView(user, clientId);
   const jobOf = new Map(reading.jobs.map((j) => [j.id, j]));
   const waiting = v.messages.some((m) => m.status === "WAITING");
   const usd = (c: number | null) => (c == null ? "" : (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" }));
@@ -158,6 +160,46 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
         )}
       </section>
 
+      {/* Apply These Decisions: the entries Coetha prepared from Tabitha's decisions, for Approve & Post */}
+      {apply.entries.length > 0 && (
+        <section className={clsx(card, "border-2 border-gold-400 p-4 sm:p-5")} data-testid="apply-decisions">
+          <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><ClipboardCheck className="size-5 text-gold-600" aria-hidden /> Apply These Decisions <span className="rounded-full bg-navy-900 px-2 py-0.5 font-sans text-xs font-bold text-white">{apply.entries.length}</span></h2>
+          <p className="mt-1 text-xs text-slate-600">Coetha prepared these entries from your decisions. Nothing is posted until you tick it and click Approve &amp; Post; anything you leave unticked stays on hold. Waiting bank rows are posted as they are (no new bank transaction), each entry posts once, and closed months are refused.</p>
+          {apply.impact.length > 0 && (
+            <div className="mt-3 rounded-lg bg-navy-900 p-3 text-sm text-white" data-testid="apply-impact">
+              <p className="font-semibold text-gold-200">Effect on the books if every entry below is approved</p>
+              <ul className="mt-1 flex flex-wrap gap-x-5 gap-y-1">{apply.impact.map((i) => <li key={i.type}>{i.label}: <strong>{i.cents >= 0 ? "+" : "−"}{usd(Math.abs(i.cents))}</strong></li>)}</ul>
+            </div>
+          )}
+          <ActionForm action={applyDecisionsAction.bind(null, clientId)} className="mt-3">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[820px] text-xs">
+                <thead><tr className="text-left text-slate-600"><th className="py-1 pr-2">{apply.canApprove ? "Approve" : ""}</th><th className="pr-2">Date</th><th className="pr-2">Entry</th><th className="pr-2">Debit</th><th className="pr-2">Credit</th><th className="pr-2 text-right">Amount</th><th>Why</th></tr></thead>
+                <tbody>
+                  {apply.entries.map((e) => (
+                    <tr key={e.id} className={clsx("border-t border-ivory-200 align-top", e.stale && "opacity-60")} data-testid="apply-entry" data-kind={e.kind}>
+                      <td className="py-1.5 pr-2">{apply.canApprove && !e.stale && <input type="checkbox" name="decision" value={e.id} aria-label={`Approve ${e.title}`} className="size-4" />}</td>
+                      <td className="pr-2 whitespace-nowrap">{e.date}</td>
+                      <td className="pr-2"><span className="font-semibold text-navy-900">{e.title}</span><span className="block text-slate-600">{e.bankRow ? "Waiting bank row" : "Journal entry (reclassification)"} · {e.source}{e.stale ? " · this row was already posted or excluded; it will be skipped" : ""}</span></td>
+                      <td className="pr-2">{e.lines.filter((l) => l.debitCents).map((l, i) => <span key={i} className="block">{l.account} {usd(l.debitCents)}</span>)}</td>
+                      <td className="pr-2">{e.lines.filter((l) => l.creditCents).map((l, i) => <span key={i} className="block">{l.account} {usd(l.creditCents)}</span>)}</td>
+                      <td className="pr-2 text-right tabular-nums">{usd(e.amountCents)}</td>
+                      <td>{e.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {apply.canApprove ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="submit" name="do" value="approve" className="rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-800" data-testid="apply-approve">Approve &amp; Post selected</button>
+                <button type="submit" name="do" value="remove" className="rounded-lg border-2 border-navy-900 bg-white px-4 py-2 text-sm font-semibold text-navy-900" data-testid="apply-remove">Remove selected (don&apos;t post)</button>
+              </div>
+            ) : <p className="mt-2 text-xs font-semibold text-navy-900">Only Tabitha can approve and post these.</p>}
+          </ActionForm>
+        </section>
+      )}
+
       {reading.jobs.some((j) => j.findings.length > 0) && (
         <section className={clsx(card, "p-4 sm:p-5")} data-testid="coetha-findings">
           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -172,6 +214,12 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
                 {j.groups.map((g) => `${g.label}: ${g.items.length}`).join(" · ")}
                 {" "}<a className="ml-1 font-semibold text-navy-900 underline" href={`/api/coetha/findings?clientId=${encodeURIComponent(clientId)}&jobId=${encodeURIComponent(j.id)}`} data-testid="findings-download">Download this document as a spreadsheet</a>
               </p>
+              {j.groups.some((g) => g.key === "ROUTINE") && (
+                <ActionForm action={prepareFromDocumentAction.bind(null, clientId, j.id)} className="mt-2">
+                  <button type="submit" className="rounded-lg border-2 border-navy-900 bg-white px-3 py-1.5 text-xs font-semibold text-navy-900 hover:bg-ivory-100" data-testid="findings-prepare">Prepare the routine checks for Approve &amp; Post</button>
+                  <span className="ml-2 text-xs text-slate-600">Checks needing documents or your judgment stay on hold; answer Coetha about them and she prepares those too.</span>
+                </ActionForm>
+              )}
               {j.groups.map((g) => (
                 <details key={g.key} className="mt-2 rounded-lg bg-ivory-100 p-2 ring-1 ring-ivory-200" data-testid="findings-group" data-group={g.key}>
                   <summary className="cursor-pointer text-sm font-semibold text-navy-900">{g.label} ({g.items.length})</summary>

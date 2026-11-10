@@ -271,8 +271,8 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
     const covered = built.toCat.map((t) => t.id);
     await prisma.$transaction(async (tx) => {
       // Earlier open drafts this run replaces: categories for the same transactions, and every other kind.
-      // Never the drafts from rules or from the completed financial statements.
-      await tx.coethaProposal.updateMany({ where: { clientId, status: "PROPOSED", model: { notIn: ["rules", STATEMENTS_MODEL] }, OR: [{ kind: { not: "CATEGORY" } }, { bankTransactionId: { in: covered } }] }, data: { status: "SUPERSEDED" } });
+      // Never the drafts from rules, the completed financial statements or Tabitha's own decisions.
+      await tx.coethaProposal.updateMany({ where: { clientId, status: "PROPOSED", model: { notIn: ["rules", STATEMENTS_MODEL, "decisions"] }, OR: [{ kind: { not: "CATEGORY" } }, { bankTransactionId: { in: covered } }] }, data: { status: "SUPERSEDED" } });
       if (proposals.length) {
         await tx.coethaProposal.createMany({ data: proposals.map((p) => ({ clientId, runId: run.id, kind: p.kind, payload: p.payload, bankTransactionId: p.bankTransactionId ?? null, confidence: p.confidence ?? null, reason: p.reason, model: res.model, inputHash: built.inputHash })) });
       }

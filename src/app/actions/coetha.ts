@@ -61,6 +61,38 @@ export async function bulkCoethaAction(clientId: string, _prev: ActionState, fd:
   });
 }
 
+/**
+ * Apply These Decisions: Approve & Post the ticked entries (Tabitha only, through the existing
+ * approval and posting path), or take them off the card. Unticked entries stay on hold.
+ */
+export async function applyDecisionsAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const ids = fd.getAll("decision").filter((v): v is string => typeof v === "string");
+    const { approveDecisions, removeDecisions } = await import("@/lib/services/coetha-decisions");
+    const remove = str(fd, "do") === "remove";
+    const results = remove ? await removeDecisions(actor, clientId, ids) : await approveDecisions(actor, clientId, ids);
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    revalidatePath(`/bookkeeping/${clientId}`);
+    const done = results.filter((r) => r.result !== "SKIPPED").length;
+    const skipped = results.filter((r) => r.result === "SKIPPED");
+    const why = skipped.length ? ` Not done (left on the card): ${skipped.map((s) => s.message).filter((m, i, a) => a.indexOf(m) === i).join(" ")}` : "";
+    return remove ? `Removed ${done} from the card; nothing was posted.${why}` : `Posted ${done} of ${results.length} to the books. The ledger, statements and review counts are updated.${why}`;
+  });
+}
+
+/** Prepares the document's routine checks (matched to a waiting bank row, with a proposed account) for Approve & Post. */
+export async function prepareFromDocumentAction(clientId: string, jobId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { prepareFromDocument } = await import("@/lib/services/coetha-decisions");
+    const r = await prepareFromDocument(actor, clientId, jobId);
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    return `Prepared ${r.prepared} entr${r.prepared === 1 ? "y" : "ies"} on the Apply These Decisions card. Nothing is posted until Tabitha approves.${r.skipped.length ? ` Not prepared: ${r.skipped.map((x) => x.message).join(" ")}` : ""}`;
+  });
+}
+
 export async function ownerSwitchAction(which: OwnerSwitch, on: boolean, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
