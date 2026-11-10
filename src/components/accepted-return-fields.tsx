@@ -28,8 +28,8 @@ const label = "mb-1 block text-sm font-semibold text-navy-900";
 
 /**
  * The fields of "Finish & Send a Return": which returns (Federal, the
- * client's state, more states), the accepted date and reference (shared, or
- * per return), one combined PDF or one per return, the optional acceptance
+ * client's state, more states), each with its own submission ID (the IRS and
+ * each state issue their own), the accepted date (shared, or per return), one combined PDF or one per return, the optional acceptance
  * confirmation (not the return), the notice, and Tabitha's confirmation.
  */
 export function AcceptedReturnFields({
@@ -52,7 +52,6 @@ export function AcceptedReturnFields({
   const [year, setYear] = useState<number>(defaultYear ?? thisYear - 1);
   const [filingType, setFilingType] = useState<"ORIGINAL" | "AMENDED">(amended ? "AMENDED" : "ORIGINAL");
   const [date, setDate] = useState(today());
-  const [ref, setRef] = useState("");
   const [fed, setFed] = useState<{ on: boolean; form: string | null; acceptedOn: string | null; ref: string | null }>({ on: !startWithState, form: null, acceptedOn: null, ref: null });
   const home = ctx.clientState && STATES.includes(ctx.clientState) ? ctx.clientState : "AL";
   const [rows, setRows] = useState<Row[]>([{ code: home, on: startWithState || !!ctx.clientState, form: null, acceptedOn: null, ref: null }]);
@@ -90,7 +89,7 @@ export function AcceptedReturnFields({
 
   return (
     <div ref={ref0} className="space-y-4 sm:col-span-6" data-testid="accepted-return-fields">
-      <div className="grid gap-3 sm:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-3">
         {showYear && (
           <label className="block">
             <span className={label}>Tax year</span>
@@ -110,10 +109,6 @@ export function AcceptedReturnFields({
           <span className={label}>Accepted on</span>
           <input className="input" type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} required data-testid="accepted-date" />
         </label>
-        <label className="block">
-          <span className={label}>Submission ID / reference</span>
-          <input className="input" value={ref} onChange={(e) => setRef(e.target.value)} placeholder="Optional" />
-        </label>
       </div>
 
       <fieldset className="rounded-lg border border-ivory-200 p-3">
@@ -123,6 +118,8 @@ export function AcceptedReturnFields({
             <label className="flex w-40 items-center gap-2 font-semibold"><input type="checkbox" name="fed.on" checked={fed.on} onChange={(e) => setFed({ ...fed, on: e.target.checked })} className="accent-navy-900" /> Federal</label>
             <span className="text-sm text-slate-600">Form</span>
             <input className="input w-28" name="fed.returnType" value={fedForm} onChange={(e) => setFed({ ...fed, form: e.target.value })} placeholder="e.g. 1120-S" required={fed.on} aria-label="Federal form" />
+            <span className="text-sm text-slate-600">Submission ID</span>
+            <input className="input w-60" name="fed.submissionId" value={fed.ref ?? ""} onChange={(e) => setFed({ ...fed, ref: e.target.value })} placeholder="IRS submission ID (optional)" aria-label="Federal submission ID" data-testid="fed-submission-id" />
           </div>
           {rows.map((r, i) => (
             <div key={i} className="flex flex-wrap items-center gap-2" data-testid={`row-state-${i}`}>
@@ -135,23 +132,23 @@ export function AcceptedReturnFields({
               </label>
               <span className="text-sm text-slate-600">Form</span>
               <input className="input w-28" name={`st.${i}.returnType`} value={stForm(r)} onChange={(e) => set(i, { form: e.target.value })} placeholder="Type it" required={r.on && !onFile(r.code)} aria-label={`${r.code} form`} />
+              <span className="text-sm text-slate-600">Submission ID</span>
+              <input className="input w-60" name={`st.${i}.submissionId`} value={r.ref ?? ""} onChange={(e) => set(i, { ref: e.target.value })} placeholder={`${r.code} submission ID (optional)`} aria-label={`${r.code} submission ID`} data-testid={`state-${i}-submission-id`} />
             </div>
           ))}
           <button type="button" className="text-xs underline" onClick={() => setRows((rs) => [...rs, { code: "GA", on: true, form: null, acceptedOn: null, ref: null }])}>+ Another state</button>
         </div>
         <details className="mt-2 text-sm">
-          <summary className="cursor-pointer text-slate-600 underline">Different date or reference for one return?</summary>
+          <summary className="cursor-pointer text-slate-600 underline">Different accepted date for one return?</summary>
           <div className="mt-2 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <span className="w-24">Federal</span>
               <input className="input w-44" type="date" name="fed.acceptedOn" value={fed.acceptedOn ?? date} max={today()} onChange={(e) => setFed({ ...fed, acceptedOn: e.target.value })} aria-label="Federal accepted on" />
-              <input className="input w-56" name="fed.submissionId" value={fed.ref ?? ref} onChange={(e) => setFed({ ...fed, ref: e.target.value })} placeholder="Reference" aria-label="Federal reference" />
             </div>
             {rows.map((r, i) => (
               <div key={i} className="flex flex-wrap items-center gap-2">
                 <span className="w-24">{r.code}</span>
                 <input className="input w-44" type="date" name={`st.${i}.acceptedOn`} value={r.acceptedOn ?? date} max={today()} onChange={(e) => set(i, { acceptedOn: e.target.value })} aria-label={`${r.code} accepted on`} />
-                <input className="input w-56" name={`st.${i}.submissionId`} value={r.ref ?? ref} onChange={(e) => set(i, { ref: e.target.value })} placeholder="Reference" aria-label={`${r.code} reference`} />
               </div>
             ))}
           </div>
