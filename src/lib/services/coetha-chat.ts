@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
-import { callCoethaChat, CoethaModelError, coethaKeyPresent, type CoethaChatTurn } from "@/lib/coetha-model";
+import { CHAT_FILE_TYPES, callCoethaChat, CoethaModelError, coethaKeyPresent, type CoethaChatTurn } from "@/lib/coetha-model";
 import { ValidationError } from "./clients";
 import { assertLedger, assertManagedBusiness, bookOf } from "./ledger";
 import { coethaOn } from "./owner-switches";
@@ -29,12 +29,48 @@ import { recordsSnapshot, RECORDS_TOOLS, runRecordsTool } from "./coetha-records
  */
 
 export const MAX_QUESTION = 2000;
+/** Files sent to Coetha: PDFs or images, up to MAX_CHAT_FILES per question and 5 MB in all (the page's upload limit is 6 MB). */
+export const MAX_CHAT_FILES = 3;
+/**
+ * Pictures and scanned PDFs go to Coetha as files, which grow by a third on the way; together they
+ * stay under this so the request isn't refused before it reaches her. Text PDFs (bank statements,
+ * invoices) are sent as their text instead, which is far smaller.
+ */
+export const MAX_CHAT_RAW = 3 * 1024 * 1024;
+/** The most text read from one PDF that is sent (about 40 pages of a bank statement). */
+const MAX_PDF_TEXT = 120_000;
+
+/** What Coetha receives for one file: a PDF's text when it has any, else the file itself. */
+type ForCoetha = { name: string; text: string } | { mediaType: string; base64: string; raw: number };
+async function forCoetha(f: { bytes: Uint8Array; originalName: string; type: string }): Promise<ForCoetha> {
+  if (f.type === "application/pdf") {
+    const { pdfLines } = await import("@/lib/statement-pdf");
+    const lines = await pdfLines(f.bytes);
+    const text = (lines ?? []).map((l) => scrub(l, 400)).filter(Boolean).join("\n");
+    if (text.replace(/\s/g, "").length >= 40) return { name: f.originalName.slice(0, 120), text: text.slice(0, MAX_PDF_TEXT) };
+  }
+  return { mediaType: f.type, base64: Buffer.from(f.bytes).toString("base64"), raw: f.bytes.length };
+}
+export const MAX_CHAT_FILE = 5 * 1024 * 1024;
+export type ChatFile = { bytes: Uint8Array; originalName: string; mimeType: string };
+
+/** The file's real type from its first bytes (the browser's label isn't trusted). */
+export function chatFileType(bytes: Uint8Array): (typeof CHAT_FILE_TYPES)[number] | null {
+  const h = (n: number) => Array.from(bytes.slice(0, n));
+  const is = (sig: number[]) => sig.every((b, i) => bytes[i] === b);
+  if (is([0x25, 0x50, 0x44, 0x46])) return "application/pdf";
+  if (is([0x89, 0x50, 0x4e, 0x47])) return "image/png";
+  if (is([0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (is([0x47, 0x49, 0x46, 0x38])) return "image/gif";
+  if (is([0x52, 0x49, 0x46, 0x46]) && String.fromCharCode(...h(12).slice(8)) === "WEBP") return "image/webp";
+  return null;
+}
 /** How many earlier messages go with each question (the newest ones). */
 const HISTORY = 16;
 const SHOWN = 60;
 
 export const COETHA_CHAT_PRIVACY =
-  "When you ask Coetha a question, your question and this business's bookkeeping data (transaction dates, amounts, shortened descriptions and account names) are sent to Anthropic's API (Claude) under the firm's own API key. Long numbers are shortened to the last 4 digits, and SSNs, EINs, emails and phone numbers are removed first. The conversation is saved in Client Connect for this business only.";
+  "When you ask Coetha a question, your question and this business's bookkeeping data (transaction dates, amounts, shortened descriptions and account names) are sent to Anthropic's API (Claude) under the firm's own API key. Long numbers are shortened to the last 4 digits, and SSNs, EINs, emails and phone numbers are removed first. From a PDF with text (a bank statement, an invoice), its text is sent with long numbers shortened to the last 4 digits; a picture or a scanned PDF is sent as it is (a check image shows the account and routing numbers printed on it). Every file is kept as a staff-only document for this business. The conversation is saved in Client Connect for this business only.";
 
 async function takeLock(name: string, seconds: number) {
   const now = new Date();
@@ -59,7 +95,7 @@ export function cleanQuestion(q: string): string {
 }
 
 /** Asks Coetha one question about this client's books and saves both sides of the exchange. */
-export async function askCoetha(actor: Actor, clientId: string, question: string, opts: { today?: string } = {}) {
+export async function askCoetha(actor: Actor, clientId: string, question: string, opts: { today?: string; files?: ChatFile[] } = {}) {
   await assertLedger(actor, clientId);
   await assertManagedBusiness(clientId);
   await bookOf(clientId);
@@ -67,32 +103,57 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
   await assertCoethaAllowed(clientId);
   if (!(await coethaOn())) throw new ValidationError(COETHA_OFF);
   if (!coethaKeyPresent()) throw new ValidationError(COETHA_NO_KEY);
-  const q = cleanQuestion(question);
+  const files = (opts.files ?? []).filter((f) => f.bytes.length);
+  if (files.length > MAX_CHAT_FILES) throw new ValidationError(`Send up to ${MAX_CHAT_FILES} files with one question.`);
+  if (files.reduce((n, f) => n + f.bytes.length, 0) > MAX_CHAT_FILE) throw new ValidationError(files.length > 1 ? "Keep the files under 5 MB in all." : "Attach a file under 5 MB.");
+  const typed = files.map((f) => {
+    const type = chatFileType(f.bytes);
+    if (!type) throw new ValidationError(`“${f.originalName.slice(0, 80)}” isn't a PDF or a picture (PNG, JPEG, GIF or WebP).`);
+    return { ...f, type };
+  });
+  const parts = await Promise.all(typed.map(forCoetha));
+  const raw = parts.reduce((n, p) => n + ("raw" in p ? p.raw : 0), 0);
+  if (raw > MAX_CHAT_RAW) throw new ValidationError("Pictures and scanned PDFs can be up to 3 MB in all for one question. Send a smaller picture, just the pages you need, or one file at a time.");
+  const q = cleanQuestion(question.trim() || (files.length ? `Please read the attached file${files.length > 1 ? "s" : ""} and tell me what ${files.length > 1 ? "they show" : "it shows"} and how it should be recorded.` : ""));
   const lock = `coetha-chat:${clientId}`;
   if (!(await takeLock(lock, 120))) throw new ValidationError("Coetha is still answering the last question for this business. Try again in a moment.");
   try {
-    const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true } })).reverse();
+    const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true, attachmentName: true, attachments: true } })).reverse();
     const built = await buildCoethaInput(actor, clientId, { today: opts.today });
     // The batch a Coetha run categorizes is capped and skips drafted rows; the complete records replace it.
     const { toCategorize: _batch, recentPosted: _recent, ...books } = built.input;
     void _batch; void _recent;
     const records = await recordsSnapshot(actor, clientId);
-    const turns: CoethaChatTurn[] = [...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: m.text })), { role: "user", text: q }];
+    // Earlier files aren't sent again; Coetha sees which were attached and her answer about them.
+    const names = (m: { attachmentName: string | null; attachments: unknown }) => (Array.isArray(m.attachments) ? (m.attachments as { name: string }[]).map((a) => a.name) : m.attachmentName ? [m.attachmentName] : []);
+    const turns: CoethaChatTurn[] = [...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })), { role: "user", text: q }];
     let res;
     try {
-      res = await callCoethaChat(books, turns, { defs: RECORDS_TOOLS, run: (name, input) => runRecordsTool(clientId, name, input), records });
+      res = await callCoethaChat(books, turns, { defs: RECORDS_TOOLS, run: (name, input) => runRecordsTool(clientId, name, input), records }, parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
     } catch (err) {
       const code = err instanceof CoethaModelError ? err.code : "ERROR";
       await audit(prisma, { actorId: actor.id, action: "coetha.chat_failed", entityType: "LedgerBook", entityId: clientId, clientId, details: { code } });
       throw new ValidationError(`Coetha couldn't answer: ${err instanceof CoethaModelError ? err.message : "something went wrong."} Your question wasn't saved; you can send it again.`);
     }
+    // The files are kept only once Coetha has answered (a failed question saves nothing).
+    const attachments: { documentId: string; name: string }[] = [];
+    if (typed.length) {
+      const { staffUploadDocument } = await import("./documents");
+      for (const f of typed) {
+        const name = f.originalName.slice(0, 200);
+        const doc = await staffUploadDocument(actor, { clientId, category: "BOOKKEEPING", title: `Sent to Coetha — ${name}`.slice(0, 200), visibility: "STAFF_ONLY", bytes: f.bytes, originalName: f.originalName, notify: false });
+        attachments.push({ documentId: doc.id, name });
+      }
+    }
+    const documentId = attachments[0]?.documentId ?? null;
+    const attachmentName = attachments[0]?.name ?? null;
     // Explicit times keep the question just before its answer in the thread.
     const at = Date.now();
     const [asked, answered] = await prisma.$transaction([
-      prisma.coethaChatMessage.create({ data: { clientId, role: "USER", text: q, authorId: actor.id, createdAt: new Date(at) } }),
+      prisma.coethaChatMessage.create({ data: { clientId, role: "USER", text: q, authorId: actor.id, documentId, attachmentName, ...(attachments.length ? { attachments } : {}), createdAt: new Date(at) } }),
       prisma.coethaChatMessage.create({ data: { clientId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(at + 1) } }),
     ]);
-    await audit(prisma, { actorId: actor.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId: asked.id, searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
+    await audit(prisma, { actorId: actor.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId: asked.id, documentIds: attachments.map((a) => a.documentId), searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
     return { questionId: asked.id, answerId: answered.id, text: answered.text };
   } finally {
     await releaseLock(lock);
@@ -110,6 +171,6 @@ export async function coethaChatView(actor: Actor, clientId: string) {
   ]);
   const people = await prisma.user.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.authorId).filter((x): x is string => !!x))] } }, select: { id: true, name: true } });
   const nameOf = new Map(people.map((u) => [u.id, u.name]));
-  const messages = rows.reverse().map((m) => ({ id: m.id, role: m.role as "USER" | "COETHA", text: m.text, createdAt: m.createdAt, author: m.role === "USER" ? (m.authorId ? nameOf.get(m.authorId) ?? "Staff" : "Staff") : "Coetha" }));
+  const messages = rows.reverse().map((m) => ({ id: m.id, role: m.role as "USER" | "COETHA", text: m.text, createdAt: m.createdAt, author: m.role === "USER" ? (m.authorId ? nameOf.get(m.authorId) ?? "Staff" : "Staff") : "Coetha", attachments: Array.isArray(m.attachments) ? (m.attachments as { documentId: string; name: string }[]) : m.attachmentName ? [{ documentId: m.documentId ?? "", name: m.attachmentName }] : [] }));
   return { status, hasBook: !!book, optedOut: !!optOut, messages, canAsk: status.ready && !!book && !optOut };
 }

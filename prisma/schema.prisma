@@ -4925,6 +4925,11 @@ model CoethaChatMessage {
   outputTokens Int        @default(0)
   requestId    String?
   inputHash    String?
+  // A file sent with the question (check image, statement page, receipt): kept as a staff-only document.
+  documentId     String?
+  attachmentName String?
+  // Every file sent with the question: [{ documentId, name }] (documentId/attachmentName keep the first).
+  attachments    Json?
   createdAt    DateTime   @default(now())
 
   @@index([clientId, createdAt])

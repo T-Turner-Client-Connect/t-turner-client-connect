@@ -170,6 +170,12 @@ function chatError(err: unknown, model: string): CoethaModelError {
   if (err instanceof Anthropic.APIError) return new CoethaModelError(`Anthropic's API returned an error${err.status ? ` (${err.status})` : ""}.`, "API");
   return new CoethaModelError("Coetha's answer couldn't be read.", "PARSE");
 }
+/**
+ * A file sent with the newest question: the text read from a PDF (statements, invoices: small and
+ * de-identified), or the file itself for a picture or a scanned PDF (PNG, JPEG, GIF, WebP, PDF).
+ */
+export type CoethaChatFile = { mediaType: string; base64: string } | { name: string; text: string };
+export const CHAT_FILE_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"] as const;
 
 /**
  * One chat reply. `books` is the de-identified data from buildCoethaInput for ONE client; `turns`
@@ -177,7 +183,7 @@ function chatError(err: unknown, model: string): CoethaModelError {
  * Coetha's only tools are read-only searches of the same business (tools.run is bound to it), so
  * a reply can't change anything. Tests replace global fetch.
  */
-export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], tools?: CoethaChatTools): Promise<CoethaChatResult> {
+export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], tools?: CoethaChatTools, files: CoethaChatFile[] = []): Promise<CoethaChatResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
   if (!turns.length || turns[turns.length - 1].role !== "user") throw new CoethaModelError("Ask Coetha a question first.", "BAD_REQUEST");
@@ -187,6 +193,16 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], to
   // The API expects the conversation to start with a user turn.
   const first = turns.findIndex((t) => t.role === "user");
   const messages: Anthropic.Beta.BetaMessageParam[] = turns.slice(first).map((t) => ({ role: t.role, content: t.text }));
+  if (files.length) {
+    // The files go with the newest question, before its text.
+    const blocks: Anthropic.Beta.BetaContentBlockParam[] = files.map((file) => ("text" in file
+      ? { type: "text", text: `Attached file “${file.name}” (its text, read from the PDF; long numbers shortened to the last 4 digits):\n${file.text}` }
+      : file.mediaType === "application/pdf"
+        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: file.base64 } }
+        : { type: "image", source: { type: "base64", media_type: file.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: file.base64 } }));
+    const last = messages[messages.length - 1];
+    last.content = [...blocks, { type: "text", text: String(last.content) }];
+  }
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
     { type: "text", text: COETHA_CHAT_SYSTEM },
     { type: "text", text: `Books (JSON):\n${JSON.stringify(books)}` },
