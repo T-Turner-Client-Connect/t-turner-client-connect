@@ -3993,6 +3993,7 @@ model ManualBillingPayment {
 
 model LedgerBook {
   clientId             String               @id
+  coethaMemories       CoethaMemory[]
   client               Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
   // CASH | ACCRUAL — the basis this client's statements use by default.
   basis                String               @default("CASH")
@@ -4912,6 +4913,23 @@ model YearEndFiling {
 // ====================================================================
 /// "Ask Coetha": the office's back-and-forth conversation with Coetha about ONE client's books.
 /// Coetha answers from that client's de-identified books only; a reply never changes anything.
+/// What Coetha remembers for one business: Tabitha's decisions, standing instructions and holds,
+/// so she never has to say them again. Only Tabitha adds or removes; removed notes are kept.
+model CoethaMemory {
+  id          String     @id @default(cuid())
+  clientId    String
+  book        LedgerBook @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  /// DECISION | INSTRUCTION | HOLD
+  kind        String
+  text        String
+  createdById String
+  createdAt   DateTime   @default(now())
+  removedAt   DateTime?
+  removedById String?
+
+  @@index([clientId, removedAt])
+}
+
 model CoethaChatMessage {
   id           String     @id @default(cuid())
   clientId     String

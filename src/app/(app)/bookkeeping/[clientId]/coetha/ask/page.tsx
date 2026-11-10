@@ -2,7 +2,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { ClipboardCheck, Download, FileSearch, KeyRound, Loader2, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
+import { Brain, ClipboardCheck, Download, FileSearch, KeyRound, Loader2, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { BusinessTabs } from "@/components/business-tabs";
@@ -10,8 +10,9 @@ import { ActionForm } from "@/components/action-form";
 import { canUseLedger } from "@/lib/services/ledger";
 import { COETHA_NO_KEY } from "@/lib/services/coetha";
 import { COETHA_CHAT_PRIVACY, coethaChatView, MAX_QUESTION } from "@/lib/services/coetha-chat";
-import { applyDecisionsAction, askCoethaAction, prepareFromDocumentAction, retryReadingAction, summarizeAgainAction } from "@/app/actions/coetha";
+import { applyDecisionsAction, forgetMemoryAction, askCoethaAction, prepareFromDocumentAction, retryReadingAction, summarizeAgainAction } from "@/app/actions/coetha";
 import { applyDecisionsView } from "@/lib/services/coetha-decisions";
+import { memoryView } from "@/lib/services/coetha-memory";
 import { readingView } from "@/lib/services/coetha-reading";
 import { CoethaReadingPoller } from "@/components/coetha-reading-poller";
 import { fmtDateTime } from "@/lib/format";
@@ -50,6 +51,7 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
   const v = await coethaChatView(user, clientId);
   const reading = await readingView(user, clientId);
   const apply = await applyDecisionsView(user, clientId);
+  const memory = await memoryView(user, clientId);
   const jobOf = new Map(reading.jobs.map((j) => [j.id, j]));
   const waiting = v.messages.some((m) => m.status === "WAITING");
   const usd = (c: number | null) => (c == null ? "" : (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" }));
@@ -164,6 +166,30 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
             ))}
           </ol>
         )}
+      </section>
+
+      {/* What Coetha remembers for this business */}
+      <section className={clsx(card, "p-4 sm:p-5")} data-testid="coetha-memory">
+        <details open={memory.length > 0 && memory.length <= 8}>
+          <summary className="flex cursor-pointer items-center gap-2 font-serif text-lg font-bold text-navy-900"><Brain className="size-5 text-gold-600" aria-hidden /> What Coetha remembers for {biz} <span className="rounded-full bg-navy-900 px-2 py-0.5 font-sans text-xs font-bold text-white">{memory.length}</span></summary>
+          <p className="mt-1 text-xs text-slate-600">Your decisions, standing instructions and holds. Coetha applies them to every question about this business, so you don&apos;t have to repeat them. Tell her &ldquo;remember …&rdquo; to add one; she saves only what you state. Removing one keeps it in the history.</p>
+          {memory.length === 0 ? <p className="mt-2 text-sm text-slate-600">Nothing yet.</p> : (
+            <ul className="mt-2 divide-y divide-ivory-200 text-sm">
+              {memory.map((m) => (
+                <li key={m.id} className="flex flex-wrap items-start gap-2 py-1.5" data-testid="memory-note">
+                  <span className={clsx("rounded px-1.5 py-0.5 text-xs font-semibold", m.kind === "HOLD" ? "bg-amber-100 text-amber-900" : m.kind === "DECISION" ? "bg-emerald-100 text-emerald-900" : "bg-ivory-200 text-navy-900")}>{m.label}</span>
+                  <span className="min-w-0 flex-1 text-navy-900">{m.text}</span>
+                  <span className="text-xs text-slate-600">{fmtDateTime(m.createdAt)}</span>
+                  {apply.canApprove && (
+                    <ActionForm action={forgetMemoryAction.bind(null, clientId, m.id)} showSuccess={false}>
+                      <button type="submit" className="text-xs font-semibold text-navy-900 underline" data-testid="memory-remove">Remove</button>
+                    </ActionForm>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
       </section>
 
       {/* Apply These Decisions: the entries Coetha prepared from Tabitha's decisions, for Approve & Post */}

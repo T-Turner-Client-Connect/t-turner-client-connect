@@ -156,6 +156,17 @@ export async function askCoethaAction(clientId: string, _prev: ActionState, fd: 
   });
 }
 
+/** Remove a note from what Coetha remembers for this business (Tabitha only; kept in history). */
+export async function forgetMemoryAction(clientId: string, memoryId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { forgetNotes } = await import("@/lib/services/coetha-memory");
+    await forgetNotes(actor, clientId, [memoryId]);
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    return "Removed. Coetha won't apply it any more.";
+  });
+}
+
 /** "Try again" on a file Coetha couldn't read: she continues from where she stopped. */
 export async function retryReadingAction(clientId: string, jobId: string, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();

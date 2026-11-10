@@ -176,9 +176,14 @@ export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEO
 async function chatTools(actor: Actor, clientId: string, records: unknown) {
   const owner = await isPrimaryOwner(actor.id);
   const { PREPARE_TOOL, runPrepareTool } = await import("./coetha-decisions");
+  const { MEMORY_TOOLS, runMemoryTool } = await import("./coetha-memory");
+  const memoryNames = new Set(MEMORY_TOOLS.map((t) => t.name));
   return {
-    defs: owner ? [...RECORDS_TOOLS, PREPARE_TOOL] : RECORDS_TOOLS,
-    run: (name: string, input: unknown) => (owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input) : runRecordsTool(clientId, name, input)),
+    defs: owner ? [...RECORDS_TOOLS, PREPARE_TOOL, ...MEMORY_TOOLS] : RECORDS_TOOLS,
+    run: (name: string, input: unknown) =>
+      owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input)
+        : owner && memoryNames.has(name) ? runMemoryTool(actor, clientId, name, input)
+          : runRecordsTool(clientId, name, input),
     records,
     asker: owner ? ("owner" as const) : ("staff" as const),
   };
