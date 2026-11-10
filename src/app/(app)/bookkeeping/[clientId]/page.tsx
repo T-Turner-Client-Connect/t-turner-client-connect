@@ -145,7 +145,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
         </div>
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
-            { icon: Landmark, label: "Total Bank Balance", value: o.ledger ? usd(o.ledger.bank) : "—", sub: o.ledger ? `(${o.ledger.bankAccounts} account${o.ledger.bankAccounts === 1 ? "" : "s"})` : "Books not set up", tone: "text-gold-600", id: "fo-bank" },
+            { icon: Landmark, label: "Total Bank Balance", value: o.ledger ? usd(o.ledger.bank) : "—", sub: o.ledger ? `Per the books (${o.ledger.bankAccounts} account${o.ledger.bankAccounts === 1 ? "" : "s"})${o.ledger.waitingRows ? ` · ${o.ledger.waitingRows} bank row${o.ledger.waitingRows === 1 ? "" : "s"} not posted yet` : ""}` : "Books not set up", tone: "text-gold-600", id: "fo-bank" },
             { icon: TrendingUp, label: "Income (MTD)", value: o.ledger ? usd(o.ledger.income) : "—", tone: "text-emerald-600", id: "fo-income" },
             { icon: TrendingDown, label: "Expenses (MTD)", value: o.ledger ? usd(o.ledger.expenses) : "—", tone: "text-red-500", id: "fo-expenses" },
             { icon: Coins, label: "Net Profit (MTD)", value: o.ledger ? usd(o.ledger.net) : "—", tone: "text-gold-600", id: "fo-net" },

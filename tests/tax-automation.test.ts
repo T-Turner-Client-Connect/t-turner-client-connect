@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { commitTaxImport, createFiling, decideTaxRow, setFilingStatusByStaff, setPrepStatus, stageTaxImport } from "@/lib/services/tax";
@@ -47,7 +47,7 @@ describe("tax workspace", () => {
     // Form 8879 confirmed and an approved summary (or a stated reason). This Admin is stopped by the 8879 check.
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center" })).rejects.toThrow(/8879/);
     const unassigned = await makeUser("STAFF", "Unassigned Staff");
-    await expect(setFilingStatusByStaff(unassigned, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true, overrideReason: "Filed in TaxAct (fictional)" } })).rejects.toThrow(/Only Tabitha, an Admin or the staff member assigned/);
+    await expect(setFilingStatusByStaff(unassigned, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true, overrideReason: "Filed in TaxAct (fictional)" } })).rejects.toThrow(/assigned preparer|staff member assigned to this client/);
     await prisma.ownerAccess.create({ data: { userId: staff.id, isPrimary: true } });
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: false } })).rejects.toThrow(/8879/);
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true } })).rejects.toThrow(/no client-approved/);

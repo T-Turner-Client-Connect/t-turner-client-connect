@@ -184,6 +184,22 @@ export async function uploadStatementAction(clientId: string, _prev: ActionState
   });
 }
 
+/** Reads every statement already on file for one account (no re-upload), oldest month first. */
+export async function readAllStatementsAction(clientId: string, registryId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { readStatementsOnFile } = await import("@/lib/services/statement-import");
+    const r = await readStatementsOnFile(actor, clientId, registryId, { postOpening: fd.get("postOpening") === "on" });
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    revalidatePath(`/bookkeeping/${clientId}/banking/reconciliation`);
+    if (!r.results.length) throw new ValidationError("There are no statements on file for this account yet.");
+    const ok = r.results.filter((x) => x.ok);
+    const lines = r.results.map((x) => `${x.month}: ${x.ok ? `${x.added} added` : `not imported (${x.message.replace(/^The statement was filed, but /, "")})`}`);
+    return `${ok.length} of ${r.results.length} statements read. ${lines.join(" · ")}${r.opening ? ` ${r.opening}` : ""}`;
+  });
+}
+
 /** "Read transactions from statement": reads a statement PDF already on file. */
 export async function readStatementAction(clientId: string, documentId: string, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();
@@ -193,5 +209,18 @@ export async function readStatementAction(clientId: string, documentId: string, 
     revalidatePath(`/bookkeeping/${clientId}/books`);
     if (!r.ok) throw new ValidationError(statementReadMessage(r));
     return statementReadMessage(r);
+  });
+}
+
+/** Posts the opening balance from the earliest statement's beginning balance (Tabitha or an Admin; once). */
+export async function postOpeningFromStatementAction(clientId: string, ledgerAccountId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { postOpeningFromStatement } = await import("@/lib/services/cash-proof");
+    const r = await postOpeningFromStatement(actor, clientId, ledgerAccountId);
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/banking/reconciliation`);
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    return `${r.corrected ? "Opening corrected with an adjusting entry (the original stays in the history): " : "Opening balance "}$${(r.cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })} ${r.corrected ? "recorded on the bank account" : "posted"} on ${r.date}.`;
   });
 }

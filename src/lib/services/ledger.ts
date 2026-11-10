@@ -176,12 +176,16 @@ export async function setupLedger(actor: Actor, clientId: string, input: { basis
   const client = await prisma.client.findUnique({ where: { id: clientId }, select: { archivedAt: true } });
   if (!client || client.archivedAt) throw new ValidationError("Client not found.");
   if (await prisma.ledgerBook.count({ where: { clientId } })) throw new ValidationError("This client's books are already set up.");
-  return prisma.$transaction(async (tx) => {
+  const book = await prisma.$transaction(async (tx) => {
     const book = await tx.ledgerBook.create({ data: { clientId, basis: input.basis, fiscalYearStartMonth: fy, createdById: actor.id } });
     await tx.ledgerAccount.createMany({ data: DEFAULT_CHART.map((a) => ({ clientId, code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null })) });
     await audit(tx, { actorId: actor.id, action: "ledger.setup", entityType: "LedgerBook", entityId: clientId, clientId, details: { basis: input.basis, fiscalYearStartMonth: fy } });
     return book;
   });
+  // Accounts registered before the books existed get their GL accounts now, so their statements import.
+  const { linkRegisteredAccounts } = await import("./bank-accounts");
+  await linkRegisteredAccounts(clientId, actor.id);
+  return book;
 }
 
 export type AccountInput = { code: string; name: string; type: string; subtype?: string | null; description?: string; institution?: string; last4?: string };

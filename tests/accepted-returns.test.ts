@@ -402,7 +402,7 @@ describe("Deliver an already-accepted return in one step", () => {
     expect(err.message).toMatch(/Taxes tab → Finish & Send a Return \(federal and state together\)/);
     expect(err.message).not.toMatch(/send it for review|Tabitha releases/);
     expect(err.next.href).toBe(`/clients/${rosalind.id}?tab=taxes&deliver=1&year=2025#finish-send`);
-    await expect(staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "STATE_RETURN", bytes: pdf(), originalName: "y.pdf" })).rejects.toThrow(/Only Tabitha, an Admin or the staff member assigned/);
+    await expect(staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", visibility: "PUBLISHED", year: 2025, docType: "STATE_RETURN", bytes: pdf(), originalName: "y.pdf" })).rejects.toThrow(/assigned preparer|staff member assigned to this client/);
     const ctx = await deliveryContext(rosalind.id, tabitha);
     expect([ctx.owner, ctx.clientType]).toEqual([true, "INDIVIDUAL"]);
     expect((await deliveryContext(rosalind.id, daria)).owner).toBe(false);
@@ -619,4 +619,3 @@ describe("Fixing a filing (Tabitha only)", () => {
     await expect(fileReturn(daria, { clientId: rosalind.id, taxYear: 2025, returnType: "", jurisdiction: "AL", filingType: "ORIGINAL", bytes: pdf("ambiguous"), originalName: "x.pdf" })).rejects.toThrow(/Enter the return type/);
   });
 });
-

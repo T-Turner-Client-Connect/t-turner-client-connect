@@ -2,7 +2,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { ListChecks, Sparkles } from "lucide-react";
+import { ListChecks, Sparkles , Scale } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { ActionForm } from "@/components/action-form";
@@ -13,7 +13,8 @@ import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { usd } from "@/lib/services/ledger";
 import { workMonth } from "@/lib/services/bookkeeping-clients";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
-import { approveReconciliationAction, readStatementAction, runMonitorAction, statementBalancesAction } from "@/app/actions/bk-workflow";
+import { approveReconciliationAction, postOpeningFromStatementAction, readAllStatementsAction, readStatementAction, runMonitorAction, statementBalancesAction } from "@/app/actions/bk-workflow";
+import { cashProof } from "@/lib/services/cash-proof";
 
 export const metadata = { title: "Monthly Reconciliation" };
 
@@ -33,6 +34,7 @@ export default async function ReconciliationPage({ params, searchParams }: { par
   const [y, m] = sp.month && /^\d{4}-(0[1-9]|1[0-2])$/.test(sp.month) ? sp.month.split("-").map(Number) : [wm.year, wm.month];
   const [p, manage, owner] = await Promise.all([monthlyAccountProgress(user, clientId, y, m), canManageBanking(user, clientId), canApproveCoethaWork(user)]);
   const label = `${MONTH_NAMES[m - 1]} ${y}`;
+  const proofs = await cashProof(user, clientId).catch(() => []);
   const months = Array.from({ length: 12 }, (_, i) => { const d = new Date(Date.UTC(wm.year, wm.month - 1 - i, 1)); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; });
 
   return (
@@ -61,6 +63,42 @@ export default async function ReconciliationPage({ params, searchParams }: { par
         )}
       </section>
       <Legend />
+
+      {proofs.map((pf) => (
+        <section key={pf.ledgerAccountId} className={clsx(card, "p-4 sm:p-5")} data-testid="cash-proof">
+          <h2 className={h2}><Scale className="size-5 text-gold-600" aria-hidden /> Cash proof — {pf.account}, {pf.asOf}</h2>
+          <p className="mt-1 text-sm text-navy-800">How the bank statement balance becomes the balance in the books, from this business&apos;s own records. Nothing here changes a number.</p>
+          <table className="mt-2 w-full max-w-xl text-sm"><tbody>
+            <tr><td className="py-0.5">Statement ending balance ({pf.asOf})</td><td className="text-right tabular-nums">{usd(pf.statementEnding)}</td></tr>
+            <tr><td className="py-0.5">Less: bank activity not posted yet ({pf.waiting.count} row{pf.waiting.count === 1 ? "" : "s"} waiting for review)</td><td className="text-right tabular-nums">{usd(-pf.waiting.cents)}</td></tr>
+            {pf.excluded.count > 0 && <tr><td className="py-0.5">Less: bank activity excluded from the books ({pf.excluded.count})</td><td className="text-right tabular-nums">{usd(-pf.excluded.cents)}</td></tr>}
+            {pf.openingNeeded != null && pf.openingNeeded !== pf.openingPosted && <tr><td className="py-0.5">Less: opening balance not posted ({pf.openingMonth} statement begins at {usd(pf.openingNeeded)})</td><td className="text-right tabular-nums">{usd(-(pf.openingNeeded - pf.openingPosted))}</td></tr>}
+            {pf.other !== 0 && <tr><td className="py-0.5">Plus: entries on this account that aren&apos;t bank rows (manual or adjusting)</td><td className="text-right tabular-nums">{usd(pf.other)}</td></tr>}
+            <tr className="border-t border-navy-200 font-semibold"><td className="py-0.5">Expected balance in the books</td><td className="text-right tabular-nums">{usd(pf.expected)}</td></tr>
+            <tr className="font-semibold"><td className="py-0.5">Balance in the books (posted entries)</td><td className="text-right tabular-nums">{usd(pf.ledger)}</td></tr>
+            <tr className={clsx("font-semibold", pf.difference ? "text-red-700" : "text-emerald-700")}><td className="py-0.5">Unexplained difference</td><td className="text-right tabular-nums" data-testid="cash-proof-difference">{usd(pf.difference)}</td></tr>
+          </tbody></table>
+          {pf.coverageGap ? <p className="mt-2 text-sm text-red-800">The statements on file don&apos;t run continuously: starting from the first beginning balance and adding every bank row gives an ending balance that is off by {usd(pf.coverageGap)}. A statement may be missing or overlap.</p> : null}
+          {pf.duplicateRows > 0 && <p className="mt-2 text-sm text-red-800">{pf.duplicateRows} bank row{pf.duplicateRows === 1 ? " is" : "s are"} posted more than once.</p>}
+          <div className="mt-2 rounded-lg bg-ivory-50 p-2 text-xs text-navy-900 ring-1 ring-ivory-200" data-testid="cash-proof-opening">
+            <p><strong>Beginning balance on file</strong> for {pf.openingMonth ?? "the first statement month"}: {pf.openingNeeded != null ? usd(pf.openingNeeded) : "none"} (from the reconciliation page or the statement itself).</p>
+            <p className="mt-0.5"><strong>Opening entry in the books:</strong> {pf.openingOnFile ? <>dated {pf.openingOnFile.date}: {pf.openingOnFile.lines.map((l) => `${l.account} ${l.debitCents ? `debit ${usd(l.debitCents)}` : `credit ${usd(l.creditCents)}`}`).join("; ")}{pf.openingElsewhere ? " — it does not include this bank account, so the bank balance doesn't reflect it." : ""}</> : "none. Entering a beginning balance on the reconciliation page records the statement's balance; it doesn't post to the books."}</p>
+          </div>
+          {pf.openingElsewhere && owner && (
+            <ActionForm action={postOpeningFromStatementAction.bind(null, clientId, pf.ledgerAccountId)} className="mt-3 flex flex-wrap items-center gap-2" confirm={`Record the opening balance ${usd(pf.openingNeeded ?? 0)} on this bank account with an adjusting entry dated ${pf.openingOnFile?.date}? The original opening entry stays as it is, in the history.`}>
+              <span className="mr-auto text-sm text-navy-900">The opening entry was recorded on other accounts. Correct it using the {usd(pf.openingNeeded ?? 0)} already on file.</span>
+              <button type="submit" className={navyBtn} data-testid="correct-opening">Correct the opening balance</button>
+            </ActionForm>
+          )}
+          {pf.openingMissing && owner && (
+            <ActionForm action={postOpeningFromStatementAction.bind(null, clientId, pf.ledgerAccountId)} className="mt-3 flex flex-wrap items-center gap-2" confirm={`Post the opening balance ${usd(pf.openingNeeded ?? 0)} on ${pf.openingMonth}-01, from the ${pf.openingMonth} statement's beginning balance? It's posted once and can only be corrected with an adjusting entry.`}>
+              <span className="mr-auto text-sm text-navy-900">The books have no opening entry. Use the {usd(pf.openingNeeded ?? 0)} beginning balance already on file for {pf.openingMonth}; nothing to type again.</span>
+              <button type="submit" className={navyBtn} data-testid="post-opening-from-statement">Post the opening balance on file ({usd(pf.openingNeeded ?? 0)})</button>
+            </ActionForm>
+          )}
+        </section>
+      ))}
+
 
       <section className={clsx(card, "p-4 sm:p-5")}>
         <h2 className={h2}><ListChecks className="size-5 text-gold-600" aria-hidden /> Every account</h2>
@@ -96,6 +134,12 @@ export default async function ReconciliationPage({ params, searchParams }: { par
                   {manage && rec?.statementDocumentId && rec.status !== "APPROVED" && (
                     <ActionForm action={readStatementAction.bind(null, clientId, rec.statementDocumentId)} className="w-full sm:w-auto">
                       <button type="submit" className={goldBtn} data-testid="read-statement"><Sparkles className="size-4" aria-hidden /> Read transactions from statement</button>
+                    </ActionForm>
+                  )}
+                  {manage && (
+                    <ActionForm action={readAllStatementsAction.bind(null, clientId, a.id)} className="flex flex-wrap items-center gap-2" confirm="Read every statement already on file for this account? Transactions already imported are skipped; nothing is posted until it's categorized.">
+                      <button type="submit" className={outlineBtn} data-testid="read-all-statements">Read every statement on file</button>
+                      <label className="flex items-center gap-1 text-xs text-slate-700"><input type="checkbox" name="postOpening" /> Also post opening cash from the earliest statement (only if no opening balance is posted yet)</label>
                     </ActionForm>
                   )}
                   {owner && rec?.status === "READY" && (
