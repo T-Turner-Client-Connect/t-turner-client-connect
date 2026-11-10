@@ -180,10 +180,24 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
                     <tr key={e.id} className={clsx("border-t border-ivory-200 align-top", e.stale && "opacity-60")} data-testid="apply-entry" data-kind={e.kind}>
                       <td className="py-1.5 pr-2">{apply.canApprove && !e.stale && <input type="checkbox" name="decision" value={e.id} aria-label={`Approve ${e.title}`} className="size-4" />}</td>
                       <td className="pr-2 whitespace-nowrap">{e.date}</td>
-                      <td className="pr-2"><span className="font-semibold text-navy-900">{e.title}</span><span className="block text-slate-600">{e.bankRow ? "Waiting bank row" : "Journal entry (reclassification)"} · {e.source}{e.stale ? " · this row was already posted or excluded; it will be skipped" : ""}</span></td>
+                      <td className="pr-2">
+                        {e.newAccount ? (
+                          <>
+                            <span className="font-semibold text-navy-900">New account for the chart of accounts</span>
+                            <span className="mt-1 flex flex-wrap items-center gap-1">
+                              <input className="input w-20 py-0.5 text-xs" name={`code:${e.id}`} defaultValue={e.newAccount.code} aria-label="New account code" disabled={!apply.canApprove} />
+                              <input className="input w-56 py-0.5 text-xs" name={`name:${e.id}`} defaultValue={e.newAccount.name} aria-label="New account name" disabled={!apply.canApprove} />
+                              <span className="rounded bg-ivory-200 px-1.5 py-0.5">{e.newAccount.type}</span>
+                            </span>
+                            <span className="block text-slate-600">Created only when you approve it · tick it with the entries that use it · {e.source}</span>
+                          </>
+                        ) : (
+                          <><span className="font-semibold text-navy-900">{e.title}</span><span className="block text-slate-600">{e.bankRow ? "Waiting bank row" : "Journal entry (reclassification)"} · {e.source}{e.needs.length ? " · uses a new account: tick it too" : ""}{e.stale ? " · this row was already posted or excluded; it will be skipped" : ""}</span></>
+                        )}
+                      </td>
                       <td className="pr-2">{e.lines.filter((l) => l.debitCents).map((l, i) => <span key={i} className="block">{l.account} {usd(l.debitCents)}</span>)}</td>
                       <td className="pr-2">{e.lines.filter((l) => l.creditCents).map((l, i) => <span key={i} className="block">{l.account} {usd(l.creditCents)}</span>)}</td>
-                      <td className="pr-2 text-right tabular-nums">{usd(e.amountCents)}</td>
+                      <td className="pr-2 text-right tabular-nums">{e.newAccount ? "" : usd(e.amountCents)}</td>
                       <td>{e.reason}</td>
                     </tr>
                   ))}
