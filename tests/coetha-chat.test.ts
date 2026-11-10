@@ -69,8 +69,8 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(body).not.toContain("SECRETHARBORVENDOR");
     expect(body).not.toContain("owner@vessel.example");
     expect(body).not.toContain("987654321");
-    // No tools: Coetha can't act from a chat.
-    expect(sent[0].tools).toBeUndefined();
+    // Her only tools are read-only searches of this business.
+    expect((sent[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries"]);
     expect(sent[0].messages).toEqual([{ role: "user", content: "What is the Office Depot charge?" }]);
 
     await askCoetha(s.tabitha, s.vessel.id, "And the ATM withdrawal?", today);

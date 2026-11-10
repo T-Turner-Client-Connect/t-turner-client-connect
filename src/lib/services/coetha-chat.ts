@@ -9,6 +9,7 @@ import { assertLedger, assertManagedBusiness, bookOf } from "./ledger";
 import { coethaOn } from "./owner-switches";
 import { assertCoethaAllowed, coethaOptOutView } from "./coetha-opt-out";
 import { buildCoethaInput, COETHA_NO_KEY, COETHA_OFF, coethaStatus, scrub } from "./coetha";
+import { recordsSnapshot, RECORDS_TOOLS, runRecordsTool } from "./coetha-records-view";
 
 /**
  * "Ask Coetha": the office's back-and-forth conversation with Coetha about ONE client's books.
@@ -16,10 +17,13 @@ import { buildCoethaInput, COETHA_NO_KEY, COETHA_OFF, coethaStatus, scrub } from
  * - Only staff who can open this client's books (Admins and the assigned staff member) can read
  *   or add to the conversation. Each business has its own thread; nothing from another client is
  *   read, sent or shown.
- * - Coetha answers from the same de-identified data a Coetha run uses (buildCoethaInput), plus the
+ * - Coetha answers from the business's books context (buildCoethaInput, without its batch of
+ *   transactions to categorize) and its complete open records (recordsSnapshot: every waiting row
+ *   with its draft, counts, cash proof, judgment groups, comparison, documents on file), plus the
  *   question, with long numbers, SSN/EIN shapes, emails and phone numbers removed first.
- * - She has no tools here: a reply is text only and never posts, changes, approves or sends
- *   anything. Corrections still go through Coetha's drafts and Tabitha's approval.
+ * - Her only tools are read-only searches of the same business's history (coetha-records-view).
+ *   A reply is text only and never posts, changes, approves, reverses or sends anything.
+ *   Corrections still go through Coetha's drafts and Tabitha's approval.
  * - Same switches as a Coetha run: Tabitha's Coetha switch, the API key and "Client prefers no
  *   Coetha". Every question is audited (who, when, model, tokens; not the text).
  */
@@ -69,10 +73,14 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
   try {
     const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true } })).reverse();
     const built = await buildCoethaInput(actor, clientId, { today: opts.today });
+    // The batch a Coetha run categorizes is capped and skips drafted rows; the complete records replace it.
+    const { toCategorize: _batch, recentPosted: _recent, ...books } = built.input;
+    void _batch; void _recent;
+    const records = await recordsSnapshot(actor, clientId);
     const turns: CoethaChatTurn[] = [...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: m.text })), { role: "user", text: q }];
     let res;
     try {
-      res = await callCoethaChat(built.input, turns);
+      res = await callCoethaChat(books, turns, { defs: RECORDS_TOOLS, run: (name, input) => runRecordsTool(clientId, name, input), records });
     } catch (err) {
       const code = err instanceof CoethaModelError ? err.code : "ERROR";
       await audit(prisma, { actorId: actor.id, action: "coetha.chat_failed", entityType: "LedgerBook", entityId: clientId, clientId, details: { code } });
@@ -84,7 +92,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
       prisma.coethaChatMessage.create({ data: { clientId, role: "USER", text: q, authorId: actor.id, createdAt: new Date(at) } }),
       prisma.coethaChatMessage.create({ data: { clientId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(at + 1) } }),
     ]);
-    await audit(prisma, { actorId: actor.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId: asked.id, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
+    await audit(prisma, { actorId: actor.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId: asked.id, searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
     return { questionId: asked.id, answerId: answered.id, text: answered.text };
   } finally {
     await releaseLock(lock);
