@@ -373,7 +373,9 @@ export async function workReading(budgetMs = 20_000, opts: { clientId?: string; 
 
 /** Starts the background function (up to 15 minutes of reading). Without it, the scheduled task and the open page keep reading going. */
 export async function kickBackgroundReading() {
-  const url = process.env.URL, secret = process.env.CRON_SECRET;
+  // This deploy's own address (a deploy preview reads with its own code and database); the site's
+  // main address only when the deploy address isn't available.
+  const url = process.env.DEPLOY_URL || process.env.URL, secret = process.env.CRON_SECRET;
   if (!url || !secret || process.env.VITEST) return false;
   try {
     await fetch(`${url}/.netlify/functions/coetha-reading-background`, { method: "POST", headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(5000) });

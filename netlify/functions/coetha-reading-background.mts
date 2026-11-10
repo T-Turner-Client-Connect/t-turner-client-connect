@@ -18,10 +18,13 @@ export default async (req: Request) => {
     console.log("coetha-reading: refused (CRON_SECRET missing or wrong)");
     return;
   }
+  // This deploy's own address: a deploy preview reads with its own code and database branch.
+  const base = process.env.DEPLOY_URL || process.env.URL;
+  console.log(`coetha-reading: started (${process.env.CONTEXT ?? "unknown context"})`);
   const started = Date.now();
   let units = 0;
   while (Date.now() - started < BUDGET_MS) {
-    const res = await fetch(`${process.env.URL}/api/cron/coetha-reading`, { method: "POST", headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` } }).catch(() => null);
+    const res = await fetch(`${base}/api/cron/coetha-reading`, { method: "POST", headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` } }).catch(() => null);
     if (!res || !res.ok) {
       console.log(`coetha-reading: step HTTP ${res?.status ?? "no response"}`);
       // A step that was cut off: its lease runs out and the next call continues from the saved place.
