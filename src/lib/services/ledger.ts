@@ -190,7 +190,7 @@ export async function setupLedger(actor: Actor, clientId: string, input: { basis
 
 export type AccountInput = { code: string; name: string; type: string; subtype?: string | null; description?: string; institution?: string; last4?: string };
 
-function cleanAccount(input: AccountInput) {
+export function cleanAccount(input: AccountInput) {
   const code = input.code.trim();
   const name = input.name.trim().slice(0, 120);
   if (!/^[0-9A-Za-z.-]{1,12}$/.test(code)) throw new ValidationError("Account number: up to 12 letters, digits, dots or dashes.");

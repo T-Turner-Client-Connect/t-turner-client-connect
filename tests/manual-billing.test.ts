@@ -5,7 +5,7 @@ import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { saveBilling } from "@/lib/services/bookkeeping-profile";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
-import { manualBillingView, manualLedger, markMonthsPaid, portalManualBilling, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
+import { manualBillingView, manualLedger, markMonthsPaid, nonSquareRecurring, portalManualBilling, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
 
 // Fictional office-billed client ($350 monthly, due on the 5th).
 const TODAY = new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
@@ -173,5 +173,33 @@ describe("Mark Months Paid safety", () => {
     await recordManualPayment(tabitha, rich.id, input);
     await expect(recordManualPayment(tabitha, rich.id, input)).rejects.toThrow(/just recorded/);
     expect(await prisma.manualBillingPayment.count({ where: { clientId: rich.id } })).toBe(1);
+  });
+});
+
+describe("Owner's Office shows the same balance as the client's billing page and portal", () => {
+  it("shows the whole balance past due (every unpaid month, not only this month) and updates when a payment is recorded", async () => {
+    const { tabitha } = await setup();
+    // Fictional: $795 a month due on the 1st since ten months ago, nothing paid yet.
+    const realty = await createClient(tabitha, { businessName: "Maple Example Realty (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
+    await saveProfile(tabitha, realty.id, { active: true, frequency: "MONTHLY", payroll: false });
+    await saveBilling(tabitha, realty.id, { monthlyFee: "795", billingDay: 1, billingStartDate: new Date(`${month(-10)}-01T12:00:00Z`) });
+    const { token } = await invitePortalUser(tabitha, realty.id, { email: "owner@maple.fictional.example", name: "Owner", role: "OWNER" });
+    const owner = await acceptPortalInvite(token!, "Portal-Pass-123456");
+    const portal = () => portalManualBilling({ id: owner.id, name: owner.name, email: owner.email }, realty.id);
+    const row = async () => (await nonSquareRecurring(tabitha)).rows.find((r) => r.clientId === realty.id)!;
+
+    const staff = await manualBillingView(tabitha, realty.id);
+    const owed = staff.ledger!.overdueCents;
+    expect(owed).toBeGreaterThanOrEqual(10 * 79500);
+    expect((await row()).overdueCents).toBe(owed);
+    expect((await portal())!.overdueCents).toBe(owed);
+    expect((await row()).next).toEqual(staff.ledger!.next);
+
+    // A payment recorded on the client's billing page lowers all three by the same amount.
+    await recordManualPayment(tabitha, realty.id, { amount: "795", paidOn: TODAY, periodMonth: month(-10), method: "CHECK", reference: "1042" });
+    expect((await row()).overdueCents).toBe(owed - 79500);
+    expect((await portal())!.overdueCents).toBe(owed - 79500);
+    const totals = (await nonSquareRecurring(tabitha)).totals;
+    expect(totals.overdueCents).toBe((await nonSquareRecurring(tabitha)).rows.reduce((n, r) => n + r.overdueCents, 0));
   });
 });

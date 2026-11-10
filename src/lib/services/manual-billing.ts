@@ -233,8 +233,9 @@ export async function manualBillingFor(clientId: string) {
 // --- Recurring billing outside Square (Owner's Office overview) ----------------------------------
 
 /**
- * Every client on monthly billing that is NOT in a Square recurring series, with this month's
- * standing from the same manual ledger used on the client's billing page.
+ * Every client on monthly billing that is NOT in a Square recurring series, with the same figures
+ * as the client's billing page and portal (one manual ledger): the whole balance past due (every
+ * unpaid month whose due date has passed, not only this month) and the next payment due.
  */
 export async function nonSquareRecurring(actor: Actor, today = todayCentral()) {
   await assertBilling(actor, "view");
@@ -251,7 +252,7 @@ export async function nonSquareRecurring(actor: Actor, today = todayCentral()) {
         const ledger = manualLedger({ feeCents: b.monthlyFeeCents, billingDay: b.billingDay, startDate: b.billingStartDate, payments, today });
         const month = today.slice(0, 7);
         const thisMonth = ledger?.periods.find((p) => p.month === month) ?? null;
-        return { clientId: b.clientId, name: b.client.businessName || b.client.displayName, feeCents: b.monthlyFeeCents!, billingDay: b.billingDay, paidThisMonthCents: thisMonth?.paidCents ?? 0, owedThisMonthCents: thisMonth?.owedCents ?? 0, overdueCents: ledger?.overdueCents ?? 0, status: ledger?.status ?? null, notes: b.notes };
+        return { clientId: b.clientId, name: b.client.businessName || b.client.displayName, feeCents: b.monthlyFeeCents!, billingDay: b.billingDay, paidThisMonthCents: thisMonth?.paidCents ?? 0, owedThisMonthCents: thisMonth?.owedCents ?? 0, overdueCents: ledger?.overdueCents ?? 0, next: ledger?.next ?? null, status: ledger?.status ?? null, notes: b.notes };
       }),
   );
   rows.sort((a, b) => a.name.localeCompare(b.name));
