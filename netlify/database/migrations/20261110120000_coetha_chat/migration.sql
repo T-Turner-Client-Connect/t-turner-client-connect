@@ -11,6 +11,8 @@ CREATE TABLE "CoethaChatMessage" (
     "outputTokens" INTEGER NOT NULL DEFAULT 0,
     "requestId" TEXT,
     "inputHash" TEXT,
+    "documentId" TEXT,
+    "attachmentName" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "CoethaChatMessage_pkey" PRIMARY KEY ("id")

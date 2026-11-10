@@ -101,7 +101,9 @@ export async function clearCoethaOptOutAction(clientId: string, _prev: ActionSta
 export async function askCoethaAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    await askCoetha(actor, clientId, str(fd, "question"));
+    const f = fd.get("file");
+    const file = f instanceof File && f.size > 0 ? { bytes: new Uint8Array(await f.arrayBuffer()), originalName: f.name || "file", mimeType: f.type } : null;
+    await askCoetha(actor, clientId, str(fd, "question"), { file });
     revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
     return "Coetha answered below. Nothing in the books was changed.";
   });

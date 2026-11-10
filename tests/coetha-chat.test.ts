@@ -6,11 +6,12 @@ import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { setCoethaOptOut } from "@/lib/services/coetha-opt-out";
 import { COETHA_NO_KEY, COETHA_OFF } from "@/lib/services/coetha";
-import { askCoetha, cleanQuestion, coethaChatView, MAX_QUESTION } from "@/lib/services/coetha-chat";
+import { askCoetha, chatFileType, cleanQuestion, coethaChatView, MAX_CHAT_FILE, MAX_QUESTION } from "@/lib/services/coetha-chat";
 
 // A local stand-in for Anthropic's Messages API. Nothing leaves this test: any other host fails.
 // Fictional businesses, people and transactions only.
-type Req = { model: string; system: { type: string; text: string }[]; messages: { role: string; content: string }[]; tools?: unknown; max_tokens: number };
+type Block = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
+type Req = { model: string; system: { type: string; text: string }[]; messages: { role: string; content: string | Block[] }[]; tools?: unknown; max_tokens: number };
 let sent: Req[] = [];
 let mode: "ok" | "refusal" | "error" | "long" = "ok";
 
@@ -143,5 +144,49 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     mode = "long";
     const r = await askCoetha(s.daria, s.vessel.id, "Hello", today);
     expect(r.text).toMatch(/cut off/);
+  });
+
+  it("a file (check image or PDF) goes with the question, is kept as a staff-only document for that business only, and nothing is posted", async () => {
+    const s = await setup();
+    // A tiny fictional PNG (1x1) standing in for a check image.
+    const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
+    expect(chatFileType(png)).toBe("image/png");
+    const before = await prisma.journalEntry.count();
+    await askCoetha(s.daria, s.vessel.id, "", { ...today, file: { bytes: png, originalName: "check-1043.png", mimeType: "image/png" } });
+    const content = sent[0].messages[sent[0].messages.length - 1].content as Block[];
+    expect(content[0]).toMatchObject({ type: "image", source: { type: "base64", media_type: "image/png" } });
+    expect(content[1].text).toMatch(/read the attached file/);
+    const q = await prisma.coethaChatMessage.findFirstOrThrow({ where: { role: "USER" } });
+    expect(q.attachmentName).toBe("check-1043.png");
+    const doc = await prisma.document.findUniqueOrThrow({ where: { id: q.documentId! } });
+    expect(doc).toMatchObject({ clientId: s.vessel.id, category: "BOOKKEEPING", visibility: "STAFF_ONLY" });
+    expect((await coethaChatView(s.daria, s.vessel.id)).messages[0]).toMatchObject({ attachmentName: "check-1043.png", documentId: doc.id });
+    // The next question doesn't resend the file; Coetha is told one was attached.
+    await askCoetha(s.daria, s.vessel.id, "Which account should it go to?", today);
+    expect(JSON.stringify(sent[1].messages)).not.toContain("iVBORw0KGgo");
+    expect(sent[1].messages[0].content).toContain("[Attached earlier: check-1043.png]");
+    // The other business sees none of it.
+    expect((await coethaChatView(s.tabitha, s.harbor.id)).messages).toHaveLength(0);
+    expect(await prisma.document.count({ where: { clientId: s.harbor.id } })).toBe(0);
+    expect(await prisma.journalEntry.count()).toBe(before);
+  });
+
+  it("a PDF goes as a document; other files, oversized files and failed answers save nothing", async () => {
+    const s = await setup();
+    const pdf = new TextEncoder().encode("%PDF-1.4\n%fictional\n");
+    await askCoetha(s.daria, s.vessel.id, "What is this?", { ...today, file: { bytes: pdf, originalName: "stmt.pdf", mimeType: "application/pdf" } });
+    expect((sent[0].messages[sent[0].messages.length - 1].content as Block[])[0]).toMatchObject({ type: "document", source: { media_type: "application/pdf" } });
+    const docs = await prisma.document.count();
+    // A renamed text file is refused by its content, not its name.
+    await expect(askCoetha(s.daria, s.vessel.id, "Hi", { ...today, file: { bytes: new TextEncoder().encode("not a pdf"), originalName: "x.pdf", mimeType: "application/pdf" } })).rejects.toThrow(/PDF or a picture/);
+    await expect(askCoetha(s.daria, s.vessel.id, "Hi", { ...today, file: { bytes: new Uint8Array(MAX_CHAT_FILE + 1), originalName: "big.pdf", mimeType: "application/pdf" } })).rejects.toThrow(/under 5 MB/);
+    mode = "error";
+    await expect(askCoetha(s.daria, s.vessel.id, "Hi", { ...today, file: { bytes: pdf, originalName: "again.pdf", mimeType: "application/pdf" } })).rejects.toThrow(/wasn't saved/);
+    expect(await prisma.document.count()).toBe(docs);
+    expect(await prisma.coethaChatMessage.count({ where: { role: "USER" } })).toBe(1);
+    // Someone without access to the books can't send a file either.
+    mode = "ok";
+    await expect(askCoetha(s.stranger, s.vessel.id, "Hi", { ...today, file: { bytes: pdf, originalName: "x.pdf", mimeType: "application/pdf" } })).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await prisma.document.count()).toBe(docs);
   });
 });

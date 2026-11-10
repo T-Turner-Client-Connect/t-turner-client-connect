@@ -141,6 +141,9 @@ How to answer:
 - This is bookkeeping help, not a final tax or legal opinion; flag anything that needs Tabitha's professional judgment.`;
 
 export type CoethaChatTurn = { role: "user" | "assistant"; text: string };
+/** A file sent with the newest question: a PDF or an image (PNG, JPEG, GIF, WebP). */
+export type CoethaChatFile = { mediaType: string; base64: string };
+export const CHAT_FILE_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"] as const;
 export type CoethaChatResult = { text: string; inputTokens: number; outputTokens: number; requestId: string | null; model: string };
 
 /**
@@ -148,7 +151,7 @@ export type CoethaChatResult = { text: string; inputTokens: number; outputTokens
  * is the earlier conversation (oldest first) ending with the new question. Returns text only:
  * Coetha has no tools here, so a reply can't change anything. Tests replace global fetch.
  */
-export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[]): Promise<CoethaChatResult> {
+export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], file?: CoethaChatFile): Promise<CoethaChatResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
   if (!turns.length || turns[turns.length - 1].role !== "user") throw new CoethaModelError("Ask Coetha a question first.", "BAD_REQUEST");
@@ -158,6 +161,14 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[]): P
   // The API expects the conversation to start with a user turn.
   const first = turns.findIndex((t) => t.role === "user");
   const messages: Anthropic.Beta.BetaMessageParam[] = turns.slice(first).map((t) => ({ role: t.role, content: t.text }));
+  if (file) {
+    // The file goes with the newest question, before its text.
+    const block: Anthropic.Beta.BetaContentBlockParam = file.mediaType === "application/pdf"
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: file.base64 } }
+      : { type: "image", source: { type: "base64", media_type: file.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: file.base64 } };
+    const last = messages[messages.length - 1];
+    last.content = [block, { type: "text", text: String(last.content) }];
+  }
   let msg;
   try {
     msg = await client.beta.messages.create({
