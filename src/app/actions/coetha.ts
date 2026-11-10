@@ -20,7 +20,9 @@ export async function runCoethaAction(clientId: string, _prev: ActionState, fd: 
   return run(async () => {
     const r = await runCoetha(actor, clientId, { trigger: "MANUAL", month: str(fd, "month") || undefined });
     refresh(clientId);
-    return `Coetha prepared ${r.proposals} draft${r.proposals === 1 ? "" : "s"} for Tabitha's review. Nothing was posted.${r.dropped ? ` (${r.dropped} unusable suggestion${r.dropped === 1 ? " was" : "s were"} dropped.)` : ""}`;
+    const { prisma } = await import("@/lib/prisma");
+    const diag = (await prisma.coethaRun.findUnique({ where: { id: r.runId }, select: { error: true } }))?.error;
+    return `Coetha prepared ${r.proposals} draft${r.proposals === 1 ? "" : "s"} for Tabitha's review. Nothing was posted.${diag ? ` ${diag}` : r.dropped ? ` (${r.dropped} unusable suggestion${r.dropped === 1 ? " was" : "s were"} dropped.)` : ""}`;
   });
 }
 
@@ -143,4 +145,35 @@ export async function approveMatchingAction(clientId: string, _prev: ActionState
 
 function preparedText(p: { drafts: number; waiting: number; needsJudgment: number; notMatched: number; accountsAdded: string[]; linesNotMatched: string[] }) {
   return `Coetha drafted ${p.drafts} of ${p.waiting} waiting transactions from the completed statements; ${p.needsJudgment} need your judgment and ${p.notMatched} didn't match.${p.accountsAdded.length ? ` Added ${p.accountsAdded.length} account${p.accountsAdded.length === 1 ? "" : "s"} named like the statement lines.` : ""}${p.linesNotMatched.length ? ` Not explained by the bank activity: ${p.linesNotMatched.slice(0, 4).join("; ")}${p.linesNotMatched.length > 4 ? "…" : ""}.` : ""} Nothing was posted.`;
+}
+
+/**
+ * Approves ONE group of judgment items (one statement line), as the completed statements treated
+ * them, only with a note saying how the treatment was verified (Tabitha only).
+ */
+export async function approveJudgmentGroupAction(clientId: string, line: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const note = str(fd, "verified").trim();
+    if (note.length < 10) throw new ValidationError("Say how this treatment was verified (for example, “Confirmed with Cari: personal transfers to her savings”).");
+    const { judgmentDraftIds } = await import("@/lib/services/coetha-records");
+    const ids = await judgmentDraftIds(clientId, line);
+    if (!ids.length) throw new ValidationError("Nothing is waiting in that group.");
+    const results = await decideCoethaProposals(actor, clientId, "APPROVE", ids.slice(0, 200).map((id) => ({ id })), `Verified: ${note}`.slice(0, 300));
+    refresh(clientId);
+    const done = results.filter((r) => r.result !== "SKIPPED").length;
+    return `Approved and posted ${done} of ${ids.length} for “${line}”. Your verification note is recorded on each.`;
+  });
+}
+
+/** Reverses the few postings an earlier version matched by vendor family inside the statement months, then prepares again. */
+export async function undoFamilyAction(clientId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { undoFamilyPostings, prepareFromRecords } = await import("@/lib/services/coetha-records");
+    const n = await undoFamilyPostings(actor, clientId);
+    const p = await prepareFromRecords(actor, clientId);
+    refresh(clientId);
+    return `Reversed ${n} posting${n === 1 ? "" : "s"}; they're waiting again. ${preparedText(p)}`;
+  });
 }

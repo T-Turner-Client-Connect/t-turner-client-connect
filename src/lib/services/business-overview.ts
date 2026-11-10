@@ -101,7 +101,7 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
 
   // --- Ledger figures: the month and the five before it -----------------------------------------
   type Perf = { month: string; income: number; expenses: number };
-  let ledger: null | { income: number; expenses: number; net: number; change: { income: number | null; expenses: number | null; net: number | null }; bank: number; bankAccounts: number; perf: Perf[]; basis: string } = null;
+  let ledger: null | { income: number; expenses: number; net: number; change: { income: number | null; expenses: number | null; net: number | null }; bank: number; bankAccounts: number; waitingRows: number; perf: Perf[]; basis: string } = null;
   const book = await prisma.ledgerBook.findUnique({ where: { clientId } });
   if (book && (await canUseLedger(actor, clientId))) {
     const from = `${shiftMonth(selected, -5)}-01`;
@@ -117,6 +117,8 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
       ? await prisma.journalLine.groupBy({ by: ["accountId"], where: { accountId: { in: banks.map((b) => b.id) }, entry: { clientId, date: { lte: new Date(`${to}T00:00:00Z`) }, basis: { in: ["BOTH", book.basis === "CASH" ? "CASH_ONLY" : "ACCRUAL_ONLY"] } } }, _sum: { debitCents: true, creditCents: true } })
       : [];
     const bank = sums.reduce((t, s) => t + (s._sum.debitCents ?? 0) - (s._sum.creditCents ?? 0), 0);
+    // The balance above is the books' (posted entries only); bank rows still waiting for review aren't in it yet.
+    const waitingRows = banks.length ? await prisma.bankTransaction.count({ where: { clientId, accountId: { in: banks.map((b) => b.id) }, status: "UNREVIEWED", date: { lte: new Date(`${to}T00:00:00Z`) } } }) : 0;
     ledger = {
       income: perf[n].income,
       expenses: perf[n].expenses,
@@ -124,6 +126,7 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
       change: n > 0 ? { income: pct(perf[n].income, perf[n - 1].income), expenses: pct(perf[n].expenses, perf[n - 1].expenses), net: pct(perf[n].income - perf[n].expenses, perf[n - 1].income - perf[n - 1].expenses) } : { income: null, expenses: null, net: null },
       bank,
       bankAccounts: banks.length,
+      waitingRows,
       perf,
       basis: pl.basis,
     };

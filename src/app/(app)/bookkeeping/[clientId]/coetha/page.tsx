@@ -12,8 +12,8 @@ import { taxProfile } from "@/lib/services/tax-classification";
 import { coethaCurrentWork } from "@/lib/services/monthly-workflow";
 import { RecommendationCard } from "@/components/bk/parts";
 import { COETHA_NO_KEY, COETHA_PRIVACY, coethaView, KIND_LABEL } from "@/lib/services/coetha";
-import { approveCoethaAction, approveMatchingAction, bulkCoethaAction, prepareFromRecordsAction, rejectCoethaAction, runCoethaAction, saveReferenceAction } from "@/app/actions/coetha";
-import { compareWithReference, matchingDraftIds } from "@/lib/services/coetha-records";
+import { approveCoethaAction, approveJudgmentGroupAction, approveMatchingAction, bulkCoethaAction, prepareFromRecordsAction, rejectCoethaAction, runCoethaAction, saveReferenceAction, undoFamilyAction } from "@/app/actions/coetha";
+import { compareWithReference, familyPostingsToUndo, judgmentGroups, matchingDraftIds, routineSummary } from "@/lib/services/coetha-records";
 import { fmtDateTime } from "@/lib/format";
 import { canSetCoethaOptOut, coethaOptOutView } from "@/lib/services/coetha-opt-out";
 import { CoethaOptOutPanel } from "@/components/bk/coetha-opt-out-panel";
@@ -67,8 +67,10 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
   }
 
   const v = await coethaView(user, clientId);
-  const [cmp, matching] = v.book ? await Promise.all([compareWithReference(user, clientId), matchingDraftIds(clientId)]) : [null, [] as string[]];
-  const judgment = v.open.filter((p) => p.kind === "CATEGORY" && (p.payload as { needsJudgment?: boolean }).needsJudgment).length;
+  const [cmp, matching, groups, familyUndo, routine] = v.book
+    ? await Promise.all([compareWithReference(user, clientId), matchingDraftIds(clientId), judgmentGroups(clientId), familyPostingsToUndo(clientId), routineSummary(clientId)])
+    : [null, [] as string[], [] as Awaited<ReturnType<typeof judgmentGroups>>, [] as { entryId: string }[], [] as Awaited<ReturnType<typeof routineSummary>>];
+  const judgment = groups.reduce((n, g) => n + g.ids.length, 0);
   const byKind = (k: keyof typeof KIND_LABEL) => v.open.filter((p) => p.kind === k);
   const cats = byKind("CATEGORY");
   const discs = byKind("DISCREPANCY");
@@ -148,6 +150,7 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <ActionForm action={saveReferenceAction.bind(null, clientId)} className="flex flex-wrap items-center gap-2" resetOnSuccess idempotent>
               <input className="input max-w-72" type="file" name="file" accept="application/pdf" required aria-label="Completed financial statements PDF" />
+              <span className="w-full text-xs text-slate-600">The completed financial statements package with the monthly Profit &amp; Loss (not a bank statement).</span>
               <button type="submit" className={goldBtn} data-testid="records-upload"><Sparkles className="size-4" aria-hidden /> {cmp ? "Replace statements and prepare" : "Add statements and prepare"}</button>
             </ActionForm>
             {cmp && (
@@ -160,6 +163,37 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
             <ActionForm action={approveMatchingAction.bind(null, clientId)} className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900 ring-1 ring-emerald-200" confirm={`Approve and post all ${matching.length} transactions that match the completed statements? The ones that need your judgment are not included.`}>
               <span className="mr-auto"><strong>{matching.length}</strong> drafts match the completed statements.{judgment ? ` ${judgment} more need your judgment (below, marked “Needs your judgment”).` : ""}</span>
               <button type="submit" className={navyBtn} data-testid="records-approve-all">Approve all {matching.length}</button>
+              <details className="w-full text-xs" data-testid="records-approve-all-preview">
+                <summary className="cursor-pointer font-semibold">Exactly what this posts</summary>
+                <table className="mt-1 w-full"><tbody>
+                  {routine.map((r) => <tr key={r.account} className="border-t border-emerald-200"><td className="py-0.5 pr-2">{r.account}</td><td className="px-2 text-right">{r.count} transaction{r.count === 1 ? "" : "s"}</td><td className="px-2 text-right tabular-nums">{r.inCents ? `in ${usd(r.inCents)}` : ""}</td><td className="text-right tabular-nums">{r.outCents ? `out ${usd(r.outCents)}` : ""}</td></tr>)}
+                </tbody></table>
+                <p className="mt-1">Only drafts that match the completed statements to the cent (or the same vendor in later months). Items with an accounting question are never included.</p>
+              </details>
+            </ActionForm>
+          )}
+          {judgment > 0 && (
+            <div className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-950 ring-1 ring-amber-200" data-testid="records-judgment">
+              <p><strong>{judgment}</strong> need your judgment and are <strong>never</strong> part of “Approve all”. Each is drafted the way the completed statements treated it. Approve a group only after its treatment is verified, or review items one by one in the list below. Anything Coetha couldn&apos;t match (for example a new wire) stays in “Bank rows to review”.</p>
+              <ul className="mt-2 space-y-2">
+                {groups.map((g) => (
+                  <li key={`${g.line}|${g.family}`} className="rounded-lg bg-white/70 p-2 ring-1 ring-amber-200">
+                    <p className="font-semibold">{g.line}{g.family ? " (similar vendor; confirm the vendor)" : ""}: {g.ids.length} transaction{g.ids.length === 1 ? "" : "s"}{g.outCents ? ` · out ${usd(g.outCents)}` : ""}{g.inCents ? ` · in ${usd(g.inCents)}` : ""}</p>
+                    {v.canApprove && (
+                      <ActionForm action={approveJudgmentGroupAction.bind(null, clientId, g.line)} className="mt-1 flex flex-wrap items-center gap-2" confirm={`Post these ${g.ids.length} to “${g.line}”, as the completed statements treated them?`}>
+                        <input className="input min-w-64 flex-1 py-1 text-xs" name="verified" required minLength={10} placeholder="How was this verified? (required)" aria-label={`How ${g.line} was verified`} />
+                        <button type="submit" className={outlineBtn} data-testid="records-approve-group">Verified — approve these {g.ids.length}</button>
+                      </ActionForm>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {v.canApprove && familyUndo.length > 0 && (
+            <ActionForm action={undoFamilyAction.bind(null, clientId)} className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-red-50 p-3 text-sm text-red-900 ring-1 ring-red-200" confirm={`Reverse these ${familyUndo.length} postings and prepare them again?`}>
+              <span className="mr-auto"><strong>Correction:</strong> {familyUndo.length} transaction{familyUndo.length === 1 ? " was" : "s were"} posted by a “same vendor family” shortcut inside the statement months (that shortcut now only applies to later months). Reverse {familyUndo.length === 1 ? "it" : "them"} so Coetha prepares {familyUndo.length === 1 ? "it" : "them"} again correctly.</span>
+              <button type="submit" className={outlineBtn} data-testid="records-undo-family">Reverse and prepare again</button>
             </ActionForm>
           )}
           {cmp && cmp.rows.some((r) => r.books) && (
@@ -241,6 +275,7 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
                   <div className="flex min-w-0 gap-3">
                     {v.canApprove && <input type="checkbox" name="ids" value={p.id} form={BULK} className="mt-1 size-5 shrink-0 accent-navy-900" aria-label={`Select ${d.description}`} />}
                     <div className="min-w-0">
+                      {(p.payload as { needsJudgment?: boolean }).needsJudgment && <p className="mb-1 inline-block rounded bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900" data-testid="needs-judgment">Needs your judgment</p>}
                       <p className="flex flex-wrap items-baseline gap-x-2 text-[15px] text-navy-900">
                         <span className="font-semibold">{d.description}</span>
                         <span className={clsx("font-semibold tabular-nums", d.amountCents < 0 ? "text-red-700" : "text-emerald-700")}>{usd(d.amountCents)}</span>

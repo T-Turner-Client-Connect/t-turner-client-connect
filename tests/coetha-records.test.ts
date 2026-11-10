@@ -6,7 +6,7 @@ import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { registerAccount } from "@/lib/services/bank-accounts";
 import { readPackageTable } from "@/lib/statement-package";
-import { compareWithReference, matchingDraftIds, matchVendors, prepareFromRecords, saveReferenceStatements, vendorKey } from "@/lib/services/coetha-records";
+import { compareWithReference, familyPostingsToUndo, judgmentDraftIds, judgmentGroups, matchingDraftIds, matchVendors, prepareFromRecords, routineSummary, saveReferenceStatements, undoFamilyPostings, vendorKey } from "@/lib/services/coetha-records";
 import { decideCoethaProposals, runDiagnostic } from "@/lib/services/coetha";
 import { ForbiddenError } from "@/lib/auth/actor";
 
@@ -158,5 +158,70 @@ describe("Coetha prepares the books from a business's completed financial statem
   it("a Coetha run that leaves transactions undecided says so, in counts only", () => {
     expect(runDiagnostic(80, 1, 0, 1, 412)).toMatch(/Sent 80 waiting transactions; Coetha answered with categories for 1; 0 became drafts\. 1 suggestion was dropped .* She left most transactions undecided/);
     expect(runDiagnostic(10, 10, 10, 0, 900)).toBeNull();
+  });
+
+  it("matches a line made of many small purchases (up to eight vendors together)", () => {
+    const vecs = [[100, 0], [200, 50], [0, 75], [30, 20], [40, 0], [10, 5], [5, 0]];
+    const groups = vecs.map((vec, i) => ({ key: `SHOP ${i}`, dir: "OUT" as const, vec }));
+    const m = matchVendors([{ section: "EXPENSE", label: "Meals", amounts: vecs.reduce((a, v) => a.map((x, k) => x + v[k]), [0, 0]) }], groups);
+    expect(m.get(0)).toHaveLength(7);
+  });
+
+  it("the same-vendor-family shortcut applies only after the statement months; earlier family postings can be reversed and prepared again", async () => {
+    const w = await world();
+    // A new vendor sharing a first word with a matched one, inside the statement months.
+    const gl = (await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, subtype: "BANK" } })).id;
+    await importBankCsv(w.tabitha, w.biz.id, gl, { fileName: "extra.csv", text: "Date,Description,Amount\n02/14/2026,MILL OUTLET STORE,-18.53" });
+    await saveReferenceStatements(w.tabitha, w.biz.id, { bytes: await pdf(PACKAGE), originalName: "willow-q1.pdf" });
+    const p = await prepareFromRecords(w.tabitha, w.biz.id);
+    const outlet = await prisma.bankTransaction.findFirstOrThrow({ where: { clientId: w.biz.id, description: "MILL OUTLET STORE" } });
+    expect(await prisma.coethaProposal.count({ where: { bankTransactionId: outlet.id, status: "PROPOSED" } })).toBe(0);
+    expect(p.notMatched).toBe(2);
+
+    // An earlier version's family posting inside the statement months is offered for reversal.
+    const supplies = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, name: "Supplies — Flour & Sugar" } });
+    const run = await prisma.coethaRun.findFirstOrThrow({ where: { clientId: w.biz.id, model: "records" } });
+    const draft = await prisma.coethaProposal.create({ data: { clientId: w.biz.id, runId: run.id, kind: "CATEGORY", bankTransactionId: outlet.id, confidence: 0.9, reason: "“Supplies — Flour & Sugar” — same vendor family as in your completed statements (2026-01 to 2026-03).", model: "records", inputHash: "x", payload: { bankTransactionId: outlet.id, date: "2026-02-14", amountCents: -1853, description: outlet.description, bankAccountName: "Bank", accountId: supplies.id, accountCode: supplies.code, accountName: supplies.name, fromRecords: true, needsJudgment: false, referenceLine: supplies.name } } });
+    await decideCoethaProposals(w.tabitha, w.biz.id, "APPROVE", [{ id: draft.id }]);
+    expect(await familyPostingsToUndo(w.biz.id)).toHaveLength(1);
+    await expect(undoFamilyPostings(w.staff, w.biz.id)).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await undoFamilyPostings(w.tabitha, w.biz.id)).toBe(1);
+    expect((await prisma.bankTransaction.findUniqueOrThrow({ where: { id: outlet.id } })).status).toBe("UNREVIEWED");
+    expect(await familyPostingsToUndo(w.biz.id)).toHaveLength(0);
+    // History is kept: the original entry and its reversal both remain, with the reason and who did it.
+    const original = await prisma.journalEntry.findUniqueOrThrow({ where: { id: (await prisma.coethaProposal.findUniqueOrThrow({ where: { id: draft.id } })).journalEntryId! }, include: { reversedBy: true } });
+    expect(original.reversedBy).not.toBeNull();
+    expect(await prisma.auditLog.count({ where: { clientId: w.biz.id, action: "ledger.entry_reversed", actorId: w.tabitha.id } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { clientId: w.biz.id, action: "coetha.family_postings_undone" } })).toBe(1);
+    expect((await prisma.coethaProposal.findUniqueOrThrow({ where: { id: draft.id } })).status).toBe("APPROVED");
+    // Undoing again does nothing (no double reversal).
+    expect(await undoFamilyPostings(w.tabitha, w.biz.id)).toBe(0);
+    // Posting the row again leaves exactly one live posting for it: original + reversal + new = net one.
+    const other = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, code: "6300" } });
+    const { categorizeBankTransaction } = await import("@/lib/services/ledger");
+    await categorizeBankTransaction(w.tabitha, w.biz.id, outlet.id, { accountId: other.id });
+    const net = (await prisma.journalLine.findMany({ where: { accountId: { in: [supplies.id, other.id] }, entry: { clientId: w.biz.id, date: new Date("2026-02-14T00:00:00Z") } } })).reduce((t, l) => t + l.debitCents - l.creditCents, 0);
+    expect(net).toBe(1853);
+    expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id, date: new Date("2026-02-14T00:00:00Z"), reversalOfId: null, reversedBy: null } })).toBe(1);
+  });
+
+  it("judgment items can be approved together, exactly as the statements treated them", async () => {
+    const w = await world();
+    await saveReferenceStatements(w.tabitha, w.biz.id, { bytes: await pdf(PACKAGE), originalName: "willow-q1.pdf" });
+    await prepareFromRecords(w.tabitha, w.biz.id);
+    const ids = await judgmentDraftIds(w.biz.id);
+    expect(ids).toHaveLength(3);
+    // Never part of "Approve all"; grouped by statement line; "Approve all" shows exactly what it posts.
+    const routine = await matchingDraftIds(w.biz.id);
+    expect(routine.some((id) => ids.includes(id))).toBe(false);
+    expect((await judgmentGroups(w.biz.id)).map((g) => [g.line, g.ids.length, g.outCents])).toEqual([["Owner Draws & Personal Transfers", 3, 150000]]);
+    const sum = await routineSummary(w.biz.id);
+    expect(sum.reduce((n, r) => n + r.count, 0)).toBe(routine.length);
+    expect(sum.find((r) => r.account === "Catering Sales — Example Events")).toMatchObject({ count: 3, inCents: 1550000, outCents: 0 });
+    const res = await decideCoethaProposals(w.tabitha, w.biz.id, "APPROVE", ids.map((id) => ({ id })));
+    expect(res.every((r) => r.result === "APPROVED")).toBe(true);
+    await decideCoethaProposals(w.tabitha, w.biz.id, "APPROVE", (await matchingDraftIds(w.biz.id)).map((id) => ({ id })));
+    const cmp = (await compareWithReference(w.tabitha, w.biz.id))!;
+    expect(cmp.months.map((m) => m.agrees)).toEqual([true, true, true]);
   });
 });
