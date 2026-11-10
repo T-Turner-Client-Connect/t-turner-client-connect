@@ -192,7 +192,7 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[40rem] text-sm" data-testid="owner-non-square">
-              <thead><tr className="border-b border-navy-100 text-left"><th className="py-2">Client</th><th>Monthly</th><th>Due day</th><th>Paid this month</th><th>Still owed</th><th>Status</th></tr></thead>
+              <thead><tr className="border-b border-navy-100 text-left"><th className="py-2">Client</th><th>Monthly</th><th>Due day</th><th>Paid this month</th><th>Balance past due</th><th>Next due</th><th>Status</th></tr></thead>
               <tbody>
                 {other.rows.map((o) => (
                   <tr key={o.clientId} className="border-b border-navy-50">
@@ -200,7 +200,8 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
                     <td>{money(o.feeCents)}</td>
                     <td>{o.billingDay ?? "—"}</td>
                     <td>{money(o.paidThisMonthCents)}</td>
-                    <td>{money(o.owedThisMonthCents)}</td>
+                    <td className={o.overdueCents > 0 ? "font-semibold text-red-700" : undefined} data-testid="owner-non-square-owed">{money(o.overdueCents)}</td>
+                    <td>{o.next ? `${money(o.next.amountCents)} on ${fmtDate(new Date(`${o.next.due}T12:00:00Z`))}` : "—"}</td>
                     <td>{o.status ? <Badge tone={o.status.tone}>{o.status.label}</Badge> : "—"}</td>
                   </tr>
                 ))}
