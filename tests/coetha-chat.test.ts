@@ -14,7 +14,7 @@ import { askCoetha, chatFileType, cleanQuestion, coethaChatView, MAX_CHAT_FILE, 
 type Block = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
 type Req = { model: string; system: { type: string; text: string }[]; messages: { role: string; content: string | Block[] }[]; tools?: unknown; max_tokens: number };
 let sent: Req[] = [];
-let mode: "ok" | "refusal" | "error" | "long" = "ok";
+let mode: "ok" | "refusal" | "error" | "long" | "busy" = "ok";
 
 beforeEach(async () => {
   await resetDb();
@@ -27,6 +27,7 @@ beforeEach(async () => {
     const req = JSON.parse(String(init?.body ?? "")) as Req;
     sent.push(req);
     const headers = { "content-type": "application/json", "request-id": "req_fictional_chat" };
+    if (mode === "busy") return new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "slow down" } }), { status: 429, headers: { ...headers, "retry-after-ms": "1" } });
     if (mode === "error") return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "bad" } }), { status: 400, headers });
     const last = req.messages[req.messages.length - 1].content;
     const text = `You asked: ${last}. Office Depot (T1) is $84.20 to 6300 Office Supplies.`;
@@ -243,5 +244,47 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     await expect(askCoetha(s.daria, s.vessel.id, "Read this", { ...today, files: [{ bytes: big, originalName: "photo.png", mimeType: "image/png" }] })).rejects.toThrow(/up to 3 MB/);
     expect(sent).toHaveLength(1);
     expect(await prisma.document.count()).toBe(docs);
+  });
+
+  it("when the AI service is busy the question is saved, answered in the background a minute later, and never lost", async () => {
+    const s = await setup();
+    const { workOnce } = await import("@/lib/services/coetha-reading");
+    mode = "busy";
+    const r = await askCoetha(s.tabitha, s.vessel.id, "Is the Office Depot charge posted?", today);
+    expect(r).toMatchObject({ queued: true, answerId: null });
+    const q = await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: r.questionId } });
+    expect(q).toMatchObject({ role: "USER", status: "WAITING", text: "Is the Office Depot charge posted?" });
+    expect(await prisma.auditLog.count({ where: { action: "coetha.chat_queued", entityId: q.id } })).toBe(1);
+
+    // The background worker tries; still busy: it stays waiting and isn't retried within the minute.
+    await workOnce({ clientId: s.vessel.id });
+    expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: q.id } })).status).toBe("WAITING");
+    const calls = sent.length;
+    await workOnce({ clientId: s.vessel.id });
+    expect(sent.length).toBe(calls);
+
+    // A minute later the service answers: the reply is placed right after the question, with her tools.
+    await prisma.auditLog.updateMany({ where: { action: "coetha.answer_attempt", entityId: q.id }, data: { createdAt: new Date(Date.now() - 2 * 60_000) } });
+    mode = "ok";
+    await workOnce({ clientId: s.vessel.id });
+    expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: q.id } })).status).toBe("ANSWERED");
+    const v = await coethaChatView(s.tabitha, s.vessel.id);
+    expect(v.messages.map((m) => m.role)).toEqual(["USER", "COETHA"]);
+    expect((sent.at(-1)!.tools as { name: string }[]).map((t) => t.name)).toContain("search_bank_transactions");
+    expect(JSON.stringify(sent.at(-1)!.messages.at(-1))).toContain("Is the Office Depot charge posted?");
+    expect(JSON.stringify(sent.at(-1)!.messages.at(-1))).not.toContain("What you read from the attached documents");
+  });
+
+  it("a question the AI service keeps refusing stops after several tries and says so", async () => {
+    const s = await setup();
+    const { workOnce } = await import("@/lib/services/coetha-reading");
+    mode = "busy";
+    const r = await askCoetha(s.tabitha, s.vessel.id, "Anything waiting?", today);
+    for (let i = 0; i < 8; i++) {
+      await prisma.auditLog.updateMany({ where: { action: "coetha.answer_attempt", entityId: r.questionId }, data: { createdAt: new Date(Date.now() - 2 * 60_000) } });
+      await workOnce({ clientId: s.vessel.id });
+    }
+    expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: r.questionId } })).status).toBe("FAILED");
+    expect(await prisma.auditLog.count({ where: { action: "coetha.answer_attempt", entityId: r.questionId } })).toBe(6);
   });
 });

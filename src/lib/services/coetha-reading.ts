@@ -502,6 +502,9 @@ export async function askAboutDocuments(actor: Actor, clientId: string, question
 }
 
 /** Answers each waiting question whose documents are all read (or given up on). */
+const RETRY_AFTER_MS = 60_000;
+const MAX_BUSY_TRIES = 6;
+
 export async function answerReadyQuestions(limit = 1, quick = true, clientId?: string) {
   const waiting = await prisma.coethaChatMessage.findMany({ where: { status: "WAITING", ...(clientId ? { clientId } : {}) }, orderBy: { createdAt: "asc" }, take: 20 });
   let n = 0;
@@ -516,9 +519,13 @@ export async function answerReadyQuestions(limit = 1, quick = true, clientId?: s
     const { takeLock, releaseLock } = await import("./coetha-chat");
     const hold = `coetha-answer:${m.id}`;
     if (!(await takeLock(hold, 90))) continue;
+    let tries = 0;
     try {
-      const tries = await prisma.auditLog.count({ where: { action: "coetha.answer_attempt", entityId: m.id } });
-      if (tries >= 3) {
+      const attempts = await prisma.auditLog.findMany({ where: { action: "coetha.answer_attempt", entityId: m.id }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+      tries = attempts.length;
+      // A minute between tries, so a busy AI service (its per-minute limit) can recover.
+      if (attempts[0] && Date.now() - attempts[0].createdAt.getTime() < RETRY_AFTER_MS) continue;
+      if (tries >= (ids.length ? 3 : MAX_BUSY_TRIES)) {
         await prisma.coethaChatMessage.update({ where: { id: m.id }, data: { status: "FAILED" } });
         continue;
       }
@@ -526,12 +533,16 @@ export async function answerReadyQuestions(limit = 1, quick = true, clientId?: s
       const asker = m.authorId ? await prisma.user.findUnique({ where: { id: m.authorId }, select: { id: true, role: true, name: true, email: true } }) : null;
       if (!asker) throw new ValidationError("The person who asked no longer has an account.");
       const { answerQuestion } = await import("./coetha-chat");
-      await answerQuestion(asker, m.clientId, m.id, await documentsText(jobs), { quick });
+      // A question saved while the AI service was busy has no documents: it's answered as asked, with her tools.
+      await answerQuestion(asker, m.clientId, m.id, ids.length ? await documentsText(jobs) : "", { quick: ids.length ? quick : false });
       await prisma.coethaChatMessage.update({ where: { id: m.id }, data: { status: "ANSWERED" } });
       n++;
     } catch (err) {
-      // The question stays visible with its findings; it can be asked again.
-      await prisma.coethaChatMessage.update({ where: { id: m.id }, data: { status: "FAILED" } });
+      const { BUSY_CODES } = await import("./coetha-chat");
+      const busy = err instanceof CoethaModelError && BUSY_CODES.has(err.code);
+      // Busy: it stays waiting and is tried again in a minute (up to MAX_BUSY_TRIES).
+      // Otherwise the question stays visible with its findings; it can be asked again.
+      if (!busy || tries + 1 >= MAX_BUSY_TRIES) await prisma.coethaChatMessage.update({ where: { id: m.id }, data: { status: "FAILED" } });
       await audit(prisma, { actorId: m.authorId, action: "coetha.chat_failed", entityType: "CoethaChatMessage", entityId: m.id, clientId: m.clientId, details: { code: err instanceof CoethaModelError ? err.code : "ERROR" } });
     } finally {
       await releaseLock(hold);

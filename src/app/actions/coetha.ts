@@ -145,8 +145,13 @@ export async function askCoethaAction(clientId: string, _prev: ActionState, fd: 
       revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
       return `Coetha is reading ${jobIds.length === 1 ? "the file" : `the ${jobIds.length} files`}. You can leave this page; her answer will be here when she's done. Nothing in the books is changed.`;
     }
-    await askCoetha(actor, clientId, str(fd, "question"));
+    const r = await askCoetha(actor, clientId, str(fd, "question"));
     revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    if (r.queued) {
+      const { kickBackgroundReading } = await import("@/lib/services/coetha-reading");
+      await kickBackgroundReading();
+      return "The AI service is busy for a moment. Your question is saved, and Coetha will answer it here shortly; you can keep working or leave this page. You don't need to send it again.";
+    }
     return "Coetha answered below. Nothing in the books was changed.";
   });
 }
