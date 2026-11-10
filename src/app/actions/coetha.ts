@@ -101,10 +101,43 @@ export async function clearCoethaOptOutAction(clientId: string, _prev: ActionSta
 export async function askCoethaAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
-    const files = await Promise.all(fd.getAll("file").filter((f): f is File => f instanceof File && f.size > 0).map(async (f) => ({ bytes: new Uint8Array(await f.arrayBuffer()), originalName: f.name || "file", mimeType: f.type })));
-    await askCoetha(actor, clientId, str(fd, "question"), { files });
+    if (str(fd, "uploadsPending")) throw new ValidationError("Wait until the files finish uploading (see the progress under Upload Files), then press Ask Coetha.");
+    const jobIds = fd.getAll("jobId").map(String).filter(Boolean);
+    if (jobIds.length) {
+      // Files: Coetha reads them in the background; her answer appears in the thread when she's done.
+      const { askAboutDocuments, kickBackgroundReading } = await import("@/lib/services/coetha-reading");
+      await askAboutDocuments(actor, clientId, str(fd, "question"), jobIds);
+      await kickBackgroundReading();
+      revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+      return `Coetha is reading ${jobIds.length === 1 ? "the file" : `the ${jobIds.length} files`}. You can leave this page; her answer will be here when she's done. Nothing in the books is changed.`;
+    }
+    await askCoetha(actor, clientId, str(fd, "question"));
     revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
     return "Coetha answered below. Nothing in the books was changed.";
+  });
+}
+
+/** "Try again" on a file Coetha couldn't read: she continues from where she stopped. */
+export async function retryReadingAction(clientId: string, jobId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { retryJob, kickBackgroundReading } = await import("@/lib/services/coetha-reading");
+    await retryJob(actor, jobId);
+    await kickBackgroundReading();
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    return "Coetha will try this file again.";
+  });
+}
+
+/** "Summarize again": a new short answer from what Coetha already read. Nothing is uploaded or read again. */
+export async function summarizeAgainAction(clientId: string, messageId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { summarizeAgain, kickBackgroundReading } = await import("@/lib/services/coetha-reading");
+    await summarizeAgain(actor, clientId, messageId);
+    await kickBackgroundReading();
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    return "Coetha is writing a new summary from what she already read.";
   });
 }
 

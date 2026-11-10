@@ -4017,6 +4017,8 @@ model LedgerBook {
   coethaProposals      CoethaProposal[]
   coethaChat           CoethaChatMessage[]
   coethaReferences     CoethaReference[]
+  coethaUploads        CoethaUpload[]
+  coethaDocJobs        CoethaDocJob[]
 }
 
 model LedgerAccount {
@@ -4930,9 +4932,99 @@ model CoethaChatMessage {
   attachmentName String?
   // Every file sent with the question: [{ documentId, name }] (documentId/attachmentName keep the first).
   attachments    Json?
+  // USER rows with documents: WAITING (Coetha is reading) | ANSWERING | ANSWERED | FAILED; null = answered at once.
+  status         String?
+  // The reading jobs this question waits for.
+  jobIds         Json?
   createdAt    DateTime   @default(now())
 
   @@index([clientId, createdAt])
+}
+
+/// A large file sent to Coetha in pieces (each stored encrypted until the file is put back together).
+model CoethaUpload {
+  id          String     @id @default(cuid())
+  clientId    String
+  book        LedgerBook @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  createdById String
+  name        String
+  size        Int
+  chunks      Int
+  /// The piece numbers received so far.
+  parts       Json       @default("[]")
+  documentId  String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([clientId, createdAt])
+}
+
+/// Coetha reading one document in the background: read once, a few pages per step, its place saved.
+model CoethaDocJob {
+  id           String             @id @default(cuid())
+  clientId     String
+  book         LedgerBook         @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  documentId   String             @unique
+  name         String
+  /// QUEUED | READING | DONE | FAILED
+  status       String             @default("QUEUED")
+  /// PDF_TEXT (its text is kept) | PDF_SCAN (read a few pages at a time) | IMAGE
+  kind         String?
+  pages        Int                @default(0)
+  pagesDone    Int                @default(0)
+  attempts     Int                @default(0)
+  /// While set and in the future, one worker holds the job; an interrupted worker's lease simply runs out.
+  leaseUntil   DateTime?
+  /// After a failed step, the job waits until then before it is tried again.
+  notBefore    DateTime?
+  error        String?
+  /// PDF_TEXT: the de-identified text of the PDF.
+  text         String?
+  inputTokens  Int                @default(0)
+  outputTokens Int                @default(0)
+  createdById  String
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  finishedAt   DateTime?
+  findings     CoethaDocFinding[]
+
+  @@index([status, leaseUntil])
+  @@index([clientId, createdAt])
+}
+
+/// One item Coetha found on a page (a check, deposit, receipt...), de-identified, with its bank-row match.
+model CoethaDocFinding {
+  id                String       @id @default(cuid())
+  jobId             String
+  job               CoethaDocJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  clientId          String
+  page              Int
+  seq               Int
+  /// CHECK | DEPOSIT | RECEIPT | INVOICE | STATEMENT | OTHER
+  kind              String
+  checkNumber       String?
+  /// YYYY-MM-DD as written on the document
+  date              String?
+  payee             String?
+  amountCents       Int?
+  memo              String?
+  details           String?
+  bankTransactionId String?
+  matchNote         String?
+  /// Coetha's review (proposals only): ROUTINE | NEEDS_DOCS | OWNER_PERSONAL. "Already posted" and
+  /// "Unmatched" are decided from the bank match when the page is shown.
+  reviewGroup       String?
+  /// "code name" of the account she proposes (nothing is posted).
+  proposedAccount   String?
+  reason            String?
+  evidenceNeeded    String?
+  confidence        Float?
+  reviewedAt        DateTime?
+  createdAt         DateTime     @default(now())
+
+  @@unique([jobId, page, seq])
+  @@index([clientId])
+  @@index([jobId, reviewedAt])
 }
 
 model CoethaRun {
