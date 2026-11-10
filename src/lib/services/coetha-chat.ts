@@ -10,6 +10,7 @@ import { coethaOn } from "./owner-switches";
 import { assertCoethaAllowed, coethaOptOutView } from "./coetha-opt-out";
 import { buildCoethaInput, COETHA_NO_KEY, COETHA_OFF, coethaStatus, scrub } from "./coetha";
 import { recordsSnapshot, RECORDS_TOOLS, runRecordsTool } from "./coetha-records-view";
+import { isPrimaryOwner } from "@/lib/auth/permissions";
 
 /**
  * "Ask Coetha": the office's back-and-forth conversation with Coetha about ONE client's books.
@@ -21,9 +22,10 @@ import { recordsSnapshot, RECORDS_TOOLS, runRecordsTool } from "./coetha-records
  *   transactions to categorize) and its complete open records (recordsSnapshot: every waiting row
  *   with its draft, counts, cash proof, judgment groups, comparison, documents on file), plus the
  *   question, with long numbers, SSN/EIN shapes, emails and phone numbers removed first.
- * - Her only tools are read-only searches of the same business's history (coetha-records-view).
- *   A reply is text only and never posts, changes, approves, reverses or sends anything.
- *   Corrections still go through Coetha's drafts and Tabitha's approval.
+ * - Her tools are read-only searches of the same business's history (coetha-records-view), plus,
+ *   only when Tabitha herself is asking, prepare_entries (coetha-decisions): it turns decisions
+ *   she stated into drafts on her Apply These Decisions card. A reply never posts, approves,
+ *   reverses or sends anything; only Tabitha's Approve & Post does, through the existing path.
  * - Same switches as a Coetha run: Tabitha's Coetha switch, the API key and "Client prefers no
  *   Coetha". Every question is audited (who, when, model, tokens; not the text).
  */
@@ -129,7 +131,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
     const turns: CoethaChatTurn[] = [...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })), { role: "user", text: q }];
     let res;
     try {
-      res = await callCoethaChat(books, turns, { defs: RECORDS_TOOLS, run: (name, input) => runRecordsTool(clientId, name, input), records }, parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
+      res = await callCoethaChat(books, turns, await chatTools(actor, clientId, records), parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
     } catch (err) {
       const code = err instanceof CoethaModelError ? err.code : "ERROR";
       await audit(prisma, { actorId: actor.id, action: "coetha.chat_failed", entityType: "LedgerBook", entityId: clientId, clientId, details: { code } });
@@ -158,6 +160,18 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
   } finally {
     await releaseLock(lock);
   }
+}
+
+/** Read-only searches for everyone; prepare_entries only when the person asking is Tabitha. */
+async function chatTools(actor: Actor, clientId: string, records: unknown) {
+  const owner = await isPrimaryOwner(actor.id);
+  const { PREPARE_TOOL, runPrepareTool } = await import("./coetha-decisions");
+  return {
+    defs: owner ? [...RECORDS_TOOLS, PREPARE_TOOL] : RECORDS_TOOLS,
+    run: (name: string, input: unknown) => (owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input) : runRecordsTool(clientId, name, input)),
+    records,
+    asker: owner ? ("owner" as const) : ("staff" as const),
+  };
 }
 
 /** The same switches as a question: Coetha on, the API key present, and the client hasn't opted out. */
