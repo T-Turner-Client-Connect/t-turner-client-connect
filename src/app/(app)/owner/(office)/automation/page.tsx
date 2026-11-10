@@ -46,7 +46,7 @@ export default async function OwnerAutomationPage() {
     isReportApprover(actor),
     prisma.bankConnection.groupBy({ by: ["environment", "status"], _count: true, where: { status: { not: "DISCONNECTED" } } }),
   ]);
-  const ids = [sw.liveBanking.changedById, sw.coetha.changedById, sw.coethaAutoSend.changedById, sw.taxSummaryAutoSend.changedById, sw.clientBankBalances.changedById].filter((x): x is string => !!x);
+  const ids = [sw.liveBanking.changedById, sw.coetha.changedById, sw.coethaAutoSend.changedById, sw.coethaAutoPost.changedById, sw.taxSummaryAutoSend.changedById, sw.clientBankBalances.changedById].filter((x): x is string => !!x);
   const names = new Map((await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const env = (process.env.PLAID_ENV ?? "sandbox").trim().toLowerCase();
   const keys = !!process.env.PLAID_CLIENT_ID?.trim() && !!process.env.PLAID_SECRET?.trim();
@@ -111,6 +111,20 @@ export default async function OwnerAutomationPage() {
             {primary && (
               <ActionForm action={ownerSwitchAction.bind(null, "coethaAutoSend", !sw.coethaAutoSend.on)} confirm={sw.coethaAutoSend.on ? "Turn off automatic sending? Coetha's drafts will wait for staff to send them." : "Let Coetha send her drafted document requests to clients automatically?"}>
                 <button type="submit" className={clsx("inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold shadow", sw.coethaAutoSend.on ? "border-[1.5px] border-navy-900 bg-white text-navy-900" : "bg-navy-900 text-white hover:bg-navy-800")} data-testid="toggle-coetha-auto-send">{sw.coethaAutoSend.on ? "Turn off" : "Turn on"}</button>
+              </ActionForm>
+            )}
+          </div>
+        </section>
+
+        <section className={card} data-testid="switch-coetha-auto-post">
+          <h2 className="flex items-center gap-3 font-serif text-xl font-bold text-navy-900"><Sparkles className="size-7 text-gold-600" aria-hidden /> Coetha posts routine bookkeeping</h2>
+          <p className="mt-1 text-sm text-navy-800">Coetha posts on her own only: <strong>decisions you stated</strong> to her (she quotes your words and Client Connect checks them against your messages), and <strong>routine items</strong> that match one of the business&apos;s rules or the way that vendor was already posted. Only in open months, never twice, never a new bank transaction; every posting is audited and listed under &ldquo;Posted automatically&rdquo; on Ask Coetha, where you can reverse it. Owner/personal, entity, unclear-purpose and on-hold items always wait for you. On by default; turn it off to approve everything by hand.</p>
+          <p className="mt-2 text-xs text-slate-600">{changed(sw.coethaAutoPost)}</p>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-ivory-200 pt-4">
+            <Switch on={sw.coethaAutoPost.on} label="Post routine items automatically" testId="coetha-auto-post-state" />
+            {primary && (
+              <ActionForm action={ownerSwitchAction.bind(null, "coethaAutoPost", !sw.coethaAutoPost.on)} confirm={sw.coethaAutoPost.on ? "Turn off automatic posting? Coetha's entries will wait on the Apply These Decisions card for you." : "Let Coetha post routine bookkeeping and your stated decisions herself?"}>
+                <button type="submit" className={clsx("inline-flex min-h-10 items-center rounded-lg px-4 py-2 text-sm font-semibold shadow", sw.coethaAutoPost.on ? "border-[1.5px] border-navy-900 bg-white text-navy-900" : "bg-navy-900 text-white hover:bg-navy-800")} data-testid="toggle-coetha-auto-post">{sw.coethaAutoPost.on ? "Turn off" : "Turn on"}</button>
               </ActionForm>
             )}
           </div>

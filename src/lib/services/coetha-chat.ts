@@ -131,7 +131,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
     const turns: CoethaChatTurn[] = [...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })), { role: "user", text: q }];
     let res;
     try {
-      res = await callCoethaChat(books, turns, await chatTools(actor, clientId, records), parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
+      res = await callCoethaChat(books, turns, await chatTools(actor, clientId, records, q), parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
     } catch (err) {
       const code = err instanceof CoethaModelError ? err.code : "ERROR";
       // The AI service is busy (its per-minute limit, or a refusal/connection drop right after it):
@@ -173,7 +173,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
 export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEOUT"]);
 
 /** Read-only searches for everyone; prepare_entries only when the person asking is Tabitha. */
-async function chatTools(actor: Actor, clientId: string, records: unknown) {
+async function chatTools(actor: Actor, clientId: string, records: unknown, currentQuestion?: string) {
   const owner = await isPrimaryOwner(actor.id);
   const { PREPARE_TOOL, runPrepareTool } = await import("./coetha-decisions");
   const { MEMORY_TOOLS, runMemoryTool } = await import("./coetha-memory");
@@ -181,7 +181,7 @@ async function chatTools(actor: Actor, clientId: string, records: unknown) {
   return {
     defs: owner ? [...RECORDS_TOOLS, PREPARE_TOOL, ...MEMORY_TOOLS] : RECORDS_TOOLS,
     run: (name: string, input: unknown) =>
-      owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input)
+      owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
         : owner && memoryNames.has(name) ? runMemoryTool(actor, clientId, name, input)
           : runRecordsTool(clientId, name, input),
     records,

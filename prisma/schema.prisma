@@ -4580,6 +4580,11 @@ model IntegrationSettings {
   coethaAutoSendRequests    Boolean   @default(true)
   coethaAutoSendChangedById String?
   coethaAutoSendChangedAt   DateTime?
+  // Coetha posts routine bookkeeping herself (Tabitha's decisions she stated, or the same
+  // treatment as a rule or earlier postings); judgment items still wait for her. On by default.
+  coethaAutoPost            Boolean   @default(true)
+  coethaAutoPostChangedById String?
+  coethaAutoPostChangedAt   DateTime?
   // Owner-only safety lock (primary owner): "Portal invitations authorized". While off, staff
   // can prepare invitation batches and Tabitha can approve them, but nothing is sent.
   portalInvitesAuthorized   Boolean   @default(false)

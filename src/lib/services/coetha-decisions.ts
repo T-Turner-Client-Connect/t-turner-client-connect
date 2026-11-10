@@ -6,7 +6,8 @@ import { isPrimaryOwner } from "@/lib/auth/permissions";
 import { ValidationError } from "./clients";
 import { addAccount, assertLedger, bookOf, cleanAccount, ymdOf } from "./ledger";
 import { assertCanApproveCoethaWork } from "@/lib/auth/permissions";
-import { decideCoethaProposals, scrub } from "./coetha";
+import { approveCoethaProposal, decideCoethaProposals, scrub } from "./coetha";
+import { coethaAutoPostOn } from "./owner-switches";
 
 /**
  * "Apply These Decisions": Coetha turns Tabitha's accounting decisions into the entries
@@ -33,10 +34,70 @@ const MAX_ITEMS = 60;
 
 export type DecisionItem =
   | { type: "new_account"; accountCode: string; name: string; accountType: string; subtype?: string | null; description?: string; reason?: string }
-  | { type: "post_bank_row"; ref?: string; bankTransactionId?: string; date?: string; amount?: number; accountCode: string; memo?: string; reason?: string }
-  | { type: "journal_entry"; date: string; memo: string; reason?: string; lines: { accountCode: string; debit?: number | null; credit?: number | null; description?: string | null }[] };
+  | { type: "post_bank_row"; ref?: string; bankTransactionId?: string; date?: string; amount?: number; accountCode: string; memo?: string; reason?: string; basis?: Basis; quote?: string }
+  | { type: "journal_entry"; date: string; memo: string; reason?: string; basis?: Basis; quote?: string; lines: { accountCode: string; debit?: number | null; credit?: number | null; description?: string | null }[] };
 
-export type PrepareResult = { index: number; ok: boolean; message: string; proposalId?: string };
+export type PrepareResult = { index: number; ok: boolean; message: string; proposalId?: string; posted?: boolean };
+/** Why an entry may post without a click: Tabitha said so (quoted), or it's the business's routine treatment. */
+type Basis = "tabitha_said" | "routine";
+
+// --- Posting routine items automatically (Tabitha's switch, on by default) ---------------------------
+
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9$.#]+/g, " ").trim();
+// Bank descriptions that say nothing about the payee: never "routine" by history alone.
+const GENERIC = new Set(["CHECK", "CHK", "DEPOSIT", "ATM", "TRANSFER", "XFER", "WITHDRAWAL", "DEBIT", "CREDIT", "ONLINE", "POS", "ACH", "WIRE", "PAYMENT", "PURCHASE", "MOBILE", "EPAY", "BILL", "SERVICE", "FEE"]);
+const vendorKey = (d: string) => {
+  const words = d.toUpperCase().replace(/[^A-Z ]+/g, " ").split(/\s+/).filter((w) => w.length > 1);
+  if (!words.length || GENERIC.has(words[0])) return null;
+  return words.slice(0, 2).join(" ");
+};
+
+/** Tabitha's own words, quoted by Coetha, must appear in what she wrote to Coetha about this business. */
+function saidByTabitha(quote: string | undefined, said: string[]) {
+  const q = norm(quote ?? "");
+  return q.length >= 6 && said.some((t) => norm(t).includes(q));
+}
+
+/** The business's routine treatment: one of its rules, or the account this vendor was already posted to (and never another). */
+async function routineFor(clientId: string, t: { id: string; description: string; amountCents: number; accountId: string }, accountId: string) {
+  const rules = await prisma.categorizationRule.findMany({ where: { clientId, active: true } });
+  const desc = t.description.toUpperCase();
+  const dir = t.amountCents > 0 ? "IN" : "OUT";
+  if (rules.some((r) => desc.includes(r.matchText.toUpperCase()) && (r.direction === "ANY" || r.direction === dir) && r.accountId === accountId)) return "rule";
+  const key = vendorKey(t.description);
+  if (!key) return null;
+  const posted = await prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED", journalEntryId: { not: null }, id: { not: t.id } }, orderBy: { date: "desc" }, take: 800, select: { description: true, accountId: true, journalEntry: { select: { reversedBy: { select: { id: true } }, lines: { select: { accountId: true } } } } } });
+  let same = 0, other = 0;
+  for (const r of posted) {
+    if (vendorKey(r.description) !== key || !r.journalEntry || r.journalEntry.reversedBy) continue;
+    const cat = r.journalEntry.lines.find((l) => l.accountId !== r.accountId)?.accountId;
+    if (cat === accountId) same++; else other++;
+  }
+  return same >= 1 && other === 0 ? "history" : null;
+}
+
+/** The owner, who turned automatic posting on; postings made for her are audited as automatic. */
+async function ownerActor(): Promise<Actor | null> {
+  const o = await prisma.ownerAccess.findFirst({ where: { isPrimary: true, revokedAt: null, user: { active: true } }, select: { user: { select: { id: true, role: true, name: true, email: true } } } });
+  return o?.user ?? null;
+}
+
+async function autoPost(clientId: string, proposalId: string, basis: string): Promise<boolean> {
+  if (!(await coethaAutoPostOn())) return false;
+  const owner = await ownerActor();
+  if (!owner) return false;
+  try {
+    const r = await approveCoethaProposal(owner, clientId, proposalId, { note: `Posted automatically (${basis})` });
+    if (r.result !== "APPROVED") return false;
+    const p = await prisma.coethaProposal.findUniqueOrThrow({ where: { id: proposalId } });
+    await prisma.coethaProposal.update({ where: { id: proposalId }, data: { payload: { ...(p.payload as object), autoPosted: { basis, at: new Date().toISOString() } } } });
+    await audit(prisma, { actorId: owner.id, action: "coetha.auto_posted", entityType: "CoethaProposal", entityId: proposalId, clientId, details: { basis, journalEntryId: r.journalEntryId } });
+    return true;
+  } catch {
+    // Anything the ledger refuses (closed month, already posted, ...) stays on the card for Tabitha.
+    return false;
+  }
+}
 
 const cents = (n: unknown) => (typeof n === "number" && Number.isFinite(n) ? Math.round(n * 100) : 0);
 const isYmd = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`));
@@ -53,7 +114,7 @@ async function waitingRefs(clientId: string) {
  * Saves decisions as proposals awaiting Tabitha's Approve & Post. Each item is checked on its
  * own; a bad item is reported and skipped, the others are kept. Changes no books.
  */
-export async function prepareDecisions(actor: Actor, clientId: string, items: DecisionItem[], source: "chat" | "documents", note?: string): Promise<PrepareResult[]> {
+export async function prepareDecisions(actor: Actor, clientId: string, items: DecisionItem[], source: "chat" | "documents", note?: string, said: string[] = []): Promise<PrepareResult[]> {
   await assertLedger(actor, clientId);
   const book = await bookOf(clientId);
   if (!Array.isArray(items) || !items.length) throw new ValidationError("There are no entries to prepare.");
@@ -137,7 +198,10 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
         });
       });
       made++;
-      results.push({ index, ok: true, message: `${it.ref ?? date} ${date} ${usd(t.amountCents)} → ${got.a.code} ${got.a.name}`, proposalId: p.id });
+      const label = `${it.ref ?? date} ${date} ${usd(t.amountCents)} → ${got.a.code} ${got.a.name}`;
+      const basis = !got.a.id ? null : it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? "your decision" : it.basis === "routine" ? await routineFor(clientId, t, got.a.id) : null;
+      const posted = basis ? await autoPost(clientId, p.id, basis) : false;
+      results.push({ index, ok: true, message: posted ? `Posted automatically (${basis}): ${label}` : `On your Apply These Decisions card: ${label}`, proposalId: p.id, posted });
       continue;
     }
     if (it.type === "journal_entry") {
@@ -167,7 +231,10 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
         data: { clientId, runId: run.id, kind: "ADJUSTING_ENTRY", confidence: 1, reason, model: DECISIONS_MODEL, inputHash: `${source}:${run.id}`, payload: { date: it.date, memo, totalCents: dr, lines, key, source, note: note ?? null } },
       });
       made++;
-      results.push({ index, ok: true, message: `${it.date} "${memo}" ${usd(dr)}: ${lines.map((l) => `${l.debitCents ? "Dr" : "Cr"} ${l.accountCode}`).join(", ")}`, proposalId: p.id });
+      const label = `${it.date} "${memo}" ${usd(dr)}: ${lines.map((l) => `${l.debitCents ? "Dr" : "Cr"} ${l.accountCode}`).join(", ")}`;
+      // A correction posts by itself only when Tabitha said so in her own words.
+      const posted = lines.every((l) => l.accountId) && it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? await autoPost(clientId, p.id, "your decision") : false;
+      results.push({ index, ok: true, message: posted ? `Posted automatically (your decision): ${label}` : `On your Apply These Decisions card: ${label}`, proposalId: p.id, posted });
       continue;
     }
     fail("Unknown kind of entry.");
@@ -188,7 +255,7 @@ export async function prepareFromDocument(actor: Actor, clientId: string, jobId:
   const waiting = new Set(rows.map((r) => r.id));
   const items: DecisionItem[] = findings
     .filter((f) => waiting.has(f.bankTransactionId!))
-    .map((f) => ({ type: "post_bank_row", bankTransactionId: f.bankTransactionId!, accountCode: f.proposedAccount!, memo: [f.checkNumber ? `Check #${f.checkNumber}` : "", f.payee ?? ""].filter(Boolean).join(" ") || undefined, reason: f.reason ?? undefined }));
+    .map((f) => ({ type: "post_bank_row", basis: "routine" as const, bankTransactionId: f.bankTransactionId!, accountCode: f.proposedAccount!, memo: [f.checkNumber ? `Check #${f.checkNumber}` : "", f.payee ?? ""].filter(Boolean).join(" ") || undefined, reason: f.reason ?? undefined }));
   if (!items.length) throw new ValidationError("No routine checks from this document are waiting to be posted. Checks needing documents or your judgment stay on hold until you decide them.");
   const results = await prepareDecisions(actor, clientId, items, "documents", job.name);
   return { prepared: results.filter((r) => r.ok).length, skipped: results.filter((r) => !r.ok) };
@@ -253,8 +320,16 @@ export async function applyDecisionsView(actor: Actor, clientId: string) {
       lines: shown.map(({ l, i }) => ({ account: i?.label ?? "?", debitCents: l.debitCents, creditCents: l.creditCents })),
     };
   });
+  const since = new Date(Date.now() - 14 * 86_400_000);
+  const auto = (await prisma.coethaProposal.findMany({ where: { clientId, model: DECISIONS_MODEL, status: "APPROVED", decidedAt: { gte: since }, journalEntryId: { not: null } }, orderBy: { decidedAt: "desc" }, take: 100 })).filter((p) => (p.payload as { autoPosted?: unknown }).autoPosted);
+  const je = new Map((await prisma.journalEntry.findMany({ where: { clientId, id: { in: auto.map((p) => p.journalEntryId!) } }, select: { id: true, date: true, memo: true, reversedBy: { select: { id: true } }, lines: { select: { debitCents: true } } } })).map((e) => [e.id, e]));
+  const autoPosted = auto.filter((p) => je.has(p.journalEntryId!)).map((p) => {
+    const e = je.get(p.journalEntryId!)!;
+    return { id: p.id, entryId: e.id, date: ymdOf(e.date), memo: scrub(e.memo, 120), amountCents: e.lines.reduce((n, l) => n + l.debitCents, 0), basis: (p.payload as { autoPosted: { basis: string } }).autoPosted.basis, reversed: !!e.reversedBy, postedAt: p.decidedAt };
+  });
   return {
     entries,
+    autoPosted,
     impact: IMPACT_ORDER.filter((t) => (impact.get(t) ?? 0) !== 0).map((t) => ({ type: t, label: IMPACT_LABEL[t], cents: impact.get(t)! })),
     canApprove: await isPrimaryOwner(actor.id),
   };
@@ -339,6 +414,16 @@ export async function removeDecisions(actor: Actor, clientId: string, ids: strin
   return decideCoethaProposals(actor, clientId, "REJECT", [...new Set([...chosen, ...dependents])].map((id) => ({ id })), note || "Removed from Apply These Decisions");
 }
 
+/** Reverse something Coetha posted automatically (Tabitha only). The bank row goes back to review. */
+export async function reverseAutoPosted(actor: Actor, clientId: string, proposalId: string) {
+  await assertCanApproveCoethaWork(actor);
+  const p = await prisma.coethaProposal.findFirst({ where: { id: proposalId, clientId, model: DECISIONS_MODEL, status: "APPROVED" } });
+  if (!p?.journalEntryId || !(p.payload as { autoPosted?: unknown }).autoPosted) throw new ValidationError("That isn't one of Coetha's automatic postings for this business.");
+  const { reverseEntry } = await import("./ledger");
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+  return reverseEntry(actor, clientId, p.journalEntryId, { date: today, reason: "Reversed by Tabitha from Coetha's automatic postings" });
+}
+
 // --- The tool Coetha uses in Ask Coetha (only when Tabitha is asking) -------------------------------
 
 export const PREPARE_TOOL = {
@@ -362,6 +447,8 @@ export const PREPARE_TOOL = {
             accountCode: { type: "string", description: "post_bank_row: the account it is posted to; new_account: the new account's code" },
             memo: { type: "string" },
             reason: { type: "string", description: "Short: which decision of Tabitha's this carries out" },
+            basis: { type: "string", enum: ["tabitha_said", "routine"], description: "tabitha_said: Tabitha stated this treatment (give her exact words in quote); routine: the business's usual treatment (a rule or how this vendor was posted before). Leave out for anything else; it then waits for her approval." },
+            quote: { type: "string", description: "With basis tabitha_said: Tabitha's own words that decide it, copied exactly from her message" },
             lines: {
               type: "array",
               description: "journal_entry: at least two lines; each has a debit or a credit in dollars",
@@ -377,12 +464,20 @@ export const PREPARE_TOOL = {
 };
 
 /** Runs prepare_entries for ONE business; only offered when the person asking is Tabitha. */
-export async function runPrepareTool(actor: Actor, clientId: string, input: unknown) {
+export async function runPrepareTool(actor: Actor, clientId: string, input: unknown, currentQuestion?: string) {
   const items = (input && typeof input === "object" ? (input as { items?: unknown }).items : null) as DecisionItem[] | null;
   if (!Array.isArray(items)) return { error: "Send items." };
   try {
-    const results = await prepareDecisions(actor, clientId, items, "chat");
-    return { prepared: results.filter((r) => r.ok).map((r) => r.message), notPrepared: results.filter((r) => !r.ok).map((r) => r.message), note: "These are drafts on Tabitha's Apply These Decisions card. Nothing is posted until she approves." };
+    // What Tabitha wrote to Coetha about this business (to check quoted decisions).
+    const mine = await prisma.coethaChatMessage.findMany({ where: { clientId, role: "USER", authorId: actor.id }, orderBy: { createdAt: "desc" }, take: 60, select: { text: true } });
+    const said = [...(currentQuestion ? [currentQuestion] : []), ...mine.map((m) => m.text)];
+    const results = await prepareDecisions(actor, clientId, items, "chat", undefined, said);
+    return {
+      postedAutomatically: results.filter((r) => r.ok && r.posted).map((r) => r.message),
+      onHerCard: results.filter((r) => r.ok && !r.posted).map((r) => r.message),
+      notPrepared: results.filter((r) => !r.ok).map((r) => r.message),
+      note: "Posted items are in the books (listed under Posted automatically, reversible). Card items wait for Tabitha's Approve & Post.",
+    };
   } catch (err) {
     return { error: err instanceof ValidationError ? err.message : "The entries couldn't be prepared." };
   }

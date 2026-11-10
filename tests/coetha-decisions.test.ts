@@ -5,7 +5,7 @@ import { createClient } from "@/lib/services/clients";
 import { categorizeBankTransaction, closeBooksThrough, importBankCsv, profitAndLoss, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { askCoetha } from "@/lib/services/coetha-chat";
-import { applyDecisionsView, approveDecisions, DECISIONS_MODEL, prepareDecisions, prepareFromDocument, removeDecisions } from "@/lib/services/coetha-decisions";
+import { applyDecisionsView, approveDecisions, DECISIONS_MODEL, prepareDecisions, prepareFromDocument, removeDecisions, reverseAutoPosted } from "@/lib/services/coetha-decisions";
 
 // Fictional businesses and transactions only. A local stand-in for Anthropic's Messages API: when a
 // question starts with "DECIDE:", the stand-in calls prepare_entries (if offered) with the items
@@ -76,7 +76,7 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
     ];
     await askCoetha(s.tabitha, s.biz.id, "DECIDE: #178 and the wire are owner draws; #184 is a license; #180 is personal.");
     expect(sent[0].tools!.map((t) => t.name)).toContain("prepare_entries");
-    expect(JSON.parse(toolResults[0])).toMatchObject({ prepared: expect.any(Array), notPrepared: [expect.stringContaining("not $999.00")] });
+    expect(JSON.parse(toolResults[0])).toMatchObject({ postedAutomatically: [], onHerCard: expect.any(Array), notPrepared: [expect.stringContaining("not $999.00")] });
     const drafts = await prisma.coethaProposal.findMany({ where: { clientId: s.biz.id, model: DECISIONS_MODEL, status: "PROPOSED" }, orderBy: { createdAt: "asc" } });
     expect(drafts.map((d) => d.kind)).toEqual(["CATEGORY", "CATEGORY", "ADJUSTING_ENTRY"]);
     // Nothing posted, no bank transaction added.
@@ -282,5 +282,53 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
     const st = async (id: string) => (await prisma.coethaProposal.findUniqueOrThrow({ where: { id } })).status;
     expect([await st(res[0].proposalId!), await st(res[1].proposalId!), await st(res[2].proposalId!)]).toEqual(["REJECTED", "REJECTED", "PROPOSED"]);
     expect(await prisma.ledgerAccount.count({ where: { clientId: s.biz.id, code: "6195" } })).toBe(0);
+  });
+
+  it("auto-posting: Tabitha's quoted decisions and verified routine items post; everything else waits on her card", async () => {
+    const s = await setup();
+    const gl = (await s.acct("1000")).id;
+    await importBankCsv(s.daria, s.biz.id, gl, { fileName: "flour.csv", text: CSV(["08/10/2026,FLOUR MILL ORDER 55,-90.00", "09/20/2026,FLOUR MILL ORDER 77,-95.00", "09/21/2026,ACME PAPER 9,-40.00", "09/22/2026,CHECK 191,-75.00"]) });
+    // How this vendor was posted before: office supplies.
+    await categorizeBankTransaction(s.daria, s.biz.id, (await s.row("FLOUR MILL ORDER 55")).id, { accountId: (await s.acct("6300")).id });
+    const [bankBefore] = await counts();
+    const said = ["#184 yes, business license — post it to 6400", "#2 yes repair and maintenance"];
+    const r = await prepareDecisions(s.tabitha, s.biz.id, [
+      // Her words, quoted exactly: posts.
+      { type: "post_bank_row", ref: "W2", date: "2026-09-05", amount: -580.85, accountCode: "6400", basis: "tabitha_said", quote: "#184 yes, business license" },
+      // A quote she never wrote: waits on the card.
+      { type: "post_bank_row", ref: "W1", date: "2026-09-02", amount: -18000, accountCode: "3100", basis: "tabitha_said", quote: "the car check is an owner draw" },
+      // Same vendor, same account as before: posts.
+      { type: "post_bank_row", ref: "W5", date: "2026-09-20", amount: -95, accountCode: "6300", basis: "routine" },
+      // "Routine" with no rule or history behind it, and a bare check: wait.
+      { type: "post_bank_row", ref: "W6", date: "2026-09-21", amount: -40, accountCode: "6300", basis: "routine" },
+      { type: "post_bank_row", ref: "W7", date: "2026-09-22", amount: -75, accountCode: "6300", basis: "routine" },
+      // A correction posts only on her quoted words.
+      { type: "journal_entry", date: "2026-09-30", memo: "Reclassify check 180 to repairs", basis: "tabitha_said", quote: "#2 yes repair and maintenance", lines: [{ accountCode: "6500", debit: 1000 }, { accountCode: "6600", credit: 1000 }] },
+    ], "chat", undefined, said);
+    expect(r.map((x) => x.posted ?? false)).toEqual([true, false, true, false, false, true]);
+    expect((await s.row("CHECK 184")).status).toBe("POSTED");
+    expect((await s.row("FLOUR MILL ORDER 77")).status).toBe("POSTED");
+    expect((await s.row("CHECK 178")).status).toBe("UNREVIEWED");
+    expect((await s.row("ACME PAPER 9")).status).toBe("UNREVIEWED");
+    expect((await counts())[0]).toBe(bankBefore);
+    const card = await applyDecisionsView(s.tabitha, s.biz.id);
+    expect(card.entries).toHaveLength(3);
+    expect(card.autoPosted.map((a) => a.basis).sort()).toEqual(["history", "your decision", "your decision"]);
+    expect(await prisma.auditLog.count({ where: { clientId: s.biz.id, action: "coetha.auto_posted" } })).toBe(3);
+
+    // Reversing one: owner only; the entry is mirrored and the bank row is back in review.
+    const flour = card.autoPosted.find((a) => a.basis === "history")!;
+    await expect(reverseAutoPosted(s.daria, s.biz.id, flour.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await reverseAutoPosted(s.tabitha, s.biz.id, flour.id);
+    expect((await s.row("FLOUR MILL ORDER 77")).status).toBe("UNREVIEWED");
+    expect((await applyDecisionsView(s.tabitha, s.biz.id)).autoPosted.find((a) => a.id === flour.id)!.reversed).toBe(true);
+  });
+
+  it("with automatic posting turned off, everything waits on the card", async () => {
+    const s = await setup();
+    await setOwnerSwitch(s.tabitha, "coethaAutoPost", false);
+    const r = await prepareDecisions(s.tabitha, s.biz.id, [{ type: "post_bank_row", ref: "W2", date: "2026-09-05", amount: -580.85, accountCode: "6400", basis: "tabitha_said", quote: "post #184 to 6400" }], "chat", undefined, ["post #184 to 6400 please"]);
+    expect(r[0]).toMatchObject({ ok: true, posted: false });
+    expect((await s.row("CHECK 184")).status).toBe("UNREVIEWED");
   });
 });
