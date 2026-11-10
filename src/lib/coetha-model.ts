@@ -209,10 +209,15 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], to
     const last = messages[messages.length - 1];
     last.content = [...blocks, { type: "text", text: String(last.content) }];
   }
+  // The instructions, books and records are the large, unchanging part of every request in an
+  // answer (and of the next questions for a few minutes): they're cached, so the repeat sends
+  // after each search are read from the cache instead of counting again against the AI service's
+  // per-minute limit.
+  const cache = { cache_control: { type: "ephemeral" as const } };
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
     { type: "text", text: COETHA_CHAT_SYSTEM },
-    { type: "text", text: `Books (JSON):\n${JSON.stringify(books)}` },
-    ...(tools?.records !== undefined ? [{ type: "text" as const, text: `Records (JSON):\n${JSON.stringify(tools.records)}` }] : []),
+    { type: "text", text: `Books (JSON):\n${JSON.stringify(books)}`, ...(tools?.records === undefined ? cache : {}) },
+    ...(tools?.records !== undefined ? [{ type: "text" as const, text: `Records (JSON):\n${JSON.stringify(tools.records)}`, ...cache }] : []),
     ...(tools?.asker ? [{ type: "text" as const, text: tools.asker === "owner" ? "The person asking is Tabitha, the owner. prepare_entries is available for decisions she states." : "The person asking is a staff member, not Tabitha. You can't prepare entries; describe corrections for Tabitha." }] : []),
   ];
   const started = Date.now();

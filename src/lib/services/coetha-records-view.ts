@@ -88,6 +88,7 @@ export async function recordsSnapshot(actor: Actor, clientId: string) {
   // What the document reader already read (saved, so nothing has to be uploaded again), tied to
   // the waiting rows by W-reference so Coetha can prepare entries from it.
   const wRef = new Map(waiting.map((t, i) => [t.id, `W${i + 1}`]));
+  // Checks still open (matched to a waiting row, or not matched) carry the detail; posted ones are counted.
   const findings = await prisma.coethaDocFinding.findMany({ where: { clientId }, orderBy: [{ createdAt: "asc" }, { page: "asc" }, { seq: "asc" }], take: 600, include: { job: { select: { name: true } } } });
   const fRows = await prisma.bankTransaction.findMany({ where: { clientId, id: { in: findings.map((f) => f.bankTransactionId).filter((x): x is string => !!x) } }, select: { id: true, status: true } });
   const fStatus = new Map(fRows.map((r) => [r.id, r.status]));
@@ -121,13 +122,17 @@ export async function recordsSnapshot(actor: Actor, clientId: string) {
       linesNotYetInBooks: compare.rows.filter((r) => !r.books).map((r) => scrub(r.label)),
     } : null,
     vendorFamilyPostingsToReview: family.map((f) => ({ date: f.date, amount: usd(f.amountCents), description: scrub(f.description), accountNow: scrub(f.currentAccount), proposed: f.proposedAccount ? scrub(f.proposedAccount) : null, needsJudgment: f.needsJudgment })),
-    readFromDocuments: findings.map((f) => ({
-      document: scrub(f.job.name, 80), page: f.page, kind: f.kind.toLowerCase(), checkNumber: f.checkNumber, date: f.date, payee: f.payee, amount: f.amountCents == null ? null : usd(f.amountCents),
-      memo: f.memo, details: f.details,
-      group: GROUP_LABEL[groupOf(f, f.bankTransactionId ? fStatus.get(f.bankTransactionId) : undefined)],
-      bankRow: f.bankTransactionId ? (wRef.get(f.bankTransactionId) ?? STATUS_LABEL[fStatus.get(f.bankTransactionId) ?? ""] ?? "matched") : "not matched",
-      proposedAccount: f.proposedAccount, why: f.reason, evidenceNeeded: f.evidenceNeeded,
-    })),
+    readFromDocuments: findings
+      .filter((f) => !f.bankTransactionId || wRef.has(f.bankTransactionId))
+      .slice(0, 300)
+      .map((f) => ({
+        document: scrub(f.job.name, 60), page: f.page, kind: f.kind.toLowerCase(), checkNumber: f.checkNumber, date: f.date, payee: f.payee, amount: f.amountCents == null ? null : usd(f.amountCents),
+        memo: f.memo,
+        group: GROUP_LABEL[groupOf(f, f.bankTransactionId ? fStatus.get(f.bankTransactionId) : undefined)],
+        bankRow: f.bankTransactionId ? wRef.get(f.bankTransactionId)! : "not matched",
+        proposedAccount: f.proposedAccount, why: f.reason, evidenceNeeded: f.evidenceNeeded,
+      })),
+    readFromDocumentsAlreadyPosted: findings.filter((f) => f.bankTransactionId && !wRef.has(f.bankTransactionId)).length,
     documentsOnFile: docs.map((d) => ({
       title: scrub(d.title, 120), type: d.docType, period: d.year ? `${d.year}${d.month ? `-${String(d.month).padStart(2, "0")}` : ""}` : null,
       account: d.bookkeepingAccount?.ledgerAccountId ? label(d.bookkeepingAccount.ledgerAccountId) : d.bookkeepingAccount?.nickname ? scrub(d.bookkeepingAccount.nickname) : null,
