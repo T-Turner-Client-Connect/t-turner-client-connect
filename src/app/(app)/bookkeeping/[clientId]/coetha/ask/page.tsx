@@ -119,6 +119,12 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
                     </ul>
                   )}
                   <div className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</div>
+                  {m.role === "USER" && m.jobIds.length === 0 && m.status === "WAITING" && (
+                    <p className="mt-2 flex items-center gap-1 rounded-lg bg-white/10 p-2 text-xs font-semibold" data-testid="chat-busy"><Loader2 className="size-3.5 animate-spin" aria-hidden /> The AI service was busy. Your question is saved; Coetha will answer it here shortly. No need to send it again.</p>
+                  )}
+                  {m.role === "USER" && m.jobIds.length === 0 && m.status === "FAILED" && (
+                    <p className="mt-2 rounded-lg bg-white/10 p-2 text-xs font-semibold">Coetha couldn&apos;t answer this one after several tries (the AI service stayed busy). Send it again in a few minutes.</p>
+                  )}
                   {m.jobIds.length > 0 && (
                     <div className="mt-2 space-y-1 rounded-lg bg-white/10 p-2 text-xs" data-testid="chat-reading">
                       {m.status === "WAITING" && <p className="flex items-center gap-1 font-semibold"><Loader2 className="size-3.5 animate-spin" aria-hidden /> Coetha is reading. You can leave this page; her answer will appear here.</p>}

@@ -134,6 +134,13 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
       res = await callCoethaChat(books, turns, await chatTools(actor, clientId, records), parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
     } catch (err) {
       const code = err instanceof CoethaModelError ? err.code : "ERROR";
+      // The AI service is busy (its per-minute limit, or a refusal/connection drop right after it):
+      // the question is kept and answered in the background a minute later, never lost.
+      if (BUSY_CODES.has(code) && !typed.length) {
+        const queued = await prisma.coethaChatMessage.create({ data: { clientId, role: "USER", text: q, authorId: actor.id, status: "WAITING", jobIds: [] } });
+        await audit(prisma, { actorId: actor.id, action: "coetha.chat_queued", entityType: "CoethaChatMessage", entityId: queued.id, clientId, details: { code } });
+        return { questionId: queued.id, answerId: null, text: null, queued: true as const };
+      }
       await audit(prisma, { actorId: actor.id, action: "coetha.chat_failed", entityType: "LedgerBook", entityId: clientId, clientId, details: { code } });
       throw new ValidationError(`Coetha couldn't answer: ${err instanceof CoethaModelError ? err.message : "something went wrong."} Your question wasn't saved; you can send it again.`);
     }
@@ -156,11 +163,14 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
       prisma.coethaChatMessage.create({ data: { clientId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(at + 1) } }),
     ]);
     await audit(prisma, { actorId: actor.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId: asked.id, documentIds: attachments.map((a) => a.documentId), searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
-    return { questionId: asked.id, answerId: answered.id, text: answered.text };
+    return { questionId: asked.id, answerId: answered.id as string | null, text: answered.text as string | null, queued: false as const };
   } finally {
     await releaseLock(lock);
   }
 }
+
+/** The AI service's "slow down" answers: the question is kept and retried instead of failing. */
+export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEOUT"]);
 
 /** Read-only searches for everyone; prepare_entries only when the person asking is Tabitha. */
 async function chatTools(actor: Actor, clientId: string, records: unknown) {
@@ -199,9 +209,9 @@ export async function answerQuestion(asker: Actor, clientId: string, questionId:
   const names = (m: { attachmentName: string | null; attachments: unknown }) => (Array.isArray(m.attachments) ? (m.attachments as { name: string }[]).map((a) => a.name) : m.attachmentName ? [m.attachmentName] : []);
   const turns: CoethaChatTurn[] = [
     ...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })),
-    { role: "user", text: `${question.text}\n\nWhat you read from the attached documents (read page by page; each item is matched to the bank rows where possible):\n${documentsRead}` },
+    { role: "user", text: documentsRead ? `${question.text}\n\nWhat you read from the attached documents (read page by page; each item is matched to the bank rows where possible):\n${documentsRead}` : question.text },
   ];
-  const res = await callCoethaChat(books, turns, opts.quick ? { defs: [], run: async () => ({}), records } : { defs: RECORDS_TOOLS, run: (name, input) => runRecordsTool(clientId, name, input), records });
+  const res = await callCoethaChat(books, turns, opts.quick ? { defs: [], run: async () => ({}), records } : await chatTools(asker, clientId, records));
   const answered = await prisma.coethaChatMessage.create({ data: { clientId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(question.createdAt.getTime() + 1) } });
   await audit(prisma, { actorId: asker.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId, background: true, searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
   return answered;
