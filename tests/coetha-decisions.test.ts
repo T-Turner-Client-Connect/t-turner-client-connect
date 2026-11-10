@@ -211,6 +211,13 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
     const drafts = await prisma.coethaProposal.findMany({ where: { clientId: s.biz.id, model: DECISIONS_MODEL, status: "PROPOSED" } });
     expect(drafts.map((d) => d.bankTransactionId)).toEqual([c190.id]);
     expect(await counts()).toEqual(before);
+    // In a later question Coetha sees what she already read (no re-upload), tied to the waiting rows.
+    const { recordsSnapshot } = await import("@/lib/services/coetha-records-view");
+    const snap = await recordsSnapshot(s.tabitha, s.biz.id);
+    const read = snap.readFromDocuments.find((x) => x.checkNumber === "184")!;
+    expect(read).toMatchObject({ group: "Checks requiring additional documentation", proposedAccount: "6400 Professional Fees" });
+    expect(read.bankRow).toBe(snap.waitingRows.find((w) => w.amount === -580.85)!.ref);
+    expect(snap.readFromDocuments.find((x) => x.checkNumber === "178")!.group).toBe("Owner and personal transactions");
     await expect(prepareFromDocument(s.tabitha, s.other.id, job.id)).rejects.toThrow(/isn't on file for this business/);
   });
 });
