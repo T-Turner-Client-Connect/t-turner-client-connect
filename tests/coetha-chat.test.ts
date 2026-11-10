@@ -71,6 +71,10 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(body).not.toContain("SECRETHARBORVENDOR");
     expect(body).not.toContain("owner@vessel.example");
     expect(body).not.toContain("987654321");
+    // The large, unchanging part (instructions, books, records) is cached, so repeat sends in an
+    // answer don't count again against the AI service's per-minute limit.
+    const recordsBlock = (sent[0].system as { text: string; cache_control?: { type: string } }[]).find((b) => b.text.startsWith("Records (JSON)"))!;
+    expect(recordsBlock.cache_control).toEqual({ type: "ephemeral" });
     // Her only tools are read-only searches of this business.
     expect((sent[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries"]);
     expect(sent[0].messages).toEqual([{ role: "user", content: "What is the Office Depot charge?" }]);
