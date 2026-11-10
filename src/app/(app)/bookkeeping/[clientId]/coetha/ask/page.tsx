@@ -100,11 +100,15 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
                     <span className="font-semibold">{m.author}</span>
                     <span>{fmtDateTime(m.createdAt)}</span>
                   </p>
-                  {m.attachmentName && (
-                    <p className="mb-1 flex items-center gap-1 text-xs" data-testid="chat-attachment">
-                      <Paperclip className="size-3.5" aria-hidden />
-                      {m.documentId ? <a className="underline" href={`/api/documents/${downloadToken(m.documentId, { staffId: user.id })}`} target="_blank" rel="noopener">{m.attachmentName}</a> : m.attachmentName}
-                    </p>
+                  {m.attachments.length > 0 && (
+                    <ul className="mb-1 space-y-0.5 text-xs" data-testid="chat-attachment">
+                      {m.attachments.map((f, k) => (
+                        <li key={k} className="flex items-center gap-1">
+                          <Paperclip className="size-3.5 shrink-0" aria-hidden />
+                          {f.documentId ? <a className="truncate underline" href={`/api/documents/${downloadToken(f.documentId, { staffId: user.id })}`} target="_blank" rel="noopener">{f.name}</a> : <span className="truncate">{f.name}</span>}
+                        </li>
+                      ))}
+                    </ul>
                   )}
                   <div className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</div>
                 </div>
@@ -119,16 +123,18 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
         <section className={clsx(card, "p-4 sm:p-5")} data-testid="coetha-chat-ask">
           <ActionForm action={askCoethaAction.bind(null, clientId)} resetOnSuccess showSuccess={false} idempotent>
             <label htmlFor="coetha-question" className="block text-sm font-semibold text-navy-900">Your question about {biz}&apos;s books</label>
-            <textarea id="coetha-question" name="question" maxLength={MAX_QUESTION} rows={3} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-base text-navy-900 focus:border-gold-500 focus:outline-none focus:ring-2 focus:ring-gold-300" placeholder="e.g. Why is the October bank balance different from the statement?" data-testid="coetha-chat-input" />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="mt-1 grid gap-2 sm:grid-cols-[1fr_auto]">
+              <textarea id="coetha-question" name="question" maxLength={MAX_QUESTION} rows={3} className="w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-base text-navy-900 focus:border-gold-500 focus:outline-none focus:ring-2 focus:ring-gold-300" placeholder="Ask a question, or upload files and Coetha will read them" data-testid="coetha-chat-input" />
+              <div className="flex flex-col gap-2 sm:w-48">
               <CoethaUploadButton />
               <button type="submit" className="group inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-2 text-sm font-semibold text-navy-950 shadow hover:to-gold-600 disabled:opacity-70" data-testid="coetha-chat-send">
                 <Sparkles className="size-4" aria-hidden />
                 <span className="group-disabled:hidden">Ask Coetha</span>
                 <span className="hidden group-disabled:inline">Coetha is thinking…</span>
               </button>
+              </div>
             </div>
-            <p className="mt-2 text-xs text-slate-600">Coetha sees this business&apos;s books only. You can send one document with a question: a check image, a statement page, a receipt or an invoice (PDF or picture, up to 5 MB). It&apos;s kept with this business as a staff-only document. Answers can take up to a minute.</p>
+            <p className="mt-2 text-xs text-slate-600">Coetha sees this business&apos;s books only. With a question you can send up to 3 files: check images, bank statements, receipts or invoices (PDFs or pictures, 5 MB in all). It&apos;s kept with this business as a staff-only document. Answers can take up to a minute.</p>
           </ActionForm>
         </section>
       ) : null}

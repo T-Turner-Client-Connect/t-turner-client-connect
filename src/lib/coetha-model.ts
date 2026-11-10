@@ -130,28 +130,60 @@ export async function callCoethaModel(input: unknown): Promise<CoethaCallResult>
 
 export const COETHA_CHAT_SYSTEM = `You are Coetha, the Senior Accountant AI for T. Turner & Associates, a tax and bookkeeping firm. You are talking with the firm's own staff (Tabitha Turner, the owner, or a bookkeeper she assigned) about ONE small-business client's books.
 
-You receive that client's bookkeeping data as JSON below: chart of accounts, bank and card transactions waiting to be categorized (T1, T2, ...), recently posted transactions (P1, P2, ...), the firm's categorization rules, how similar descriptions were categorized before, reconciliation status, the month-end close checklist, the ledger's warnings and the business's tax classification rules. Amounts are in dollars; money into a bank account is positive and money out is negative. On a credit card account a negative amount is a charge and a positive amount is a payment or refund. Descriptions were shortened and de-identified before they reached you.
+You receive two JSON blocks below.
+1. "Books": the chart of accounts, the firm's categorization rules, how descriptions were categorized before, the month-end close checklist, the ledger's warnings and the business's tax classification rules.
+2. "Records": the complete list of what is still open, read fresh for this question:
+   - waitingRows (W1, W2, ...): EVERY bank and card row not yet posted or excluded, each with the draft already prepared for it (proposed account, where the draft came from, whether it needs Tabitha's judgment, the completed-statement line it matched) or null when nothing is drafted.
+   - counts: totals by account and status, and waiting rows by account and month. "definitions" says exactly how each screen counts, so you can explain why two numbers differ (for example the ledger warning vs. the cash proof).
+   - excludedRows, cashProof (per bank account: statement balance to books, line by line), draftsReadyToApprove, judgmentGroups, comparisonWithCompletedStatements (books minus statements, by line and month), vendorFamilyPostingsToReview and documentsOnFile (titles only; you can't read their contents unless a file is attached to the question).
+Amounts are in dollars; money into a bank account is positive and money out is negative. On a credit card account a negative amount is a charge and a positive amount is a payment or refund. Descriptions were shortened and de-identified before they reached you.
+
+You also have two read-only search tools for the whole history (posted rows, earlier months, journal entries). Use them only when the Records block doesn't already answer the question, with narrow filters (dates, account, words, amounts). Each call returns at most 100 rows and the total.
 
 How to answer:
-- Answer like a careful senior accountant: plain language, short paragraphs or a short list, specific dates, amounts and account codes from the data. Cite transactions by their T- or P- reference.
-- Use only this client's data. If the answer isn't in the data (for example, months not included, documents you can't see, other clients), say so plainly and say what would be needed.
-- Never invent transactions, balances, accounts or facts. Don't guess a figure; if you estimate, say it is an estimate and show how you got it.
-- You cannot post, change, approve, reconcile, close, send or delete anything, and you can't contact the client. When something should change, describe the correction (accounts, debit/credit, amount, date) and say that it needs Tabitha's approval, either through a Coetha run's drafts or a manual entry by staff.
+- Do the research yourself from these records; don't ask staff to look things up or re-enter what is already here.
+- When asked what is unresolved, group the open items by what they are (for example checks without a payee, card payments, owner transfers, transfers between accounts, deposits to identify, disputes, fees), with count and total for each group and the W-references, then say for each group what evidence would settle it and which decision only Tabitha can make. Put the decisions that need her at the end, short and numbered.
+- Plain language, short paragraphs or short lists, specific dates, amounts and account codes. Cite rows by their W-reference.
+- Use only this client's data. If something isn't in the data, say so plainly and what would be needed.
+- Never invent transactions, balances, accounts or facts. If you estimate, say so and show how.
+- You cannot post, change, approve, reverse, reconcile, close, send or delete anything, and you can't contact the client. When something should change, describe the correction (accounts, debit/credit, amount, date) and say it needs Tabitha's approval.
 - Apply the business's tax classification rules (taxProfile.rules) to owner draws, distributions, guaranteed payments and payroll questions.
 - This is bookkeeping help, not a final tax or legal opinion; flag anything that needs Tabitha's professional judgment.`;
 
 export type CoethaChatTurn = { role: "user" | "assistant"; text: string };
-/** A file sent with the newest question: a PDF or an image (PNG, JPEG, GIF, WebP). */
-export type CoethaChatFile = { mediaType: string; base64: string };
+export type CoethaChatResult = { text: string; inputTokens: number; outputTokens: number; requestId: string | null; model: string; searches: number };
+/** Read-only tools for one answer: their definitions and the function that runs them for ONE business. */
+export type CoethaChatTools = { defs: Anthropic.Beta.BetaTool[]; run: (name: string, input: unknown) => Promise<unknown>; records?: unknown };
+/** At most this many search rounds per answer, and no new round after this long (the page waits). */
+export const CHAT_MAX_SEARCH_ROUNDS = 3;
+const CHAT_SEARCH_BUDGET_MS = 35_000;
+
+/** An API failure as the plain-language error staff see. */
+function chatError(err: unknown, model: string): CoethaModelError {
+  if (err instanceof Anthropic.AuthenticationError) return new CoethaModelError("The Anthropic API key was refused. Check ANTHROPIC_API_KEY in Netlify.", "AUTH");
+  if (err instanceof Anthropic.PermissionDeniedError) return new CoethaModelError("The Anthropic API key isn't allowed to use this model.", "PERMISSION");
+  if (err instanceof Anthropic.NotFoundError) return new CoethaModelError(`The model "${model}" wasn't found. Check COETHA_MODEL.`, "MODEL");
+  if (err instanceof Anthropic.RateLimitError) return new CoethaModelError("Anthropic's rate limit was reached. Try again in a few minutes.", "RATE_LIMIT");
+  if (err instanceof Anthropic.BadRequestError) return new CoethaModelError("Anthropic rejected the request.", "BAD_REQUEST");
+  if (err instanceof Anthropic.APIConnectionTimeoutError) return new CoethaModelError("Coetha took too long to answer. Try a shorter or narrower question.", "TIMEOUT");
+  if (err instanceof Anthropic.APIConnectionError) return new CoethaModelError("Couldn't reach Anthropic's API.", "NETWORK");
+  if (err instanceof Anthropic.APIError) return new CoethaModelError(`Anthropic's API returned an error${err.status ? ` (${err.status})` : ""}.`, "API");
+  return new CoethaModelError("Coetha's answer couldn't be read.", "PARSE");
+}
+/**
+ * A file sent with the newest question: the text read from a PDF (statements, invoices: small and
+ * de-identified), or the file itself for a picture or a scanned PDF (PNG, JPEG, GIF, WebP, PDF).
+ */
+export type CoethaChatFile = { mediaType: string; base64: string } | { name: string; text: string };
 export const CHAT_FILE_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"] as const;
-export type CoethaChatResult = { text: string; inputTokens: number; outputTokens: number; requestId: string | null; model: string };
 
 /**
  * One chat reply. `books` is the de-identified data from buildCoethaInput for ONE client; `turns`
  * is the earlier conversation (oldest first) ending with the new question. Returns text only:
- * Coetha has no tools here, so a reply can't change anything. Tests replace global fetch.
+ * Coetha's only tools are read-only searches of the same business (tools.run is bound to it), so
+ * a reply can't change anything. Tests replace global fetch.
  */
-export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], file?: CoethaChatFile): Promise<CoethaChatResult> {
+export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], tools?: CoethaChatTools, files: CoethaChatFile[] = []): Promise<CoethaChatResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
   if (!turns.length || turns[turns.length - 1].role !== "user") throw new CoethaModelError("Ask Coetha a question first.", "BAD_REQUEST");
@@ -161,45 +193,61 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], fi
   // The API expects the conversation to start with a user turn.
   const first = turns.findIndex((t) => t.role === "user");
   const messages: Anthropic.Beta.BetaMessageParam[] = turns.slice(first).map((t) => ({ role: t.role, content: t.text }));
-  if (file) {
-    // The file goes with the newest question, before its text.
-    const block: Anthropic.Beta.BetaContentBlockParam = file.mediaType === "application/pdf"
-      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: file.base64 } }
-      : { type: "image", source: { type: "base64", media_type: file.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: file.base64 } };
+  if (files.length) {
+    // The files go with the newest question, before its text.
+    const blocks: Anthropic.Beta.BetaContentBlockParam[] = files.map((file) => ("text" in file
+      ? { type: "text", text: `Attached file “${file.name}” (its text, read from the PDF; long numbers shortened to the last 4 digits):\n${file.text}` }
+      : file.mediaType === "application/pdf"
+        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: file.base64 } }
+        : { type: "image", source: { type: "base64", media_type: file.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: file.base64 } }));
     const last = messages[messages.length - 1];
-    last.content = [block, { type: "text", text: String(last.content) }];
+    last.content = [...blocks, { type: "text", text: String(last.content) }];
   }
-  let msg;
-  try {
-    msg = await client.beta.messages.create({
-      model,
-      max_tokens: 4000,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      output_config: { effort: "low" },
-      system: [
-        { type: "text", text: COETHA_CHAT_SYSTEM },
-        { type: "text", text: `Client bookkeeping data (JSON):\n${JSON.stringify(books)}` },
-      ],
-      messages,
-    });
-  } catch (err) {
-    if (err instanceof Anthropic.AuthenticationError) throw new CoethaModelError("The Anthropic API key was refused. Check ANTHROPIC_API_KEY in Netlify.", "AUTH");
-    if (err instanceof Anthropic.PermissionDeniedError) throw new CoethaModelError("The Anthropic API key isn't allowed to use this model.", "PERMISSION");
-    if (err instanceof Anthropic.NotFoundError) throw new CoethaModelError(`The model "${model}" wasn't found. Check COETHA_MODEL.`, "MODEL");
-    if (err instanceof Anthropic.RateLimitError) throw new CoethaModelError("Anthropic's rate limit was reached. Try again in a few minutes.", "RATE_LIMIT");
-    if (err instanceof Anthropic.BadRequestError) throw new CoethaModelError("Anthropic rejected the request.", "BAD_REQUEST");
-    if (err instanceof Anthropic.APIConnectionTimeoutError) throw new CoethaModelError("Coetha took too long to answer. Try a shorter or narrower question.", "TIMEOUT");
-    if (err instanceof Anthropic.APIConnectionError) throw new CoethaModelError("Couldn't reach Anthropic's API.", "NETWORK");
-    if (err instanceof Anthropic.APIError) throw new CoethaModelError(`Anthropic's API returned an error${err.status ? ` (${err.status})` : ""}.`, "API");
-    throw new CoethaModelError("Coetha's answer couldn't be read.", "PARSE");
+  const system: Anthropic.Beta.BetaTextBlockParam[] = [
+    { type: "text", text: COETHA_CHAT_SYSTEM },
+    { type: "text", text: `Books (JSON):\n${JSON.stringify(books)}` },
+    ...(tools?.records !== undefined ? [{ type: "text" as const, text: `Records (JSON):\n${JSON.stringify(tools.records)}` }] : []),
+  ];
+  const started = Date.now();
+  let inputTokens = 0, outputTokens = 0, searches = 0;
+  let msg: Anthropic.Beta.BetaMessage;
+  for (let round = 0; ; round++) {
+    // The last allowed round (or when time is short) can't search again: Coetha answers with what she has.
+    const mayUseTools = !!tools && round < CHAT_MAX_SEARCH_ROUNDS && Date.now() - started < CHAT_SEARCH_BUDGET_MS;
+    try {
+      msg = await client.beta.messages.create({
+        model,
+        max_tokens: 4000,
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default",
+        output_config: { effort: "low" },
+        system,
+        messages,
+        ...(tools ? { tools: tools.defs, tool_choice: mayUseTools ? { type: "auto" as const } : { type: "none" as const } } : {}),
+      });
+    } catch (err) {
+      throw chatError(err, model);
+    }
+    inputTokens += msg.usage.input_tokens ?? 0;
+    outputTokens += msg.usage.output_tokens ?? 0;
+    const calls = msg.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
+    if (msg.stop_reason !== "tool_use" || !calls.length || !tools) break;
+    searches += calls.length;
+    messages.push({ role: "assistant", content: msg.content as Anthropic.Beta.BetaContentBlockParam[] });
+    const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
+    for (const c of calls) {
+      let out: unknown;
+      try { out = await tools.run(c.name, c.input); } catch { out = { error: "That search couldn't be completed." }; }
+      results.push({ type: "tool_result", tool_use_id: c.id, content: JSON.stringify(out) });
+    }
+    messages.push({ role: "user", content: results });
   }
   const requestId: string | null = (msg as { _request_id?: string | null })._request_id ?? msg.id ?? null;
   if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to answer this question.", "REFUSAL");
   let text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
   if (!text) throw new CoethaModelError("Coetha didn't return an answer. Try asking again.", "EMPTY");
   if (msg.stop_reason === "max_tokens") text += "\n\n(Coetha's answer was cut off because it was long. Ask a narrower follow-up question for the rest.)";
-  return { text, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0, requestId, model: msg.model || model };
+  return { text, inputTokens, outputTokens, requestId, model: msg.model || model, searches };
 }
 
 // --- Reading a statement's transactions when the layout isn't recognized -------------------------
