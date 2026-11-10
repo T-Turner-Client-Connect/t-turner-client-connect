@@ -272,3 +272,25 @@ describe("approving Coetha's work", () => {
     expect(await prisma.journalEntry.count()).toBe(3);
   });
 });
+
+describe("drafts prepared from completed financial statements", () => {
+  it("Run Coetha never sends or replaces them; it only works on the other waiting rows", async () => {
+    const s = await setup();
+    const office = (await prisma.bankTransaction.findFirstOrThrow({ where: { clientId: s.vessel.id, description: { contains: "OFFICE" } } }));
+    const run = await prisma.coethaRun.create({ data: { clientId: s.vessel.id, trigger: "RECORDS", model: "records", status: "OK", transactions: 1 } });
+    const acct = await s.acct(s.vessel.id, "6300");
+    const fromStatements = await prisma.coethaProposal.create({ data: { clientId: s.vessel.id, runId: run.id, kind: "CATEGORY", bankTransactionId: office.id, confidence: 0.99, reason: "“Office Supplies” — matches your completed statements to the cent.", model: "records", inputHash: "ref", payload: { bankTransactionId: office.id, date: "2026-10-02", amountCents: -8420, description: office.description, bankAccountName: "Checking", accountId: acct, accountCode: "6300", accountName: "Office Supplies", fromRecords: true, needsJudgment: false } } });
+    await runCoetha(s.daria, s.vessel.id, opts);
+    // Still open, untouched.
+    expect((await prisma.coethaProposal.findUniqueOrThrow({ where: { id: fromStatements.id } })).status).toBe("PROPOSED");
+    // Not sent to the model, and no AI draft was made for it.
+    expect(sent.join("\n")).not.toContain("OFFICE DEPOT");
+    expect(await prisma.coethaProposal.count({ where: { bankTransactionId: office.id, status: "PROPOSED" } })).toBe(1);
+    // The other waiting rows were still worked on.
+    expect((await open(s.vessel.id, "CATEGORY")).filter((p) => p.model !== "records")).toHaveLength(2);
+    // A second run doesn't replace it either; nothing was posted.
+    await runCoetha(s.daria, s.vessel.id, opts);
+    expect((await prisma.coethaProposal.findUniqueOrThrow({ where: { id: fromStatements.id } })).status).toBe("PROPOSED");
+    expect(await prisma.journalEntry.count({ where: { clientId: s.vessel.id } })).toBe(0);
+  });
+});

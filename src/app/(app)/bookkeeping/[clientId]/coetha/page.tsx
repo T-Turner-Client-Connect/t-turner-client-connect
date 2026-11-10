@@ -69,7 +69,7 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
   const v = await coethaView(user, clientId);
   const [cmp, matching, groups, familyUndo, routine] = v.book
     ? await Promise.all([compareWithReference(user, clientId), matchingDraftIds(clientId), judgmentGroups(clientId), familyPostingsToUndo(clientId), routineSummary(clientId)])
-    : [null, [] as string[], [] as Awaited<ReturnType<typeof judgmentGroups>>, [] as { entryId: string }[], [] as Awaited<ReturnType<typeof routineSummary>>];
+    : [null, [] as string[], [] as Awaited<ReturnType<typeof judgmentGroups>>, [] as Awaited<ReturnType<typeof familyPostingsToUndo>>, [] as Awaited<ReturnType<typeof routineSummary>>];
   const judgment = groups.reduce((n, g) => n + g.ids.length, 0);
   const byKind = (k: keyof typeof KIND_LABEL) => v.open.filter((p) => p.kind === k);
   const cats = byKind("CATEGORY");
@@ -190,11 +190,33 @@ export default async function CoethaPage({ params }: { params: Promise<{ clientI
               </ul>
             </div>
           )}
-          {v.canApprove && familyUndo.length > 0 && (
-            <ActionForm action={undoFamilyAction.bind(null, clientId)} className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-red-50 p-3 text-sm text-red-900 ring-1 ring-red-200" confirm={`Reverse these ${familyUndo.length} postings and prepare them again?`}>
-              <span className="mr-auto"><strong>Correction:</strong> {familyUndo.length} transaction{familyUndo.length === 1 ? " was" : "s were"} posted by a “same vendor family” shortcut inside the statement months (that shortcut now only applies to later months). Reverse {familyUndo.length === 1 ? "it" : "them"} so Coetha prepares {familyUndo.length === 1 ? "it" : "them"} again correctly.</span>
-              <button type="submit" className={outlineBtn} data-testid="records-undo-family">Reverse and prepare again</button>
-            </ActionForm>
+          {familyUndo.length > 0 && (
+            <div className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-900 ring-1 ring-red-200" data-testid="records-family">
+              <p><strong>Correction to review:</strong> {familyUndo.length} transaction{familyUndo.length === 1 ? " was" : "s were"} posted by a “same vendor family” shortcut inside the statement months (that shortcut now only applies to later months). Nothing changes until you approve the reversal below.</p>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full min-w-[720px] text-xs" data-testid="records-family-list">
+                  <thead><tr className="text-left text-red-950"><th className="py-1 pr-2">Date</th><th className="pr-2">Bank description</th><th className="pr-2 text-right">Amount</th><th className="px-2">Account now</th><th className="pr-2">Proposed account</th></tr></thead>
+                  <tbody>
+                    {familyUndo.map((f) => (
+                      <tr key={f.entryId} className="border-t border-red-200 align-top">
+                        <td className="py-1 pr-2 whitespace-nowrap">{f.date}</td>
+                        <td className="pr-2">{f.description}<span className="block text-[11px] text-red-800">{f.bankAccount}</span></td>
+                        <td className="pr-2 text-right tabular-nums">{usd(f.amountCents)}</td>
+                        <td className="px-2">{f.currentAccount}</td>
+                        <td className="pr-2">{f.needsJudgment ? <span className="rounded bg-amber-100 px-1 font-semibold text-amber-900">Needs your judgment</span> : null}{f.proposedAccount ? <span className={f.needsJudgment ? "ml-1" : "font-semibold"}>{f.proposedAccount}</span> : null}<span className="block text-[11px] text-red-800">{f.why}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {v.canApprove && (
+                <ActionForm action={undoFamilyAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-center gap-3" confirm={`Reverse exactly these ${familyUndo.length} postings (${familyUndo.map((f) => `${f.date} ${usd(f.amountCents)}`).join("; ")})? Each original entry, its approval and the audit history stay; a reversing entry is added and the bank row waits again to be prepared.`}>
+                  {familyUndo.map((f) => <input key={f.entryId} type="hidden" name="entryId" value={f.entryId} />)}
+                  <span className="mr-auto text-xs">Reversing adds a reversing entry for each one; nothing is deleted. Rows marked “Needs your judgment” then wait for your decision.</span>
+                  <button type="submit" className={outlineBtn} data-testid="records-undo-family">I reviewed these {familyUndo.length} — reverse them</button>
+                </ActionForm>
+              )}
+            </div>
           )}
           {cmp && cmp.rows.some((r) => r.books) && (
             <div className="mt-4 overflow-x-auto" data-testid="records-compare">

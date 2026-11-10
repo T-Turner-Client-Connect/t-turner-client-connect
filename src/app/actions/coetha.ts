@@ -167,11 +167,13 @@ export async function approveJudgmentGroupAction(clientId: string, line: string,
 }
 
 /** Reverses the few postings an earlier version matched by vendor family inside the statement months, then prepares again. */
-export async function undoFamilyAction(clientId: string, _prev: ActionState): Promise<ActionState> {
+export async function undoFamilyAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {
     const { undoFamilyPostings, prepareFromRecords } = await import("@/lib/services/coetha-records");
-    const n = await undoFamilyPostings(actor, clientId);
+    // Only the entries that were on screen when Tabitha approved.
+    const reviewed = fd.getAll("entryId").map(String).filter(Boolean);
+    const n = await undoFamilyPostings(actor, clientId, reviewed);
     const p = await prepareFromRecords(actor, clientId);
     refresh(clientId);
     return `Reversed ${n} posting${n === 1 ? "" : "s"}; they're waiting again. ${preparedText(p)}`;

@@ -79,6 +79,9 @@ const DAILY_READER: Actor = { id: "system:coetha-daily", role: "ADMIN", name: "C
  * Builds exactly what is sent to the model, for ONE client, plus the id maps used to turn the
  * model's references back into this client's own rows. Every query is filtered by clientId.
  */
+/** Drafts prepared from completed financial statements (coetha-records.ts) use this model name. */
+const STATEMENTS_MODEL = "records";
+
 export async function buildCoethaInput(reader: Actor, clientId: string, opts: { month?: string; today?: string } = {}) {
   const today = opts.today ?? todayCentral();
   const month = opts.month ?? prevMonth(today);
@@ -88,12 +91,15 @@ export async function buildCoethaInput(reader: Actor, clientId: string, opts: { 
     prisma.categorizationRule.findMany({ where: { clientId, active: true } }),
     // Transactions with no open category draft come first, so repeated runs work through the whole list;
     // already-drafted ones are refreshed only when there's room left.
-    prisma.coethaProposal.findMany({ where: { clientId, status: "PROPOSED", kind: "CATEGORY", bankTransactionId: { not: null } }, select: { bankTransactionId: true } }).then(async (open) => {
-      const drafted = open.map((o) => o.bankTransactionId!);
+    prisma.coethaProposal.findMany({ where: { clientId, status: "PROPOSED", kind: "CATEGORY", bankTransactionId: { not: null } }, select: { bankTransactionId: true, model: true } }).then(async (open) => {
+      // Transactions drafted from the completed financial statements are never sent again: the
+      // statements decide them, and the AI run must not replace those drafts.
+      const fromStatements = open.filter((o) => o.model === STATEMENTS_MODEL).map((o) => o.bankTransactionId!);
+      const drafted = open.filter((o) => o.model !== STATEMENTS_MODEL).map((o) => o.bankTransactionId!);
       const q = { orderBy: [{ date: "asc" as const }, { id: "asc" as const }], include: { account: { select: { code: true, name: true } } } };
-      const fresh = await prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED", id: { notIn: drafted } }, take: MAX_TO_CATEGORIZE, ...q });
+      const fresh = await prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED", id: { notIn: [...drafted, ...fromStatements] } }, take: MAX_TO_CATEGORIZE, ...q });
       const room = MAX_TO_CATEGORIZE - fresh.length;
-      return room > 0 && drafted.length ? [...fresh, ...(await prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED", id: { in: drafted } }, take: room, ...q }))] : fresh;
+      return room > 0 && drafted.length ? [...fresh, ...(await prisma.bankTransaction.findMany({ where: { clientId, status: "UNREVIEWED", id: { in: drafted, notIn: fromStatements } }, take: room, ...q }))] : fresh;
     }),
     prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED" }, orderBy: [{ date: "desc" }, { id: "asc" }], take: MAX_RECENT, include: { account: { select: { code: true, name: true } }, journalEntry: { select: { lines: { select: { accountId: true } } } } } }),
     prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED", journalEntryId: { not: null } }, select: { accountId: true, amountCents: true, description: true, journalEntry: { select: { reversedBy: { select: { id: true } }, lines: { select: { accountId: true } } } } }, take: 2000, orderBy: { date: "desc" } }),
@@ -265,7 +271,8 @@ export async function runCoetha(actor: Actor | null, clientId: string, opts: { t
     const covered = built.toCat.map((t) => t.id);
     await prisma.$transaction(async (tx) => {
       // Earlier open drafts this run replaces: categories for the same transactions, and every other kind.
-      await tx.coethaProposal.updateMany({ where: { clientId, status: "PROPOSED", model: { not: "rules" }, OR: [{ kind: { not: "CATEGORY" } }, { bankTransactionId: { in: covered } }] }, data: { status: "SUPERSEDED" } });
+      // Never the drafts from rules or from the completed financial statements.
+      await tx.coethaProposal.updateMany({ where: { clientId, status: "PROPOSED", model: { notIn: ["rules", STATEMENTS_MODEL] }, OR: [{ kind: { not: "CATEGORY" } }, { bankTransactionId: { in: covered } }] }, data: { status: "SUPERSEDED" } });
       if (proposals.length) {
         await tx.coethaProposal.createMany({ data: proposals.map((p) => ({ clientId, runId: run.id, kind: p.kind, payload: p.payload, bankTransactionId: p.bankTransactionId ?? null, confidence: p.confidence ?? null, reason: p.reason, model: res.model, inputHash: built.inputHash })) });
       }
