@@ -4,7 +4,8 @@ import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { isPrimaryOwner } from "@/lib/auth/permissions";
 import { ValidationError } from "./clients";
-import { assertLedger, bookOf, ymdOf } from "./ledger";
+import { addAccount, assertLedger, bookOf, cleanAccount, ymdOf } from "./ledger";
+import { assertCanApproveCoethaWork } from "@/lib/auth/permissions";
 import { decideCoethaProposals, scrub } from "./coetha";
 
 /**
@@ -21,12 +22,17 @@ import { decideCoethaProposals, scrub } from "./coetha";
  *   waiting bank row with a proposed account. Uncertain items are never prepared; they stay on
  *   hold until she decides.
  * - Prepared decisions carry model DECISIONS_MODEL, so a later "Run Coetha" never replaces them.
+ * - A missing account: Coetha proposes it (NEW_ACCOUNT: code, name, type) on the same card, and
+ *   entries that need it point to that proposal. Approve & Post creates the account first through
+ *   the Chart of Accounts' own step (addAccount: same checks, audited), then posts the entries. An
+ *   entry whose new account isn't approved with it is refused. No account is created otherwise.
  */
 
 export const DECISIONS_MODEL = "decisions";
 const MAX_ITEMS = 60;
 
 export type DecisionItem =
+  | { type: "new_account"; accountCode: string; name: string; accountType: string; subtype?: string | null; description?: string; reason?: string }
   | { type: "post_bank_row"; ref?: string; bankTransactionId?: string; date?: string; amount?: number; accountCode: string; memo?: string; reason?: string }
   | { type: "journal_entry"; date: string; memo: string; reason?: string; lines: { accountCode: string; debit?: number | null; credit?: number | null; description?: string | null }[] };
 
@@ -58,9 +64,21 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
   const locked = book.lockedThrough ? ymdOf(book.lockedThrough) : null;
   const opening = book.openingDate ? ymdOf(book.openingDate) : null;
   const openDateProblem = (d: string) => (locked && d <= locked ? `the books are closed through ${locked}` : opening && d < opening ? `it's before the opening balances (${opening})` : null);
-  const account = (code: unknown) => {
-    const a = byCode.get(String(code ?? "").trim().split(/\s+/)[0]);
-    if (!a) return { error: `account ${String(code ?? "").slice(0, 20)} isn't in this business's chart of accounts` };
+  // New accounts Coetha has proposed and Tabitha hasn't decided yet (this call's and earlier ones).
+  type Acct = { id: string | null; code: string; name: string; type: string; pendingId?: string };
+  const pending = new Map<string, Acct>();
+  for (const p of await prisma.coethaProposal.findMany({ where: { clientId, kind: "NEW_ACCOUNT", status: "PROPOSED" }, select: { id: true, payload: true } })) {
+    const d = p.payload as { code: string; name: string; type: string };
+    pending.set(d.code, { id: null, code: d.code, name: d.name, type: d.type, pendingId: p.id });
+  }
+  const account = (code: unknown): { a: Acct } | { error: string } => {
+    const c = String(code ?? "").trim().split(/\s+/)[0];
+    const a = byCode.get(c);
+    if (!a) {
+      const p = pending.get(c);
+      if (p) return { a: p };
+      return { error: `account ${String(code ?? "").slice(0, 20)} isn't in this business's chart of accounts (propose it as a new account first)` };
+    }
     if (!a.active) return { error: `account ${a.code} is inactive` };
     if (a.subtype === "OPENING_BALANCE") return { error: "nothing is posted to Opening Balance Equity this way" };
     return { a };
@@ -69,9 +87,27 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
   const run = await prisma.coethaRun.create({ data: { clientId, trigger: source === "chat" ? "DECISIONS" : "DOCUMENTS", startedById: actor.id, model: DECISIONS_MODEL, status: "OK", finishedAt: new Date() } });
   const results: PrepareResult[] = [];
   let made = 0;
-  for (const [index, it] of items.entries()) {
+  const ordered = [...items.entries()].sort(([, x], [, y]) => (x.type === "new_account" ? 0 : 1) - (y.type === "new_account" ? 0 : 1));
+  for (const [index, it] of ordered) {
     const fail = (message: string) => results.push({ index, ok: false, message });
     const reason = clip(it.reason, 600) || (source === "chat" ? "Tabitha's decision in Ask Coetha" : "Routine check matched by the document reader");
+    if (it.type === "new_account") {
+      let data: ReturnType<typeof cleanAccount>;
+      try {
+        data = cleanAccount({ code: String(it.accountCode ?? ""), name: String(it.name ?? ""), type: String(it.accountType ?? ""), subtype: it.subtype || null, description: it.description });
+      } catch (err) { fail(`New account ${clip(it.accountCode, 20)}: ${err instanceof ValidationError ? err.message : "not valid"}`); continue; }
+      if (data.subtype && ["BANK", "CREDIT_CARD", "OPENING_BALANCE"].includes(data.subtype)) { fail(`New account ${data.code}: bank, card and opening-balance accounts are set up in the Chart of Accounts.`); continue; }
+      if (byCode.has(data.code)) { fail(`Account ${data.code} already exists (${byCode.get(data.code)!.name}); use it instead of a new one.`); continue; }
+      const sameName = accounts.find((a) => a.name.trim().toLowerCase() === data.name.toLowerCase());
+      if (sameName) { fail(`An account named "${sameName.name}" already exists (${sameName.code}); use it instead of a new one.`); continue; }
+      const already = pending.get(data.code);
+      if (already) { results.push({ index, ok: true, message: `New account ${data.code} ${already.name} was already proposed.`, proposalId: already.pendingId }); continue; }
+      const p = await prisma.coethaProposal.create({ data: { clientId, runId: run.id, kind: "NEW_ACCOUNT", confidence: 1, reason, model: DECISIONS_MODEL, inputHash: `${source}:${run.id}`, payload: { code: data.code, name: data.name, type: data.type, subtype: data.subtype, description: data.description, source } } });
+      pending.set(data.code, { id: null, code: data.code, name: data.name, type: data.type, pendingId: p.id });
+      made++;
+      results.push({ index, ok: true, message: `New account ${data.code} ${data.name} (${data.type.toLowerCase()}), for your approval`, proposalId: p.id });
+      continue;
+    }
     if (it.type === "post_bank_row") {
       // W-numbers move as rows are posted, so a row named by its W-number must also give its date and amount.
       if (!it.bankTransactionId && (it.date === undefined || it.amount === undefined)) { fail(`${it.ref ?? "That row"}: give the row's date and amount with its W-number, so the right row is posted.`); continue; }
@@ -84,11 +120,11 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       if (it.amount !== undefined && Math.abs(cents(it.amount)) !== Math.abs(t.amountCents)) { fail(`${it.ref ?? "That row"} is ${usd(t.amountCents)}, not ${usd(cents(it.amount))}; nothing was prepared for it.`); continue; }
       const got = account(it.accountCode);
       if ("error" in got) { fail(`${it.ref ?? "That row"}: ${got.error}.`); continue; }
-      if (got.a.id === t.accountId) { fail(`${it.ref ?? "That row"}: choose an account other than the bank account itself.`); continue; }
+      if (got.a.id && got.a.id === t.accountId) { fail(`${it.ref ?? "That row"}: choose an account other than the bank account itself.`); continue; }
       const date = ymdOf(t.date);
       const closed = openDateProblem(date);
       if (closed) { fail(`${it.ref ?? "That row"} (${date}) can't be posted: ${closed}. Use an adjusting entry in an open month instead.`); continue; }
-      const same = await prisma.coethaProposal.findFirst({ where: { clientId, kind: "CATEGORY", bankTransactionId: t.id, status: "PROPOSED", model: DECISIONS_MODEL, approvedAccountId: null, payload: { path: ["accountId"], equals: got.a.id } } });
+      const same = await prisma.coethaProposal.findFirst({ where: { clientId, kind: "CATEGORY", bankTransactionId: t.id, status: "PROPOSED", model: DECISIONS_MODEL, approvedAccountId: null, payload: got.a.id ? { path: ["accountId"], equals: got.a.id } : { path: ["pendingAccountProposalId"], equals: got.a.pendingId! } } });
       if (same) { results.push({ index, ok: true, message: `${it.ref ?? ymdOf(t.date)} ${usd(t.amountCents)} → ${got.a.code} ${got.a.name} was already prepared.`, proposalId: same.id }); continue; }
       const p = await prisma.$transaction(async (tx) => {
         // Tabitha's decision replaces any other open draft for this row (a run's, the rules', the statements').
@@ -96,7 +132,7 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
         return tx.coethaProposal.create({
           data: {
             clientId, runId: run.id, kind: "CATEGORY", bankTransactionId: t.id, confidence: 1, reason, model: DECISIONS_MODEL, inputHash: `${source}:${run.id}`,
-            payload: { bankTransactionId: t.id, date, amountCents: t.amountCents, description: t.description, bankAccountName: t.account.name, accountId: got.a.id, accountCode: got.a.code, accountName: got.a.name, memo: clip(it.memo, 250) || null, source, ref: it.ref ?? null, note: note ?? null },
+            payload: { bankTransactionId: t.id, date, amountCents: t.amountCents, description: t.description, bankAccountName: t.account.name, accountId: got.a.id, pendingAccountProposalId: got.a.pendingId ?? null, accountCode: got.a.code, accountName: got.a.name, memo: clip(it.memo, 250) || null, source, ref: it.ref ?? null, note: note ?? null },
           },
         });
       });
@@ -108,14 +144,14 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       if (!isYmd(it.date)) { fail("An entry needs a valid date (YYYY-MM-DD)."); continue; }
       const closed = openDateProblem(it.date);
       if (closed) { fail(`The entry dated ${it.date} can't be posted: ${closed}. Date it in an open month.`); continue; }
-      const lines: { accountId: string; accountCode: string; accountName: string; debitCents: number; creditCents: number; description: string }[] = [];
+      const lines: { accountId: string | null; pendingAccountProposalId: string | null; accountCode: string; accountName: string; debitCents: number; creditCents: number; description: string }[] = [];
       let bad: string | null = null;
       for (const l of it.lines ?? []) {
         const got = account(l.accountCode);
-        if ("error" in got) { bad = got.error ?? "that account can't be used"; break; }
+        if ("error" in got) { bad = got.error; break; }
         const debitCents = cents(l.debit), creditCents = cents(l.credit);
         if (debitCents < 0 || creditCents < 0 || (debitCents > 0) === (creditCents > 0)) { bad = "each line is either a debit or a credit, with a positive amount"; break; }
-        lines.push({ accountId: got.a.id, accountCode: got.a.code, accountName: got.a.name, debitCents, creditCents, description: clip(l.description, 200) });
+        lines.push({ accountId: got.a.id, pendingAccountProposalId: got.a.pendingId ?? null, accountCode: got.a.code, accountName: got.a.name, debitCents, creditCents, description: clip(l.description, 200) });
       }
       const dr = lines.reduce((n, l) => n + l.debitCents, 0);
       const cr = lines.reduce((n, l) => n + l.creditCents, 0);
@@ -123,7 +159,7 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       if (!bad && dr !== cr) bad = `debits (${usd(dr)}) and credits (${usd(cr)}) must be equal`;
       if (bad) { fail(`Entry "${clip(it.memo, 80)}": ${bad}; nothing was prepared.`); continue; }
       const memo = clip(it.memo, 250) || "Adjusting entry";
-      const key = JSON.stringify([it.date, lines.map((l) => [l.accountId, l.debitCents, l.creditCents])]);
+      const key = JSON.stringify([it.date, lines.map((l) => [l.accountId ?? l.pendingAccountProposalId, l.debitCents, l.creditCents])]);
       const existing = await prisma.coethaProposal.findMany({ where: { clientId, kind: "ADJUSTING_ENTRY", model: DECISIONS_MODEL, status: { in: ["PROPOSED", "APPROVED"] } }, select: { id: true, status: true, payload: true } });
       const dup = existing.find((e) => (e.payload as { key?: string }).key === key);
       if (dup) { results.push({ index, ok: dup.status === "PROPOSED", message: dup.status === "APPROVED" ? `"${memo}" was already approved and posted, so it wasn't prepared again.` : `"${memo}" was already prepared.`, proposalId: dup.id }); continue; }
@@ -138,7 +174,8 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
   }
   await prisma.coethaRun.update({ where: { id: run.id }, data: { proposals: made, transactions: items.length } });
   await audit(prisma, { actorId: actor.id, action: "coetha.decisions_prepared", entityType: "CoethaRun", entityId: run.id, clientId, details: { source, items: items.length, prepared: made, skipped: results.filter((r) => !r.ok).length } });
-  return results;
+  // In the order the items were given (new accounts were handled first).
+  return results.sort((x, y) => x.index - y.index);
 }
 
 /** The checks the document reader marked "Routine", matched to a waiting bank row, with a proposed account. */
@@ -162,41 +199,58 @@ export async function prepareFromDocument(actor: Actor, clientId: string, jobId:
 const NATURAL_DEBIT = new Set(["ASSET", "EXPENSE"]);
 const IMPACT_ORDER = ["INCOME", "EXPENSE", "ASSET", "LIABILITY", "EQUITY"] as const;
 export const IMPACT_LABEL: Record<(typeof IMPACT_ORDER)[number], string> = { INCOME: "Income", EXPENSE: "Expenses", ASSET: "Assets (bank and other)", LIABILITY: "Liabilities", EQUITY: "Owner's equity" };
+const TYPE_WORD: Record<string, string> = { ASSET: "Asset", LIABILITY: "Liability", EQUITY: "Equity", INCOME: "Income", EXPENSE: "Expense" };
+
+type Line = { accountId: string | null; pendingAccountProposalId?: string | null; debitCents: number; creditCents: number };
+type NewAccountPayload = { code: string; name: string; type: string; subtype: string | null; description: string | null; accountId?: string };
 
 /** Every prepared decision waiting for Approve & Post, with its lines and the effect on the statements. */
 export async function applyDecisionsView(actor: Actor, clientId: string) {
   await assertLedger(actor, clientId);
-  const open = await prisma.coethaProposal.findMany({ where: { clientId, model: DECISIONS_MODEL, status: "PROPOSED", kind: { in: ["CATEGORY", "ADJUSTING_ENTRY"] } }, orderBy: { createdAt: "asc" }, take: 300 });
+  const open = await prisma.coethaProposal.findMany({ where: { clientId, model: DECISIONS_MODEL, status: "PROPOSED", kind: { in: ["NEW_ACCOUNT", "CATEGORY", "ADJUSTING_ENTRY"] } }, orderBy: { createdAt: "asc" }, take: 300 });
   const accounts = await prisma.ledgerAccount.findMany({ where: { clientId }, select: { id: true, code: true, name: true, type: true } });
   const acct = new Map(accounts.map((a) => [a.id, a]));
+  const newAccts = new Map(open.filter((p) => p.kind === "NEW_ACCOUNT").map((p) => [p.id, p.payload as NewAccountPayload]));
   const bankIds = open.map((p) => p.bankTransactionId).filter((x): x is string => !!x);
   const bank = new Map((await prisma.bankTransaction.findMany({ where: { clientId, id: { in: bankIds } }, select: { id: true, accountId: true, status: true } })).map((b) => [b.id, b]));
+  const info = (l: Line) => {
+    if (l.accountId) { const a = acct.get(l.accountId); return a ? { label: `${a.code} ${a.name}`, type: a.type, pending: null } : null; }
+    const n = l.pendingAccountProposalId ? newAccts.get(l.pendingAccountProposalId) : undefined;
+    return n ? { label: `${n.code} ${n.name} (new)`, type: n.type, pending: l.pendingAccountProposalId! } : { label: "a new account that was removed", type: "", pending: l.pendingAccountProposalId ?? "missing" };
+  };
   const impact = new Map<string, number>();
   const entries = open.map((p) => {
-    let lines: { accountId: string; debitCents: number; creditCents: number }[] = [];
+    if (p.kind === "NEW_ACCOUNT") {
+      const d = p.payload as NewAccountPayload;
+      return { id: p.id, kind: "NEW_ACCOUNT" as const, date: "", title: `New account ${d.code} ${d.name} (${TYPE_WORD[d.type] ?? d.type})`, amountCents: 0, reason: p.reason, source: (p.payload as { source?: string }).source === "documents" ? "From a document" : "From your decision in Ask Coetha", stale: false, bankRow: false, newAccount: { code: d.code, name: d.name, type: TYPE_WORD[d.type] ?? d.type }, needs: [] as string[], lines: [] as { account: string; debitCents: number; creditCents: number }[] };
+    }
+    let lines: Line[] = [];
     let date = "", title = "", amountCents = 0, stale = false;
     if (p.kind === "CATEGORY") {
-      const d = p.payload as { date: string; amountCents: number; description: string; accountId: string; memo?: string | null };
+      const d = p.payload as { date: string; amountCents: number; description: string; accountId: string | null; pendingAccountProposalId?: string | null; memo?: string | null };
       const b = bank.get(p.bankTransactionId ?? "");
       stale = !b || b.status !== "UNREVIEWED";
       const amt = Math.abs(d.amountCents);
-      lines = b ? (d.amountCents > 0 ? [{ accountId: b.accountId, debitCents: amt, creditCents: 0 }, { accountId: d.accountId, debitCents: 0, creditCents: amt }] : [{ accountId: d.accountId, debitCents: amt, creditCents: 0 }, { accountId: b.accountId, debitCents: 0, creditCents: amt }]) : [];
+      const cat: Line = { accountId: d.accountId, pendingAccountProposalId: d.pendingAccountProposalId ?? null, debitCents: 0, creditCents: 0 };
+      lines = b ? (d.amountCents > 0 ? [{ accountId: b.accountId, debitCents: amt, creditCents: 0 }, { ...cat, creditCents: amt }] : [{ ...cat, debitCents: amt }, { accountId: b.accountId, debitCents: 0, creditCents: amt }]) : [];
       date = d.date; amountCents = amt; title = scrub(d.memo || d.description, 120);
     } else {
-      const d = p.payload as { date: string; memo: string; totalCents: number; lines: { accountId: string; debitCents: number; creditCents: number }[] };
+      const d = p.payload as { date: string; memo: string; totalCents: number; lines: Line[] };
       lines = d.lines; date = d.date; amountCents = d.totalCents; title = scrub(d.memo, 120);
     }
-    if (!stale) for (const l of lines) {
-      const a = acct.get(l.accountId);
-      if (!a) continue;
-      const signed = NATURAL_DEBIT.has(a.type) ? l.debitCents - l.creditCents : l.creditCents - l.debitCents;
-      impact.set(a.type, (impact.get(a.type) ?? 0) + signed);
+    const shown = lines.map((l) => ({ l, i: info(l) }));
+    if (!stale) for (const { l, i } of shown) {
+      if (!i?.type) continue;
+      const signed = NATURAL_DEBIT.has(i.type) ? l.debitCents - l.creditCents : l.creditCents - l.debitCents;
+      impact.set(i.type, (impact.get(i.type) ?? 0) + signed);
     }
     const source = (p.payload as { source?: string }).source === "documents" ? "From a document" : "From your decision in Ask Coetha";
     return {
       id: p.id, kind: p.kind as "CATEGORY" | "ADJUSTING_ENTRY", date, title, amountCents, reason: p.reason, source, stale,
-      bankRow: p.kind === "CATEGORY",
-      lines: lines.map((l) => { const a = acct.get(l.accountId); return { account: a ? `${a.code} ${a.name}` : "?", debitCents: l.debitCents, creditCents: l.creditCents }; }),
+      bankRow: p.kind === "CATEGORY", newAccount: null,
+      // The new accounts this entry needs approved with it.
+      needs: [...new Set(shown.map(({ i }) => i?.pending).filter((x): x is string => !!x))],
+      lines: shown.map(({ l, i }) => ({ account: i?.label ?? "?", debitCents: l.debitCents, creditCents: l.creditCents })),
     };
   });
   return {
@@ -206,25 +260,83 @@ export async function applyDecisionsView(actor: Actor, clientId: string) {
   };
 }
 
-/** Approve & Post the chosen decisions (Tabitha only, through the existing approval path). Unchosen ones stay on hold. */
-export async function approveDecisions(actor: Actor, clientId: string, ids: string[]) {
+/** Points every open entry that was waiting for this new account at the account just created. */
+async function resolvePending(clientId: string, proposalId: string, a: { id: string; code: string; name: string }) {
+  const waiting = await prisma.coethaProposal.findMany({ where: { clientId, model: DECISIONS_MODEL, status: "PROPOSED", kind: { in: ["CATEGORY", "ADJUSTING_ENTRY"] } } });
+  for (const p of waiting) {
+    const d = p.payload as Record<string, unknown> & { pendingAccountProposalId?: string | null; lines?: Line[] };
+    let changed = false;
+    if (p.kind === "CATEGORY" && d.pendingAccountProposalId === proposalId) {
+      Object.assign(d, { accountId: a.id, accountCode: a.code, accountName: a.name, pendingAccountProposalId: null });
+      changed = true;
+    }
+    if (p.kind === "ADJUSTING_ENTRY" && Array.isArray(d.lines)) {
+      d.lines = d.lines.map((l) => (l.pendingAccountProposalId === proposalId ? (changed = true, { ...l, accountId: a.id, accountCode: a.code, accountName: a.name, pendingAccountProposalId: null }) : l));
+    }
+    if (changed) await prisma.coethaProposal.update({ where: { id: p.id }, data: { payload: d as object } });
+  }
+}
+
+const needsNewAccount = (p: { kind: string; payload: unknown }) => {
+  const d = p.payload as { pendingAccountProposalId?: string | null; lines?: Line[] };
+  return p.kind === "CATEGORY" ? !!d.pendingAccountProposalId : (d.lines ?? []).some((l) => !l.accountId);
+};
+
+/**
+ * Approve & Post the chosen decisions (Tabitha only). New accounts first, through the Chart of
+ * Accounts' own step (addAccount: same checks, audited), with any code or name she changed; then
+ * the entries, through the existing approval path. An entry whose new account isn't approved is
+ * left on the card. Unchosen ones stay on hold.
+ */
+export async function approveDecisions(actor: Actor, clientId: string, ids: string[], edits: Record<string, { code?: string; name?: string }> = {}) {
+  await assertCanApproveCoethaWork(actor);
   const chosen = [...new Set(ids)].filter(Boolean);
   if (!chosen.length) throw new ValidationError("Tick the entries you approve first.");
   // Only prepared decisions of this business go through this button.
-  const mine = await prisma.coethaProposal.findMany({ where: { id: { in: chosen }, clientId, model: DECISIONS_MODEL }, select: { id: true } });
+  const mine = await prisma.coethaProposal.findMany({ where: { id: { in: chosen }, clientId, model: DECISIONS_MODEL } });
   if (mine.length !== chosen.length) throw new ValidationError("One of those entries isn't a prepared decision for this business.");
-  const results = await decideCoethaProposals(actor, clientId, "APPROVE", chosen.map((id) => ({ id })));
+  const results: { id: string; result: "APPROVED" | "ALREADY_APPROVED" | "REJECTED" | "SKIPPED"; message?: string; journalEntryId?: string | null }[] = [];
+  for (const p of mine.filter((x) => x.kind === "NEW_ACCOUNT")) {
+    if (p.status === "APPROVED") { results.push({ id: p.id, result: "ALREADY_APPROVED" }); continue; }
+    if (p.status !== "PROPOSED") { results.push({ id: p.id, result: "SKIPPED", message: "That new account was already decided." }); continue; }
+    const d = p.payload as NewAccountPayload;
+    const e = edits[p.id] ?? {};
+    const code = e.code?.trim() || d.code, name = e.name?.trim() || d.name;
+    const claimed = await prisma.coethaProposal.updateMany({ where: { id: p.id, status: "PROPOSED" }, data: { status: "APPROVED", decidedById: actor.id, decidedAt: new Date() } });
+    if (!claimed.count) { results.push({ id: p.id, result: "ALREADY_APPROVED" }); continue; }
+    try {
+      const a = await addAccount(actor, clientId, { code, name, type: d.type, subtype: d.subtype, description: d.description ?? undefined });
+      await prisma.coethaProposal.update({ where: { id: p.id }, data: { payload: { ...d, code: a.code, name: a.name, accountId: a.id } } });
+      await audit(prisma, { actorId: actor.id, action: "coetha.proposal_approved", entityType: "CoethaProposal", entityId: p.id, clientId, details: { kind: "NEW_ACCOUNT", code: a.code, name: a.name, type: a.type, edited: code !== d.code || name !== d.name } });
+      await resolvePending(clientId, p.id, a);
+      results.push({ id: p.id, result: "APPROVED" });
+    } catch (err) {
+      await prisma.coethaProposal.update({ where: { id: p.id }, data: { status: "PROPOSED", decidedById: null, decidedAt: null } });
+      results.push({ id: p.id, result: "SKIPPED", message: `New account ${code}: ${err instanceof ValidationError ? err.message : "couldn't be created."}` });
+    }
+  }
+  const rest = await prisma.coethaProposal.findMany({ where: { id: { in: mine.filter((x) => x.kind !== "NEW_ACCOUNT").map((x) => x.id) } } });
+  const ready = rest.filter((p) => !needsNewAccount(p));
+  for (const p of rest.filter((x) => needsNewAccount(x))) results.push({ id: p.id, result: "SKIPPED", message: "It uses a new account that isn't approved yet: tick the new account with it." });
+  if (ready.length) results.push(...(await decideCoethaProposals(actor, clientId, "APPROVE", ready.map((p) => ({ id: p.id })))));
   await audit(prisma, { actorId: actor.id, action: "coetha.decisions_approved", entityType: "LedgerBook", entityId: clientId, clientId, details: { chosen: chosen.length, posted: results.filter((r) => r.result === "APPROVED").length, skipped: results.filter((r) => r.result === "SKIPPED").length } });
   return results;
 }
 
-/** Take decisions off the card without posting them (Tabitha only; kept in history as rejected). */
+/** Take decisions off the card without posting them (Tabitha only; kept in history as rejected). Entries needing a removed new account go with it. */
 export async function removeDecisions(actor: Actor, clientId: string, ids: string[], note?: string) {
   const chosen = [...new Set(ids)].filter(Boolean);
   if (!chosen.length) throw new ValidationError("Tick the entries to remove first.");
-  const mine = await prisma.coethaProposal.findMany({ where: { id: { in: chosen }, clientId, model: DECISIONS_MODEL }, select: { id: true } });
+  const mine = await prisma.coethaProposal.findMany({ where: { id: { in: chosen }, clientId, model: DECISIONS_MODEL }, select: { id: true, kind: true } });
   if (mine.length !== chosen.length) throw new ValidationError("One of those entries isn't a prepared decision for this business.");
-  return decideCoethaProposals(actor, clientId, "REJECT", chosen.map((id) => ({ id })), note || "Removed from Apply These Decisions");
+  const accountIds = mine.filter((p) => p.kind === "NEW_ACCOUNT").map((p) => p.id);
+  const dependents = accountIds.length
+    ? (await prisma.coethaProposal.findMany({ where: { clientId, model: DECISIONS_MODEL, status: "PROPOSED", kind: { in: ["CATEGORY", "ADJUSTING_ENTRY"] } } })).filter((p) => {
+        const d = p.payload as { pendingAccountProposalId?: string | null; lines?: Line[] };
+        return accountIds.includes(d.pendingAccountProposalId ?? "") || (d.lines ?? []).some((l) => accountIds.includes(l.pendingAccountProposalId ?? ""));
+      }).map((p) => p.id)
+    : [];
+  return decideCoethaProposals(actor, clientId, "REJECT", [...new Set([...chosen, ...dependents])].map((id) => ({ id })), note || "Removed from Apply These Decisions");
 }
 
 // --- The tool Coetha uses in Ask Coetha (only when Tabitha is asking) -------------------------------
@@ -232,7 +344,7 @@ export async function removeDecisions(actor: Actor, clientId: string, ids: strin
 export const PREPARE_TOOL = {
   name: "prepare_entries",
   description:
-    "Prepare entries for Tabitha's approval from accounting decisions SHE stated in this conversation. Each item becomes a draft on her Apply These Decisions card; nothing is posted until she ticks it and clicks Approve & Post. Use post_bank_row for a waiting bank row (by its W-reference, with its date and amount exactly as in the records) and journal_entry for reclassifications or corrections of entries already posted (balanced debits and credits by account code). Never prepare anything she hasn't decided; leave uncertain items for her.",
+    "Prepare entries for Tabitha's approval from accounting decisions SHE stated in this conversation. Each item becomes a draft on her Apply These Decisions card; nothing is posted until she ticks it and clicks Approve & Post. Use post_bank_row for a waiting bank row (by its W-reference, with its date and amount exactly as in the records) and journal_entry for reclassifications or corrections of entries already posted (balanced debits and credits by account code). When the right account doesn't exist in the chart, add a new_account item (a code that fits the chart's numbering, a plain name and the correct type) in the same call and use its code in the entries; it is created only if she approves it. Never prepare anything she hasn't decided; leave uncertain items for her.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -241,11 +353,13 @@ export const PREPARE_TOOL = {
         items: {
           type: "object",
           properties: {
-            type: { type: "string", enum: ["post_bank_row", "journal_entry"] },
+            type: { type: "string", enum: ["new_account", "post_bank_row", "journal_entry"] },
+            name: { type: "string", description: "new_account: the account's name, e.g. Business Licenses & Permits" },
+            accountType: { type: "string", enum: ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"], description: "new_account: the account type" },
             ref: { type: "string", description: "post_bank_row: the waiting row's W-reference, e.g. W28 (date and amount are required with it)" },
             date: { type: "string", description: "YYYY-MM-DD. post_bank_row: the row's date; journal_entry: the entry date (in an open month)" },
             amount: { type: "number", description: "post_bank_row: the row's amount in dollars as shown in the records" },
-            accountCode: { type: "string", description: "post_bank_row: the account it is posted to" },
+            accountCode: { type: "string", description: "post_bank_row: the account it is posted to; new_account: the new account's code" },
             memo: { type: "string" },
             reason: { type: "string", description: "Short: which decision of Tabitha's this carries out" },
             lines: {

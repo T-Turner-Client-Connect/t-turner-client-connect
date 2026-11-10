@@ -71,7 +71,9 @@ export async function applyDecisionsAction(clientId: string, _prev: ActionState,
     const ids = fd.getAll("decision").filter((v): v is string => typeof v === "string");
     const { approveDecisions, removeDecisions } = await import("@/lib/services/coetha-decisions");
     const remove = str(fd, "do") === "remove";
-    const results = remove ? await removeDecisions(actor, clientId, ids) : await approveDecisions(actor, clientId, ids);
+    // A proposed new account's code and name, as Tabitha left them on the card.
+    const edits = Object.fromEntries(ids.map((id) => [id, { code: str(fd, `code:${id}`) || undefined, name: str(fd, `name:${id}`) || undefined }]));
+    const results = remove ? await removeDecisions(actor, clientId, ids) : await approveDecisions(actor, clientId, ids, edits);
     refresh(clientId);
     revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
     revalidatePath(`/bookkeeping/${clientId}`);

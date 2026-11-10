@@ -220,4 +220,67 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
     expect(snap.readFromDocuments.find((x) => x.checkNumber === "178")!.group).toBe("Owner and personal transactions");
     await expect(prepareFromDocument(s.tabitha, s.other.id, job.id)).rejects.toThrow(/isn't on file for this business/);
   });
+
+  it("a missing account is proposed on the card and created only when Tabitha approves it with its entries", async () => {
+    const s = await setup();
+    const res = await prepareDecisions(s.tabitha, s.biz.id, [
+      // The entry comes first in the call; the new account is still handled before it.
+      { type: "post_bank_row", ref: "W2", date: "2026-09-05", amount: -580.85, accountCode: "6195", reason: "Business license renewal" },
+      { type: "new_account", accountCode: "6195", name: "Business Licenses & Permits", accountType: "EXPENSE", reason: "No license account in the chart" },
+      { type: "journal_entry", date: "2026-10-01", memo: "License part paid by the owner", lines: [{ accountCode: "6195", debit: 50 }, { accountCode: "3000", credit: 50 }] },
+      // Refused: an existing code, an existing name, a bank account, a bad type.
+      { type: "new_account", accountCode: "6300", name: "Something", accountType: "EXPENSE" },
+      { type: "new_account", accountCode: "6310", name: "office supplies", accountType: "EXPENSE" },
+      { type: "new_account", accountCode: "1010", name: "Second checking", accountType: "ASSET", subtype: "BANK" },
+      { type: "new_account", accountCode: "6196", name: "Odd", accountType: "BANANA" },
+    ], "chat");
+    expect(res.map((r) => r.ok)).toEqual([true, true, true, false, false, false, false]);
+    expect(res[3].message).toMatch(/already exists/);
+    expect(res[4].message).toMatch(/named "Office Supplies" already exists/);
+    expect(res[5].message).toMatch(/set up in the Chart of Accounts/);
+    const accountsBefore = await prisma.ledgerAccount.count({ where: { clientId: s.biz.id } });
+    const [bankBefore, entriesBefore] = await counts();
+    const [entryId, accountId, adjId] = [res[0].proposalId!, res[1].proposalId!, res[2].proposalId!];
+
+    const card = await applyDecisionsView(s.tabitha, s.biz.id);
+    expect(card.entries.find((e) => e.id === accountId)).toMatchObject({ kind: "NEW_ACCOUNT", newAccount: { code: "6195", name: "Business Licenses & Permits", type: "Expense" } });
+    expect(card.entries.find((e) => e.id === entryId)).toMatchObject({ needs: [accountId], lines: [expect.objectContaining({ account: "6195 Business Licenses & Permits (new)", debitCents: 58085 }), expect.anything()] });
+    expect(card.impact).toEqual(expect.arrayContaining([expect.objectContaining({ type: "EXPENSE", cents: 58085 + 5000 })]));
+
+    // Without its new account the entry is refused; nothing is created or posted. Staff can't approve.
+    const alone = await approveDecisions(s.tabitha, s.biz.id, [entryId]);
+    expect(alone[0]).toMatchObject({ result: "SKIPPED", message: expect.stringMatching(/new account that isn't approved/) });
+    await expect(approveDecisions(s.daria, s.biz.id, [accountId, entryId])).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await prisma.ledgerAccount.count({ where: { clientId: s.biz.id } })).toBe(accountsBefore);
+    expect(await counts()).toEqual([bankBefore, entriesBefore]);
+
+    // Approved together (with Tabitha's own code and name): the account is created first, then the entries post to it.
+    const out = await approveDecisions(s.tabitha, s.biz.id, [entryId, accountId, adjId], { [accountId]: { code: "6185", name: "Licenses & Permits" } });
+    expect(out.map((r) => r.result)).toEqual(["APPROVED", "APPROVED", "APPROVED"]);
+    const lic = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: s.biz.id, code: "6185" } });
+    expect(lic).toMatchObject({ name: "Licenses & Permits", type: "EXPENSE" });
+    const row = await s.row("CHECK 184");
+    expect(row.status).toBe("POSTED");
+    const lines = await prisma.journalLine.findMany({ where: { entryId: row.journalEntryId! } });
+    expect(lines.find((l) => l.debitCents === 58085)!.accountId).toBe(lic.id);
+    expect(await prisma.journalLine.count({ where: { accountId: lic.id } })).toBe(2);
+    expect((await counts())[0]).toBe(bankBefore);
+    expect(await prisma.auditLog.count({ where: { clientId: s.biz.id, action: "ledger.account_added" } })).toBe(1);
+    // Approving again creates nothing more.
+    await approveDecisions(s.tabitha, s.biz.id, [accountId, entryId]);
+    expect(await prisma.ledgerAccount.count({ where: { clientId: s.biz.id } })).toBe(accountsBefore + 1);
+  });
+
+  it("removing a proposed account takes the entries that need it off the card too; nothing is created", async () => {
+    const s = await setup();
+    const res = await prepareDecisions(s.tabitha, s.biz.id, [
+      { type: "new_account", accountCode: "6195", name: "Business Licenses & Permits", accountType: "EXPENSE" },
+      { type: "post_bank_row", ref: "W2", date: "2026-09-05", amount: -580.85, accountCode: "6195" },
+      { type: "post_bank_row", ref: "W3", date: "2026-09-08", amount: -102, accountCode: "6300" },
+    ], "chat");
+    await removeDecisions(s.tabitha, s.biz.id, [res[0].proposalId!]);
+    const st = async (id: string) => (await prisma.coethaProposal.findUniqueOrThrow({ where: { id } })).status;
+    expect([await st(res[0].proposalId!), await st(res[1].proposalId!), await st(res[2].proposalId!)]).toEqual(["REJECTED", "REJECTED", "PROPOSED"]);
+    expect(await prisma.ledgerAccount.count({ where: { clientId: s.biz.id, code: "6195" } })).toBe(0);
+  });
 });
