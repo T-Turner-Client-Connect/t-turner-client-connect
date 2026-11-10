@@ -15,6 +15,7 @@ import { rangeText, requestsFor } from "@/lib/services/client-requests";
 import { monthlyChecklist } from "@/lib/services/monthly-workflow";
 import { accountBalance, todayCentral, usd } from "@/lib/services/ledger";
 import { workMonth } from "@/lib/services/bookkeeping-clients";
+import { yearMonths } from "@/lib/bookkeeping-months";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
 import { retrieveNowAction } from "@/app/actions/ledger";
 import { uploadForRequestAction, uploadStatementAction } from "@/app/actions/bk-workflow";
@@ -33,7 +34,6 @@ const card = "min-w-0 rounded-2xl border border-gold-200/80 bg-gradient-to-b fro
 const smallBtn = "inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-sm font-semibold text-navy-900 shadow-sm hover:bg-ivory-50";
 const fmtSync = (d: Date) => d.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" }).replace(/, (\d{1,2}:)/, " at $1");
 const fmtShort = (d: Date) => d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" });
-const shiftYm = (y: number, m: number, n: number) => { const d = new Date(Date.UTC(y, m - 1 + n, 1)); return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 }; };
 
 const PILL: Record<string, string> = { DONE: "bg-emerald-50 text-emerald-800 ring-emerald-200", IN_PROGRESS: "bg-gold-100 text-gold-800 ring-gold-300", NOT_DUE: "bg-gold-100 text-gold-800 ring-gold-300", MISSING: "bg-red-50 text-red-700 ring-red-200" };
 function RowIcon({ state, red }: { state: string; red?: boolean }) {
@@ -103,12 +103,11 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
   // Statements Coetha asked for (new clients / missing statements): upload straight to the request.
   const statementRequests = reqs.all.filter((r) => (r.status === "OPEN" || (r.status === "DRAFT" && r.routing !== "REVIEW")) && (r.docType === "BANK_STATEMENT" || r.docType === "CARD_STATEMENT"));
 
-  // Month tiles: four months back, the month shown, two ahead.
-  const months = await Promise.all([-4, -3, -2, -1, 0, 1, 2].map(async (n) => {
-    const t = shiftYm(sel.year, sel.month, n);
+  // Month tiles: January through December of the year shown, in order (read only; months with no record are listed too).
+  const months = await Promise.all(yearMonths(sel.year).map(async (t) => {
     const c = await monthlyChecklist(clientId, t.year, t.month, { today });
     const started = c.items.some((i) => i.state !== "NOT_DUE");
-    return { ...t, percent: c.percent, state: c.percent === 100 ? "COMPLETE" : started ? "IN_PROGRESS" : "NOT_STARTED", current: n === 0 };
+    return { ...t, percent: c.percent, state: c.percent === 100 ? "COMPLETE" : started ? "IN_PROGRESS" : "NOT_STARTED", current: t.month === sel.month };
   }));
 
   return (
@@ -287,12 +286,12 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
       {/* Monthly Bookkeeping Progress */}
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="bookkeeping-progress">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="flex items-center gap-2 font-serif text-xl font-bold text-navy-900"><BarChart3 className="size-6 text-gold-600" aria-hidden /> Monthly Bookkeeping Progress</h2>
+          <h2 className="flex items-center gap-2 font-serif text-xl font-bold text-navy-900"><BarChart3 className="size-6 text-gold-600" aria-hidden /> Monthly Bookkeeping Progress – {sel.year}</h2>
           <Link href={`${base}/statements`} className={smallBtn}>View Full Bookkeeping History <ArrowRight className="size-4" aria-hidden /></Link>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+        <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
           {months.map((m) => (
-            <Link key={`${m.year}-${m.month}`} href={`${base}?year=${m.year}&month=${m.month}`} className={clsx("rounded-xl border px-3 py-2.5 text-center", m.current ? "border-gold-400 bg-gold-50 shadow" : "border-ivory-200 bg-white hover:border-gold-300")} data-testid="month-tile" data-state={m.state}>
+            <Link key={`${m.year}-${m.month}`} href={`${base}?year=${m.year}&month=${m.month}`} className={clsx("min-w-0 rounded-xl border px-2 py-2.5 text-center sm:px-3", m.current ? "border-gold-400 bg-gold-50 shadow" : "border-ivory-200 bg-white hover:border-gold-300")} data-testid="month-tile" data-month={m.month} data-state={m.state} aria-current={m.current ? "true" : undefined}>
               <p className="font-semibold text-navy-900">{MONTH_NAMES[m.month - 1].slice(0, 3)} {m.year}</p>
               {m.state === "COMPLETE" ? <p className="mt-1 flex items-center justify-center gap-1 text-sm font-semibold text-emerald-700"><CheckCircle2 className="size-4" aria-hidden /> Complete</p>
                 : m.state === "IN_PROGRESS" ? (<><p className="mt-1 flex items-center justify-center gap-1 text-sm font-semibold text-navy-900"><span className="size-2 rounded-full bg-red-600" aria-hidden /> In Progress</p><span className="mt-1 flex items-center gap-1.5"><span className="h-1.5 flex-1 overflow-hidden rounded-full bg-ivory-200"><span className="block h-full rounded-full bg-emerald-600" style={{ width: `${m.percent}%` }} /></span><span className="text-xs">{m.percent}%</span></span></>)
