@@ -2,7 +2,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { KeyRound, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
+import { FileSearch, KeyRound, Loader2, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { BusinessTabs } from "@/components/business-tabs";
@@ -10,7 +10,9 @@ import { ActionForm } from "@/components/action-form";
 import { canUseLedger } from "@/lib/services/ledger";
 import { COETHA_NO_KEY } from "@/lib/services/coetha";
 import { COETHA_CHAT_PRIVACY, coethaChatView, MAX_QUESTION } from "@/lib/services/coetha-chat";
-import { askCoethaAction } from "@/app/actions/coetha";
+import { askCoethaAction, retryReadingAction } from "@/app/actions/coetha";
+import { readingView } from "@/lib/services/coetha-reading";
+import { CoethaReadingPoller } from "@/components/coetha-reading-poller";
 import { fmtDateTime } from "@/lib/format";
 import { downloadToken } from "@/lib/services/documents";
 import { CoethaUploadButton } from "@/components/coetha-upload-button";
@@ -45,6 +47,10 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
   }
 
   const v = await coethaChatView(user, clientId);
+  const reading = await readingView(user, clientId);
+  const jobOf = new Map(reading.jobs.map((j) => [j.id, j]));
+  const waiting = v.messages.some((m) => m.status === "WAITING");
+  const usd = (c: number | null) => (c == null ? "" : (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" }));
 
   return (
     <div className="space-y-5" data-testid="coetha-chat-page">
@@ -111,12 +117,73 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
                     </ul>
                   )}
                   <div className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</div>
+                  {m.jobIds.length > 0 && (
+                    <div className="mt-2 space-y-1 rounded-lg bg-white/10 p-2 text-xs" data-testid="chat-reading">
+                      {m.status === "WAITING" && <p className="flex items-center gap-1 font-semibold"><Loader2 className="size-3.5 animate-spin" aria-hidden /> Coetha is reading. You can leave this page; her answer will appear here.</p>}
+                      {m.status === "FAILED" && <p className="font-semibold">Coetha couldn&apos;t finish this answer. What she read is below; ask again to get her answer.</p>}
+                      {m.jobIds.map((id) => {
+                        const j = jobOf.get(id);
+                        if (!j) return null;
+                        return (
+                          <div key={id} data-testid="chat-reading-file">
+                            <p className="flex flex-wrap items-center gap-x-2">
+                              <FileSearch className="size-3.5" aria-hidden />
+                              <span className="font-semibold">{j.name}</span>
+                              <span>
+                                {j.status === "QUEUED" && "waiting to be read"}
+                                {j.status === "READING" && (j.pages ? `reading: ${j.pagesDone} of ${j.pages} pages` : "starting")}
+                                {j.status === "DONE" && `read${j.pages ? ` (${j.pages} page${j.pages === 1 ? "" : "s"})` : ""}${j.findings.length ? `, ${j.findings.length} item${j.findings.length === 1 ? "" : "s"} found` : ""}`}
+                                {j.status === "FAILED" && <>couldn&apos;t be read: {j.error}</>}
+                              </span>
+                            </p>
+                            {j.status === "FAILED" && (
+                              <ActionForm action={retryReadingAction.bind(null, clientId, j.id)} className="mt-1" showSuccess={false}>
+                                <button type="submit" className="rounded border border-current px-2 py-0.5 font-semibold" data-testid="reading-retry">Try again</button>
+                              </ActionForm>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </li>
             ))}
           </ol>
         )}
       </section>
+
+      {reading.jobs.some((j) => j.findings.length > 0) && (
+        <section className={clsx(card, "p-4 sm:p-5")} data-testid="coetha-findings">
+          <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><FileSearch className="size-5 text-gold-600" aria-hidden /> What Coetha read from the documents</h2>
+          <p className="mt-1 text-xs text-slate-600">Read-only: each item is matched to this business&apos;s bank rows where possible. Account and routing numbers are never kept (last 4 digits at most).</p>
+          {reading.jobs.filter((j) => j.findings.length > 0).map((j) => (
+            <details key={j.id} className="mt-3 text-sm" open={reading.jobs.length === 1}>
+              <summary className="cursor-pointer font-semibold text-navy-900">{j.name} — {j.findings.length} item{j.findings.length === 1 ? "" : "s"}</summary>
+              <div className="mt-1 overflow-x-auto">
+                <table className="w-full min-w-[760px] text-xs">
+                  <thead><tr className="text-left text-slate-600"><th className="py-1 pr-2">Page</th><th className="pr-2">Item</th><th className="pr-2">Check #</th><th className="pr-2">Date</th><th className="pr-2">Payee / from</th><th className="pr-2 text-right">Amount</th><th className="pr-2">Memo / details</th><th>Bank match</th></tr></thead>
+                  <tbody>
+                    {j.findings.map((f) => (
+                      <tr key={f.id} className="border-t border-ivory-200 align-top" data-testid="finding">
+                        <td className="py-1 pr-2">{f.page}</td>
+                        <td className="pr-2">{f.kind.toLowerCase()}</td>
+                        <td className="pr-2">{f.checkNumber ?? ""}</td>
+                        <td className="pr-2 whitespace-nowrap">{f.date ?? ""}</td>
+                        <td className="pr-2">{f.payee ?? ""}</td>
+                        <td className="pr-2 text-right tabular-nums">{usd(f.amountCents)}</td>
+                        <td className="pr-2">{[f.memo, f.details].filter(Boolean).join(" · ")}</td>
+                        <td className={clsx(f.bankTransactionId ? "text-emerald-700" : "text-slate-600")}>{f.matchNote ?? ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          ))}
+        </section>
+      )}
+      <CoethaReadingPoller clientId={clientId} active={waiting || reading.active} />
 
       {/* Ask */}
       {v.canAsk ? (
@@ -126,7 +193,7 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
             <div className="mt-1 grid gap-2 sm:grid-cols-[1fr_auto]">
               <textarea id="coetha-question" name="question" maxLength={MAX_QUESTION} rows={3} className="w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-base text-navy-900 focus:border-gold-500 focus:outline-none focus:ring-2 focus:ring-gold-300" placeholder="Ask a question, or upload files and Coetha will read them" data-testid="coetha-chat-input" />
               <div className="flex flex-col gap-2 sm:w-48">
-              <CoethaUploadButton />
+              <CoethaUploadButton clientId={clientId} />
               <button type="submit" className="group inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-2 text-sm font-semibold text-navy-950 shadow hover:to-gold-600 disabled:opacity-70" data-testid="coetha-chat-send">
                 <Sparkles className="size-4" aria-hidden />
                 <span className="group-disabled:hidden">Ask Coetha</span>
@@ -134,7 +201,7 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
               </button>
               </div>
             </div>
-            <p className="mt-2 text-xs text-slate-600">Coetha sees this business&apos;s books only. With a question you can send up to 3 files: check images, bank statements, receipts or invoices (PDFs or pictures, 5 MB in all). It&apos;s kept with this business as a staff-only document. Answers can take up to a minute.</p>
+            <p className="mt-2 text-xs text-slate-600">Coetha sees this business&apos;s books only. Upload as many files as you need: check scans, bank statements, receipts or invoices (PDFs or pictures, up to 60 MB each). They&apos;re saved with this business as staff-only documents, and Coetha reads them in the background; you can leave this page and come back for her answer.</p>
           </ActionForm>
         </section>
       ) : null}

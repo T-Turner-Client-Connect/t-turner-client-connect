@@ -130,9 +130,11 @@ export async function assertNotDuplicate(clientId: string, sha256: string, forCl
   if (existing) throw new ValidationError(`This file is already saved${existing.year ? ` under ${existing.year}` : ""} as “${existing.title}”, so it wasn't added again.`);
 }
 
-export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string, opts: { encrypt?: boolean; allowOffice?: boolean; allowSpreadsheet?: boolean } = {}) {
+export async function storeDocumentFile(bytes: Uint8Array, originalName: string, uploader: Uploader, clientId?: string, opts: { encrypt?: boolean; allowOffice?: boolean; allowSpreadsheet?: boolean; maxBytes?: number } = {}) {
   if (bytes.length === 0) throw new ValidationError("The file is empty.");
-  if (bytes.length > MAX_UPLOAD_BYTES) throw new ValidationError(`Files can be up to ${MAX_UPLOAD_LABEL}.`);
+  // A larger limit only where a caller allows it (Coetha's background reading, sent in pieces).
+  const max = opts.maxBytes ?? MAX_UPLOAD_BYTES;
+  if (bytes.length > max) throw new ValidationError(`Files can be up to ${opts.maxBytes ? `${Math.round(max / 1024 / 1024)} MB` : MAX_UPLOAD_LABEL}.`);
   const type = sniffType(bytes, { allowOffice: opts.allowOffice, allowSpreadsheet: opts.allowSpreadsheet, name: originalName });
   if (!type) throw new ValidationError(opts.allowSpreadsheet ? "Upload the payroll register as a CSV or Excel (.xlsx) file." : opts.allowOffice ? "Upload a PDF, Word (DOC/DOCX, no macros), JPG or PNG file." : "Upload a PDF, JPG, or PNG file.");
   const sha256 = sha256Of(bytes);
@@ -202,6 +204,8 @@ export type StaffUploadInput = {
   businessOwnerId?: string | null;
   // The caller already checked duplicates (a combined federal + state return PDF filed once per filing).
   duplicateChecked?: boolean;
+  /** A larger size limit (Coetha's background reading only; files arrive in pieces). */
+  maxBytes?: number;
 };
 
 /** Categories that belong to one business owner (Document.businessOwnerId) and open only for them (plus staff). */
@@ -230,7 +234,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   } else if (input.businessOwnerId) {
     throw new ValidationError("Only a K-1 (owner) or an owner's personal document is linked to an owner.");
   }
-  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.duplicateChecked ? undefined : input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT" });
+  const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.duplicateChecked ? undefined : input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT", maxBytes: input.maxBytes });
   try {
     const doc = await prisma.$transaction(async (tx) => {
       const file = await tx.storedFile.create({ data: stored.fileData });
