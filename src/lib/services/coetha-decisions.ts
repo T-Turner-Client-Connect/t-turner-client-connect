@@ -39,7 +39,7 @@ export type DecisionItem =
 
 export type PrepareResult = { index: number; ok: boolean; message: string; proposalId?: string; posted?: boolean };
 /** Why an entry may post without a click: Tabitha said so (quoted), or it's the business's routine treatment. */
-type Basis = "tabitha_said" | "routine";
+type Basis = "tabitha_said" | "routine" | "senior_accountant";
 
 // --- Posting routine items automatically (Tabitha's switch, on by default) ---------------------------
 
@@ -199,7 +199,9 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       });
       made++;
       const label = `${it.ref ?? date} ${date} ${usd(t.amountCents)} → ${got.a.code} ${got.a.name}`;
-      const basis = !got.a.id ? null : it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? "your decision" : it.basis === "routine" ? await routineFor(clientId, t, got.a.id) : null;
+      // Coetha's own professional judgment (Tabitha's instruction: she decides like a senior
+      // accountant); it needs a written reason, and auto-posted entries stay listed and reversible.
+      const basis = !got.a.id ? null : it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? "your decision" : it.basis === "routine" ? await routineFor(clientId, t, got.a.id) : it.basis === "senior_accountant" && clip(it.reason, 300) ? "Coetha's judgment" : null;
       const posted = basis ? await autoPost(clientId, p.id, basis) : false;
       results.push({ index, ok: true, message: posted ? `Posted automatically (${basis}): ${label}` : `On your Apply These Decisions card: ${label}`, proposalId: p.id, posted });
       continue;
@@ -233,7 +235,8 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       made++;
       const label = `${it.date} "${memo}" ${usd(dr)}: ${lines.map((l) => `${l.debitCents ? "Dr" : "Cr"} ${l.accountCode}`).join(", ")}`;
       // A correction posts by itself only when Tabitha said so in her own words.
-      const posted = lines.every((l) => l.accountId) && it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? await autoPost(clientId, p.id, "your decision") : false;
+      const jBasis = it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? "your decision" : it.basis === "senior_accountant" && clip(it.reason, 300) ? "Coetha's judgment" : null;
+      const posted = lines.every((l) => l.accountId) && jBasis ? await autoPost(clientId, p.id, jBasis) : false;
       results.push({ index, ok: true, message: posted ? `Posted automatically (your decision): ${label}` : `On your Apply These Decisions card: ${label}`, proposalId: p.id, posted });
       continue;
     }
@@ -448,7 +451,7 @@ export const PREPARE_TOOL = {
             accountCode: { type: "string", description: "post_bank_row: the account it is posted to; new_account: the new account's code" },
             memo: { type: "string" },
             reason: { type: "string", description: "Short: which decision of Tabitha's this carries out" },
-            basis: { type: "string", enum: ["tabitha_said", "routine"], description: "tabitha_said: Tabitha stated this treatment (give her exact words in quote); routine: the business's usual treatment (a rule or how this vendor was posted before). Leave out for anything else; it then waits for her approval." },
+            basis: { type: "string", enum: ["tabitha_said", "routine", "senior_accountant"], description: "tabitha_said: Tabitha stated this treatment (give her exact words in quote); routine: the business's usual treatment (a rule or how this vendor was posted before); senior_accountant: your own professional judgment as the firm's senior accountant (give the reason). Leave out only when you truly can't decide; it then waits for her approval." },
             quote: { type: "string", description: "With basis tabitha_said: Tabitha's own words that decide it, copied exactly from her message" },
             lines: {
               type: "array",

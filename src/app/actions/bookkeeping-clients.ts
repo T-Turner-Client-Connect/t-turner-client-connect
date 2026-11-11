@@ -263,6 +263,17 @@ export async function requestChangesAction(clientId: string, documentId: string,
   });
 }
 
+/** The month's Profit & Loss and Balance Sheet built from the books, saved as drafts for Tabitha. */
+export async function prepareStatementsAction(clientId: string, ym: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { prepareStatementsFromBooks } = await import("@/lib/services/coetha-statements");
+    const r = await prepareStatementsFromBooks(actor, clientId, ym);
+    refresh(clientId);
+    return `Prepared from the books: ${r.saved.join(" and ")}. Net income ${r.figures.netIncome}; total assets ${r.figures.totalAssets}.${r.stillOpenThisMonth.length ? ` Still open this month: ${r.stillOpenThisMonth.length} item(s); prepare again after they're fixed.` : ""}`;
+  });
+}
+
 export async function deliverApprovedAction(clientId: string, periodId: string, periodType: string | null, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();
   return run(async () => {

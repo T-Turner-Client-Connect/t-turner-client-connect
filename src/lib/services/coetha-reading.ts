@@ -546,9 +546,12 @@ export async function askAboutDocuments(actor: Actor, clientId: string, question
 
 /** Answers each waiting question whose documents are all read (or given up on). */
 const RETRY_AFTER_MS = 60_000;
-const MAX_BUSY_TRIES = 6;
+const MAX_BUSY_TRIES = 15;
 
 export async function answerReadyQuestions(limit = 1, quick = true, clientId?: string) {
+  // The AI service just said "slow down": wait instead of sending more large requests.
+  const { coolingDown } = await import("./coetha-chat");
+  if (await coolingDown()) return 0;
   const waiting = await prisma.coethaChatMessage.findMany({ where: { status: "WAITING", ...(clientId ? { clientId } : {}) }, orderBy: { createdAt: "asc" }, take: 20 });
   let n = 0;
   for (const m of waiting) {
@@ -583,6 +586,7 @@ export async function answerReadyQuestions(limit = 1, quick = true, clientId?: s
     } catch (err) {
       const { BUSY_CODES } = await import("./coetha-chat");
       const busy = err instanceof CoethaModelError && BUSY_CODES.has(err.code);
+      if (busy) await (await import("./coetha-chat")).startCooldown();
       // Busy: it stays waiting and is tried again in a minute (up to MAX_BUSY_TRIES).
       // Otherwise the question stays visible with its findings; it can be asked again.
       if (!busy || tries + 1 >= MAX_BUSY_TRIES) await prisma.coethaChatMessage.update({ where: { id: m.id }, data: { status: "FAILED" } });

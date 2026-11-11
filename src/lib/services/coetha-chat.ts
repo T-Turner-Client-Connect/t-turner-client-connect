@@ -154,6 +154,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
       const code = err instanceof CoethaModelError ? err.code : "ERROR";
       // The AI service is busy (its per-minute limit, or a refusal/connection drop right after it):
       // the question is kept and answered in the background a minute later, never lost.
+      if (BUSY_CODES.has(code)) await startCooldown();
       if (BUSY_CODES.has(code) && !typed.length) {
         const queued = await prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "USER", text: q, authorId: actor.id, status: "WAITING", jobIds: [] } });
         await audit(prisma, { actorId: actor.id, action: "coetha.chat_queued", entityType: "CoethaChatMessage", entityId: queued.id, clientId, details: { code } });
@@ -187,6 +188,20 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
   }
 }
 
+/**
+ * After the AI service says "slow down" (or refuses), every Coetha call waits this long before
+ * trying again, so retries of saved questions don't keep the account over its per-minute limit.
+ */
+const COOLDOWN = "coetha-cooldown";
+export async function startCooldown(seconds = 90) {
+  const until = new Date(Date.now() + seconds * 1000);
+  await prisma.jobLock.upsert({ where: { name: COOLDOWN }, create: { name: COOLDOWN, lockedUntil: until }, update: { lockedUntil: until } }).catch(() => {});
+}
+export async function coolingDown() {
+  const l = await prisma.jobLock.findUnique({ where: { name: COOLDOWN } }).catch(() => null);
+  return !!l && l.lockedUntil > new Date();
+}
+
 /** The AI service's "slow down" answers: the question is kept and retried instead of failing. */
 export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEOUT"]);
 
@@ -205,6 +220,7 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
   // Day-to-day bank activity read from what was sent (checked to the cent; nothing posted). The
   // person asking must be allowed to import bank transactions for this business.
   const { BANK_ACTIVITY_TOOL, addBankActivity } = await import("./coetha-bank-activity");
+  const { STATEMENTS_TOOL, runStatementsTool } = await import("./coetha-statements");
   const enterActivity = async (input: unknown) => {
     try {
       return await addBankActivity(actor, clientId, (input && typeof input === "object" ? input : {}) as Record<string, unknown>);
@@ -213,13 +229,14 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
     }
   };
   return {
-    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, PREPARE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL],
+    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, PREPARE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL],
     run: (name: string, input: unknown) =>
       owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
         : owner && memoryNames.has(name) ? runMemoryTool(actor, clientId, name, input)
           : asks && name === ASK_CLIENT_TOOL.name ? runAskClientTool(actor, clientId, input)
             : CHECKLIST_TOOL_NAMES.has(name) ? runChecklistTool(actor, clientId, name, input)
               : name === BANK_ACTIVITY_TOOL.name ? enterActivity(input)
+                : name === STATEMENTS_TOOL.name ? runStatementsTool(actor, clientId, input)
               : runRecordsTool(clientId, name, input),
     records,
     asker: owner ? ("owner" as const) : ("staff" as const),

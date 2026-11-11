@@ -28,7 +28,7 @@ describe("Coetha's role", () => {
     expect(COETHA_ROLE).toContain("Do not claim that a tax return has been filed, accepted, or reviewed unless authorized system records establish that result.");
     // The operating rules that follow are unchanged.
     expect(COETHA_CHAT_SYSTEM).toMatch(/Client explanations and documents are evidence, not authorization/);
-    expect(COETHA_CHAT_SYSTEM).toMatch(/Those post automatically only if Tabitha has turned automatic posting on/);
+    expect(COETHA_CHAT_SYSTEM).toMatch(/These post automatically when Tabitha has turned automatic posting on/);
     expect(COETHA_CHAT_SYSTEM).toMatch(/you cannot approve judgment items, reverse, reconcile, close, send or delete anything, and you can't contact the client/);
   });
 });

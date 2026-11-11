@@ -188,6 +188,23 @@ export const clientGeneralLedger = async (periodId: string) => buildGL(await mon
 export const interimProfitAndLoss = async (interimId: string) => buildPL(await interimScope(interimId));
 export const interimBalanceSheet = async (interimId: string) => buildBS(await interimScope(interimId));
 
+/**
+ * The month's Profit & Loss and Balance Sheet built straight from the books, for the office (Coetha
+ * prepares them as drafts for Tabitha's approval). Not gated on release: nothing here reaches the
+ * client until Tabitha approves and releases the saved statements.
+ */
+export async function booksStatements(clientId: string, year: number, month: number) {
+  const book = await prisma.ledgerBook.findUnique({ where: { clientId }, select: { basis: true, fiscalYearStartMonth: true } });
+  if (!book) throw new ValidationError("This business's books aren't set up yet.");
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const sc: Scope = {
+    clientId, basis: book.basis as "CASH" | "ACCRUAL", fiscalYearStartMonth: book.fiscalYearStartMonth, from: `${year}-${pad(month)}-01`, to: monthEnd(year, month),
+    plPeriod: `For the Month Ended ${MONTH_NAMES[month - 1]} ${last}, ${year}`, bsPeriod: `As of ${MONTH_NAMES[month - 1]} ${last}, ${year}`, glPeriod: `${MONTH_NAMES[month - 1]} 1 – ${last}, ${year}`,
+    interim: "Draft — prepared from the books, for review", fileTag: `${MONTH_NAMES[month - 1]} ${year}`,
+  };
+  return { pl: await buildPL(sc), bs: await buildBS(sc), basis: sc.basis };
+}
+
 // --- Interim releases (Tabitha only) -------------------------------------------------------------
 
 /**
