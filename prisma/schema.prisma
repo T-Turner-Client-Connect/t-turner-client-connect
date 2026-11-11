@@ -4960,9 +4960,12 @@ model CoethaChatMessage {
   status         String?
   // The reading jobs this question waits for.
   jobIds         Json?
+  // Which chat on the Ask Coetha page this message belongs to (null = conversations from before chats).
+  chatId         String?
   createdAt    DateTime   @default(now())
 
   @@index([clientId, createdAt])
+  @@index([clientId, chatId, createdAt])
 }
 
 /// A large file sent to Coetha in pieces (each stored encrypted until the file is put back together).

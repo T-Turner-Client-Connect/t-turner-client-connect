@@ -71,6 +71,23 @@ export function chatFileType(bytes: Uint8Array): (typeof CHAT_FILE_TYPES)[number
 const HISTORY = 16;
 const SHOWN = 60;
 
+/**
+ * Chats: the Ask Coetha page keeps separate conversations per business. A question carries the
+ * id of the chat it was asked in, and only that chat's earlier messages go with it. What Coetha
+ * remembers (coetha-memory) is in every chat. Messages from before chats existed have no chat id
+ * and form one "Earlier conversation", addressed as EARLIER_CHAT.
+ */
+export const EARLIER_CHAT = "earlier";
+/** A chat id from the page (or a form): a fresh id for a new chat, EARLIER_CHAT, or null when absent or malformed. */
+export function chatKey(raw: unknown): string | null {
+  const v = typeof raw === "string" ? raw.trim() : "";
+  return v === EARLIER_CHAT || /^c_[A-Za-z0-9-]{8,40}$/.test(v) ? v : null;
+}
+/** A new chat's id (the chat exists once its first question is asked). */
+export const newChatKey = () => `c_${randomUUID()}`;
+/** The database value for a chat key: EARLIER_CHAT is stored as null. */
+const chatIdOf = (key: string | null | undefined) => (key && key !== EARLIER_CHAT ? key : null);
+
 export const COETHA_CHAT_PRIVACY =
   "When you ask Coetha a question, your question and this business's bookkeeping data (transaction dates, amounts, shortened descriptions and account names) are sent to Anthropic's API (Claude) under the firm's own API key. Long numbers are shortened to the last 4 digits, and SSNs, EINs, emails and phone numbers are removed first. From a PDF with text (a bank statement, an invoice), its text is sent with long numbers shortened to the last 4 digits; a picture or a scanned PDF is sent as it is (a check image shows the account and routing numbers printed on it). Every file is kept as a staff-only document for this business. The conversation is saved in Client Connect for this business only.";
 
@@ -97,7 +114,8 @@ export function cleanQuestion(q: string): string {
 }
 
 /** Asks Coetha one question about this client's books and saves both sides of the exchange. */
-export async function askCoetha(actor: Actor, clientId: string, question: string, opts: { today?: string; files?: ChatFile[] } = {}) {
+export async function askCoetha(actor: Actor, clientId: string, question: string, opts: { today?: string; files?: ChatFile[]; chat?: string | null } = {}) {
+  const chatId = chatIdOf(chatKey(opts.chat));
   await assertLedger(actor, clientId);
   await assertManagedBusiness(clientId);
   await bookOf(clientId);
@@ -120,7 +138,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
   const lock = `coetha-chat:${clientId}`;
   if (!(await takeLock(lock, 120))) throw new ValidationError("Coetha is still answering the last question for this business. Try again in a moment.");
   try {
-    const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true, attachmentName: true, attachments: true } })).reverse();
+    const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId, chatId }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true, attachmentName: true, attachments: true } })).reverse();
     const built = await buildCoethaInput(actor, clientId, { today: opts.today });
     // The batch a Coetha run categorizes is capped and skips drafted rows; the complete records replace it.
     const { toCategorize: _batch, recentPosted: _recent, ...books } = built.input;
@@ -137,7 +155,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
       // The AI service is busy (its per-minute limit, or a refusal/connection drop right after it):
       // the question is kept and answered in the background a minute later, never lost.
       if (BUSY_CODES.has(code) && !typed.length) {
-        const queued = await prisma.coethaChatMessage.create({ data: { clientId, role: "USER", text: q, authorId: actor.id, status: "WAITING", jobIds: [] } });
+        const queued = await prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "USER", text: q, authorId: actor.id, status: "WAITING", jobIds: [] } });
         await audit(prisma, { actorId: actor.id, action: "coetha.chat_queued", entityType: "CoethaChatMessage", entityId: queued.id, clientId, details: { code } });
         return { questionId: queued.id, answerId: null, text: null, queued: true as const };
       }
@@ -159,8 +177,8 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
     // Explicit times keep the question just before its answer in the thread.
     const at = Date.now();
     const [asked, answered] = await prisma.$transaction([
-      prisma.coethaChatMessage.create({ data: { clientId, role: "USER", text: q, authorId: actor.id, documentId, attachmentName, ...(attachments.length ? { attachments } : {}), createdAt: new Date(at) } }),
-      prisma.coethaChatMessage.create({ data: { clientId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(at + 1) } }),
+      prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "USER", text: q, authorId: actor.id, documentId, attachmentName, ...(attachments.length ? { attachments } : {}), createdAt: new Date(at) } }),
+      prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(at + 1) } }),
     ]);
     await audit(prisma, { actorId: actor.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId: asked.id, documentIds: attachments.map((a) => a.documentId), searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
     return { questionId: asked.id, answerId: answered.id as string | null, text: answered.text as string | null, queued: false as const };
@@ -206,7 +224,7 @@ export async function answerQuestion(asker: Actor, clientId: string, questionId:
   await assertLedger(asker, clientId);
   await assertCanAsk(clientId);
   const question = await prisma.coethaChatMessage.findFirstOrThrow({ where: { id: questionId, clientId, role: "USER" } });
-  const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId, createdAt: { lt: question.createdAt } }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true, attachmentName: true, attachments: true } })).reverse();
+  const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId, chatId: question.chatId, createdAt: { lt: question.createdAt } }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true, attachmentName: true, attachments: true } })).reverse();
   const built = await buildCoethaInput(asker, clientId);
   const { toCategorize: _batch, recentPosted: _recent, ...books } = built.input;
   void _batch; void _recent;
@@ -217,22 +235,40 @@ export async function answerQuestion(asker: Actor, clientId: string, questionId:
     { role: "user", text: documentsRead ? `${question.text}\n\nWhat you read from the attached documents (read page by page; each item is matched to the bank rows where possible):\n${documentsRead}` : question.text },
   ];
   const res = await callCoethaChat(books, turns, opts.quick ? { defs: [], run: async () => ({}), records } : await chatTools(asker, clientId, records));
-  const answered = await prisma.coethaChatMessage.create({ data: { clientId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(question.createdAt.getTime() + 1) } });
+  const answered = await prisma.coethaChatMessage.create({ data: { clientId, chatId: question.chatId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(question.createdAt.getTime() + 1) } });
   await audit(prisma, { actorId: asker.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId, background: true, searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
   return answered;
 }
 
-/** The conversation for one business (newest SHOWN messages, oldest first), for staff who can open its books. */
-export async function coethaChatView(actor: Actor, clientId: string) {
+/**
+ * The Ask Coetha page for one business, for staff who can open its books: the list of chats
+ * (newest first, each titled by its first question) and one chat's messages, oldest first.
+ * opts.chat picks the chat (default: the most recent one; a new chat's id shows an empty chat);
+ * opts.limit keeps only that chat's newest messages (default SHOWN), with total for "See all".
+ */
+export async function coethaChatView(actor: Actor, clientId: string, opts: { chat?: string | null; limit?: number } = {}) {
   await assertLedger(actor, clientId);
-  const [status, book, optOut, rows] = await Promise.all([
+  const [status, book, optOut, groups, firsts] = await Promise.all([
     coethaStatus(),
     prisma.ledgerBook.findUnique({ where: { clientId }, select: { clientId: true } }),
     coethaOptOutView(clientId),
-    prisma.coethaChatMessage.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: SHOWN }),
+    prisma.coethaChatMessage.groupBy({ by: ["chatId"], where: { clientId }, _count: { _all: true }, _min: { createdAt: true }, _max: { createdAt: true } }),
+    prisma.coethaChatMessage.findMany({ where: { clientId, role: "USER" }, distinct: ["chatId"], orderBy: { createdAt: "asc" }, select: { chatId: true, text: true } }),
   ]);
+  const titleOf = new Map(firsts.map((f) => [f.chatId ?? EARLIER_CHAT, f.text]));
+  const chats = groups
+    .map((g) => {
+      const key = g.chatId ?? EARLIER_CHAT;
+      const first = titleOf.get(key);
+      return { key, title: g.chatId ? (first ? first.replace(/\s+/g, " ").slice(0, 70) : "Chat with Coetha") : "Earlier conversation", startedAt: g._min.createdAt!, lastAt: g._max.createdAt!, count: g._count._all };
+    })
+    .sort((a, b) => b.lastAt.getTime() - a.lastAt.getTime());
+  const asked = chatKey(opts.chat);
+  const current = asked ?? chats[0]?.key ?? newChatKey();
+  const chat = chats.find((c) => c.key === current) ?? null;
+  const rows = chat ? await prisma.coethaChatMessage.findMany({ where: { clientId, chatId: chatIdOf(current) }, orderBy: { createdAt: "desc" }, take: Math.max(1, opts.limit ?? SHOWN) }) : [];
   const people = await prisma.user.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.authorId).filter((x): x is string => !!x))] } }, select: { id: true, name: true } });
   const nameOf = new Map(people.map((u) => [u.id, u.name]));
   const messages = rows.reverse().map((m) => ({ id: m.id, role: m.role as "USER" | "COETHA", text: m.text, createdAt: m.createdAt, author: m.role === "USER" ? (m.authorId ? nameOf.get(m.authorId) ?? "Staff" : "Staff") : "Coetha", attachments: Array.isArray(m.attachments) ? (m.attachments as { documentId: string; name: string }[]) : m.attachmentName ? [{ documentId: m.documentId ?? "", name: m.attachmentName }] : [], status: m.status, jobIds: Array.isArray(m.jobIds) ? (m.jobIds as string[]) : [] }));
-  return { status, hasBook: !!book, optedOut: !!optOut, messages, canAsk: status.ready && !!book && !optOut };
+  return { status, hasBook: !!book, optedOut: !!optOut, chats, chat: { key: current, title: chat?.title ?? "New chat", total: chat?.count ?? 0, isNew: !chat }, messages, canAsk: status.ready && !!book && !optOut };
 }

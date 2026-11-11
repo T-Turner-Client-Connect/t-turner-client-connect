@@ -486,17 +486,19 @@ export async function kickBackgroundReading() {
 // --- 5. Questions that wait for their documents --------------------------------------------------
 
 /** Asks Coetha a question about documents she reads in the background; the answer arrives when they're read. */
-export async function askAboutDocuments(actor: Actor, clientId: string, question: string, jobIds: string[]) {
+export async function askAboutDocuments(actor: Actor, clientId: string, question: string, jobIds: string[], chat?: string | null) {
   await assertCoethaReader(actor, clientId);
   const ids = [...new Set(jobIds)];
   if (!ids.length) throw new ValidationError("Add the files first.");
   const jobs = await prisma.coethaDocJob.findMany({ where: { id: { in: ids }, clientId } });
   if (jobs.length !== ids.length) throw new ValidationError("One of the files isn't on file for this business.");
-  const { cleanQuestion, assertCanAsk } = await import("./coetha-chat");
+  const { cleanQuestion, assertCanAsk, chatKey, EARLIER_CHAT } = await import("./coetha-chat");
+  const key = chatKey(chat);
+  const chatId = key && key !== EARLIER_CHAT ? key : null;
   await assertCanAsk(clientId);
   const q = cleanQuestion(question.trim() || `Please read the attached file${ids.length > 1 ? "s" : ""}: list what ${ids.length > 1 ? "they show" : "it shows"}, match each item to the bank rows, and tell me what needs my decision.`);
   const names = jobs.map((j) => j.name);
-  const msg = await prisma.coethaChatMessage.create({ data: { clientId, role: "USER", text: q, authorId: actor.id, status: "WAITING", jobIds: ids, attachments: jobs.map((j) => ({ documentId: j.documentId, name: j.name })), documentId: jobs[0].documentId, attachmentName: names[0] } });
+  const msg = await prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "USER", text: q, authorId: actor.id, status: "WAITING", jobIds: ids, attachments: jobs.map((j) => ({ documentId: j.documentId, name: j.name })), documentId: jobs[0].documentId, attachmentName: names[0] } });
   await audit(prisma, { actorId: actor.id, action: "coetha.chat_documents", entityType: "CoethaChatMessage", entityId: msg.id, clientId, details: { jobIds: ids } });
   return msg;
 }
