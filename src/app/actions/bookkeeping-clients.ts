@@ -6,6 +6,8 @@ import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
+import { ForbiddenError } from "@/lib/auth/actor";
+import { STATEMENT_DOC_TYPES } from "@/lib/services/client-request-scope";
 import { staffUploadDocument, REPORT_LABELS } from "@/lib/services/documents";
 import {
   AlreadyEnrolledError, approveReport, deliverApprovedReports, classifyDocument, deliverReport, enrollExistingClient, enrollNewClient, openWorkPeriod, openWorkPeriodsForAll, periodLabel, PossibleDuplicateError, requestReportChanges, saveProfile, setChecklistItem, submitReportForReview, uploadMonthlyReport,
@@ -223,8 +225,21 @@ export async function uploadBookkeepingFileAction(clientId: string, periodId: st
       originalName: f.name,
     });
     if (accountId) await prisma.document.update({ where: { id: saved.id }, data: { bookkeepingAccountId: accountId } });
+    // A bank or card statement for an account is read right away: its transactions come in and its
+    // balances fill in the month's reconciliation (Ask Coetha → Reconciliation), with no extra step.
+    let read = "";
+    if (accountId && (STATEMENT_DOC_TYPES as readonly string[]).includes(kind)) {
+      const { readStatementTransactions, statementReadMessage } = await import("@/lib/services/statement-import");
+      try {
+        read = ` ${statementReadMessage(await readStatementTransactions(actor, clientId, saved.id))}`;
+      } catch (err) {
+        if (!(err instanceof ValidationError) && !(err instanceof ForbiddenError)) throw err;
+        read = err instanceof ValidationError ? ` It wasn't read yet: ${err.message}` : "";
+      }
+      revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    }
     refresh(clientId);
-    return "Saved to this month (staff only).";
+    return `Saved to this month (staff only).${read}`;
   });
 }
 

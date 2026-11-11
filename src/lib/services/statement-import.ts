@@ -127,7 +127,7 @@ export async function readAfterUpload(actor: Actor, clientId: string, documentId
     if (err instanceof ValidationError) return `Its transactions weren't read: ${err.message}`;
     if (err instanceof ForbiddenError) return "";
     console.error("Statement read failed:", err instanceof Error ? err.name : "unknown error");
-    return "Its transactions couldn't be read automatically; use “Read transactions from statement” on the reconciliation page to try again.";
+    return "Its transactions couldn't be read automatically; use “Read transactions from statement” under Ask Coetha → Reconciliation to try again.";
   }
 }
 

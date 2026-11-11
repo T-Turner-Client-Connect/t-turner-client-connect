@@ -18,6 +18,7 @@ import { CoethaReadingPoller } from "@/components/coetha-reading-poller";
 import { fmtDateTime } from "@/lib/format";
 import { downloadToken } from "@/lib/services/documents";
 import { CoethaUploadButton } from "@/components/coetha-upload-button";
+import { ReconciliationPanel } from "@/components/bk/reconciliation-panel";
 
 export const metadata = { title: "Ask Coetha" };
 
@@ -33,7 +34,7 @@ const STARTERS = [
 /** How many of the chat's newest messages the page shows before "See all messages". */
 const SHORT = 6;
 
-export default async function AskCoethaPage({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ chat?: string; all?: string }> }) {
+export default async function AskCoethaPage({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ chat?: string; all?: string; month?: string }> }) {
   await connection();
   const user = await requireUser();
   const { clientId } = await params;
@@ -49,6 +50,7 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
       <>
         <p className="mb-2 text-sm"><Link className="underline" href={base}>← Client Overview</Link></p>
         <div className={clsx(card, "p-6 text-navy-900")} data-testid="coetha-chat-no-access">Only Admins and the staff member assigned to {biz} can talk with Coetha about this business&apos;s books.</div>
+        <div className="mt-4"><ReconciliationPanel user={user} clientId={clientId} month={sp.month} pagePath={`${base}/coetha/ask`} /></div>
       </>
     );
   }
@@ -90,6 +92,8 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
         </div>
       )}
       {!v.hasBook && <div className={clsx(card, "p-4 text-sm text-navy-900")}>Set up this business&apos;s books first in <Link className="font-semibold underline" href={`${base}/books`}>Books &amp; Ledger</Link>.</div>}
+
+      <ReconciliationPanel user={user} clientId={clientId} month={sp.month} pagePath={`${base}/coetha/ask`} />
 
       {/* Chats: older conversations on the side, the open chat (short) with the question box on top */}
       <div className="grid min-w-0 gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]">

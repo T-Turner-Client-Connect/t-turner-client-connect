@@ -70,7 +70,7 @@ export default async function BankingPage({ params }: { params: Promise<{ client
           ))}
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
-          <Link href={`${base}/banking/reconciliation`} className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-4 py-2 text-sm font-semibold text-navy-950"><ListChecks className="size-4" aria-hidden /> Monthly reconciliation</Link>
+          <Link href={`${base}/coetha/ask#reconciliation`} className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-4 py-2 text-sm font-semibold text-navy-950"><ListChecks className="size-4" aria-hidden /> Monthly reconciliation</Link>
           <Link href={`${base}/books?tab=bank`} className="inline-flex min-h-10 items-center rounded-lg border border-white/70 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">Review transactions</Link>
         </div>
       </section>
