@@ -18,7 +18,8 @@ import { workMonth } from "@/lib/services/bookkeeping-clients";
 import { yearMonths } from "@/lib/bookkeeping-months";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
 import { retrieveNowAction } from "@/app/actions/ledger";
-import { uploadForRequestAction, uploadStatementAction } from "@/app/actions/bk-workflow";
+import { markMonthsCompleteAction, uploadForRequestAction, uploadStatementAction } from "@/app/actions/bk-workflow";
+import { canApproveCoethaWork } from "@/lib/auth/permissions";
 import { canSetCoethaOptOut, coethaOptOutView } from "@/lib/services/coetha-opt-out";
 import { CoethaOptOutPanel } from "@/components/bk/coetha-opt-out-panel";
 
@@ -103,6 +104,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
   // Statements Coetha asked for (new clients / missing statements): upload straight to the request.
   const statementRequests = reqs.all.filter((r) => (r.status === "OPEN" || (r.status === "DRAFT" && r.routing !== "REVIEW")) && (r.docType === "BANK_STATEMENT" || r.docType === "CARD_STATEMENT"));
 
+  const canMarkPrior = await canApproveCoethaWork(user);
   // Month tiles: January through December of the year shown, in order (read only; months with no record are listed too).
   const months = await Promise.all(yearMonths(sel.year).map(async (t) => {
     const c = await monthlyChecklist(clientId, t.year, t.month, { today });
@@ -299,6 +301,16 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
             </Link>
           ))}
         </div>
+      {canMarkPrior && (
+          <details className="mt-3 text-sm" data-testid="mark-prior">
+            <summary className="cursor-pointer font-semibold text-navy-900 underline decoration-gold-500">Mark months complete (books done before Client Connect)</summary>
+            <ActionForm action={markMonthsCompleteAction.bind(null, clientId)} className="mt-2 flex flex-wrap items-end gap-2" confirm="Mark these months complete? Their progress shows Complete.">
+              <label>From<input className="input mt-1" type="month" name="from" defaultValue={`${sel.year}-01`} required /></label>
+              <label>Through<input className="input mt-1" type="month" name="through" required /></label>
+              <button type="submit" className={smallBtn}>Mark complete</button>
+            </ActionForm>
+          </details>
+        )}
       </section>
 
       {/* Statements Coetha asked for (only when she needs them) */}

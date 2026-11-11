@@ -5,9 +5,9 @@ import { requireUser } from "@/lib/auth/session";
 import { dateOrNull, run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
 import { approveReconciliation, decideSharedCard, enterStatementBalances, monitorConnectionAccount, registerAccount, updateRegistryAccount } from "@/lib/services/bank-accounts";
-import { discardDraftRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, staffUploadForRequest, staffUploadStatement } from "@/lib/services/client-requests";
+import { closeClientRequest, discardDraftRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, staffUploadForRequest, staffUploadStatement } from "@/lib/services/client-requests";
 
-import { runWorkflowMonitor } from "@/lib/services/monthly-workflow";
+import { markMonthsCompletePrior, runWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { readAfterUpload, readStatementTransactions, statementReadMessage } from "@/lib/services/statement-import";
 import { setTaxClassification } from "@/lib/services/tax-classification";
 import { releaseInterimStatement, revokeInterimStatement } from "@/lib/services/client-statements";
@@ -118,6 +118,24 @@ export async function discardRequestAction(clientId: string, requestId: string, 
     await discardDraftRequest(actor, clientId, requestId);
     refresh(clientId);
     return "Draft discarded.";
+  });
+}
+
+export async function closeRequestAction(clientId: string, requestId: string, outcome: "received" | "not_needed", _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    await closeClientRequest(actor, clientId, requestId, outcome);
+    refresh(clientId);
+    return outcome === "received" ? "Marked received." : "Closed — not needed.";
+  });
+}
+
+export async function markMonthsCompleteAction(clientId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const done = await markMonthsCompletePrior(actor, clientId, str(fd, "from"), str(fd, "through"));
+    refresh(clientId);
+    return `Marked complete: ${done.length} month${done.length === 1 ? "" : "s"} (${done[0]} to ${done.at(-1)}).`;
   });
 }
 
