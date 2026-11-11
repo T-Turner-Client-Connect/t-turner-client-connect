@@ -316,6 +316,34 @@ export async function staffUploadForRequest(actor: Actor, clientId: string, requ
   return doc;
 }
 
+/**
+ * A file already saved for this business (for example uploaded in Ask Coetha) becomes the
+ * statement of one registered account for one month: the same document record and stored file,
+ * now labeled, dated and linked to the account, and answering any open statement request for that
+ * account and month. Nothing is uploaded or stored again.
+ */
+export async function fileAsStatement(actor: Actor, clientId: string, documentId: string, input: { accountId: string; month: string }) {
+  await assertCanSendClientRequests(actor, clientId);
+  const acct = await prisma.bookkeepingAccount.findFirst({ where: { id: input.accountId, clientId, active: true } });
+  if (!acct) throw new ValidationError("Choose one of this business's registered accounts.");
+  const r = monthRange(input.month);
+  const doc = await prisma.document.findFirst({ where: { id: documentId, clientId, deletedAt: null } });
+  if (!doc) throw new ValidationError("That file isn't on file for this business.");
+  const isBank = acct.accountType === "CHECKING" || acct.accountType === "SAVINGS";
+  const docType = isBank ? "BANK_STATEMENT" : "CARD_STATEMENT";
+  if (doc.bookkeepingAccountId === acct.id && doc.docType === docType && doc.year === r.y && doc.month === r.m) return doc;
+  // A file already filed as another account's or month's statement isn't relabeled silently.
+  if (doc.bookkeepingAccountId && doc.bookkeepingAccountId !== acct.id) throw new ValidationError("This file is already filed as another account's statement.");
+  if ((doc.docType === "BANK_STATEMENT" || doc.docType === "CARD_STATEMENT") && (doc.year !== r.y || doc.month !== r.m)) throw new ValidationError("This file is already filed as another month's statement.");
+  const updated = await prisma.document.update({
+    where: { id: doc.id },
+    data: { category: "BOOKKEEPING", docType, year: r.y, month: r.m, periodStart: toDate(r.start), periodEnd: toDate(r.end), reportPeriodType: "MONTH", bookkeepingAccountId: acct.id, title: `${isBank ? "Bank" : "Card"} statement — ${registryLabel(acct)} — ${rangeText({ periodStart: toDate(r.start), periodEnd: toDate(r.end) })}` },
+  });
+  await prisma.documentRequest.updateMany({ where: { clientId, bookkeepingAccountId: acct.id, status: { in: ["DRAFT", "OPEN"] }, periodStart: { lte: toDate(r.end) }, periodEnd: { gte: toDate(r.start) }, kind: "STATEMENT" }, data: { status: "SUBMITTED" } });
+  await audit(prisma, { actorId: actor.id, action: "bookkeeping.statement_uploaded", entityType: "Document", entityId: doc.id, clientId, details: { account: registryLabel(acct), month: input.month, via: "ask_coetha" } });
+  return updated;
+}
+
 /** Onboarding without a bank feed: a statement for one registered account and month. */
 export async function staffUploadStatement(actor: Actor, clientId: string, input: { accountId: string; month: string; bytes: Uint8Array; originalName: string }) {
   await assertCanSendClientRequests(actor, clientId);

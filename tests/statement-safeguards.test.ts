@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { makeUser, prisma, resetDb } from "./db";
+import { makeUser, managed, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { approveReconciliation, enterStatementBalances, prepareReconciliation, registerAccount } from "@/lib/services/bank-accounts";
 import { staffUploadStatement } from "@/lib/services/client-requests";
 import { readStatementsOnFile, readStatementTransactions } from "@/lib/services/statement-import";
+import { finishUpload, putChunk, startUpload } from "@/lib/services/coetha-reading";
 
 // Fictional business, bank and transactions only. Three safeguards Tabitha asked to verify:
 // no doubled transactions, balances that carry month to month, and no automatic approval.
@@ -149,5 +150,48 @@ describe("3. No accidental approval", () => {
     await readStatementsOnFile(w.daria, w.biz.id, w.chk.id, { postOpening: true });
     expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id, sourceKey: "opening" } })).toBe(1);
     expect((await w.rec(10)).status).not.toBe("APPROVED");
+  });
+});
+
+describe("Statements uploaded in Ask Coetha", () => {
+  async function askUpload(w: Awaited<ReturnType<typeof world>>, bytes: Uint8Array, name: string, statement?: { accountId: string; month: string }) {
+    const { uploadId, chunks, chunkSize } = await startUpload(w.daria, w.biz.id, { name, size: bytes.length });
+    for (let i = 0; i < chunks; i++) await putChunk(w.daria, uploadId, i, bytes.slice(i * chunkSize, (i + 1) * chunkSize));
+    return finishUpload(w.daria, uploadId, { statement });
+  }
+
+  it("go to the chosen account and month, fill that month's reconciliation, and are never imported twice", async () => {
+    const w = await world();
+    await managed(w.biz.id);
+    const bytes = await statementPdf(LINES);
+    const r = await askUpload(w, bytes, "october.pdf", { accountId: w.chk.id, month: "2026-10" });
+    expect(r.statement).toMatch(/added 8 for review/);
+    // One document record, filed as that account's October statement (and still read by Coetha).
+    const doc = await prisma.document.findUniqueOrThrow({ where: { id: r.documentId } });
+    expect(doc).toMatchObject({ bookkeepingAccountId: w.chk.id, docType: "BANK_STATEMENT", year: 2026, month: 10, visibility: "STAFF_ONLY" });
+    expect(await prisma.coethaDocJob.count({ where: { documentId: doc.id } })).toBe(1);
+    expect(await w.rec(10)).toMatchObject({ beginningBalanceCents: 100000, endingBalanceCents: 178044, statementStatus: "RECEIVED" });
+    expect(await w.rows()).toBe(8);
+
+    // The same file again: the record on file is reused (no second copy) and nothing is imported again.
+    const again = await askUpload(w, bytes, "october (again).pdf", { accountId: w.chk.id, month: "2026-10" });
+    expect(again.documentId).toBe(r.documentId);
+    expect(await prisma.document.count({ where: { clientId: w.biz.id } })).toBe(1);
+    expect(await w.rows()).toBe(8);
+    // It can't be refiled silently as another month's statement.
+    const other = await askUpload(w, bytes, "october (3).pdf", { accountId: w.chk.id, month: "2026-09" });
+    expect(other.statement).toMatch(/another month's statement/);
+    expect((await w.rec(10)).status).not.toBe("APPROVED");
+  });
+
+  it("only staff who manage this business's banking can file a statement; another business's account is refused", async () => {
+    const w = await world();
+    await managed(w.biz.id);
+    const otherBiz = await createClient(w.tabitha, { businessName: "Other Example Co (fictional)", clientType: "BUSINESS", status: "ACTIVE" });
+    await managed(otherBiz.id);
+    await setupLedger(w.tabitha, otherBiz.id, { basis: "CASH" });
+    const foreign = await registerAccount(w.tabitha, otherBiz.id, { institution: "Elsewhere Bank", accountType: "CHECKING", nickname: "Other", last4: "9999", gl: "NEW" });
+    await expect(askUpload(w, await statementPdf(LINES), "october.pdf", { accountId: foreign.id, month: "2026-10" })).rejects.toThrow(/registered accounts/);
+    expect(await w.rows()).toBe(0);
   });
 });

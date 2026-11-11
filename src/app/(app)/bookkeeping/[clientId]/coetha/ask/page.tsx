@@ -19,6 +19,8 @@ import { fmtDateTime } from "@/lib/format";
 import { downloadToken } from "@/lib/services/documents";
 import { CoethaUploadButton } from "@/components/coetha-upload-button";
 import { ReconciliationPanel } from "@/components/bk/reconciliation-panel";
+import { canManageBanking } from "@/lib/services/bk-permissions";
+import { reconciles, registryLabel } from "@/lib/services/bank-accounts";
 
 export const metadata = { title: "Ask Coetha" };
 
@@ -56,6 +58,12 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
   }
 
   const v = await coethaChatView(user, clientId, { chat: sp.chat, limit: showAll ? 500 : SHORT });
+  // Statements can be uploaded right here, to an account and month, by staff who manage its banking.
+  const statementAccounts = (await canManageBanking(user, clientId))
+    ? (await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null }, orderBy: { createdAt: "asc" } })).filter((a) => reconciles(a.accountType)).map((a) => ({ id: a.id, label: registryLabel(a) }))
+    : [];
+  const lm = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - 1, 1));
+  const lastMonth = sp.month ?? `${lm.getUTCFullYear()}-${String(lm.getUTCMonth() + 1).padStart(2, "0")}`;
   const chatHref = (key: string, all = false) => `${base}/coetha/ask?chat=${encodeURIComponent(key)}${all ? "&all=1" : ""}`;
   const reading = await readingView(user, clientId);
   const apply = await applyDecisionsView(user, clientId);
@@ -123,7 +131,7 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
                 <div className="mt-1 grid gap-2 sm:grid-cols-[1fr_auto]">
                   <textarea id="coetha-question" name="question" maxLength={MAX_QUESTION} rows={2} className="w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-base text-navy-900 focus:border-gold-500 focus:outline-none focus:ring-2 focus:ring-gold-300" placeholder="Ask a question, or upload files and Coetha will read them" data-testid="coetha-chat-input" />
                   <div className="flex flex-col gap-2 sm:w-48">
-                    <CoethaUploadButton clientId={clientId} />
+                    <CoethaUploadButton clientId={clientId} accounts={statementAccounts} defaultMonth={lastMonth} />
                     <button type="submit" className="group inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-2 text-sm font-semibold text-navy-950 shadow hover:to-gold-600 disabled:opacity-70" data-testid="coetha-chat-send">
                       <Sparkles className="size-4" aria-hidden />
                       <span className="group-disabled:hidden">Ask Coetha</span>
@@ -131,7 +139,7 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
                     </button>
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-slate-600">Files (check scans, statements, receipts, invoices; PDFs or pictures up to 60 MB each) are saved as staff-only documents for this business, and Coetha reads them in the background.</p>
+                <p className="mt-1 text-xs text-slate-600">Statements: choose the account and month first; Coetha reads each one right away, brings in its transactions and fills in that month&apos;s reconciliation (a file already on file is never imported twice). Other files (check scans, statements, receipts, invoices; PDFs or pictures up to 60 MB each) are saved as staff-only documents for this business, and Coetha reads them in the background.</p>
               </ActionForm>
             </section>
           ) : null}
