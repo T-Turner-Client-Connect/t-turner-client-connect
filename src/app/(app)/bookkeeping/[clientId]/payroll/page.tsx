@@ -13,7 +13,7 @@ import { canUseLedger } from "@/lib/services/ledger";
 import { payHistory, payrollSchedule } from "@/lib/services/payroll";
 import { approverWhere, canManagePayrollApprovers, channelsFor } from "@/lib/services/payroll-approval";
 import { connectionStatus } from "@/lib/payroll/providers";
-import { NOTIFY_CHANNELS, PAYROLL_CONNECTIONS, PAYROLL_SYSTEMS } from "@/lib/payroll/fields";
+import { NOTIFY_CHANNELS, PAYROLL_CONNECTIONS, PAYROLL_PROVIDER_LOGIN, PAYROLL_SYSTEMS, type PayrollSystem } from "@/lib/payroll/fields";
 import { PayrollImport } from "@/components/payroll/payroll-import";
 import { dayOf, money, RunStatus } from "@/components/payroll/status";
 import { deliveryOf } from "@/lib/payroll/queue";
@@ -134,11 +134,20 @@ export default async function PayrollPage({ params }: { params: Promise<{ client
 
       <section id="import" className="mt-4">
         <Card title="Import a payroll register">
+          {(() => {
+            const login = p.payrollSystem ? PAYROLL_PROVIDER_LOGIN[p.payrollSystem as PayrollSystem] : undefined;
+            return login ? (
+              <p className="mb-3 flex flex-wrap items-center gap-2 text-sm text-slate-700" data-testid="payroll-provider-login">
+                <a href={login.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-10 items-center rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-800">{login.label} ↗</a>
+                <span>Opens in a new tab, so this page stays open. Download the payroll register (PDF is fine) and choose it below.</span>
+              </p>
+            ) : null;
+          })()}
           {!ledgerOk ? (
             <Notice tone="warn">Only Admins and the staff member assigned to this client can import payroll.</Notice>
           ) : (
             <>
-              <p className="mb-3 text-sm text-slate-700">Export the <strong>payroll register</strong> (ADP) or <strong>payroll journal</strong> (Paychex) as CSV or Excel for the pay dates you need, then upload it here. You&apos;ll see totals per pay date before anything is created. Each new pay date becomes a draft pay run with a draft journal entry; re-importing the same file never doubles up.</p>
+              <p className="mb-3 text-sm text-slate-700">Export the <strong>payroll register</strong> (ADP — PDF is fine) or <strong>payroll journal</strong> (Paychex) as PDF, CSV or Excel for the pay dates you need, then upload it here. A PDF is read by Coetha and checked against the register&apos;s own totals. You&apos;ll see totals per pay date before anything is created. Each new pay date becomes a draft pay run with a draft journal entry; re-importing the same file never doubles up.</p>
               <PayrollImport clientId={clientId} defaultPreset={PRESET_FOR[p.payrollSystem ?? ""] ?? "OTHER"} bankAccounts={banks.map((b) => ({ id: b.id, label: `${b.code} ${b.name}` }))} />
             </>
           )}

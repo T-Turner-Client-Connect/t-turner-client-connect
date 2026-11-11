@@ -500,6 +500,61 @@ export async function callStatementReader(lines: string[], period: string | null
   return { output: msg.parsed_output, model: msg.model || model, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0 };
 }
 
+// --- Reading a payroll register PDF (ADP RUN and others) ---------------------------------------
+
+const money = z.number().describe("Dollars as printed, positive; 0 if the column is blank");
+export const PayrollRegisterOutput = z.object({
+  payDates: z.array(z.object({
+    checkDate: z.string().describe("Check / pay date, YYYY-MM-DD"),
+    periodStart: z.string().nullable().describe("Pay period start, YYYY-MM-DD; null if not printed"),
+    periodEnd: z.string().nullable().describe("Pay period end, YYYY-MM-DD; null if not printed"),
+    employees: z.array(z.object({
+      name: z.string().describe("Employee name as printed (never an SSN or employee ID)"),
+      hours: z.number().describe("Total hours; 0 if not printed"),
+      gross: money,
+      federalWh: money.describe("Federal income tax withheld"),
+      socialSecurity: money.describe("Employee Social Security"),
+      medicare: money.describe("Employee Medicare"),
+      stateWh: money.describe("State income tax withheld"),
+      otherEmployeeTaxes: money.describe("Local, SDI and any other employee taxes"),
+      deductions: money.describe("All voluntary and other deductions (401k, insurance, garnishments...)"),
+      netPay: money,
+    })),
+    employerTaxes: money.describe("Employer taxes for the pay date (employer Social Security, Medicare, FUTA, SUTA...); 0 if not printed"),
+    printedTotals: z.object({ gross: z.number().nullable(), netPay: z.number().nullable() }).describe("The register's own totals line for this pay date; null where not printed"),
+  })),
+});
+export type PayrollRegisterOutputT = z.infer<typeof PayrollRegisterOutput>;
+
+const PAYROLL_SYSTEM = `You read ONE payroll register report (for example ADP RUN "Payroll Register" or "Payroll Details") for a bookkeeping firm. You receive its text lines (SSNs and long numbers were removed). For every check date in the report, list every employee's current-period amounts exactly as printed: hours, gross pay, federal income tax, employee Social Security, employee Medicare, state income tax, other employee taxes, deductions, and net pay. Give the employer taxes for the check date and the report's own totals line (gross and net) when printed. Use current-period columns only, never year-to-date. Never invent, merge, round or skip an amount; if a value isn't printed, use 0.`;
+
+/** Asks Claude to read a payroll register's figures (text only, de-identified). The caller verifies them. */
+export async function callPayrollReader(lines: string[]): Promise<{ output: PayrollRegisterOutputT; model: string; inputTokens: number; outputTokens: number }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
+  const model = coethaModel();
+  const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 120_000 });
+  let msg;
+  try {
+    msg = await client.beta.messages.parse({
+      model,
+      max_tokens: 16000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low", format: betaZodOutputFormat(PayrollRegisterOutput) },
+      system: PAYROLL_SYSTEM,
+      messages: [{ role: "user", content: `Payroll register text:\n${lines.join("\n")}` }],
+    });
+  } catch (err) {
+    if (err instanceof Anthropic.APIError) throw new CoethaModelError(`Anthropic's API returned an error${err.status ? ` (${err.status})` : ""}.`, "API");
+    throw new CoethaModelError("The payroll register couldn't be read.", "PARSE");
+  }
+  if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to read this payroll register.", "REFUSAL");
+  if (msg.stop_reason === "max_tokens") throw new CoethaModelError("The payroll register is too long to read at once. Export fewer pay dates.", "MAX_TOKENS");
+  if (!msg.parsed_output) throw new CoethaModelError("The payroll figures weren't returned in the expected format.", "PARSE");
+  return { output: msg.parsed_output, model: msg.model || model, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0 };
+}
+
 // --- Reading documents (background) -------------------------------------------------------------
 
 export const DocumentFindings = z.object({
