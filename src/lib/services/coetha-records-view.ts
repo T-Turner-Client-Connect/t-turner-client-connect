@@ -94,7 +94,10 @@ export async function recordsSnapshot(actor: Actor, clientId: string) {
   const fStatus = new Map(fRows.map((r) => [r.id, r.status]));
   const { groupOf, GROUP_LABEL } = await import("./coetha-reading");
 
+  const { activeMemory } = await import("./coetha-memory");
+  const memory = await activeMemory(clientId);
   return {
+    rememberedForThisBusiness: memory.map((m) => ({ id: m.id, kind: m.kind, note: m.text, since: ymdOf(m.createdAt) })),
     definitions: COUNT_DEFINITIONS,
     counts: {
       waitingTotal,

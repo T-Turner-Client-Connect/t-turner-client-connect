@@ -11,11 +11,11 @@ import { isReportApprover } from "./bookkeeping-clients";
  * written to both the office audit log and the Owner's Office log.
  */
 
-export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend" | "portalInvites" | "taxSummaryAutoSend" | "clientRollout" | "clientBankBalances";
+export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend" | "coethaAutoPost" | "portalInvites" | "taxSummaryAutoSend" | "clientRollout" | "clientBankBalances";
 
-export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", portalInvites: "Portal invitations authorized", taxSummaryAutoSend: "Send tax summaries automatically", clientRollout: "Client rollout authorized", clientBankBalances: "Show office-entered bank balances to clients" };
+export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", coethaAutoPost: "Coetha posts routine bookkeeping automatically", portalInvites: "Portal invitations authorized", taxSummaryAutoSend: "Send tax summaries automatically", clientRollout: "Client rollout authorized", clientBankBalances: "Show office-entered bank balances to clients" };
 const LABEL = SWITCH_LABEL;
-const ACTION: Record<OwnerSwitch, string> = { liveBanking: "banking.live_connections", coetha: "coetha.enabled", coethaAutoSend: "coetha.auto_send_requests", portalInvites: "portal_invites.authorized", taxSummaryAutoSend: "tax.summary_auto_send", clientRollout: "client_letters.rollout_authorized", clientBankBalances: "banking.client_balances_visible" };
+const ACTION: Record<OwnerSwitch, string> = { liveBanking: "banking.live_connections", coetha: "coetha.enabled", coethaAutoSend: "coetha.auto_send_requests", coethaAutoPost: "coetha.auto_post", portalInvites: "portal_invites.authorized", taxSummaryAutoSend: "tax.summary_auto_send", clientRollout: "client_letters.rollout_authorized", clientBankBalances: "banking.client_balances_visible" };
 
 export async function ownerSwitches() {
   const s = await prisma.integrationSettings.findUnique({ where: { id: "default" } });
@@ -23,6 +23,7 @@ export async function ownerSwitches() {
     liveBanking: { on: s?.liveBankingEnabled ?? false, changedAt: s?.liveBankingChangedAt ?? null, changedById: s?.liveBankingChangedById ?? null },
     coetha: { on: s?.coethaEnabled ?? false, changedAt: s?.coethaChangedAt ?? null, changedById: s?.coethaChangedById ?? null },
     coethaAutoSend: { on: s?.coethaAutoSendRequests ?? true, changedAt: s?.coethaAutoSendChangedAt ?? null, changedById: s?.coethaAutoSendChangedById ?? null },
+    coethaAutoPost: { on: s?.coethaAutoPost === true, changedAt: s?.coethaAutoPostChangedAt ?? null, changedById: s?.coethaAutoPostChangedById ?? null },
     portalInvites: { on: s?.portalInvitesAuthorized === true, changedAt: s?.portalInvitesChangedAt ?? null, changedById: s?.portalInvitesChangedById ?? null },
     taxSummaryAutoSend: { on: s?.taxSummaryAutoSend === true, changedAt: s?.taxSummaryAutoSendAt ?? null, changedById: s?.taxSummaryAutoSendById ?? null },
     clientRollout: { on: s?.clientRolloutAuthorized === true, changedAt: s?.clientRolloutChangedAt ?? null, changedById: s?.clientRolloutChangedById ?? null },
@@ -37,6 +38,11 @@ export async function liveBankingOn(): Promise<boolean> {
 /** Tabitha's setting: Coetha's ROUTINE document requests go to clients without a staff click. On by default (her approval, PR #82); she can turn it off. */
 export async function coethaAutoSendOn(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoSendRequests: true } }))?.coethaAutoSendRequests ?? true;
+}
+
+/** Tabitha's setting: Coetha posts routine bookkeeping herself. OFF by default; only Tabitha turns it on. */
+export async function coethaAutoPostOn(): Promise<boolean> {
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoPost: true } }))?.coethaAutoPost === true;
 }
 
 /** Tabitha's safety lock on Prepared invitations: batches can be prepared and approved, but Send is refused until she authorizes it. Off by default. */
@@ -74,6 +80,8 @@ export async function setOwnerSwitch(actor: Actor, which: OwnerSwitch, on: boole
         ? { coethaEnabled: on, coethaChangedById: actor.id, coethaChangedAt: now, updatedById: actor.id }
         : which === "coethaAutoSend"
           ? { coethaAutoSendRequests: on, coethaAutoSendChangedById: actor.id, coethaAutoSendChangedAt: now, updatedById: actor.id }
+          : which === "coethaAutoPost"
+          ? { coethaAutoPost: on, coethaAutoPostChangedById: actor.id, coethaAutoPostChangedAt: now, updatedById: actor.id }
           : which === "portalInvites"
             ? { portalInvitesAuthorized: on, portalInvitesChangedById: actor.id, portalInvitesChangedAt: now, updatedById: actor.id }
             : which === "taxSummaryAutoSend"

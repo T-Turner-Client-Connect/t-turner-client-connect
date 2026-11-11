@@ -156,6 +156,29 @@ export async function askCoethaAction(clientId: string, _prev: ActionState, fd: 
   });
 }
 
+/** Reverse one of Coetha's automatic postings (Tabitha only). The bank row goes back to review. */
+export async function reverseAutoPostedAction(clientId: string, proposalId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { reverseAutoPosted } = await import("@/lib/services/coetha-decisions");
+    await reverseAutoPosted(actor, clientId, proposalId);
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    return "Reversed. The entry is undone and the bank row is back in review.";
+  });
+}
+
+/** Remove a note from what Coetha remembers for this business (Tabitha only; kept in history). */
+export async function forgetMemoryAction(clientId: string, memoryId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { forgetNotes } = await import("@/lib/services/coetha-memory");
+    await forgetNotes(actor, clientId, [memoryId]);
+    revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
+    return "Removed. Coetha won't apply it any more.";
+  });
+}
+
 /** "Try again" on a file Coetha couldn't read: she continues from where she stopped. */
 export async function retryReadingAction(clientId: string, jobId: string, _prev: ActionState): Promise<ActionState> {
   const actor = await requireUser();
