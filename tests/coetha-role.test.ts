@@ -21,4 +21,12 @@ describe("Coetha's role", () => {
     expect(COETHA_CHAT_SYSTEM).toMatch(/Those post automatically only if Tabitha has turned automatic posting on/);
     expect(COETHA_CHAT_SYSTEM).toMatch(/you cannot approve judgment items, reverse, reconcile, close, send or delete anything, and you can't contact the client/);
   });
+
+  it("asks fewer questions: looks it up first, decides routine work, puts recommendations on the card, asks at most three", () => {
+    expect(COETHA_ROLE).toMatch(/ASKING FEWER QUESTIONS/);
+    expect(COETHA_ROLE).toMatch(/Look it up: what you remember for this business/);
+    expect(COETHA_ROLE).toMatch(/waits on her Apply These Decisions card/);
+    expect(COETHA_ROLE).toMatch(/Ask at most three at a time, numbered, each with your recommended answer/);
+    expect(COETHA_ROLE).toMatch(/When she answers, remember it so you never ask again/);
+  });
 });
