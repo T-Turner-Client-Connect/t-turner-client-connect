@@ -169,7 +169,8 @@ async function recordAcceptance(
       lastVerifiedById: actor.id,
       submittedAt: f.submittedAt ?? a.acceptedAt,
       acknowledgedAt: a.acceptedAt,
-      filingReference: a.submissionId || f.filingReference,
+      // A Submission ID already on file is kept; only Tabitha may replace it with a different one.
+      filingReference: f.filingReference && a.submissionId && a.submissionId !== f.filingReference && !(await isReportApprover(actor)) ? f.filingReference : a.submissionId || f.filingReference,
     },
   });
   await audit(tx, { actorId: actor.id, action: "filing.status_staff_update", entityType: "FilingRecord", entityId: f.id, clientId: f.clientId, details: { from, to: "ACCEPTED", oneStep: true, submissionId: a.submissionId } });

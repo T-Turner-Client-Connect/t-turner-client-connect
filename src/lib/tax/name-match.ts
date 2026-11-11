@@ -80,3 +80,33 @@ export function matchByName(idx: Map<string, Set<string>>, name: string | null |
   for (const k of rowNameKeys(name)) for (const id of idx.get(k) ?? []) out.add(id);
   return [...out];
 }
+
+/** The second person on a joint row ("DOE, JOHN & JANE" or "John & Jane Doe"), as a person key. */
+export function spouseKeyOf(name: string | null | undefined): string | null {
+  const raw = (name ?? "").trim();
+  const parts = raw.split(/\s+(?:&|and)\s+|&/i);
+  if (parts.length < 2) return null;
+  const second = words(parts[1]).filter((x) => !SUFFIXES.has(x) && x !== ",");
+  if (!second.length) return null;
+  const primary = parts[0];
+  // Last name: the row's last-first surname, else the second person's own last word, else the row's last word.
+  const last = primary.includes(",") ? primary.split(",")[0] : second.length >= 2 ? second[second.length - 1] : words(raw).at(-1) ?? "";
+  return personKey(second[0], last);
+}
+
+/** True when the row names both spouses and both match this client's taxpayer and spouse. */
+export function bothSpousesMatch(c: Parameters<typeof clientNameKeys>[0], rowName: string | null | undefined): boolean {
+  const s = spouseKeyOf(rowName);
+  const mine = personKey(c.spouseFirstName, c.spouseLastName ?? c.lastName);
+  const taxpayer = personKey(c.firstName, c.lastName);
+  return !!s && !!mine && !!taxpayer && s === mine && rowNameKeys(rowName).includes(taxpayer);
+}
+
+const INDIVIDUAL_FORM = /^1040/i;
+const BUSINESS_FORM = /^(1120|1065|990|1041|706|709|5500)/i;
+/** False when the form plainly belongs to the other kind of client (a 1040 for a business record, an 1120-S for a person). */
+export function formFitsClient(returnType: string | null | undefined, clientType: string): boolean {
+  const f = (returnType ?? "").trim();
+  if (clientType === "INDIVIDUAL") return !BUSINESS_FORM.test(f);
+  return !INDIVIDUAL_FORM.test(f);
+}

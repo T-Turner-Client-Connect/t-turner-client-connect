@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { isSensitiveHeader } from "@/lib/import/fields";
-import { matchByName, nameIndex } from "@/lib/tax/name-match";
+import { bothSpousesMatch, formFitsClient, matchByName, nameIndex } from "@/lib/tax/name-match";
 import { allowedCategories, effectiveGrantsFor } from "@/lib/portal/access";
 import {
   normalizeFilingType,
@@ -275,6 +275,9 @@ type CleanTaxRow = {
   rejectionCodes: string | null;
   /** The status on file is already as new: only the missing Submission ID is saved. */
   idOnly?: boolean;
+  /** A different Submission ID already on file: kept unless Tabitha approves replacing it. */
+  refOnFile?: string | null;
+  replaceApprovedById?: string | null;
 };
 
 function cleanTaxRow(raw: Record<string, unknown>): { row: CleanTaxRow; errors: string[] } {
@@ -344,14 +347,30 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
   for (const c of clients) {
     for (const key of [c.taxSoftwareId, c.id]) if (key) byRef.set(key, [...(byRef.get(key) ?? []), c.id]);
   }
-  // No known TaxAct client ID: match by the taxpayer's or business's name. A name that fits more
-  // than one client always goes to review; it is never applied automatically.
+  // Verified client ID first. With no known ID, the taxpayer's or business's name may find the
+  // client, but it is applied automatically only when the name fits ONE client and another
+  // identifier supports it (nameSupport). Anything else goes to review; never applied on a name alone.
   const needNames = cleaned.some((c) => !(c.row.clientRef && byRef.has(c.row.clientRef)) && c.row.displayName);
   const people = needNames
-    ? await prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, firstName: true, lastName: true, spouseFirstName: true, spouseLastName: true, businessName: true } })
+    ? await prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, firstName: true, lastName: true, spouseFirstName: true, spouseLastName: true, businessName: true, clientType: true, state: true } })
     : [];
   const names = nameIndex(people);
   const nameOf = new Map(people.map((p) => [p.id, p.displayName]));
+  const person = new Map(people.map((p) => [p.id, p]));
+  /** What else (besides the name) shows this row is this client's; empty = not supported. */
+  const nameSupport = async (cid: string, r: CleanTaxRow): Promise<{ support: string[]; conflict: string | null }> => {
+    const c = person.get(cid)!;
+    if (!formFitsClient(r.returnType, c.clientType)) return { support: [], conflict: `Form ${r.returnType} doesn't fit this client's type` };
+    const support: string[] = [];
+    const [filed, prep] = await Promise.all([
+      prisma.filingRecord.count({ where: { clientId: cid, taxYear: r.taxYear! } }),
+      prisma.taxPrepCase.count({ where: { clientId: cid, taxYear: r.taxYear! } }),
+    ]);
+    if (filed || prep) support.push(`a ${r.taxYear} return is already on file for this client`);
+    if (r.jurisdiction && r.jurisdiction !== "FEDERAL" && normalizeJurisdiction(c.state ?? "") === r.jurisdiction) support.push(`the client's state on file is ${r.jurisdiction}`);
+    if (bothSpousesMatch(c, r.displayName)) support.push("both spouses' names match");
+    return { support, conflict: null };
+  };
 
   const seen = new Set<string>();
   const rows: Prisma.TaxImportRowCreateManyBatchInput[] = [];
@@ -371,7 +390,6 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
         match = "AMBIGUOUS";
         warnings.push(byName ? `"${row.displayName}" fits more than one client: ${ids.map((id) => nameOf.get(id)).join(", ")}. Choose one.` : "This ID matches more than one client.");
       } else {
-        if (byName) warnings.push(`Matched by name: ${nameOf.get(ids[0])}.`);
         clientId = ids[0];
         const key = `${clientId}|${row.taxYear}|${row.returnType}|${row.jurisdiction}|${row.filingType}`;
         const filing = await prisma.filingRecord.findUnique({
@@ -393,12 +411,23 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
           warnings.push(`Older than the status already recorded (${filing.filingStatus.toLowerCase().replace(/_/g, " ")}) — will not overwrite.`);
         } else {
           match = filing ? "MATCH" : "NEW_FILING";
-          if (filing?.filingReference && row.submissionId && filing.filingReference !== row.submissionId) warnings.push(`Replaces the Submission ID on file (${filing.filingReference}). Skip this row to keep it.`);
+          if (filing?.filingReference && row.submissionId && filing.filingReference !== row.submissionId) {
+            row.refOnFile = filing.filingReference;
+            warnings.push(`A different Submission ID is on file (${filing.filingReference}). It is kept unless Tabitha approves replacing it.`);
+          }
           if (filing && ORDER.indexOf(row.status!) < ORDER.indexOf(filing.filingStatus) && filing.filingStatus !== "REJECTED") {
             warnings.push(`Moves status back from ${filing.filingStatus.toLowerCase().replace(/_/g, " ")} — check before applying.`);
           }
         }
         seen.add(key);
+        // A name match is applied automatically only when something else supports it.
+        if (byName && (match === "MATCH" || match === "NEW_FILING")) {
+          const { support, conflict } = await nameSupport(clientId, row);
+          if (conflict || !support.length) {
+            match = "AMBIGUOUS";
+            warnings.push(`Name matches ${nameOf.get(clientId)}, but ${conflict ? conflict.toLowerCase() : "nothing else on file confirms it"}. Check and apply, or skip.`);
+          } else warnings.push(`Matched by name: ${nameOf.get(clientId)} (confirmed: ${support.join("; ")}).`);
+        }
       }
     }
     rows.push({
@@ -419,9 +448,18 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
   return batch;
 }
 
-export async function decideTaxRow(actor: Actor, rowId: string, decision: "apply" | "skip", clientId?: string) {
+export async function decideTaxRow(actor: Actor, rowId: string, decision: "apply" | "skip" | "replace_id", clientId?: string) {
   const row = await prisma.taxImportRow.findUnique({ where: { id: rowId }, include: { batch: true } });
   if (!row || row.batch.status !== "REVIEW") throw new ValidationError("This import is no longer open.");
+  if (decision === "replace_id") {
+    // Replacing a Submission ID already on file: Tabitha only.
+    if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can replace a Submission ID that is already on file.");
+    const d = row.data as unknown as CleanTaxRow;
+    if (!d.refOnFile || !row.clientId) throw new ValidationError("This row doesn't replace a Submission ID.");
+    await prisma.taxImportRow.update({ where: { id: rowId }, data: { decision: "apply", data: { ...d, replaceApprovedById: actor.id } as unknown as Prisma.InputJsonValue } });
+    await audit(prisma, { actorId: actor.id, action: "tax_import.replace_id_approved", entityType: "TaxImportRow", entityId: rowId, clientId: row.clientId, details: { from: d.refOnFile, to: d.submissionId } });
+    return;
+  }
   if (decision === "apply") {
     if (row.errors.length) throw new ValidationError("Rows with errors can only be skipped.");
     if (row.match === "STALE" || row.match === "FILTERED") throw new ValidationError("This row won't be applied (older status or not in the selected queues).");
@@ -459,7 +497,7 @@ export async function commitTaxImport(actor: Actor, batchId: string, linkClientI
         if (filing.statusAsOf && eventAt <= filing.statusAsOf) {
           if (d.submissionId && !filing.filingReference) {
             await tx.filingRecord.update({ where: { id: filing.id }, data: { filingReference: d.submissionId } });
-            await audit(tx, { actorId: actor.id, action: "filing.submission_id_imported", entityType: "FilingRecord", entityId: filing.id, clientId: r.clientId, details: { batchId } });
+            await audit(tx, { actorId: actor.id, action: "filing.submission_id_imported", entityType: "FilingRecord", entityId: filing.id, clientId: r.clientId, details: { submissionId: d.submissionId, batchId, source: batch.source, fileName: batch.fileName, rowNumber: r.rowNumber } });
             await tx.taxImportRow.update({ where: { id: r.id }, data: { applied: true, filingId: filing.id } });
             applied++;
           } else skipped++;
@@ -474,10 +512,15 @@ export async function commitTaxImport(actor: Actor, batchId: string, linkClientI
             lastVerifiedAt: new Date(),
             submittedAt: d.submittedAt ? new Date(d.submittedAt) : filing.submittedAt,
             acknowledgedAt: d.status === "ACCEPTED" || d.status === "REJECTED" ? eventAt : filing.acknowledgedAt,
-            filingReference: d.submissionId ?? filing.filingReference,
+            // Each return (federal, each state) keeps its own ID. One already on file is never
+            // replaced without Tabitha's approval.
+            filingReference: !filing.filingReference ? d.submissionId ?? null : d.replaceApprovedById && d.submissionId ? d.submissionId : filing.filingReference,
             rejectionCodes: d.status === "REJECTED" ? d.rejectionCodes : filing.rejectionCodes,
           },
         });
+        if (filing.filingReference && d.replaceApprovedById && d.submissionId && d.submissionId !== filing.filingReference) {
+          await audit(tx, { actorId: actor.id, action: "filing.submission_id_replaced", entityType: "FilingRecord", entityId: filing.id, clientId: r.clientId, details: { from: filing.filingReference, to: d.submissionId, approvedById: d.replaceApprovedById, batchId, source: batch.source, fileName: batch.fileName, rowNumber: r.rowNumber } });
+        }
         await tx.filingStatusEvent.create({
           data: { filingId: filing.id, field: "FILING", fromValue: filing.filingStatus, toValue: d.status!, source: "TAXACT_IMPORT", actorId: actor.id, importBatchId: batchId, eventAt },
         });
