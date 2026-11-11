@@ -78,7 +78,7 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(recordsBlock.cache_control).toEqual({ type: "ephemeral" });
     // A staff member asking: read-only searches of this business, and the monthly checklist (clearing
     // a line is checked against the person asking).
-    expect((sent[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist", "add_bank_activity"]);
+    expect((sent[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist", "add_bank_activity", "prepare_financial_statements"]);
     expect(sent[0].messages).toEqual([{ role: "user", content: "What is the Office Depot charge?" }]);
 
     await askCoetha(s.tabitha, s.vessel.id, "And the ATM withdrawal?", today);
@@ -257,8 +257,15 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(q).toMatchObject({ role: "USER", status: "WAITING", text: "Is the Office Depot charge posted?" });
     expect(await prisma.auditLog.count({ where: { action: "coetha.chat_queued", entityId: q.id } })).toBe(1);
 
+    // While the service is cooling down, nothing is sent at all.
+    expect(await prisma.jobLock.count({ where: { name: "coetha-cooldown", lockedUntil: { gt: new Date() } } })).toBe(1);
+    const before = sent.length;
+    await workOnce({ clientId: s.vessel.id });
+    expect(sent.length).toBe(before);
+    await prisma.jobLock.deleteMany({ where: { name: "coetha-cooldown" } });
     // The background worker tries; still busy: it stays waiting and isn't retried within the minute.
     await workOnce({ clientId: s.vessel.id });
+    await prisma.jobLock.deleteMany({ where: { name: "coetha-cooldown" } });
     expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: q.id } })).status).toBe("WAITING");
     const calls = sent.length;
     await workOnce({ clientId: s.vessel.id });
@@ -266,6 +273,7 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
 
     // A minute later the service answers: the reply is placed right after the question, with her tools.
     await prisma.auditLog.updateMany({ where: { action: "coetha.answer_attempt", entityId: q.id }, data: { createdAt: new Date(Date.now() - 2 * 60_000) } });
+    await prisma.jobLock.deleteMany({ where: { name: "coetha-cooldown" } });
     mode = "ok";
     await workOnce({ clientId: s.vessel.id });
     expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: q.id } })).status).toBe("ANSWERED");
@@ -281,12 +289,13 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     const { workOnce } = await import("@/lib/services/coetha-reading");
     mode = "busy";
     const r = await askCoetha(s.tabitha, s.vessel.id, "Anything waiting?", today);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 18; i++) {
       await prisma.auditLog.updateMany({ where: { action: "coetha.answer_attempt", entityId: r.questionId }, data: { createdAt: new Date(Date.now() - 2 * 60_000) } });
+      await prisma.jobLock.deleteMany({ where: { name: "coetha-cooldown" } });
       await workOnce({ clientId: s.vessel.id });
     }
     expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: r.questionId } })).status).toBe("FAILED");
-    expect(await prisma.auditLog.count({ where: { action: "coetha.answer_attempt", entityId: r.questionId } })).toBe(6);
+    expect(await prisma.auditLog.count({ where: { action: "coetha.answer_attempt", entityId: r.questionId } })).toBe(15);
   });
 });
 

@@ -10,7 +10,7 @@ import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { recordHeading } from "@/lib/services/related-businesses";
 import {
-  classifyDocumentAction, coethaLinkAction, deliverApprovedAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
+  classifyDocumentAction, coethaLinkAction, deliverApprovedAction, prepareStatementsAction, reportStepAction, requestChangesAction, saveBookkeepingProfileAction, uploadBookkeepingFileAction, uploadMonthlyFinancialsAction,
 } from "@/app/actions/bookkeeping-clients";
 import { releaseInterimAction, revokeInterimAction, taxClassificationAction } from "@/app/actions/bk-workflow";
 import { clientInterimStatements } from "@/lib/services/client-statements";
@@ -107,6 +107,10 @@ export default async function StatementsPage({ params, searchParams }: { params:
       {/* Statements awaiting Tabitha */}
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="statements-approval">
         <h2 className={h2}><BadgeCheck className="size-5 text-gold-600" aria-hidden /> Financial statements {waitingTabitha.length > 0 && <span className="rounded-full bg-gold-100 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-800">{waitingTabitha.length} awaiting Tabitha</span>}</h2>
+        <ActionForm action={prepareStatementsAction.bind(null, clientId, `${target.year}-${String(target.month).padStart(2, "0")}`)} className="mt-2" confirm={`Build the ${label} Profit & Loss and Balance Sheet from the books and save them as drafts for Tabitha's approval?`}>
+          <button type="submit" className={navyBtn} data-testid="prepare-from-books">Prepare P&amp;L &amp; Balance Sheet from the books</button>
+          <span className="ml-2 text-xs text-slate-600">Built from the posted entries; a new version replaces an older draft. Coetha can do this too in Ask Coetha.</span>
+        </ActionForm>
         {!period ? <p className="mt-2 text-sm text-slate-600">No statements yet for {label}.</p> : !reports.length ? <p className="mt-2 text-sm text-slate-600">No statements uploaded for {label} yet.</p> : (
           <ul className="mt-2 divide-y divide-ivory-200" data-testid="reports">
             {reports.map((d) => {
