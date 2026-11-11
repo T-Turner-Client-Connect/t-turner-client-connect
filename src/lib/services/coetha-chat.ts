@@ -178,12 +178,17 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
   const { PREPARE_TOOL, runPrepareTool } = await import("./coetha-decisions");
   const { MEMORY_TOOLS, runMemoryTool } = await import("./coetha-memory");
   const memoryNames = new Set(MEMORY_TOOLS.map((t) => t.name));
+  // Ask Client drafts: for anyone who may send this business requests (drafts only; never sent from chat).
+  const { ASK_CLIENT_TOOL, runAskClientTool } = await import("./ask-client");
+  const { canSendClientRequests } = await import("./bk-permissions");
+  const asks = await canSendClientRequests(actor, clientId);
   return {
-    defs: owner ? [...RECORDS_TOOLS, PREPARE_TOOL, ...MEMORY_TOOLS] : RECORDS_TOOLS,
+    defs: [...RECORDS_TOOLS, ...(owner ? [PREPARE_TOOL, ...MEMORY_TOOLS] : []), ...(asks ? [ASK_CLIENT_TOOL] : [])],
     run: (name: string, input: unknown) =>
       owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
         : owner && memoryNames.has(name) ? runMemoryTool(actor, clientId, name, input)
-          : runRecordsTool(clientId, name, input),
+          : asks && name === ASK_CLIENT_TOOL.name ? runAskClientTool(actor, clientId, input)
+            : runRecordsTool(clientId, name, input),
     records,
     asker: owner ? ("owner" as const) : ("staff" as const),
   };
