@@ -45,7 +45,6 @@ import {
   Banknote,
   FileSignature,
   MailQuestionMark,
-  FolderArchive,
 } from "lucide-react";
 
 const LINKS = [
@@ -113,8 +112,7 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
     { href: base, label: "Client Overview", icon: LayoutGrid, active: pathname === base },
     { href: `/clients/${id}?tab=overview`, label: "Client Profile", icon: Users, active: false },
     { href: `${base}/coetha`, label: "Coetha AI", icon: Sparkles, active: pathname === `${base}/coetha` },
-    { href: `${base}/ask-client`, label: "Ask Client", icon: MailQuestionMark, active: pathname === `${base}/ask-client` },
-    { href: `${base}/audit-file`, label: "Audit File", icon: FolderArchive, active: pathname === `${base}/audit-file` },
+    { href: `${base}/ask-client`, label: "Ask Client & Audit File", icon: MailQuestionMark, active: pathname === `${base}/ask-client` || pathname === `${base}/audit-file` },
     { href: base, label: "Bookkeeping Management", icon: ClipboardList, active: false },
     { href: `${base}/banking`, label: "Banking & Reconciliation", icon: Building2, active: pathname.startsWith(`${base}/banking`) || (pathname === `${base}/books` && tab === "bank") },
     { href: `${base}/records`, label: "Historical Records", icon: History, active: pathname === `${base}/records` },

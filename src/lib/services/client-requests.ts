@@ -158,6 +158,8 @@ export type RequestInput = {
   dueAt?: Date | null;
   periodId?: string | null;
   draftKey?: string | null;
+  /** An Ask Client item (held until Tabitha authorizes client communications). */
+  askClient?: boolean;
   /** Coetha's routing signals (see classifyRequest). */
   routingHints?: Omit<RoutingInput, "kind" | "docType" | "bookkeepingAccountId" | "accountType">;
 };
@@ -204,15 +206,16 @@ export async function createClientRequest(actor: Actor | null, clientId: string,
   if (!createdById) throw new ValidationError("No staff account to record the request under.");
   // Coetha's requests carry an explicit routing; staff requests are the staff member's own decision.
   const routing = source === "COETHA" ? classifyRequest({ kind: input.kind, docType: input.docType, bookkeepingAccountId: input.bookkeepingAccountId, accountType: acct?.accountType ?? null, ...input.routingHints, evidence: [input.routingHints?.evidence, input.instructions].filter(Boolean).join(" ") || null }) : null;
-  // Supporting-document requests (Ask Client) never reach the client before Tabitha authorizes client communications.
-  const held = input.kind === "SUPPORTING" && !(await clientRolloutAuthorized());
+  // Ask Client items never reach the client before Tabitha authorizes client communications.
+  // The office's other requests (including supporting requests) work as before.
+  const held = !!input.askClient && !(await clientRolloutAuthorized());
   const send = (opts.send ?? !!actor) && routing?.routing !== "REVIEW" && !held;
   const req = await prisma.documentRequest.create({
     data: {
       clientId, title, reason: input.reason?.trim().slice(0, 500) || null, instructions: input.instructions?.trim().slice(0, 1000) || null,
       kind: input.kind, docType: input.docType ?? null, bookkeepingAccountId: input.bookkeepingAccountId ?? null,
       periodStart: input.start ? toDate(input.start) : null, periodEnd: input.end ? toDate(input.end) : null, taxYear: input.taxYear ?? null,
-      dueAt: input.dueAt ?? null, periodId: input.periodId ?? null, category: "CLIENT_UPLOADS", source, draftKey: input.draftKey ?? null,
+      dueAt: input.dueAt ?? null, periodId: input.periodId ?? null, category: "CLIENT_UPLOADS", source, draftKey: input.draftKey ?? null, askClient: !!input.askClient,
       status: send ? "OPEN" : "DRAFT", sentAt: send ? new Date() : null, sentById: send ? actor?.id ?? null : null, createdById,
       routing: routing?.routing ?? null, routingReason: routing?.reason ?? null,
     },
@@ -229,7 +232,7 @@ export async function sendClientRequest(actor: Actor | null, clientId: string, r
   if (!draft) throw new ValidationError("Only a draft request can be sent.");
   // Unusual, sensitive or unclear requests: only Tabitha sends them, never Coetha on her own.
   if (draft.routing === "REVIEW" && !(actor && (await canApproveCoethaWork(actor)))) throw new ForbiddenError("Tabitha reviews this request before it goes to the client.");
-  if (draft.kind === "SUPPORTING" && !(await clientRolloutAuthorized())) throw new ValidationError("Client communications are on hold. Nothing goes to the client until Tabitha authorizes client communications and rollout in the Owner's Office.");
+  if (draft.askClient && !(await clientRolloutAuthorized())) throw new ValidationError("Client communications are on hold. Nothing goes to the client until Tabitha authorizes client communications and rollout in the Owner's Office.");
   if (!actor) {
     // Coetha never sends anything on her own for a client who prefers no Coetha.
     await assertCoethaAllowed(clientId);

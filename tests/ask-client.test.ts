@@ -72,11 +72,18 @@ describe("Ask Client: prepare, review and hold until Tabitha authorizes client c
     // Sending is refused until client communications are authorized: no portal notice, no email, nothing visible.
     await expect(sendAskItems(s.tabitha, s.biz.id, v.drafts.map((d) => d.id))).rejects.toThrow(ASK_CLIENT_ON_HOLD);
     await expect(sendClientRequest(s.tabitha, s.biz.id, added.request!.id)).rejects.toThrow("Client communications are on hold");
-    // Any other path that would send a supporting request keeps it as a draft.
-    const direct = await createClientRequest(s.tabitha, s.biz.id, { kind: "SUPPORTING", title: "Explain the transfer on May 5, 2026" }, { send: true });
+    // Any other path that would send an Ask Client item keeps it as a draft.
+    const direct = await createClientRequest(s.tabitha, s.biz.id, { kind: "SUPPORTING", title: "Explain the transfer on May 5, 2026", askClient: true }, { send: true });
     expect(direct.request!.status).toBe("DRAFT");
     expect(await notices(s.portal.id)).toBe(0);
     expect(await prisma.documentRequest.count({ where: { clientId: s.biz.id, status: "OPEN" } })).toBe(0);
+
+    // The office's existing requests are NOT held: an ordinary supporting request still goes out at once,
+    // and it never appears on the Ask Client list.
+    const office = await createClientRequest(s.tabitha, s.biz.id, { kind: "SUPPORTING", title: "Receipts for October purchases" }, { send: true });
+    expect(office.request).toMatchObject({ status: "OPEN", askClient: false });
+    expect(await notices(s.portal.id)).toBeGreaterThan(0);
+    expect((await askClientView(s.tabitha, s.biz.id)).waiting).toHaveLength(0);
 
     // Someone without access to this business can't see or change the list.
     await expect(askClientView(s.outsider, s.biz.id)).rejects.toBeInstanceOf(ForbiddenError);

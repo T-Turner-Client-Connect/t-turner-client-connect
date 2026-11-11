@@ -217,8 +217,6 @@ describe("request routing: routine requests go out on their own, the rest wait f
 
   it("unusual or sensitive requests wait for Tabitha; staff can't send them; with the switch off routine ones wait for staff", async () => {
     const w = await world();
-    // Supporting requests reach a client only after Tabitha authorizes client communications (tested in ask-client.test.ts).
-    await setOwnerSwitch(w.tabitha, "clientRollout", true);
     const chk = await registerAccount(w.daria, w.biz.id, { institution: "Pretend National Bank", accountType: "CHECKING", last4: "0042", gl: "NEW" });
     const conn = await connect(w, w.biz.id);
     await monitorConnectionAccount(w.daria, w.biz.id, conn.accounts[0].id, chk.id);

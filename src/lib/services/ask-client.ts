@@ -50,7 +50,7 @@ const dueDate = (v: string | null | undefined) => {
 };
 
 async function itemOf(clientId: string, requestId: string) {
-  const r = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, kind: "SUPPORTING" } });
+  const r = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, kind: "SUPPORTING", askClient: true } });
   if (!r) throw new ValidationError("That request isn't on this business's Ask Client list.");
   return r;
 }
@@ -68,7 +68,7 @@ export async function addAskItem(actor: Actor, clientId: string, input: AskItemI
     {
       kind: "SUPPORTING", title, reason: clean(input.reason, 500), instructions: clean(input.instructions, 1000),
       dueAt: dueDate(input.dueAt), bookkeepingAccountId: input.bookkeepingAccountId || null,
-      start: input.start || null, end: input.end || null, draftKey,
+      start: input.start || null, end: input.end || null, draftKey, askClient: true,
     },
     { send: false, source },
   );
@@ -103,7 +103,7 @@ export async function removeAskItem(actor: Actor, clientId: string, requestId: s
 export async function sendAskItems(actor: Actor, clientId: string, requestIds: string[]) {
   await assertCanSendClientRequests(actor, clientId);
   if (!(await clientRolloutAuthorized())) throw new ValidationError(ASK_CLIENT_ON_HOLD);
-  const drafts = await prisma.documentRequest.findMany({ where: { id: { in: requestIds }, clientId, kind: "SUPPORTING", status: "DRAFT" }, select: { id: true } });
+  const drafts = await prisma.documentRequest.findMany({ where: { id: { in: requestIds }, clientId, kind: "SUPPORTING", askClient: true, status: "DRAFT" }, select: { id: true } });
   if (!drafts.length) throw new ValidationError("Choose at least one draft to send.");
   for (const d of drafts) await sendClientRequest(actor, clientId, d.id);
   return drafts.length;
@@ -113,7 +113,7 @@ export async function sendAskItems(actor: Actor, clientId: string, requestIds: s
 export async function askClientView(actor: Actor, clientId: string) {
   await assertCanSendClientRequests(actor, clientId);
   const items = await prisma.documentRequest.findMany({
-    where: { clientId, kind: "SUPPORTING", status: { not: "CANCELLED" } },
+    where: { clientId, kind: "SUPPORTING", askClient: true, status: { not: "CANCELLED" } },
     orderBy: [{ createdAt: "asc" }],
     include: {
       bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } },
@@ -181,7 +181,7 @@ export async function portalAskLetterPdf(user: PortalActor, clientId: string) {
 
 async function letterFor(clientId: string, statuses: ("DRAFT" | "OPEN")[], requestIds?: string[]) {
   const items = await prisma.documentRequest.findMany({
-    where: { clientId, kind: "SUPPORTING", status: { in: statuses }, ...(requestIds?.length ? { id: { in: requestIds } } : {}) },
+    where: { clientId, kind: "SUPPORTING", askClient: true, status: { in: statuses }, ...(requestIds?.length ? { id: { in: requestIds } } : {}) },
     orderBy: { createdAt: "asc" },
     include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } },
   });
@@ -204,7 +204,7 @@ export async function portalExplainRequest(user: PortalActor, clientId: string, 
   const access = await requireClientAccess(user.id, clientId);
   const explanation = text.trim().slice(0, MAX_EXPLANATION);
   if (explanation.length < 2) throw new ValidationError("Write your explanation first.");
-  const r = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, kind: "SUPPORTING" } });
+  const r = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, kind: "SUPPORTING", askClient: true } });
   if (!r || (r.status !== "OPEN" && r.status !== "SUBMITTED")) throw new ValidationError("That request is closed.");
   if (r.periodId && !access.canViewBookkeeping) throw new ValidationError("Your access to this account doesn't include that.");
   await prisma.documentRequest.update({ where: { id: r.id }, data: { clientExplanation: explanation, explainedAt: new Date(), explainedByPortalId: user.id, status: "SUBMITTED" } });
@@ -218,8 +218,8 @@ export async function portalExplainRequest(user: PortalActor, clientId: string, 
  */
 export async function queueClientResponseReading(documentId: string) {
   try {
-    const doc = await prisma.document.findUnique({ where: { id: documentId }, select: { id: true, clientId: true, title: true, scanStatus: true, request: { select: { kind: true, createdById: true } }, file: { select: { mimeType: true, originalName: true } } } });
-    if (!doc?.request || doc.request.kind !== "SUPPORTING" || doc.scanStatus === "INFECTED") return null;
+    const doc = await prisma.document.findUnique({ where: { id: documentId }, select: { id: true, clientId: true, title: true, scanStatus: true, request: { select: { askClient: true, createdById: true } }, file: { select: { mimeType: true, originalName: true } } } });
+    if (!doc?.request || !doc.request.askClient || doc.scanStatus === "INFECTED") return null;
     if (!doc.file || !/^(application\/pdf|image\/(png|jpeg|gif|webp))$/.test(doc.file.mimeType)) return null;
     if (!(await prisma.ledgerBook.findUnique({ where: { clientId: doc.clientId }, select: { clientId: true } }))) return null;
     const { coethaOn } = await import("./owner-switches");
@@ -236,7 +236,7 @@ export async function queueClientResponseReading(documentId: string) {
 /** For Coetha's records: what clients answered on supporting requests (evidence only). */
 export async function clientResponsesForCoetha(clientId: string) {
   const rows = await prisma.documentRequest.findMany({
-    where: { clientId, kind: "SUPPORTING", status: { in: ["SUBMITTED", "ACCEPTED"] } },
+    where: { clientId, askClient: true, status: { in: ["SUBMITTED", "ACCEPTED"] } },
     orderBy: { updatedAt: "desc" },
     take: 40,
     select: { id: true, title: true, reason: true, clientExplanation: true, explainedAt: true, documents: { where: { deletedAt: null }, select: { title: true } } },

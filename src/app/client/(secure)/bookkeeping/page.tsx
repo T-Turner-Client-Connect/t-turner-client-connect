@@ -79,7 +79,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       </ActionForm>
       </PreviewDisabled>
     ) : null;
-  type Req = { id: string; title: string; instructions: string | null; reason: string | null; dueAt: Date | null; status: string; kind: string; clientExplanation: string | null; docType: string | null; periodStart: Date | null; periodEnd: Date | null; bookkeepingAccount: { institution: string; nickname: string | null; last4: string | null; accountType: string } | null };
+  type Req = { id: string; title: string; instructions: string | null; reason: string | null; dueAt: Date | null; status: string; askClient: boolean; clientExplanation: string | null; docType: string | null; periodStart: Date | null; periodEnd: Date | null; bookkeepingAccount: { institution: string; nickname: string | null; last4: string | null; accountType: string } | null };
   // Ask Client: a supporting request is answered with the file, or with a written explanation.
   const explain = (r: Req) =>
     current.canUpload ? (
@@ -102,7 +102,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       {(r.bookkeepingAccount || r.periodStart) && <p className="text-xs text-slate-600">{r.bookkeepingAccount ? `Account: ${registryLabel(r.bookkeepingAccount)}` : ""}{r.bookkeepingAccount && r.periodStart ? " · " : ""}{r.periodStart ? `Period: ${rangeText(r)}` : ""}</p>}
       {r.reason && <p className="text-slate-600">{r.reason}</p>}
       {r.instructions && <p className="text-slate-600">{r.instructions}</p>}
-      {r.kind === "SUPPORTING" && (r.status === "OPEN" || r.status === "SUBMITTED")
+      {r.askClient && (r.status === "OPEN" || r.status === "SUBMITTED")
         ? <>{linkedUpload(r.id, `Upload for ${r.title}`)}{explain(r)}</>
         : r.status === "OPEN" && (r.docType ? linkedUpload(r.id, `Upload for ${r.title}`) : upload(r.id, periodId, `Upload for ${r.title}`, period?.year, period?.month))}
     </li>
@@ -113,7 +113,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       <PageHeader title="Bookkeeping & requests" subtitle={<span data-testid="bk-business">Checklist, reports and questions for <strong>{current.client.businessName || current.client.displayName}</strong> only.</span>} />
       {looseRequests.length > 0 && (
         <Card title="Documents we need" className="mb-4">
-          {looseRequests.some((r) => r.kind === "SUPPORTING" && r.status === "OPEN") && (
+          {looseRequests.some((r) => r.askClient && r.status === "OPEN") && (
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b-2 border-gold-500 pb-3" data-testid="ask-letterhead">
               <div>
                 <p className="font-serif text-base font-bold text-navy-900">{BK_PORTAL_COETHA_V1.letterhead.name}</p>
