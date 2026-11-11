@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import type { Actor } from "@/lib/auth/actor";
+import { ForbiddenError, type Actor } from "@/lib/auth/actor";
 import { CHAT_FILE_TYPES, callCoethaChat, CoethaModelError, coethaKeyPresent, type CoethaChatTurn } from "@/lib/coetha-model";
 import { ValidationError } from "./clients";
 import { assertLedger, assertManagedBusiness, bookOf } from "./ledger";
@@ -202,13 +202,24 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
   // The Monthly Progress checklist: everyone may read it; clearing a paperwork line is checked
   // against the person asking (the same people who handle the business's document requests).
   const { CHECKLIST_TOOLS, CHECKLIST_TOOL_NAMES, runChecklistTool } = await import("./coetha-checklist");
+  // Day-to-day bank activity read from what was sent (checked to the cent; nothing posted). The
+  // person asking must be allowed to import bank transactions for this business.
+  const { BANK_ACTIVITY_TOOL, addBankActivity } = await import("./coetha-bank-activity");
+  const enterActivity = async (input: unknown) => {
+    try {
+      return await addBankActivity(actor, clientId, (input && typeof input === "object" ? input : {}) as Record<string, unknown>);
+    } catch (err) {
+      return { entered: false, problem: err instanceof ForbiddenError || err instanceof ValidationError ? err.message : "The transactions couldn't be entered." };
+    }
+  };
   return {
-    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, PREPARE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS],
+    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, PREPARE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL],
     run: (name: string, input: unknown) =>
       owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
         : owner && memoryNames.has(name) ? runMemoryTool(actor, clientId, name, input)
           : asks && name === ASK_CLIENT_TOOL.name ? runAskClientTool(actor, clientId, input)
             : CHECKLIST_TOOL_NAMES.has(name) ? runChecklistTool(actor, clientId, name, input)
+              : name === BANK_ACTIVITY_TOOL.name ? enterActivity(input)
               : runRecordsTool(clientId, name, input),
     records,
     asker: owner ? ("owner" as const) : ("staff" as const),
