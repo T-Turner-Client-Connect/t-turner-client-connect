@@ -89,8 +89,8 @@ export function PayrollImport({ clientId, defaultPreset, bankAccounts }: { clien
   return (
     <div className="space-y-4" data-testid="payroll-import">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Field label="Payroll register (CSV or .xlsx)">
-          <input ref={fileRef} type="file" accept=".csv,.xlsx,text/csv" className="input" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); }} />
+        <Field label="Payroll register (PDF, CSV or .xlsx)">
+          <input ref={fileRef} type="file" accept=".pdf,.csv,.xlsx,application/pdf,text/csv" className="input" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); }} />
         </Field>
         <Field label="Layout">
           <select className="input" value={preset} onChange={(e) => setPreset(e.target.value)}>

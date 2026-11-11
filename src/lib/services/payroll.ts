@@ -93,7 +93,24 @@ export async function readGrid(bytes: Uint8Array, fileName: string): Promise<str
     }
   }
   if (/\.csv$/i.test(fileName)) return parseCsv(new TextDecoder("utf-8").decode(bytes));
-  throw new ValidationError("Upload the payroll register as CSV or Excel (.xlsx). Older .xls files: open in Excel and save as .xlsx.");
+  throw new ValidationError("Upload the payroll register as PDF, CSV or Excel (.xlsx). Older .xls files: open in Excel and save as .xlsx.");
+}
+
+/**
+ * The register's rows: CSV/Excel as exported, or a PDF register (ADP RUN's usual export) read by
+ * Coetha into the same rows with a fixed column mapping. Everything after this is the same importer.
+ */
+async function registerRows(actor: Actor, clientId: string, input: { bytes: Uint8Array; fileName: string; preset: PayrollPreset; mapping?: Mapping | null; headerRow?: number | null }) {
+  const { isPdfFile, PDF_MAPPING, PayrollPdfError, readPayrollPdf } = await import("@/lib/payroll/pdf-register");
+  if (!isPdfFile(input.bytes, input.fileName)) return { grid: await readGrid(input.bytes, input.fileName), preset: input.preset, mapping: input.mapping ?? null, headerRow: input.headerRow ?? null };
+  if (!input.bytes.length) throw new ValidationError("The file is empty.");
+  if (input.bytes.length > MAX_PAYROLL_FILE) throw new ValidationError("That file is larger than 5 MB. Export one pay period or quarter at a time.");
+  try {
+    return { grid: await readPayrollPdf(actor, clientId, input.bytes), preset: "OTHER" as PayrollPreset, mapping: PDF_MAPPING, headerRow: 0 };
+  } catch (e) {
+    if (e instanceof PayrollPdfError) throw new ValidationError(e.message);
+    throw e;
+  }
 }
 
 const presetOf = (p: string | null | undefined): PayrollPreset => (p && p in PAYROLL_PRESETS ? (p as PayrollPreset) : "OTHER");
@@ -116,9 +133,11 @@ export async function previewPayrollImport(actor: Actor, clientId: string, input
   await assertStaff(actor);
   await assertPayrollWork(actor, clientId);
   const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId } });
-  const preset = presetOf(input.preset);
-  const provider = providerOf(preset, profile?.payrollSystem);
-  const grid = await readGrid(input.bytes, input.fileName);
+  const chosen = presetOf(input.preset);
+  const provider = providerOf(chosen, profile?.payrollSystem);
+  const file = await registerRows(actor, clientId, { bytes: input.bytes, fileName: input.fileName, preset: chosen, mapping: input.mapping, headerRow: input.headerRow });
+  const { grid, preset } = file;
+  input = { ...input, mapping: file.mapping, headerRow: file.headerRow };
   let head;
   try {
     head = headersOf(grid, preset, input.headerRow);
@@ -250,10 +269,10 @@ export async function importPayrollRegister(actor: Actor, clientId: string, inpu
   await assertPayrollWork(actor, clientId);
   const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId } });
   if (!profile?.payroll) throw new ValidationError("Turn on payroll for this client first.");
-  const preset = presetOf(input.preset);
-  const provider = providerOf(preset, profile.payrollSystem);
-  const grid = await readGrid(input.bytes, input.fileName);
-  const r = parse(grid, { preset, mapping: input.mapping, defaultCheckDate: input.defaultCheckDate, headerRow: input.headerRow });
+  const chosen = presetOf(input.preset);
+  const provider = providerOf(chosen, profile.payrollSystem);
+  const file = await registerRows(actor, clientId, { bytes: input.bytes, fileName: input.fileName, preset: chosen, mapping: input.mapping, headerRow: input.headerRow });
+  const r = parse(file.grid, { preset: file.preset, mapping: file.mapping, defaultCheckDate: input.defaultCheckDate, headerRow: file.headerRow });
   if (input.cashAccountId && !(await prisma.ledgerAccount.count({ where: { id: input.cashAccountId, clientId, subtype: "BANK" } }))) throw new ValidationError("Choose one of this client's bank accounts.");
   const sha = createHash("sha256").update(input.bytes).digest("hex");
   const last = r.payDates.at(-1)!.checkDate;

@@ -61,3 +61,14 @@ export const RUN_STATUS = {
 
 export const NOTIFY_CHANNELS = { EMAIL: "Email", SMS: "Text", BOTH: "Text and email" } as const;
 export type NotifyChannel = keyof typeof NOTIFY_CHANNELS;
+
+/**
+ * Each provider's own sign-in page, opened in a new tab from the client's payroll section so staff
+ * can download the register without leaving Client Connect. Client Connect never signs in for them.
+ */
+export const PAYROLL_PROVIDER_LOGIN: Partial<Record<PayrollSystem, { label: string; url: string }>> = {
+  ADP_RUN: { label: "Open ADP RUN", url: "https://runpayroll.adp.com/" },
+  ADP_WFN: { label: "Open ADP Workforce Now", url: "https://workforcenow.adp.com/" },
+  PAYCHEX_FLEX: { label: "Open Paychex Flex", url: "https://myapps.paychex.com/" },
+  GUSTO: { label: "Open Gusto", url: "https://app.gusto.com/" },
+};
