@@ -73,6 +73,8 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
   const statementAccounts = (await canManageBanking(user, clientId))
     ? (await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null }, orderBy: { createdAt: "asc" } })).filter((a) => reconciles(a.accountType)).map((a) => ({ id: a.id, label: registryLabel(a) }))
     : [];
+  // A business that runs payroll: its payroll report (e.g. the ADP register) can be filed to a month here too.
+  const runsPayroll = statementAccounts.length > 0 && !!(await prisma.bookkeepingProfile.findUnique({ where: { clientId }, select: { payroll: true } }))?.payroll;
   const lm = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - 1, 1));
   const lastMonth = sp.month ?? `${lm.getUTCFullYear()}-${String(lm.getUTCMonth() + 1).padStart(2, "0")}`;
   const chatHref = (key: string, all = false) => `${base}/coetha/ask?chat=${encodeURIComponent(key)}${all ? "&all=1" : ""}`;
@@ -142,7 +144,7 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
                 <div className="mt-1 grid gap-2 sm:grid-cols-[1fr_auto]">
                   <textarea id="coetha-question" name="question" maxLength={MAX_QUESTION} rows={2} className="w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-base text-navy-900 focus:border-gold-500 focus:outline-none focus:ring-2 focus:ring-gold-300" placeholder="Ask a question, or upload files and Coetha will read them" data-testid="coetha-chat-input" />
                   <div className="flex flex-col gap-2 sm:w-48">
-                    <CoethaUploadButton clientId={clientId} accounts={statementAccounts} defaultMonth={lastMonth} />
+                    <CoethaUploadButton clientId={clientId} accounts={statementAccounts} defaultMonth={lastMonth} payroll={runsPayroll} />
                     <button type="submit" className="group inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-2 text-sm font-semibold text-navy-950 shadow hover:to-gold-600 disabled:opacity-70" data-testid="coetha-chat-send">
                       <Sparkles className="size-4" aria-hidden />
                       <span className="group-disabled:hidden">Ask Coetha</span>

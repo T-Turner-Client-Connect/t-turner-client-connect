@@ -23,7 +23,9 @@ export async function POST(req: Request) {
       // Optional: the file is a bank or card statement for this account and month.
       const accountId = String(fd.get("accountId") ?? "");
       const month = String(fd.get("month") ?? "");
-      const r = await finishUpload(actor, String(fd.get("uploadId") ?? ""), { statement: accountId ? { accountId, month } : null });
+      // Or: a payroll report (e.g. the ADP register) for this month.
+      const payroll = String(fd.get("payroll") ?? "") === "1";
+      const r = await finishUpload(actor, String(fd.get("uploadId") ?? ""), { statement: accountId && !payroll ? { accountId, month } : null, payrollMonth: payroll ? month : null });
       await kickBackgroundReading();
       return Response.json(r);
     }

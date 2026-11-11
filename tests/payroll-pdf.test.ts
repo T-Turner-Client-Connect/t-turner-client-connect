@@ -7,7 +7,7 @@ import { setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { setCoethaOptOut } from "@/lib/services/coetha-opt-out";
 import { importPayrollRegister, previewPayrollImport } from "@/lib/services/payroll";
-import { gridFromReading, payrollText } from "@/lib/payroll/pdf-register";
+import { gridFromReading, mergeReadings, pageChunks, payrollText } from "@/lib/payroll/pdf-register";
 import { PAYROLL_PROVIDER_LOGIN } from "@/lib/payroll/fields";
 
 // A fictional ADP RUN payroll register PDF. Fictional business, people and figures only. The AI
@@ -117,5 +117,54 @@ describe("ADP payroll register as a PDF", () => {
     expect(grid).toHaveLength(3);
     expect(grid.slice(1).map((r) => r[11])).toEqual(["290.40", "0.00"]);
     expect(PAYROLL_PROVIDER_LOGIN.ADP_RUN?.url).toBe("https://runpayroll.adp.com/");
+  });
+
+  it("a long register is read in parts (whole pages) at the same time and joined by check date, still held to its printed totals", async () => {
+    const page = (n: number, len: number) => Array.from({ length: len }, (_, i) => `p${n} line ${i}`);
+    const parts = pageChunks([page(1, 40), page(2, 40), [], page(3, 10), page(4, 90)]);
+    expect(parts.map((c) => c.length)).toEqual([40, 50, 90]);
+
+    const base = READING.payDates[0];
+    const merged = mergeReadings([
+      { payDates: [{ ...base, employees: [base.employees[0]], employerTaxes: 0, printedTotals: { gross: null, netPay: null } }] },
+      { payDates: [{ ...base, employees: [base.employees[1]], employerTaxes: 290.4, printedTotals: { gross: 2800, netPay: 2207.8 } }] },
+    ]);
+    expect(merged.payDates).toHaveLength(1);
+    expect(merged.payDates[0].employees.map((e) => e.name)).toEqual(["Avery Example", "Blake Example"]);
+    expect(merged.payDates[0]).toMatchObject({ employerTaxes: 290.4, printedTotals: { gross: 2800, netPay: 2207.8 } });
+    expect(gridFromReading(merged)).toHaveLength(3);
+    // Parts that print different totals for the same date are refused, not guessed.
+    expect(() => mergeReadings([
+      { payDates: [{ ...base, printedTotals: { gross: 2800, netPay: null } }] },
+      { payDates: [{ ...base, employees: [], printedTotals: { gross: 2900, netPay: null } }] },
+    ])).toThrow(/two different totals/);
+
+    // End to end: a multi-page PDF is read in more than one request and imports as one pay date.
+    const s = await setup();
+    const filler = Array.from({ length: 34 }, (_, i) => `Employee detail line ${i}`);
+    const doc = await PDFDocument.create();
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    for (const lines of [[...REGISTER.slice(0, 3), ...filler, ...filler.slice(0, 2)], [...REGISTER.slice(3), ...filler, ...filler.slice(0, 2)], [...filler, "end"]]) {
+      const pg = doc.addPage([792, 612]);
+      lines.forEach((l, i) => pg.drawText(l, { x: 20, y: 600 - i * 15, size: 7, font }));
+    }
+    const answers = [
+      { payDates: [{ ...base, employees: [base.employees[0]], employerTaxes: 0, printedTotals: { gross: null, netPay: null } }] },
+      { payDates: [{ ...base, employees: [base.employees[1]], employerTaxes: 290.4, printedTotals: { gross: 2800, netPay: 2207.8 } }] },
+    ];
+    let call = 0;
+    reading = undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url);
+      if (u.host === "scanner.test") return new Response(JSON.stringify({ clean: true }), { status: 200 });
+      const req = JSON.parse(String(init?.body ?? ""));
+      const text = JSON.stringify(req.messages);
+      const out = text.includes("Avery") ? answers[0] : text.includes("Blake") ? answers[1] : { payDates: [] };
+      call++;
+      return new Response(JSON.stringify({ id: "msg_fictional", type: "message", role: "assistant", model: req.model, content: [{ type: "text", text: JSON.stringify(out) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10 } }), { status: 200, headers: { "content-type": "application/json", "request-id": "req_fictional" } });
+    }));
+    const preview = await previewPayrollImport(s.tabitha, s.biz.id, { bytes: await doc.save(), fileName: "adp-register.pdf", preset: "ADP_RUN" });
+    expect(call).toBeGreaterThan(1);
+    expect(preview.payDates[0]).toMatchObject({ checkDate: "2026-10-24", grossCents: 280000, netPayCents: 220780, employerTaxCents: 29040, differenceCents: 0, employees: 2 });
   });
 });

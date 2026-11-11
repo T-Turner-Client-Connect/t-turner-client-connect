@@ -66,6 +66,55 @@ export function gridFromReading(out: PayrollRegisterOutputT): string[][] {
   return rows;
 }
 
+/** Whole pages per part, about this many text lines each (a part is one quick reading). */
+const CHUNK_LINES = 70;
+const MAX_CHUNKS = 12;
+
+/** Groups whole pages into parts of about CHUNK_LINES lines (a page is never split). */
+export function pageChunks(pages: string[][]): string[][] {
+  const out: string[][] = [];
+  let cur: string[] = [];
+  for (const p of pages) {
+    if (!p.length) continue;
+    if (cur.length && cur.length + p.length > CHUNK_LINES) { out.push(cur); cur = []; }
+    cur = cur.concat(p);
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+/**
+ * Joins the readings of several parts of one register by check date: employees are listed once
+ * from the part they appear in; a pay date's printed totals and employer taxes come from the part
+ * that printed its totals line (parts that print different totals for the same date are refused).
+ */
+export function mergeReadings(parts: PayrollRegisterOutputT[]): PayrollRegisterOutputT {
+  const byDate = new Map<string, PayrollRegisterOutputT["payDates"][number] & { _taxesFromTotals: boolean }>();
+  for (const part of parts) {
+    for (const p of part.payDates) {
+      const hasTotals = p.printedTotals.gross != null || p.printedTotals.netPay != null;
+      const cur = byDate.get(p.checkDate);
+      if (!cur) {
+        byDate.set(p.checkDate, { ...p, employees: [...p.employees], _taxesFromTotals: hasTotals });
+        continue;
+      }
+      cur.employees.push(...p.employees);
+      cur.periodStart ??= p.periodStart;
+      cur.periodEnd ??= p.periodEnd;
+      for (const k of ["gross", "netPay"] as const) {
+        const v = p.printedTotals[k];
+        if (v == null) continue;
+        if (cur.printedTotals[k] != null && Math.round(cur.printedTotals[k]! * 100) !== Math.round(v * 100)) throw new PayrollPdfError(`The register shows two different totals for ${p.checkDate}. Nothing was imported; export the register as Excel instead.`);
+        cur.printedTotals[k] = v;
+      }
+      // Employer taxes: the totals part wins; otherwise the parts' amounts add up.
+      if (hasTotals && !cur._taxesFromTotals) { cur.employerTaxes = p.employerTaxes; cur._taxesFromTotals = true; }
+      else if (!hasTotals && !cur._taxesFromTotals) cur.employerTaxes += p.employerTaxes;
+    }
+  }
+  return { payDates: [...byDate.values()].map(({ _taxesFromTotals: _t, ...p }) => p).sort((a, b) => a.checkDate.localeCompare(b.checkDate)) };
+}
+
 const cacheKey = (clientId: string, sha: string) => `client_document/payroll_pdf/${clientId}/${sha}`;
 
 /** The importer rows for a payroll register PDF (read once per file, then reused). */
@@ -79,12 +128,18 @@ export async function readPayrollPdf(actor: Actor, clientId: string, bytes: Uint
   const { coethaOptOutView } = await import("@/lib/services/coetha-opt-out");
   if (!(await coethaOn()) || !coethaKeyPresent()) throw new PayrollPdfError("Reading a PDF register needs Coetha turned on. Export the register as Excel (.xlsx) or CSV instead.");
   if (await coethaOptOutView(clientId)) throw new PayrollPdfError("This client prefers no Coetha, so a PDF register can't be read. Export it as Excel (.xlsx) or CSV instead.");
-  const { pdfLines } = await import("@/lib/statement-pdf");
-  const lines = await pdfLines(bytes);
-  if (!lines?.length) throw new PayrollPdfError("No text could be read from this PDF (it may be a scan). Export the register from ADP as PDF or Excel again.");
+  const { pdfPageLines } = await import("@/lib/statement-pdf");
+  const pages = await pdfPageLines(bytes);
+  if (!pages?.some((p) => p.length)) throw new PayrollPdfError("No text could be read from this PDF (it may be a scan). Export the register from ADP as PDF or Excel again.");
+  const chunks = pageChunks(pages.map((p) => payrollText(p)));
+  if (chunks.length > MAX_CHUNKS) throw new PayrollPdfError(`This register is too long to read in one go (${pages.length} pages). Export fewer pay dates at a time, or export it as Excel (.xlsx).`);
   let res;
   try {
-    res = await callPayrollReader(payrollText(lines));
+    // A page request has about 30 seconds: the pages are read in parts at the same time, so even a
+    // long register finishes in time. The parts are joined by check date and then held to the
+    // register's own printed totals, exactly as before.
+    const parts = await Promise.all(chunks.map((c) => callPayrollReader(c)));
+    res = { output: mergeReadings(parts.map((p) => p.output)), model: parts[0].model, inputTokens: parts.reduce((n, p) => n + p.inputTokens, 0), outputTokens: parts.reduce((n, p) => n + p.outputTokens, 0) };
   } catch (err) {
     if (err instanceof CoethaModelError) throw new PayrollPdfError(`Coetha couldn't read this PDF: ${err.message} Export the register as Excel (.xlsx) instead, or try again.`);
     throw err;

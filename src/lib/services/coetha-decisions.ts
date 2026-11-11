@@ -442,6 +442,7 @@ export const PREPARE_TOOL = {
             name: { type: "string", description: "new_account: the account's name, e.g. Business Licenses & Permits" },
             accountType: { type: "string", enum: ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"], description: "new_account: the account type" },
             ref: { type: "string", description: "post_bank_row: the waiting row's W-reference, e.g. W28 (date and amount are required with it)" },
+            bankTransactionId: { type: "string", description: "post_bank_row: instead of ref, the row id add_bank_activity returned for a row it just entered" },
             date: { type: "string", description: "YYYY-MM-DD. post_bank_row: the row's date; journal_entry: the entry date (in an open month)" },
             amount: { type: "number", description: "post_bank_row: the row's amount in dollars as shown in the records" },
             accountCode: { type: "string", description: "post_bank_row: the account it is posted to; new_account: the new account's code" },

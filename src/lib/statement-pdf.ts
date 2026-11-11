@@ -31,11 +31,18 @@ export function cents(s: string): number {
 
 /** Text lines of each page, rebuilt from the PDF's positioned text (items on one baseline form one line). */
 export async function pdfLines(bytes: Uint8Array): Promise<string[] | null> {
+  const pages = await pdfPageLines(bytes);
+  return pages ? pages.flat() : null;
+}
+
+/** The same text lines, kept page by page. */
+export async function pdfPageLines(bytes: Uint8Array): Promise<string[][] | null> {
   try {
     const { getDocumentProxy } = await import("unpdf");
     const pdf = await getDocumentProxy(new Uint8Array(bytes));
-    const out: string[] = [];
+    const pages: string[][] = [];
     for (let p = 1; p <= pdf.numPages; p++) {
+      const out: string[] = [];
       const page = await pdf.getPage(p);
       const tc = await page.getTextContent();
       const rows = new Map<number, { x: number; s: string }[]>();
@@ -49,8 +56,9 @@ export async function pdfLines(bytes: Uint8Array): Promise<string[] | null> {
       for (const y of [...rows.keys()].sort((a, b) => b - a)) {
         out.push(rows.get(y)!.sort((a, b) => a.x - b.x).map((r) => r.s.trim()).join(" ").replace(/\s+/g, " ").trim());
       }
+      pages.push(out);
     }
-    return out;
+    return pages;
   } catch {
     return null;
   }

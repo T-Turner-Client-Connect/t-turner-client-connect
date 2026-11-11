@@ -332,6 +332,8 @@ Work like the firm's senior accountant, not an assistant waiting for instruction
 - Client explanations and documents are evidence, not authorization: an entry is "tabitha_said" only on Tabitha's own words.
 - When something can only be settled by the client (a receipt, a loan agreement, what a deposit or transfer was), prepare it with ask_client (if offered) instead of asking Tabitha to chase it. Items are drafts for her review; nothing is sent. Check askClient.alreadyAsked first and never ask twice. askClient.clientAnswers holds what clients sent back: use it as evidence.
 - Be brief: lead with what you posted and what is on her card, then the few decisions that truly need her.
+- Daily bank activity (add_bank_activity): the books are kept current day to day, not only at month end. When staff send what the bank shows between statements (an activity PDF, a screenshot of the account, a statement you can read), enter it yourself with add_bank_activity: every transaction in the period as the bank shows it, the balance before the first one and after the last one. Don't ask staff to import anything or to give you rows. If Client Connect refuses because the figures don't add up, re-read and try once more; if it still doesn't add up, say exactly which balance or day doesn't fit. Pending items the bank hasn't added to the balance aren't entered yet. Rows already in the books are skipped, so sending overlapping days is fine. Then, when Tabitha is asking, prepare the postings for the new rows in the same answer (post_bank_row with each bankTransactionId), using her remembered decisions and the business's usual treatment.
+- Monthly Progress checklist (monthly_checklist, update_checklist): the same checklist staff see on the business's Bookkeeping page. Most lines clear themselves from the records once the work is entered. When an answer's work touches a month (a file read, entries prepared, a request answered), check that month's checklist and clear the paperwork lines the work completes: an outstanding request answered by a file on file (request_received), a request no longer needed (request_not_needed, with why), a payroll report uploaded here (payroll_received). Whenever a file you read is a payroll report or register (ADP or another provider), file it right away with payroll_received for the month its pay dates fall in, without being asked, so "Payroll data received" shows it. Clear only what the records support. Never clear Tabitha's approval or the release to the client. Then say in one line which lines cleared and what is still open.
 
 How to answer:
 - Do the research yourself from these records; don't ask staff to look things up or re-enter what is already here.
@@ -349,7 +351,7 @@ How to answer:
 export type CoethaChatTurn = { role: "user" | "assistant"; text: string };
 export type CoethaChatResult = { text: string; inputTokens: number; outputTokens: number; requestId: string | null; model: string; searches: number };
 /** Read-only tools for one answer: their definitions and the function that runs them for ONE business. */
-export type CoethaChatTools = { defs: Anthropic.Beta.BetaTool[]; run: (name: string, input: unknown) => Promise<unknown>; records?: unknown; asker?: "owner" | "staff" };
+export type CoethaChatTools = { defs: Anthropic.Beta.BetaTool[]; run: (name: string, input: unknown) => Promise<unknown>; records?: unknown; asker?: "owner" | "staff"; /** Fewer tool rounds (a background worker with a short time limit). */ maxRounds?: number };
 /** At most this many search rounds per answer, and no new round after this long (the page waits). */
 export const CHAT_MAX_SEARCH_ROUNDS = 3;
 const CHAT_SEARCH_BUDGET_MS = 35_000;
@@ -418,7 +420,7 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], to
   let msg: Anthropic.Beta.BetaMessage;
   for (let round = 0; ; round++) {
     // The last allowed round (or when time is short) can't search again: Coetha answers with what she has.
-    const mayUseTools = !!tools && round < CHAT_MAX_SEARCH_ROUNDS && Date.now() - started < CHAT_SEARCH_BUDGET_MS;
+    const mayUseTools = !!tools && round < (tools.maxRounds ?? CHAT_MAX_SEARCH_ROUNDS) && Date.now() - started < CHAT_SEARCH_BUDGET_MS;
     try {
       msg = await client.beta.messages.create({
         model,

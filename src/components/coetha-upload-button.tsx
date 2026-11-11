@@ -5,7 +5,7 @@ import { CheckCircle2, FileText, Loader2, Paperclip, RotateCw, X } from "lucide-
 
 const ACCEPT = "application/pdf,image/png,image/jpeg,image/gif,image/webp";
 const MAX_MB = 60;
-type Item = { key: string; file: File; preview: string | null; state: "uploading" | "saved" | "error"; pct: number; jobId?: string; reused?: boolean; error?: string; as?: { accountId: string; month: string; label: string } | null; statement?: string | null };
+type Item = { key: string; file: File; preview: string | null; state: "uploading" | "saved" | "error"; pct: number; jobId?: string; reused?: boolean; error?: string; as?: { accountId: string; month: string; label: string; payroll?: boolean } | null; statement?: string | null };
 export type StatementAccount = { id: string; label: string };
 
 async function post(fd: FormData) {
@@ -21,7 +21,9 @@ async function post(fd: FormData) {
  * the business (staff-only), and gets a reading job; its job id goes with the question. Coetha
  * reads them in the background, so the page can be left and the answer appears when she's done.
  */
-export function CoethaUploadButton({ clientId, accounts = [], defaultMonth = "" }: { clientId: string; accounts?: StatementAccount[]; defaultMonth?: string }) {
+const PAYROLL = "__payroll__";
+
+export function CoethaUploadButton({ clientId, accounts = [], defaultMonth = "", payroll = false }: { clientId: string; accounts?: StatementAccount[]; defaultMonth?: string; /** The business runs payroll: offer "Payroll report". */ payroll?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<Item[]>([]);
   // "What are these files?": other documents (Coetha reads them), or one account's statement for a month.
@@ -57,7 +59,7 @@ export function CoethaUploadButton({ clientId, accounts = [], defaultMonth = "" 
       }
       const f = new FormData();
       f.set("step", "finish"); f.set("uploadId", uploadId);
-      if (it.as) { f.set("accountId", it.as.accountId); f.set("month", it.as.month); }
+      if (it.as) { f.set("accountId", it.as.accountId); f.set("month", it.as.month); if (it.as.payroll) f.set("payroll", "1"); }
       const done = await post(f);
       patch(it.key, { state: "saved", pct: 100, jobId: done.jobId, reused: done.reused, statement: done.statement ?? null });
     } catch (err) {
@@ -67,7 +69,7 @@ export function CoethaUploadButton({ clientId, accounts = [], defaultMonth = "" 
 
   const add = (files: File[]) => {
     const acct = accounts.find((a) => a.id === kind);
-    const as = acct ? { accountId: acct.id, month, label: `${acct.label} statement, ${month}` } : null;
+    const as = kind === PAYROLL ? { accountId: "", month, label: `Payroll report, ${month}`, payroll: true } : acct ? { accountId: acct.id, month, label: `${acct.label} statement, ${month}` } : null;
     const fresh = files.map((file, i) => ({ key: `${Date.now()}-${i}-${file.name}`, file, preview: file.type.startsWith("image/") ? URL.createObjectURL(file) : null, state: "uploading" as const, pct: 0, as }));
     setItems((xs) => [...xs, ...fresh]);
     if (input.current) input.current.value = "";
@@ -78,16 +80,17 @@ export function CoethaUploadButton({ clientId, accounts = [], defaultMonth = "" 
   const busy = items.some((x) => x.state === "uploading");
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      {accounts.length > 0 && (
+      {(accounts.length > 0 || payroll) && (
         <div className="grid gap-1 text-xs text-navy-900" data-testid="coetha-upload-kind">
           <label className="grid gap-0.5">What are these files?
             <select className="input py-1 text-xs" value={kind} onChange={(e) => setKind(e.target.value)} data-testid="coetha-upload-account">
               <option value="">Documents for Coetha to read</option>
               {accounts.map((a) => <option key={a.id} value={a.id}>Statement: {a.label}</option>)}
+              {payroll && <option value={PAYROLL}>Payroll report (ADP register)</option>}
             </select>
           </label>
           {kind && (
-            <label className="grid gap-0.5">Statement month
+            <label className="grid gap-0.5">{kind === PAYROLL ? "Payroll month" : "Statement month"}
               <input type="month" className="input py-1 text-xs" value={month} onChange={(e) => setMonth(e.target.value)} required data-testid="coetha-upload-month" />
             </label>
           )}
