@@ -2,6 +2,8 @@ import Link from "next/link";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, EmptyState, Notice, PageHeader } from "@/components/ui";
 import { portalUploadAction } from "@/app/actions/portal";
+import { portalExplainAction } from "@/app/actions/ask-client";
+import { BK_PORTAL_COETHA_V1 } from "@/lib/client-letters/templates";
 import { BkUploadFields, UploadMeta } from "@/components/bk-upload";
 import { UploadReceipt } from "@/components/portal/upload-receipt";
 import { scanConfigured } from "@/lib/scan";
@@ -77,7 +79,20 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       </ActionForm>
       </PreviewDisabled>
     ) : null;
-  type Req = { id: string; title: string; instructions: string | null; reason: string | null; dueAt: Date | null; status: string; docType: string | null; periodStart: Date | null; periodEnd: Date | null; bookkeepingAccount: { institution: string; nickname: string | null; last4: string | null; accountType: string } | null };
+  type Req = { id: string; title: string; instructions: string | null; reason: string | null; dueAt: Date | null; status: string; kind: string; clientExplanation: string | null; docType: string | null; periodStart: Date | null; periodEnd: Date | null; bookkeepingAccount: { institution: string; nickname: string | null; last4: string | null; accountType: string } | null };
+  // Ask Client: a supporting request is answered with the file, or with a written explanation.
+  const explain = (r: Req) =>
+    current.canUpload ? (
+      <PreviewDisabled readOnly={v.readOnly}>
+      <details className="mt-2" open={!!r.clientExplanation}>
+        <summary className="cursor-pointer text-xs font-semibold text-navy-700">{r.clientExplanation ? "Your explanation (you can update it)" : "No document? Explain instead"}</summary>
+        <ActionForm action={v.act(portalExplainAction, current.clientId, r.id)} className="mt-2 space-y-2">
+          <textarea name="explanation" className="input w-full" rows={3} maxLength={4000} required defaultValue={r.clientExplanation ?? ""} aria-label={`Explanation for ${r.title}`} />
+          <Button type="submit" variant="secondary">Send explanation</Button>
+        </ActionForm>
+      </details>
+      </PreviewDisabled>
+    ) : null;
   const requestItem = (r: Req, periodId: string | null, period?: { year: number; month: number }) => (
     <li key={r.id} className="py-2 text-sm" data-testid="client-request">
       <p className="flex flex-wrap items-center gap-2">
@@ -87,7 +102,9 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       {(r.bookkeepingAccount || r.periodStart) && <p className="text-xs text-slate-600">{r.bookkeepingAccount ? `Account: ${registryLabel(r.bookkeepingAccount)}` : ""}{r.bookkeepingAccount && r.periodStart ? " · " : ""}{r.periodStart ? `Period: ${rangeText(r)}` : ""}</p>}
       {r.reason && <p className="text-slate-600">{r.reason}</p>}
       {r.instructions && <p className="text-slate-600">{r.instructions}</p>}
-      {r.status === "OPEN" && (r.docType ? linkedUpload(r.id, `Upload for ${r.title}`) : upload(r.id, periodId, `Upload for ${r.title}`, period?.year, period?.month))}
+      {r.kind === "SUPPORTING" && (r.status === "OPEN" || r.status === "SUBMITTED")
+        ? <>{linkedUpload(r.id, `Upload for ${r.title}`)}{explain(r)}</>
+        : r.status === "OPEN" && (r.docType ? linkedUpload(r.id, `Upload for ${r.title}`) : upload(r.id, periodId, `Upload for ${r.title}`, period?.year, period?.month))}
     </li>
   );
 
@@ -95,7 +112,19 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
     <>
       <PageHeader title="Bookkeeping & requests" subtitle={<span data-testid="bk-business">Checklist, reports and questions for <strong>{current.client.businessName || current.client.displayName}</strong> only.</span>} />
       {looseRequests.length > 0 && (
-        <Card title="Documents we need" className="mb-4"><ul className="divide-y divide-navy-100">{looseRequests.map((r) => requestItem(r, null))}</ul></Card>
+        <Card title="Documents we need" className="mb-4">
+          {looseRequests.some((r) => r.kind === "SUPPORTING" && r.status === "OPEN") && (
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b-2 border-gold-500 pb-3" data-testid="ask-letterhead">
+              <div>
+                <p className="font-serif text-base font-bold text-navy-900">{BK_PORTAL_COETHA_V1.letterhead.name}</p>
+                <p className="text-xs text-slate-600">{BK_PORTAL_COETHA_V1.letterhead.lines.join(" · ")}</p>
+              </div>
+              <a href={`/api/client/ask-letter${q}`} className="rounded-full border border-navy-900 px-3 py-1 text-xs font-semibold text-navy-900" target="_blank" rel="noreferrer">View our request letter (PDF)</a>
+            </div>
+          )}
+          <p className="mb-2 text-sm text-slate-600">For each item, upload the document or write a short explanation. Everything goes securely to our office.</p>
+          <ul className="divide-y divide-navy-100">{looseRequests.map((r) => requestItem(r, null))}</ul>
+        </Card>
       )}
       {interims.length > 0 && (
         <Card title="Interim financial statements" className="mb-4">

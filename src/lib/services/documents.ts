@@ -388,6 +388,8 @@ export async function portalUploadDocument(
     });
     // Grouped office alerts: a text inside weekday hours and a link-only email.
     await queueStaffAlert({ documentId: saved.id });
+    // An answer to an Ask Client request goes straight to Coetha's reading queue (no staff re-upload).
+    if (input.requestId) await (await import("./ask-client")).queueClientResponseReading(saved.id);
     return saved;
   } catch (err) {
     await storage.remove(stored.storageKey).catch(() => {});

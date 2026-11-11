@@ -12,6 +12,7 @@ import { notifyClientUsers, staffUploadDocument } from "./documents";
 import { assertCanSendClientRequests } from "./bk-permissions";
 import { registryLabel } from "./bank-accounts";
 import { assertCoethaAllowed } from "./coetha-opt-out";
+import { clientRolloutAuthorized } from "./owner-switches";
 
 /**
  * Targeted document requests to a business: monthly statements Coetha could not retrieve,
@@ -203,7 +204,9 @@ export async function createClientRequest(actor: Actor | null, clientId: string,
   if (!createdById) throw new ValidationError("No staff account to record the request under.");
   // Coetha's requests carry an explicit routing; staff requests are the staff member's own decision.
   const routing = source === "COETHA" ? classifyRequest({ kind: input.kind, docType: input.docType, bookkeepingAccountId: input.bookkeepingAccountId, accountType: acct?.accountType ?? null, ...input.routingHints, evidence: [input.routingHints?.evidence, input.instructions].filter(Boolean).join(" ") || null }) : null;
-  const send = (opts.send ?? !!actor) && routing?.routing !== "REVIEW";
+  // Supporting-document requests (Ask Client) never reach the client before Tabitha authorizes client communications.
+  const held = input.kind === "SUPPORTING" && !(await clientRolloutAuthorized());
+  const send = (opts.send ?? !!actor) && routing?.routing !== "REVIEW" && !held;
   const req = await prisma.documentRequest.create({
     data: {
       clientId, title, reason: input.reason?.trim().slice(0, 500) || null, instructions: input.instructions?.trim().slice(0, 1000) || null,
@@ -226,6 +229,7 @@ export async function sendClientRequest(actor: Actor | null, clientId: string, r
   if (!draft) throw new ValidationError("Only a draft request can be sent.");
   // Unusual, sensitive or unclear requests: only Tabitha sends them, never Coetha on her own.
   if (draft.routing === "REVIEW" && !(actor && (await canApproveCoethaWork(actor)))) throw new ForbiddenError("Tabitha reviews this request before it goes to the client.");
+  if (draft.kind === "SUPPORTING" && !(await clientRolloutAuthorized())) throw new ValidationError("Client communications are on hold. Nothing goes to the client until Tabitha authorizes client communications and rollout in the Owner's Office.");
   if (!actor) {
     // Coetha never sends anything on her own for a client who prefers no Coetha.
     await assertCoethaAllowed(clientId);
