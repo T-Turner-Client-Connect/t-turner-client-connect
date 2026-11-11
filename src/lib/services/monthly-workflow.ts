@@ -2,6 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { ValidationError } from "./clients";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { MONTH_NAMES } from "@/lib/bk-uploads";
@@ -68,7 +69,7 @@ export async function monthlyChecklist(clientId: string, year: number, month: nu
   const [profile, accounts, period] = await Promise.all([
     prisma.bookkeepingProfile.findUnique({ where: { clientId } }),
     prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null, monitored: true } }),
-    prisma.bookkeepingPeriod.findUnique({ where: { clientId_year_month: { clientId, year, month } }, select: { id: true } }),
+    prisma.bookkeepingPeriod.findUnique({ where: { clientId_year_month: { clientId, year, month } }, select: { id: true, status: true, staffNote: true } }),
   ]);
   const items: WorkflowItem[] = [];
   const syncLine = async (key: string, label: string, list: typeof accounts, none: ItemState, unit: string): Promise<WorkflowItem> => {
@@ -126,6 +127,8 @@ export async function monthlyChecklist(clientId: string, year: number, month: nu
     const released = reports.length > 0 && reports.every((r) => r.visibility === "PUBLISHED");
     items.push({ key: "RELEASED", label: "Statements released to client", state: released ? "DONE" : approved ? "IN_PROGRESS" : "NOT_DUE", pill: released ? "Released" : "Not Released", detail: released ? "Released to the client portal" : approved ? "Approved — ready to release" : "After Tabitha approves" });
   }
+  // A month Tabitha marked complete (books done before Client Connect): every line is done.
+  if (period?.status === "COMPLETE") for (const i of items) if (i.state !== "NA" && i.state !== "DONE") { i.state = "DONE"; i.pill = "Done"; i.detail = period.staffNote || "Completed before Client Connect"; }
   const shown = items.filter((i) => i.state !== "NA");
   const done = shown.filter((i) => i.state === "DONE").length;
   return { year, month, items: shown, done, total: shown.length, percent: shown.length ? Math.round((done / shown.length) * 100) : 0, missing: shown.filter((i) => i.state === "MISSING").length, recon };
@@ -433,3 +436,29 @@ export async function coethaCurrentWork(clientId: string) {
 }
 
 export const LIGHT_CLASS: Record<Light, string> = { GREEN: "bg-emerald-600", RED: "bg-red-600", YELLOW: "bg-amber-400", GRAY: "bg-slate-300" };
+
+/**
+ * Tabitha marks months whose books were finished before Client Connect (outside the app) as
+ * complete, so their progress shows Complete. Owner / Admin approvers only; audited per month.
+ * Months from `from` through `through` (YYYY-MM, same year or across years).
+ */
+export async function markMonthsCompletePrior(actor: Actor, clientId: string, from: string, through: string) {
+  const { canApproveCoethaWork } = await import("@/lib/auth/permissions");
+  if (!(await canApproveCoethaWork(actor))) throw new ValidationError("Only Tabitha can mark months complete.");
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(from) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(through) || from > through) throw new ValidationError("Choose the first and last month.");
+  const done: string[] = [];
+  let [y, m] = from.split("-").map(Number);
+  for (let guard = 0; guard < 60; guard++) {
+    const ym = `${y}-${pad(m)}`;
+    if (ym > through) break;
+    await prisma.bookkeepingPeriod.upsert({
+      where: { clientId_year_month: { clientId, year: y, month: m } },
+      create: { clientId, year: y, month: m, status: "COMPLETE", staffNote: "Completed before Client Connect", updatedById: actor.id },
+      update: { status: "COMPLETE", staffNote: "Completed before Client Connect", updatedById: actor.id },
+    });
+    await audit(prisma, { actorId: actor.id, action: "bookkeeping.month_marked_complete", entityType: "Client", entityId: clientId, clientId, details: { month: ym, reason: "completed before Client Connect" } });
+    done.push(ym);
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return done;
+}

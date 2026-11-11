@@ -2,7 +2,7 @@ import clsx from "clsx";
 import { ActionForm } from "@/components/action-form";
 import { docTypeLabel, rangeText, REQUEST_STATUS_LABEL } from "@/lib/services/client-requests";
 import { registryLabel } from "@/lib/services/bank-accounts";
-import { discardRequestAction, sendRequestAction } from "@/app/actions/bk-workflow";
+import { closeRequestAction, discardRequestAction, sendRequestAction } from "@/app/actions/bk-workflow";
 import { navyBtn, outlineBtn } from "./parts";
 
 type Req = {
@@ -39,6 +39,12 @@ export function RequestList({ items, clientId, canSend, canApprove = false, empt
             <div className="mt-1.5 flex flex-wrap gap-2">
               <ActionForm action={sendRequestAction.bind(null, clientId, r.id)} showSuccess={false}><button type="submit" className={navyBtn} data-testid="send-request">Send to client</button></ActionForm>
               <ActionForm action={discardRequestAction.bind(null, clientId, r.id)} showSuccess={false}><button type="submit" className={outlineBtn}>Discard</button></ActionForm>
+            </div>
+          )}
+          {canSend && (r.status === "OPEN" || r.status === "SUBMITTED") && (
+            <div className="mt-1.5 flex flex-wrap gap-2" data-testid="close-request">
+              <ActionForm action={closeRequestAction.bind(null, clientId, r.id, "received")} showSuccess={false}><button type="submit" className={outlineBtn}>Mark received</button></ActionForm>
+              <ActionForm action={closeRequestAction.bind(null, clientId, r.id, "not_needed")} showSuccess={false} confirm="Close this request as not needed? It leaves the client's portal."><button type="submit" className={outlineBtn}>Close — not needed</button></ActionForm>
             </div>
           )}
         </li>

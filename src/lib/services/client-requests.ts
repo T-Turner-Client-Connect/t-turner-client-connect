@@ -253,6 +253,18 @@ export async function discardDraftRequest(actor: Actor, clientId: string, reques
   await audit(prisma, { actorId: actor.id, action: "request.draft_discarded", entityType: "DocumentRequest", entityId: requestId, clientId });
 }
 
+/**
+ * Staff close a request that was sent: "received" when the office has what it asked for (e.g. it
+ * came in another way), "not_needed" when it isn't needed any more. Either way it leaves the open
+ * lists and the client's portal; audited.
+ */
+export async function closeClientRequest(actor: Actor, clientId: string, requestId: string, outcome: "received" | "not_needed") {
+  await assertCanSendClientRequests(actor, clientId);
+  const r = await prisma.documentRequest.updateMany({ where: { id: requestId, clientId, status: { in: ["DRAFT", "OPEN", "SUBMITTED"] } }, data: { status: outcome === "received" ? "ACCEPTED" : "CANCELLED" } });
+  if (!r.count) throw new ValidationError("That request is already closed.");
+  await audit(prisma, { actorId: actor.id, action: outcome === "received" ? "request.marked_received" : "request.closed_not_needed", entityType: "DocumentRequest", entityId: requestId, clientId });
+}
+
 /** Historical Records & Statements: one request for one account (when it's a statement) and one date range. */
 export async function requestHistoricalRecords(actor: Actor, clientId: string, input: { docType: string; bookkeepingAccountId?: string | null; start: string; end: string; dueAt?: Date | null; note?: string | null }) {
   if (!(input.docType in HISTORICAL_TYPES)) throw new ValidationError("Choose what you need.");
