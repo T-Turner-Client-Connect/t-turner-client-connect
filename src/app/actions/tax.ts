@@ -176,6 +176,7 @@ export async function decideTaxRowAction(rowId: string, decision: string): Promi
   const actor = await requireUser();
   return run(async () => {
     if (decision === "skip") await decideTaxRow(actor, rowId, "skip");
+    else if (decision === "replace_id") await decideTaxRow(actor, rowId, "replace_id");
     else if (decision === "apply") await decideTaxRow(actor, rowId, "apply");
     else if (decision.startsWith("apply:")) await decideTaxRow(actor, rowId, "apply", decision.slice(6));
     else throw new ValidationError("Invalid choice.");

@@ -169,7 +169,8 @@ async function recordAcceptance(
       lastVerifiedById: actor.id,
       submittedAt: f.submittedAt ?? a.acceptedAt,
       acknowledgedAt: a.acceptedAt,
-      filingReference: a.submissionId || f.filingReference,
+      // A Submission ID already on file is kept; only Tabitha may replace it with a different one.
+      filingReference: f.filingReference && a.submissionId && a.submissionId !== f.filingReference && !(await isReportApprover(actor)) ? f.filingReference : a.submissionId || f.filingReference,
     },
   });
   await audit(tx, { actorId: actor.id, action: "filing.status_staff_update", entityType: "FilingRecord", entityId: f.id, clientId: f.clientId, details: { from, to: "ACCEPTED", oneStep: true, submissionId: a.submissionId } });
@@ -699,7 +700,7 @@ export async function deliveryContext(clientId: string, actor: Actor) {
   const [client, summaries, filings, owner] = await Promise.all([
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { clientType: true, entityType: true, state: true } }),
     prisma.taxReturnSummary.findMany({ where: { clientId }, select: { taxYear: true, filingType: true } }),
-    prisma.filingRecord.findMany({ where: { clientId, filingType: { in: ["ORIGINAL", "AMENDED"] } }, select: { taxYear: true, jurisdiction: true, filingType: true, returnType: true } }),
+    prisma.filingRecord.findMany({ where: { clientId, filingType: { in: ["ORIGINAL", "AMENDED"] } }, select: { taxYear: true, jurisdiction: true, filingType: true, returnType: true, filingReference: true } }),
     import("./return-senders").then((m) => m.canSendReturns(actor, clientId)),
   ]);
   const keys = Array.from(new Set(summaries.map((x) => `${x.taxYear}:${x.filingType}`)));
@@ -711,13 +712,19 @@ export async function deliveryContext(clientId: string, actor: Actor) {
     if ((await unsentDraftSummaries(clientId, Number(y), ft)).length) draftKeys.push(k);
   }
   const existing: Record<string, string[]> = {};
-  for (const f of filings) (existing[`${f.taxYear}:${f.jurisdiction}:${f.filingType}`] ??= []).push(f.returnType);
+  // The Submission ID already on file (from the TaxAct import), so nobody types it again.
+  const refs: Record<string, string> = {};
+  for (const f of filings) {
+    const k = `${f.taxYear}:${f.jurisdiction}:${f.filingType}`;
+    (existing[k] ??= []).push(f.returnType);
+    if (f.filingReference) refs[k] = f.filingReference;
+  }
   const st = normalizeJurisdiction(client.state ?? "");
   // Enter once: the confirmed Tax Preparation case for a year fills in its forms.
   const { prepDefaults } = await import("./tax-prep");
   const prepForms: Record<string, { federal: string | null; state: string | null }> = {};
   for (const p of await prepDefaults(clientId)) prepForms[String(p.taxYear)] = { federal: p.federalForm, state: p.stateForm };
-  return { owner, clientType: client.clientType as string, entityType: client.entityType, clientState: st && st !== "FEDERAL" ? st : null, approvedKeys, draftKeys, existing, prepForms };
+  return { owner, clientType: client.clientType as string, entityType: client.entityType, clientState: st && st !== "FEDERAL" ? st : null, approvedKeys, draftKeys, existing, refs, prepForms };
 }
 
 // --- Fixing a filing (Tabitha only) ------------------------------------------------

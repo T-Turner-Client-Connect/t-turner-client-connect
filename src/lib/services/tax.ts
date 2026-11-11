@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { isSensitiveHeader } from "@/lib/import/fields";
+import { bothSpousesMatch, formFitsClient, matchByName, nameIndex } from "@/lib/tax/name-match";
 import { allowedCategories, effectiveGrantsFor } from "@/lib/portal/access";
 import {
   normalizeFilingType,
@@ -292,6 +293,11 @@ type CleanTaxRow = {
   eventAt: string | null;
   submissionId: string | null;
   rejectionCodes: string | null;
+  /** The status on file is already as new: only the missing Submission ID is saved. */
+  idOnly?: boolean;
+  /** A different Submission ID already on file: kept unless Tabitha approves replacing it. */
+  refOnFile?: string | null;
+  replaceApprovedById?: string | null;
 };
 
 function cleanTaxRow(raw: Record<string, unknown>): { row: CleanTaxRow; errors: string[] } {
@@ -308,7 +314,7 @@ function cleanTaxRow(raw: Record<string, unknown>): { row: CleanTaxRow; errors: 
   const status = normalizeStatus(get("status"));
   const eventAt = parseDate(get("statusDate")) ?? parseDate(get("submittedAt"));
   const clientRef = get("clientRef");
-  if (!clientRef) errors.push("No client ID — rows are never matched by name alone");
+  if (!clientRef && !get("displayName")) errors.push("No client ID or name");
   if (!taxYear) errors.push("Missing or invalid tax year");
   if (!returnType) errors.push("Missing return type");
   if (!jurisdiction) errors.push(`Unknown jurisdiction "${get("jurisdiction") ?? ""}"`);
@@ -345,7 +351,7 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
     }
     mapping[header.slice(0, 200)] = field;
   }
-  if (!Object.values(mapping).includes("clientRef")) throw new ValidationError("Map the client ID column — records are never matched by name alone.");
+  if (!Object.values(mapping).includes("clientRef") && !Object.values(mapping).includes("displayName")) throw new ValidationError("Map the client name column (or the TaxAct client ID column).");
   const mapped = new Set(Object.values(mapping));
   const filter = input.statusFilter.length ? input.statusFilter : (["ACCEPTED"] as FilingStatus[]);
 
@@ -361,6 +367,30 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
   for (const c of clients) {
     for (const key of [c.taxSoftwareId, c.id]) if (key) byRef.set(key, [...(byRef.get(key) ?? []), c.id]);
   }
+  // Verified client ID first. With no known ID, the taxpayer's or business's name may find the
+  // client, but it is applied automatically only when the name fits ONE client and another
+  // identifier supports it (nameSupport). Anything else goes to review; never applied on a name alone.
+  const needNames = cleaned.some((c) => !(c.row.clientRef && byRef.has(c.row.clientRef)) && c.row.displayName);
+  const people = needNames
+    ? await prisma.client.findMany({ where: { archivedAt: null }, select: { id: true, displayName: true, firstName: true, lastName: true, spouseFirstName: true, spouseLastName: true, businessName: true, clientType: true, state: true } })
+    : [];
+  const names = nameIndex(people);
+  const nameOf = new Map(people.map((p) => [p.id, p.displayName]));
+  const person = new Map(people.map((p) => [p.id, p]));
+  /** What else (besides the name) shows this row is this client's; empty = not supported. */
+  const nameSupport = async (cid: string, r: CleanTaxRow): Promise<{ support: string[]; conflict: string | null }> => {
+    const c = person.get(cid)!;
+    if (!formFitsClient(r.returnType, c.clientType)) return { support: [], conflict: `Form ${r.returnType} doesn't fit this client's type` };
+    const support: string[] = [];
+    const [filed, prep] = await Promise.all([
+      prisma.filingRecord.count({ where: { clientId: cid, taxYear: r.taxYear! } }),
+      prisma.taxPrepCase.count({ where: { clientId: cid, taxYear: r.taxYear! } }),
+    ]);
+    if (filed || prep) support.push(`a ${r.taxYear} return is already on file for this client`);
+    if (r.jurisdiction && r.jurisdiction !== "FEDERAL" && normalizeJurisdiction(c.state ?? "") === r.jurisdiction) support.push(`the client's state on file is ${r.jurisdiction}`);
+    if (bothSpousesMatch(c, r.displayName)) support.push("both spouses' names match");
+    return { support, conflict: null };
+  };
 
   const seen = new Set<string>();
   const rows: Prisma.TaxImportRowCreateManyBatchInput[] = [];
@@ -370,13 +400,15 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
     let clientId: string | null = null;
     let filingId: string | null = null;
     if (!errors.length) {
-      const ids = Array.from(new Set(byRef.get(row.clientRef!) ?? []));
+      let ids = Array.from(new Set(row.clientRef ? byRef.get(row.clientRef) ?? [] : []));
+      const byName = !ids.length && !!row.displayName;
+      if (byName) ids = matchByName(names, row.displayName);
       if (ids.length === 0) {
         match = "NO_CLIENT";
-        warnings.push("No CRM client has this client ID. Choose the client on review, or skip.");
+        warnings.push(row.displayName ? `No client named "${row.displayName}". Choose the client on review, or skip.` : "No CRM client has this client ID. Choose the client on review, or skip.");
       } else if (ids.length > 1) {
         match = "AMBIGUOUS";
-        warnings.push("This ID matches more than one client.");
+        warnings.push(byName ? `"${row.displayName}" fits more than one client: ${ids.map((id) => nameOf.get(id)).join(", ")}. Choose one.` : "This ID matches more than one client.");
       } else {
         clientId = ids[0];
         const key = `${clientId}|${row.taxYear}|${row.returnType}|${row.jurisdiction}|${row.filingType}`;
@@ -389,16 +421,33 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
           warnings.push("Another row in this file is for the same filing.");
         } else if (!filter.includes(row.status!)) {
           match = "FILTERED";
+        } else if (filing?.statusAsOf && new Date(row.eventAt!) <= filing.statusAsOf && row.submissionId && !filing.filingReference) {
+          // The status is already up to date; the Submission ID is missing: save just the ID.
+          match = "MATCH";
+          row.idOnly = true;
+          warnings.push("Status already up to date. Only the missing Submission ID will be saved.");
         } else if (filing?.statusAsOf && new Date(row.eventAt!) <= filing.statusAsOf) {
           match = "STALE";
           warnings.push(`Older than the status already recorded (${filing.filingStatus.toLowerCase().replace(/_/g, " ")}) — will not overwrite.`);
         } else {
           match = filing ? "MATCH" : "NEW_FILING";
+          if (filing?.filingReference && row.submissionId && filing.filingReference !== row.submissionId) {
+            row.refOnFile = filing.filingReference;
+            warnings.push(`A different Submission ID is on file (${filing.filingReference}). It is kept unless Tabitha approves replacing it.`);
+          }
           if (filing && ORDER.indexOf(row.status!) < ORDER.indexOf(filing.filingStatus) && filing.filingStatus !== "REJECTED") {
             warnings.push(`Moves status back from ${filing.filingStatus.toLowerCase().replace(/_/g, " ")} — check before applying.`);
           }
         }
         seen.add(key);
+        // A name match is applied automatically only when something else supports it.
+        if (byName && (match === "MATCH" || match === "NEW_FILING")) {
+          const { support, conflict } = await nameSupport(clientId, row);
+          if (conflict || !support.length) {
+            match = "AMBIGUOUS";
+            warnings.push(`Name matches ${nameOf.get(clientId)}, but ${conflict ? conflict.toLowerCase() : "nothing else on file confirms it"}. Check and apply, or skip.`);
+          } else warnings.push(`Matched by name: ${nameOf.get(clientId)} (confirmed: ${support.join("; ")}).`);
+        }
       }
     }
     rows.push({
@@ -419,9 +468,18 @@ export async function stageTaxImport(actor: Actor, input: TaxStageInput) {
   return batch;
 }
 
-export async function decideTaxRow(actor: Actor, rowId: string, decision: "apply" | "skip", clientId?: string) {
+export async function decideTaxRow(actor: Actor, rowId: string, decision: "apply" | "skip" | "replace_id", clientId?: string) {
   const row = await prisma.taxImportRow.findUnique({ where: { id: rowId }, include: { batch: true } });
   if (!row || row.batch.status !== "REVIEW") throw new ValidationError("This import is no longer open.");
+  if (decision === "replace_id") {
+    // Replacing a Submission ID already on file: Tabitha only.
+    if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha can replace a Submission ID that is already on file.");
+    const d = row.data as unknown as CleanTaxRow;
+    if (!d.refOnFile || !row.clientId) throw new ValidationError("This row doesn't replace a Submission ID.");
+    await prisma.taxImportRow.update({ where: { id: rowId }, data: { decision: "apply", data: { ...d, replaceApprovedById: actor.id } as unknown as Prisma.InputJsonValue } });
+    await audit(prisma, { actorId: actor.id, action: "tax_import.replace_id_approved", entityType: "TaxImportRow", entityId: rowId, clientId: row.clientId, details: { from: d.refOnFile, to: d.submissionId } });
+    return;
+  }
   if (decision === "apply") {
     if (row.errors.length) throw new ValidationError("Rows with errors can only be skipped.");
     if (row.match === "STALE" || row.match === "FILTERED") throw new ValidationError("This row won't be applied (older status or not in the selected queues).");
@@ -455,9 +513,14 @@ export async function commitTaxImport(actor: Actor, batchId: string, linkClientI
         const filing =
           (await tx.filingRecord.findUnique({ where: { clientId_taxYear_returnType_jurisdiction_filingType: key } })) ??
           (await tx.filingRecord.create({ data: { ...key, method: "ELECTRONIC", prepStatus: "READY_TO_FILE" } }));
-        // Re-check freshness inside the transaction.
+        // Re-check freshness inside the transaction. An up-to-date filing still gets a missing Submission ID.
         if (filing.statusAsOf && eventAt <= filing.statusAsOf) {
-          skipped++;
+          if (d.submissionId && !filing.filingReference) {
+            await tx.filingRecord.update({ where: { id: filing.id }, data: { filingReference: d.submissionId } });
+            await audit(tx, { actorId: actor.id, action: "filing.submission_id_imported", entityType: "FilingRecord", entityId: filing.id, clientId: r.clientId, details: { submissionId: d.submissionId, batchId, source: batch.source, fileName: batch.fileName, rowNumber: r.rowNumber } });
+            await tx.taxImportRow.update({ where: { id: r.id }, data: { applied: true, filingId: filing.id } });
+            applied++;
+          } else skipped++;
           continue;
         }
         await tx.filingRecord.update({
@@ -469,10 +532,15 @@ export async function commitTaxImport(actor: Actor, batchId: string, linkClientI
             lastVerifiedAt: new Date(),
             submittedAt: d.submittedAt ? new Date(d.submittedAt) : filing.submittedAt,
             acknowledgedAt: d.status === "ACCEPTED" || d.status === "REJECTED" ? eventAt : filing.acknowledgedAt,
-            filingReference: d.submissionId ?? filing.filingReference,
+            // Each return (federal, each state) keeps its own ID. One already on file is never
+            // replaced without Tabitha's approval.
+            filingReference: !filing.filingReference ? d.submissionId ?? null : d.replaceApprovedById && d.submissionId ? d.submissionId : filing.filingReference,
             rejectionCodes: d.status === "REJECTED" ? d.rejectionCodes : filing.rejectionCodes,
           },
         });
+        if (filing.filingReference && d.replaceApprovedById && d.submissionId && d.submissionId !== filing.filingReference) {
+          await audit(tx, { actorId: actor.id, action: "filing.submission_id_replaced", entityType: "FilingRecord", entityId: filing.id, clientId: r.clientId, details: { from: filing.filingReference, to: d.submissionId, approvedById: d.replaceApprovedById, batchId, source: batch.source, fileName: batch.fileName, rowNumber: r.rowNumber } });
+        }
         await tx.filingStatusEvent.create({
           data: { filingId: filing.id, field: "FILING", fromValue: filing.filingStatus, toValue: d.status!, source: "TAXACT_IMPORT", actorId: actor.id, importBatchId: batchId, eventAt },
         });

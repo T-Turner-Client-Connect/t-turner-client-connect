@@ -21,7 +21,7 @@ const MATCH: Record<string, { label: string; tone: "green" | "navy" | "gold" | "
   ERROR: { label: "Error", tone: "red" },
 };
 
-type Row = { clientRef: string | null; displayName: string | null; taxYear: number | null; returnType: string | null; jurisdiction: string | null; filingType: string; status: keyof typeof FILING_LABELS | null; eventAt: string | null; submissionId: string | null };
+type Row = { refOnFile?: string | null; clientRef: string | null; displayName: string | null; taxYear: number | null; returnType: string | null; jurisdiction: string | null; filingType: string; status: keyof typeof FILING_LABELS | null; eventAt: string | null; submissionId: string | null };
 
 export default async function TaxImportReview({ params }: { params: Promise<{ id: string }> }) {
   await requireUser();
@@ -44,7 +44,8 @@ export default async function TaxImportReview({ params }: { params: Promise<{ id
           {batch.rows.map((r) => {
             const d = r.data as Row | null;
             const opts = [
-              ...(r.clientId && !r.errors.length && !["STALE", "FILTERED"].includes(r.match) ? [{ value: "apply", label: `Apply to ${clients.get(r.clientId) ?? "client"}` }] : []),
+              ...(r.clientId && !r.errors.length && !["STALE", "FILTERED"].includes(r.match) ? [{ value: "apply", label: `Apply to ${clients.get(r.clientId) ?? "client"}${d?.refOnFile ? " (keep the Submission ID on file)" : ""}` }] : []),
+              ...(r.clientId && d?.refOnFile ? [{ value: "replace_id", label: "Apply and replace the Submission ID (Tabitha only)" }] : []),
               ...(!r.errors.length && (r.match === "NO_CLIENT" || r.match === "AMBIGUOUS") ? allClients.map((c) => ({ value: `apply:${c.id}`, label: `Apply to ${c.displayName}` })) : []),
               { value: "skip", label: "Skip" },
             ];
