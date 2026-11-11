@@ -40,6 +40,7 @@ export async function prepareStatementsFromBooks(actor: Actor, clientId: string,
       saved.push({ reportType: "FINANCIAL_PACKET", version: r.version, documentId: r.document.id, unchanged: false });
     } catch (err) {
       if (!(err instanceof ValidationError) || !/already saved/.test(err.message)) throw err;
+      saved.push({ reportType: "FINANCIAL_PACKET", version: 0, documentId: "", unchanged: true });
     }
   }
   const net = pl.totals.find((t) => t.label === "Net Income")?.amountCents ?? 0;
@@ -49,7 +50,7 @@ export async function prepareStatementsFromBooks(actor: Actor, clientId: string,
   await audit(prisma, { actorId: actor.id, action: "coetha.statements_prepared", entityType: "Client", entityId: clientId, clientId, details: { month: ym, saved, openItems: open.length } });
   return {
     month: ym,
-    saved: saved.map((s) => `${s.reportType === "PROFIT_AND_LOSS" ? "Profit & Loss" : s.reportType === "BALANCE_SHEET" ? "Balance Sheet" : "Financial Statements Package"} v${s.version} (draft, staff-only${s.unchanged ? "; unchanged since the last draft" : ""})`),
+    saved: saved.filter((s) => s.version > 0 || !s.unchanged).map((s) => `${s.reportType === "PROFIT_AND_LOSS" ? "Profit & Loss" : s.reportType === "BALANCE_SHEET" ? "Balance Sheet" : "Financial Statements Package"} v${s.version} (draft, staff-only${s.unchanged ? "; unchanged since the last draft" : ""})`),
     figures: {
       income: usd(pl.sections.find((x) => x.title === "Income")?.totalCents ?? 0),
       expenses: usd(pl.sections.find((x) => x.title === "Expenses")?.totalCents ?? 0),

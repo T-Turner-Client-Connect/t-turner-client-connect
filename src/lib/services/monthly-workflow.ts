@@ -97,7 +97,14 @@ export async function monthlyChecklist(clientId: string, year: number, month: nu
   if (profile?.payroll) {
     const prDocs = await prisma.document.findMany({ where: { clientId, deletedAt: null, docType: "PAYROLL_REPORT", OR: [{ periodId: period?.id ?? "-" }, { year, month }, { periodStart: { lte: to }, periodEnd: { gte: from } }] }, select: { createdAt: true }, orderBy: { createdAt: "desc" } });
     const pr = prDocs.length;
-    items.push({ key: "PAYROLL", label: `Payroll data received${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`, state: pr ? "DONE" : due ? "MISSING" : "NOT_DUE", pill: pr ? `Received ${prDocs[0].createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/Chicago" })}` : due ? "Not received" : "Not due", detail: pr ? `${pr} payroll report${pr === 1 ? "" : "s"} received` : "Payroll reports not received" });
+    // Payroll already in the books for the month also counts: a pay run (imported register) or
+    // posted payroll entries (wages / payroll taxes accounts).
+    const [runs, posted] = pr ? [0, 0] : await Promise.all([
+      prisma.payrollRun.count({ where: { clientId, checkDate: { gte: from, lte: to }, status: { notIn: ["VOID", "VOIDED", "DELETED"] } } }),
+      prisma.journalLine.count({ where: { entry: { clientId, date: { gte: from, lte: to }, reversedBy: null, reversalOfId: null }, account: { type: "EXPENSE", name: { contains: "payroll", mode: "insensitive" } } } }).then(async (n) => n || prisma.journalLine.count({ where: { entry: { clientId, date: { gte: from, lte: to }, reversedBy: null, reversalOfId: null }, account: { type: "EXPENSE", name: { contains: "wages", mode: "insensitive" } } } })),
+    ]);
+    const inBooks = runs > 0 || posted > 0;
+    items.push({ key: "PAYROLL", label: `Payroll data received${profile.payrollProvider ? ` (${profile.payrollProvider})` : ""}`, state: pr || inBooks ? "DONE" : due ? "MISSING" : "NOT_DUE", pill: pr ? `Received ${prDocs[0].createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/Chicago" })}` : inBooks ? "Entered" : due ? "Not received" : "Not due", detail: pr ? `${pr} payroll report${pr === 1 ? "" : "s"} received` : runs ? `${runs} pay run${runs === 1 ? "" : "s"} in the books` : posted ? "Payroll is posted in the books for the month" : "Payroll reports not received" });
   }
 
   const [rows, open] = await Promise.all([

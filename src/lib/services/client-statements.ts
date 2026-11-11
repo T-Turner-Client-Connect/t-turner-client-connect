@@ -252,6 +252,10 @@ export async function clientStatementPdf(s: Built) {
   const name = client.bookkeepingProfile?.legalName || client.businessName || client.displayName;
   const pdf = await PDFDocument.create();
   pdf.setTitle(safe(`${name} — ${s.title} — ${s.period}${s.interim ? ` — ${s.interim}` : ""}`));
+  // Same day, same figures → the same file (so preparing again without changes saves nothing new).
+  const day = new Date(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`);
+  pdf.setCreationDate(day);
+  pdf.setModificationDate(day);
   pdf.setAuthor(safe(BUSINESS.legalName));
   pdf.setSubject("Financial statement");
   pdf.setKeywords([]);

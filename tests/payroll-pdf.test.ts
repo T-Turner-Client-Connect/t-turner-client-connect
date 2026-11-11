@@ -121,8 +121,8 @@ describe("ADP payroll register as a PDF", () => {
 
   it("a long register is read in parts (whole pages) at the same time and joined by check date, still held to its printed totals", async () => {
     const page = (n: number, len: number) => Array.from({ length: len }, (_, i) => `p${n} line ${i}`);
-    const parts = pageChunks([page(1, 40), page(2, 40), [], page(3, 10), page(4, 90)]);
-    expect(parts.map((c) => c.length)).toEqual([40, 50, 90]);
+    const parts = pageChunks([page(1, 30), page(2, 30), [], page(3, 10), page(4, 90)]);
+    expect(parts.map((c) => c.length)).toEqual([30, 40, 90]);
 
     const base = READING.payDates[0];
     const merged = mergeReadings([

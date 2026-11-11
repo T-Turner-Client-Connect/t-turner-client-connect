@@ -86,6 +86,7 @@ export const CHECKLIST_TOOLS = [
               documentId: { type: "string" },
               month: { type: "string", description: "YYYY-MM (payroll_received)" },
               note: { type: "string", description: "One line: why (required for request_not_needed)" },
+              share_with_client: { type: "boolean", description: "payroll_received: show it on the client's Payroll page (default true; false keeps it office-only)" },
             },
             required: ["action"],
           },
@@ -97,7 +98,7 @@ export const CHECKLIST_TOOLS = [
 ];
 export const CHECKLIST_TOOL_NAMES = new Set(CHECKLIST_TOOLS.map((t) => t.name));
 
-type Update = { action?: unknown; requestId?: unknown; documentId?: unknown; month?: unknown; note?: unknown };
+type Update = { action?: unknown; requestId?: unknown; documentId?: unknown; month?: unknown; note?: unknown; share_with_client?: unknown };
 const str = (v: unknown, n = 200) => (typeof v === "string" ? v.trim().slice(0, n) : "");
 
 /** One update for ONE business. Each refusal is returned in plain words; nothing outside this business is touched. */
@@ -126,7 +127,7 @@ async function applyUpdate(actor: Actor, clientId: string, u: Update): Promise<s
   }
   if (action === "payroll_received") {
     if (!monthOk(u.month)) return "Give the payroll month as YYYY-MM.";
-    return filePayrollReport(actor, clientId, str(u.documentId, 60), u.month, note || null);
+    return filePayrollReport(actor, clientId, str(u.documentId, 60), u.month, note || null, { shareWithClient: (u as { share_with_client?: unknown }).share_with_client !== false });
   }
   return "Unknown update. Use request_received, request_not_needed or payroll_received.";
 }
@@ -136,7 +137,9 @@ async function applyUpdate(actor: Actor, clientId: string, u: Update): Promise<s
  * uploaded in Ask Coetha) as the month's payroll report: the same record, labeled, dated to the
  * month and kept staff-only. The Monthly Progress "Payroll data received" line then shows it.
  */
-export async function filePayrollReport(actor: Actor, clientId: string, documentId: string, ym: string, note: string | null = null): Promise<string> {
+export async function filePayrollReport(actor: Actor, clientId: string, documentId: string, ym: string, note: string | null = null, opts: { shareWithClient?: boolean } = {}): Promise<string> {
+  // Tabitha's rule: payroll reports go to the client's Payroll page, month by month (shared unless said otherwise).
+  const share = opts.shareWithClient !== false;
   if (!monthOk(ym)) return "Give the payroll month as YYYY-MM.";
   const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId }, select: { payroll: true } });
   if (!profile?.payroll) return "Payroll isn't turned on for this business, so there's no payroll line to clear.";
@@ -145,10 +148,9 @@ export async function filePayrollReport(actor: Actor, clientId: string, document
   if (doc.category === "IDENTITY") return "That file can't be filed as a payroll report.";
   if (doc.docType && doc.docType !== "BK_OTHER" && doc.docType !== "PAYROLL_REPORT") return "That file is already filed as something else.";
   const { y, m, from, to } = monthBounds(ym);
-  // Payroll reports stay staff-only (they list employees' pay).
-  await prisma.document.update({ where: { id: doc.id }, data: { category: "BOOKKEEPING", docType: "PAYROLL_REPORT", visibility: "STAFF_ONLY", year: y, month: m, periodStart: from, periodEnd: to, reportPeriodType: "MONTH" } });
+  await prisma.document.update({ where: { id: doc.id }, data: { category: "BOOKKEEPING", docType: "PAYROLL_REPORT", visibility: share ? "PUBLISHED" : "STAFF_ONLY", publishedAt: share ? new Date() : null, title: `Payroll report — ${ym}`, year: y, month: m, periodStart: from, periodEnd: to, reportPeriodType: "MONTH" } });
   await audit(prisma, { actorId: actor.id, action: "coetha.checklist_payroll_received", entityType: "Document", entityId: doc.id, clientId, details: { month: ym, note } });
-  return `Filed as the ${ym} payroll report: ${doc.title}`;
+  return `Filed as the ${ym} payroll report${share ? " and shared on the client's Payroll page" : " (office only)"}: ${doc.title}`;
 }
 
 /** Runs one checklist tool call for ONE business. Clearing needs the same permission as handling the business's document requests. */
