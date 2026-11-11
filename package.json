@@ -24,15 +24,15 @@
     "drill:seed": "tsx --require ./scripts/lib/cli-preload.cjs scripts/drill-seed.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.4.0",
-    "@aws-sdk/client-s3": "^3.1161.0",
+    "@anthropic-ai/sdk": "^1.6.0",
+    "@aws-sdk/client-s3": "^3.1163.0",
     "@netlify/blobs": "^11.1.7",
-    "@netlify/database": "^2.0.1",
+    "@netlify/database": "^2.0.2",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
-    "lucide-react": "^1.66.0",
+    "lucide-react": "^1.70.0",
     "next": "^16.4.5",
     "papaparse": "^5.7.0",
     "pdf-lib": "^1.17.1",
@@ -46,9 +46,9 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@netlify/functions": "^6.0.3",
-    "@netlify/plugin-nextjs": "^5.16.5",
-    "@tailwindcss/postcss": "^4.3.3",
+    "@netlify/functions": "^6.1.0",
+    "@netlify/plugin-nextjs": "^5.16.6",
+    "@tailwindcss/postcss": "^4.3.4",
     "@types/node": "^22.20.5",
     "@types/papaparse": "^5.5.2",
     "@types/qrcode": "^1.5.6",
@@ -59,7 +59,7 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   },
   "overrides": {
     "@typescript-eslint/typescript-estree": {
