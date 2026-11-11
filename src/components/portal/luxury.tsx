@@ -64,9 +64,20 @@ function topicLook(n: NewsItem) {
 /** One elegant row per announcement: emblem, headline, short summary, arrow. */
 export function NewsList({ items, href, limit = 3, full }: { items: NewsItem[]; href: string; limit?: number; full?: boolean }) {
   if (!items.length) return <p className="py-6 text-sm text-slate-600">No announcements right now. New IRS, state and office updates will appear here.</p>;
+  // On the Home card, a pinned flyer (Tabitha's welcome flyer) shows full size at the top; the
+  // other announcements (monthly flyers, IRS and office updates) are listed below it.
+  const feature = !full && items[0].flyer && items[0].pinned ? items[0] : null;
+  const rest = feature ? items.slice(1, limit) : items.slice(0, limit);
   return (
+    <>
+    {feature && (
+      <Link href={href} className="mb-2 block" data-testid="news-feature-flyer" aria-label={`${feature.title} — open News & Announcements`}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={feature.flyer!.src} alt={feature.flyer!.alt} width={1536} height={1024} className="h-auto w-full rounded-2xl shadow-sm ring-1 ring-gold-200" />
+      </Link>
+    )}
     <ul className="divide-y divide-gold-100" data-testid="news-list">
-      {items.slice(0, limit).map((n) => {
+      {rest.map((n) => {
         const look = topicLook(n);
         return (
           <li key={n.id}>
@@ -94,6 +105,7 @@ export function NewsList({ items, href, limit = 3, full }: { items: NewsItem[]; 
         );
       })}
     </ul>
+    </>
   );
 }
 
