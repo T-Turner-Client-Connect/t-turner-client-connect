@@ -131,7 +131,7 @@ describe("business accounts: identity documents are per owner", () => {
     await expect(assignIdentityToOwner(tabitha, license.id, b.owner.id)).rejects.toBeInstanceOf(ValidationError);
 
     // Only A sees and opens it now.
-    expect(await canOpen(license.documentId, { portalUserId: a.login.id })).toBe(true);
+    expect(await canOpen(license.documentId, { portalUserId: a.login.id })).toBe(false); // identity files are office-only
     for (const o of [b, c, d]) expect(await canOpen(license.documentId, { portalUserId: o.login.id })).toBe(false);
     expect(visibleDocIds(await identityOverviewForViewer(biz.id, a.login.id))).toEqual([license.documentId]);
     expect((await ownerIdentityOverview(a.login, biz.id))!.map((e) => e.person.businessOwnerId)).toEqual([a.owner.id]);
@@ -175,7 +175,7 @@ describe("business accounts: identity documents are per owner", () => {
     expect(visibleDocIds(await portalIdentityOverview(a.login, biz.id))).toEqual([license.documentId]);
     expect(identityChecklistFor(await identityOverviewForViewer(biz.id, a.login.id)).flatMap((p) => p.items.map((i) => i.documentId)).filter(Boolean)).toEqual([license.documentId]);
     expect(await portalIdentityOverview(b.login, biz.id)).toEqual([]);
-    expect(await canOpen(license.documentId, { portalUserId: a.login.id })).toBe(true);
+    expect(await canOpen(license.documentId, { portalUserId: a.login.id })).toBe(false); // identity files are office-only
     expect(await canOpen(license.documentId, { portalUserId: b.login.id })).toBe(false);
   });
 
@@ -188,7 +188,7 @@ describe("business accounts: identity documents are per owner", () => {
     const me = await ensureClientPerson(c.id);
     const rec = await uploadIdentityDocument({ portal: user }, { clientId: c.id, personId: me.id, type: "DRIVERS_LICENSE", expiresOn: inDays(400), bytes: pdf(), originalName: "dl.pdf" });
     expect(visibleDocIds(await portalIdentityOverview(user, c.id))).toEqual([rec.documentId]);
-    expect(await canOpen(rec.documentId, { portalUserId: user.id })).toBe(true);
+    expect(await canOpen(rec.documentId, { portalUserId: user.id })).toBe(false); // identity files are office-only
     expect(await unassignedBusinessIdentity(tab, c.id)).toBeNull();
     await expect(assignIdentityToOwner(tab, rec.id, "anything")).rejects.toBeInstanceOf(ValidationError);
   });

@@ -136,7 +136,7 @@ describe("identity documents", () => {
     // The uploading client (account owner with identity access) can't retrieve them with a direct link.
     expect(await open(ss.documentId, { portalUserId: user.id })).toBeNull();
     expect(await open(bc.documentId, { portalUserId: user.id })).toBeNull();
-    expect(await open(dl.documentId, { portalUserId: user.id })).not.toBeNull(); // licenses unchanged
+    expect(await open(dl.documentId, { portalUserId: user.id })).toBeNull(); // no identity file opens in the portal (Tabitha's rule)
     // Neither can a bookkeeper/authorized contact, even when given identity access.
     const { token } = await invitePortalUser(tab, client.id, { email: "bookkeeper@example.com", name: "Bo", role: "AUTHORIZED_CONTACT" });
     const bo = await acceptPortalInvite(token!, "Client-Pass-5678");
