@@ -235,6 +235,26 @@ export async function uploadIdentityDocument(who: { staff: Actor } | { portal: P
   const reason = input.replacementReason?.trim().slice(0, 120) || null;
   if (existing && !reason) throw new ValidationError("Tell us why you're replacing the document on file.");
 
+  // The same file is already on file for this client (e.g. a questionnaire upload that wasn't
+  // filed into Identity): that one stored copy moves into Identity Documents instead of the upload
+  // being refused as a duplicate.
+  const { sha256Of } = await import("./documents");
+  const onFile = await prisma.document.findFirst({ where: { clientId: input.clientId, deletedAt: null, file: { sha256: sha256Of(input.bytes) } }, select: { id: true, category: true } });
+  if (onFile && onFile.category === "IDENTITY") throw new ValidationError("This exact file is already in Identity Documents.");
+  if (onFile) {
+    const { fileIntoIdentity } = await import("./identity-import");
+    const r = await fileIntoIdentity("staff" in who ? who.staff : null, { clientId: input.clientId, documentId: onFile.id, filing: { type: input.type, role: (person.role === "OWNER" ? "CLIENT" : person.role) as Exclude<IdRole, "OWNER"> }, takenAt: new Date(), personId: person.id });
+    if (!r.filed) throw new ValidationError(`This file is already saved for this client, and it couldn't be moved into Identity Documents: ${r.reason ?? "unknown reason"}`);
+    const rec = await prisma.identityDocument.findFirstOrThrow({ where: { documentId: onFile.id }, orderBy: { createdAt: "desc" } });
+    // What this upload said (license expiration, replacement reason) goes with it.
+    const updated = await prisma.identityDocument.update({ where: { id: rec.id }, data: { expiresOn, replacementReason: reason, uploadedByStaffId: "staff" in who ? who.staff.id : rec.uploadedByStaffId, uploadedByPortalId: "portal" in who ? who.portal.id : null } });
+    // A business owner's document belongs to that owner only.
+    if (person.businessOwnerId) await prisma.document.update({ where: { id: onFile.id }, data: { businessOwnerId: person.businessOwnerId } });
+    await audit(prisma, { actorId: "staff" in who ? who.staff.id : null, action: "identity.uploaded", entityType: "IdentityDocument", entityId: rec.id, clientId: input.clientId, details: { type: input.type, role: person.role, replacement: !!existing, fromFileOnFile: true } });
+    if ("portal" in who) await queueStaffAlert({ documentId: onFile.id });
+    return updated;
+  }
+
   const uploader = "staff" in who ? { staff: who.staff } : { portal: who.portal };
   const stored = await storeDocumentFile(input.bytes, input.originalName, uploader, input.clientId, { encrypt: true });
   try {

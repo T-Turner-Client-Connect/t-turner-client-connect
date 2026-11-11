@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
-import { authorizeDownload, downloadToken } from "@/lib/services/documents";
+import { authorizeDownload, downloadToken, staffUploadDocument } from "@/lib/services/documents";
 import { linkSubmission, taxYearStatuses } from "@/lib/services/tax-center";
-import { identityCompletion, identityOverview, ipPinStatus, revealIpPin, saveIpPin, setHasIpPin } from "@/lib/services/identity";
+import { ensureClientPerson, identityCompletion, identityOverview, ipPinStatus, revealIpPin, saveIpPin, setHasIpPin, uploadIdentityDocument } from "@/lib/services/identity";
 import { classifyIdQuestion, fileQuestionnaireUploadByHand, moveQuestionnaireIdentity, spouseNameFrom } from "@/lib/services/identity-import";
 
 // Fictional clients, people and files only. A fake Jotform API serves the submissions and files.
@@ -175,5 +175,19 @@ describe("IRS IP PIN, Completed, and missing items", () => {
     expect(y26.steps[0].value).toMatch(/Upload your missing identity documents to finish: .*driver's license/);
     expect(y25.steps[0]).toMatchObject({ value: "Completed", done: true });
   });
-});
 
+  it("uploading an ID that is already on file (e.g. a questionnaire upload) moves that copy into Identity instead of refusing it", async () => {
+    const s = await setup();
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0x46, 0x41, 0x4b, 0x45, 0x0a]);
+    const q = await staffUploadDocument(s.admin, { clientId: s.client.id, category: "TAXES", title: "2025 questionnaire upload — bc", year: 2025, visibility: "STAFF_ONLY", bytes, originalName: "bc.pdf", notify: false });
+    const person = await ensureClientPerson(s.client.id);
+    const rec = await uploadIdentityDocument({ staff: s.staff }, { clientId: s.client.id, personId: person.id, type: "BIRTH_CERTIFICATE", bytes, originalName: "bc (1).pdf" });
+    expect(rec).toMatchObject({ documentId: q.id, type: "BIRTH_CERTIFICATE", status: "PENDING_VERIFICATION" });
+    const doc = await prisma.document.findUniqueOrThrow({ where: { id: q.id }, include: { file: true } });
+    expect(doc).toMatchObject({ category: "IDENTITY", docType: "BIRTH_CERTIFICATE" });
+    expect(doc.file.encrypted).toBe(true);
+    expect(await prisma.document.count({ where: { clientId: s.client.id } })).toBe(1);
+    // The same file again: already in Identity, said plainly.
+    await expect(uploadIdentityDocument({ staff: s.staff }, { clientId: s.client.id, personId: person.id, type: "BIRTH_CERTIFICATE", bytes, originalName: "bc.pdf", replacementReason: "again" })).rejects.toThrow(/already in Identity Documents/);
+  });
+});
