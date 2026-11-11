@@ -132,7 +132,14 @@ export default async function ClientsPage({ searchParams }: { searchParams: SP }
       {pages > 1 && (
         <nav className="mt-4 flex items-center justify-between text-sm" aria-label="Pages">
           {page > 1 ? <Link className={buttonClass("secondary")} href={qs({ page: String(page - 1) })}>Previous</Link> : <span />}
-          <span>Page {page} of {pages}</span>
+          <form action="/clients" method="get" className="flex items-center gap-2" data-testid="page-jump">
+            {Object.entries(sp).filter(([k, v]) => k !== "page" && typeof v === "string" && v).map(([k, v]) => <input key={k} type="hidden" name={k} value={v as string} />)}
+            <label className="flex items-center gap-2">Page
+              <input className="input w-16 py-1 text-center" type="number" name="page" min={1} max={pages} defaultValue={page} aria-label="Go to page" />
+            </label>
+            <span>of {pages}</span>
+            <button type="submit" className={buttonClass("secondary")}>Go</button>
+          </form>
           {page < pages ? <Link className={buttonClass("secondary")} href={qs({ page: String(page + 1) })}>Next</Link> : <span />}
         </nav>
       )}
