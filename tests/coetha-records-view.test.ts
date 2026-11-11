@@ -117,7 +117,7 @@ describe("Ask Coetha's complete read-only view of the records", () => {
     // The complete records went with the question: all 121 waiting rows, not 80.
     const records = sent[0].system.find((b) => b.text.startsWith("Records (JSON)"))!.text;
     expect(JSON.parse(records.slice(records.indexOf("\n") + 1)).waitingRows).toHaveLength(121);
-    expect(sent[0].tools!.map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries"]);
+    expect(sent[0].tools!.map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist"]);
     // The search result came back to her, for this business only.
     const toolResult = JSON.stringify(sent[1].messages[sent[1].messages.length - 1]);
     expect(toolResult).toContain("WIRE IN FROM EXAMPLE PARTNER");

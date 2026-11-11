@@ -190,7 +190,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
 /** The AI service's "slow down" answers: the question is kept and retried instead of failing. */
 export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEOUT"]);
 
-/** Read-only searches for everyone; prepare_entries, memory and ask_client only when the person asking is Tabitha. */
+/** Read-only searches and the monthly checklist for everyone; prepare_entries, memory and ask_client only when the person asking is Tabitha. */
 async function chatTools(actor: Actor, clientId: string, records: unknown, currentQuestion?: string) {
   const owner = await isPrimaryOwner(actor.id);
   const { PREPARE_TOOL, runPrepareTool } = await import("./coetha-decisions");
@@ -199,13 +199,17 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
   // Ask Client drafts (drafts only; never sent from chat). Like her other preparing tools: Tabitha only.
   const { ASK_CLIENT_TOOL, runAskClientTool } = await import("./ask-client");
   const asks = owner;
+  // The Monthly Progress checklist: everyone may read it; clearing a paperwork line is checked
+  // against the person asking (the same people who handle the business's document requests).
+  const { CHECKLIST_TOOLS, CHECKLIST_TOOL_NAMES, runChecklistTool } = await import("./coetha-checklist");
   return {
-    defs: owner ? [...RECORDS_TOOLS, PREPARE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : RECORDS_TOOLS,
+    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, PREPARE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS],
     run: (name: string, input: unknown) =>
       owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
         : owner && memoryNames.has(name) ? runMemoryTool(actor, clientId, name, input)
           : asks && name === ASK_CLIENT_TOOL.name ? runAskClientTool(actor, clientId, input)
-            : runRecordsTool(clientId, name, input),
+            : CHECKLIST_TOOL_NAMES.has(name) ? runChecklistTool(actor, clientId, name, input)
+              : runRecordsTool(clientId, name, input),
     records,
     asker: owner ? ("owner" as const) : ("staff" as const),
   };
@@ -222,7 +226,7 @@ export async function assertCanAsk(clientId: string) {
  * Answers a question that waited for its documents to be read in the background (coetha-reading):
  * the same books, records and read-only search as any question, plus what Coetha read from the
  * documents. The answer is placed right after the question in the thread. With quick: true (a
- * worker with little time left) Coetha answers without searching.
+ * worker with little time left) Coetha gets one round of her tools, then answers.
  */
 export async function answerQuestion(asker: Actor, clientId: string, questionId: string, documentsRead: string, opts: { quick?: boolean } = {}) {
   await assertLedger(asker, clientId);
@@ -238,7 +242,9 @@ export async function answerQuestion(asker: Actor, clientId: string, questionId:
     ...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })),
     { role: "user", text: documentsRead ? `${question.text}\n\nWhat you read from the attached documents (read page by page; each item is matched to the bank rows where possible):\n${documentsRead}` : question.text },
   ];
-  const res = await callCoethaChat(books, turns, opts.quick ? { defs: [], run: async () => ({}), records } : await chatTools(asker, clientId, records));
+  // Quick (a worker with little time left): one round of tools, so Coetha can still prepare
+  // entries, save what Tabitha decided and clear checklist lines, then she answers.
+  const res = await callCoethaChat(books, turns, { ...(await chatTools(asker, clientId, records)), ...(opts.quick ? { maxRounds: 1 } : {}) });
   const answered = await prisma.coethaChatMessage.create({ data: { clientId, chatId: question.chatId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(question.createdAt.getTime() + 1) } });
   await audit(prisma, { actorId: asker.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId, background: true, searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
   return answered;
