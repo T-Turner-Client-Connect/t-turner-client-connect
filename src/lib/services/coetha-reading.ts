@@ -147,7 +147,7 @@ export async function finishUpload(actor: Actor, uploadId: string) {
 }
 
 /** One job per document: reading a document that is already read (or being read) reuses that job. */
-async function queueJob(actor: Actor, clientId: string, documentId: string, name: string) {
+async function queueJob(actor: Pick<Actor, "id">, clientId: string, documentId: string, name: string) {
   const found = await prisma.coethaDocJob.findUnique({ where: { documentId } });
   if (found) return found;
   try {
@@ -168,6 +168,17 @@ export async function readDocumentsOnFile(actor: Actor, clientId: string, docume
     jobs.push(await queueJob(actor, clientId, d.id, d.file.originalName || d.title));
   }
   return jobs;
+}
+
+/**
+ * A client's upload answering an Ask Client request: queued for Coetha to read with no staff step
+ * (recorded under the staff member who made the request). The caller checks the request, the
+ * switch and the client's Coetha preference first.
+ */
+export async function queueSystemReading(clientId: string, documentId: string, name: string, requestedById: string) {
+  const job = await queueJob({ id: requestedById }, clientId, documentId, name);
+  await audit(prisma, { actorId: null, action: "coetha.client_response_queued", entityType: "Document", entityId: documentId, clientId, details: { jobId: job.id } });
+  return job;
 }
 
 /** "Try again" on a failed job: it starts over from its saved place. */

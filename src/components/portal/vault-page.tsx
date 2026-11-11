@@ -39,7 +39,7 @@ function bucketOf(d: Doc): VaultCat | null {
 
 /** A row in the table: a vault file, or an identity record (status only — opened from Identity Documents). */
 type Row =
-  | { kind: "doc"; id: string; name: string; sub: string; category: string; year: string; added: Date; doc: Doc }
+  | { kind: "doc"; id: string; name: string; sub: string; category: string; year: string; added: Date; doc: Doc; status: string | null }
   | { kind: "id"; id: string; name: string; sub: string; category: string; year: string; added: Date; status: string };
 
 function identityRows(overview: Overview, filter: (role: string) => boolean, archived: boolean): Row[] {
@@ -76,7 +76,15 @@ const docRow = (d: Doc): Row => ({
   year: d.year ? String(d.year) : "—",
   added: d.publishedAt ?? d.createdAt,
   doc: d,
+  status: submittedStatus(d),
 });
+
+/** What the client sent us: the request it answered and where it stands (office review never shown in detail). */
+function submittedStatus(d: Doc): string | null {
+  if (!d.uploadedByPortalId) return null;
+  const st = d.request?.status === "ACCEPTED" ? "Reviewed by our office" : "Received — our office is reviewing it";
+  return d.request ? `Sent for: ${d.request.title} · ${st}` : `Submitted by you · ${d.reviewStatus === "APPROVED" ? "Reviewed by our office" : "Received"}`;
+}
 
 /**
  * A business-only account's vault, in the owner's categories. Presentation only — the same
@@ -282,7 +290,7 @@ export function DocumentsTable({ rows, years, year, yearHref, linkFor, identityH
                         ) : (
                           <span className="block text-navy-900 [overflow-wrap:anywhere]">{r.name}</span>
                         )}
-                        {r.kind === "id" && <span className="block text-xs text-slate-600">{r.status}</span>}
+                        {r.status && <span className="block text-xs text-slate-600" data-testid={r.kind === "doc" ? "vault-submitted-status" : undefined}>{r.status}</span>}
                       </span>
                     </span>
                   </td>

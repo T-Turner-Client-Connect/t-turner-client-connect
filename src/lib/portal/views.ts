@@ -153,7 +153,8 @@ export async function loadPortalDocuments(clientId: string, perms: Perms, opts: 
       // Unverified logins don't see our past-year records (see isHistorical).
       ...(opts.includeHistorical === false ? { NOT: { uploadedByStaffId: { not: null }, year: { lt: lastYear } } } : {}),
     },
-    include: { file: { select: { mimeType: true, sizeBytes: true } } },
+    // The request a client's upload answered (its client-facing title and status), for the Vault's status column.
+    include: { file: { select: { mimeType: true, sizeBytes: true } }, request: { select: { title: true, status: true } } },
     orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
   });
 }
