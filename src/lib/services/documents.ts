@@ -395,6 +395,23 @@ export async function portalUploadDocument(
   }
 }
 
+/**
+ * A bookkeeping month's documents in the portal, for one login: published, scanned-clean and
+ * client-receivable files (approved reports only, latest version), plus client uploads at any scan
+ * stage (listed, opened only once clean) — all within what this login may see
+ * (`portalDocumentScope`: its categories, payroll only with payroll access).
+ */
+export function portalPeriodDocumentsWhere(access: Parameters<typeof portalDocumentScope>[0], portalUserId: string | null) {
+  return {
+    deletedAt: null,
+    supersededAt: null,
+    AND: [
+      portalDocumentScope(access, portalUserId),
+      { OR: [{ visibility: "PUBLISHED" as const, scanStatus: "CLEAN" as const, AND: [clientReceivableWhere] }, { uploadedByPortalId: { not: null }, reportType: null }] },
+    ],
+  };
+}
+
 /** Documents a portal user may see for one client. */
 export async function portalDocuments(user: PortalActor, clientId: string) {
   const access = await requireClientAccess(user.id, clientId);

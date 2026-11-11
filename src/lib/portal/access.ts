@@ -132,12 +132,21 @@ export function k1VisibleWhere(portalUserId: string): Prisma.DocumentWhereInput 
  * categories, plus their own uploads (always), plus K-1s they may open. With no
  * viewer (staff preview) it is just the categories.
  */
+/** Payroll files by type, wherever they were filed (a payroll register is kept under Bookkeeping). */
+export const PAYROLL_DOC_TYPES = ["PAYROLL_REPORT", "FORM_W2_ISSUED"];
+/** Not a payroll file by type (null-safe: SQL NOT over a nullable column would also drop NULL rows). */
+const notPayrollByType: Prisma.DocumentWhereInput = {
+  OR: [{ docType: null }, { AND: [{ docType: { notIn: PAYROLL_DOC_TYPES } }, { NOT: { docType: { startsWith: "PAYROLL" } } }] }],
+};
+
 export function portalDocumentScope(access: CategoryFlags, portalUserId: string | null): Prisma.DocumentWhereInput {
   const categories = allowedCategories(access);
-  if (!portalUserId) return { category: { in: categories } };
+  // A login without payroll access sees no payroll file, whatever category it was filed under.
+  const byCategory: Prisma.DocumentWhereInput = access.canViewPayroll === false ? { AND: [{ category: { in: categories } }, notPayrollByType] } : { category: { in: categories } };
+  if (!portalUserId) return byCategory;
   return {
     OR: [
-      { category: { in: categories } },
+      byCategory,
       { category: "CLIENT_UPLOADS", uploadedByPortalId: portalUserId },
       k1VisibleWhere(portalUserId),
       ownerPersonalVisibleWhere(portalUserId),
