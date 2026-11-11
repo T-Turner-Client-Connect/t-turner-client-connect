@@ -23,7 +23,7 @@ export async function ownerSwitches() {
     liveBanking: { on: s?.liveBankingEnabled ?? false, changedAt: s?.liveBankingChangedAt ?? null, changedById: s?.liveBankingChangedById ?? null },
     coetha: { on: s?.coethaEnabled ?? false, changedAt: s?.coethaChangedAt ?? null, changedById: s?.coethaChangedById ?? null },
     coethaAutoSend: { on: s?.coethaAutoSendRequests ?? true, changedAt: s?.coethaAutoSendChangedAt ?? null, changedById: s?.coethaAutoSendChangedById ?? null },
-    coethaAutoPost: { on: s?.coethaAutoPost ?? true, changedAt: s?.coethaAutoPostChangedAt ?? null, changedById: s?.coethaAutoPostChangedById ?? null },
+    coethaAutoPost: { on: s?.coethaAutoPost === true, changedAt: s?.coethaAutoPostChangedAt ?? null, changedById: s?.coethaAutoPostChangedById ?? null },
     portalInvites: { on: s?.portalInvitesAuthorized === true, changedAt: s?.portalInvitesChangedAt ?? null, changedById: s?.portalInvitesChangedById ?? null },
     taxSummaryAutoSend: { on: s?.taxSummaryAutoSend === true, changedAt: s?.taxSummaryAutoSendAt ?? null, changedById: s?.taxSummaryAutoSendById ?? null },
     clientRollout: { on: s?.clientRolloutAuthorized === true, changedAt: s?.clientRolloutChangedAt ?? null, changedById: s?.clientRolloutChangedById ?? null },
@@ -40,9 +40,9 @@ export async function coethaAutoSendOn(): Promise<boolean> {
   return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoSendRequests: true } }))?.coethaAutoSendRequests ?? true;
 }
 
-/** Tabitha's setting: Coetha posts routine bookkeeping herself. On by default (her decision); she can turn it off. */
+/** Tabitha's setting: Coetha posts routine bookkeeping herself. OFF by default; only Tabitha turns it on. */
 export async function coethaAutoPostOn(): Promise<boolean> {
-  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoPost: true } }))?.coethaAutoPost ?? true;
+  return (await prisma.integrationSettings.findUnique({ where: { id: "default" }, select: { coethaAutoPost: true } }))?.coethaAutoPost === true;
 }
 
 /** Tabitha's safety lock on Prepared invitations: batches can be prepared and approved, but Send is refused until she authorizes it. Off by default. */

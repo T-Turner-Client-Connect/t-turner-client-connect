@@ -286,6 +286,11 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
 
   it("auto-posting: Tabitha's quoted decisions and verified routine items post; everything else waits on her card", async () => {
     const s = await setup();
+    // Off until Tabitha turns it on; staff can't turn it on.
+    const { ownerSwitches } = await import("@/lib/services/owner-switches");
+    expect((await ownerSwitches()).coethaAutoPost.on).toBe(false);
+    await expect(setOwnerSwitch(s.daria, "coethaAutoPost", true)).rejects.toThrow();
+    await setOwnerSwitch(s.tabitha, "coethaAutoPost", true);
     const gl = (await s.acct("1000")).id;
     await importBankCsv(s.daria, s.biz.id, gl, { fileName: "flour.csv", text: CSV(["08/10/2026,FLOUR MILL ORDER 55,-90.00", "09/20/2026,FLOUR MILL ORDER 77,-95.00", "09/21/2026,ACME PAPER 9,-40.00", "09/22/2026,CHECK 191,-75.00"]) });
     // How this vendor was posted before: office supplies.
@@ -324,9 +329,8 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
     expect((await applyDecisionsView(s.tabitha, s.biz.id)).autoPosted.find((a) => a.id === flour.id)!.reversed).toBe(true);
   });
 
-  it("with automatic posting turned off, everything waits on the card", async () => {
+  it("by default (automatic posting off) everything Coetha prepares waits on the card, even Tabitha's quoted decisions", async () => {
     const s = await setup();
-    await setOwnerSwitch(s.tabitha, "coethaAutoPost", false);
     const r = await prepareDecisions(s.tabitha, s.biz.id, [{ type: "post_bank_row", ref: "W2", date: "2026-09-05", amount: -580.85, accountCode: "6400", basis: "tabitha_said", quote: "post #184 to 6400" }], "chat", undefined, ["post #184 to 6400 please"]);
     expect(r[0]).toMatchObject({ ok: true, posted: false });
     expect((await s.row("CHECK 184")).status).toBe("UNREVIEWED");
