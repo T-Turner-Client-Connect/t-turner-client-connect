@@ -149,14 +149,36 @@ async function buildBS(sc: Scope) {
   return { kind: "BS" as const, title: "Balance Sheet", period: sc.bsPeriod, basis: sc.basis === "CASH" ? "Cash Basis" : "Accrual Basis", interim: sc.interim, sections, totals: [{ label: "Total Liabilities and Equity", amountCents: total(liabilities) + total(eqLines) }], clientId: sc.clientId, fileTag: sc.fileTag };
 }
 
-/** General ledger detail: date, account, description, debit, credit. No memos' internal notes, no reasons, no sources. */
+/**
+ * What a General Ledger line may say to the client: an explicit allowlist, never free text written
+ * in the office. A line from a bank or card transaction shows that transaction's own description
+ * (the words on the client's statement); every other line shows a fixed label for its kind of
+ * entry. Memos, line descriptions, reasons and anything Coetha wrote are never read here.
+ */
+export const GL_ENTRY_LABEL: Record<string, string> = {
+  OPENING: "Opening balance",
+  BANK: "Bank transaction",
+  ADJUSTMENT: "Adjusting entry",
+  REVERSAL: "Reversing entry",
+  INVOICE: "Invoice",
+  PAYMENT: "Payment",
+  PAYOUT: "Payout",
+  MANUAL: "Journal entry",
+};
+export function glLineDescription(entry: { source: string; bankTransactions: { description: string }[] }): string {
+  const bank = entry.bankTransactions[0]?.description?.replace(/\s+/g, " ").trim().slice(0, 120);
+  if (bank) return bank;
+  return GL_ENTRY_LABEL[entry.source] ?? "Journal entry";
+}
+
+/** General ledger detail: date, account, description (allowlisted, above), debit, credit. */
 async function buildGL(sc: Scope) {
   const lines = await prisma.journalLine.findMany({
     where: { entry: { clientId: sc.clientId, date: { gte: D(sc.from), lte: D(sc.to) }, basis: basisIn(sc.basis) } },
-    select: { debitCents: true, creditCents: true, description: true, account: { select: { code: true, name: true, subtype: true } }, entry: { select: { date: true, memo: true } } },
+    select: { debitCents: true, creditCents: true, account: { select: { code: true, name: true, subtype: true } }, entry: { select: { date: true, source: true, bankTransactions: { select: { description: true }, take: 1 } } } },
     orderBy: [{ account: { code: "asc" } }, { entry: { date: "asc" } }],
   });
-  const rows = lines.map((l) => ({ date: l.entry.date.toISOString().slice(0, 10), account: `${l.account.code} ${accountName(l.account)}`, description: clientText(l.description, clientText(l.entry.memo, "Journal entry")), debitCents: l.debitCents, creditCents: l.creditCents }));
+  const rows = lines.map((l) => ({ date: l.entry.date.toISOString().slice(0, 10), account: `${l.account.code} ${accountName(l.account)}`, description: glLineDescription(l.entry), debitCents: l.debitCents, creditCents: l.creditCents }));
   return { kind: "GL" as const, title: "General Ledger", period: sc.glPeriod, basis: sc.basis === "CASH" ? "Cash Basis" : "Accrual Basis", interim: sc.interim, rows, clientId: sc.clientId, fileTag: sc.fileTag };
 }
 

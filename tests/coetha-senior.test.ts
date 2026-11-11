@@ -160,7 +160,8 @@ describe("client-facing statements carry no internal commentary", () => {
     expect(bs.sections[0].totalCents).toBe(616_000);
     for (const s of [pl, bs, gl]) expect(JSON.stringify(s)).not.toMatch(INTERNAL);
     expect(JSON.stringify(pl)).toMatch(/Uncategorized/);
-    expect(gl.rows.find((r) => r.creditCents === 120_000)!.description).toBe("Catering sale");
+    // General Ledger descriptions come from an allowlist: a manual entry shows its kind, never its memo.
+    expect(gl.rows.find((r) => r.creditCents === 120_000)!.description).toBe("Journal entry");
     const { extractText, getDocumentProxy } = await import("unpdf");
     for (const s of [pl, bs, gl]) {
       const { pdf } = await clientStatementPdf(s);
