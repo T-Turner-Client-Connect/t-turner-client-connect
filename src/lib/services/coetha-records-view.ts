@@ -98,7 +98,6 @@ export async function recordsSnapshot(actor: Actor, clientId: string) {
   const memory = await activeMemory(clientId);
   // Ask Client: what is already asked (never ask twice) and what the client answered (evidence only).
   const { clientResponsesForCoetha } = await import("./ask-client");
-  const { scrub } = await import("./coetha");
   const asked = await prisma.documentRequest.findMany({ where: { clientId, kind: "SUPPORTING", status: { in: ["DRAFT", "OPEN"] } }, orderBy: { createdAt: "asc" }, take: 60, select: { title: true, status: true } });
   const answers = await clientResponsesForCoetha(clientId);
   return {

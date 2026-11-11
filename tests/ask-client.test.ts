@@ -53,9 +53,9 @@ describe("Ask Client: prepare, review and hold until Tabitha authorizes client c
       { title: "Receipt or invoice for check #1043, $412.00, paid March 4, 2026", reason: "To record it to the right expense account." },
       { title: "What the $2,500.00 deposit on April 2, 2026 was", reason: "A sale, a loan or money from the owner are each recorded differently." },
     ] });
-    expect(r.prepared.map((p) => p.result)).toEqual(["Draft added to the Ask Client list", "Draft added to the Ask Client list"]);
+    expect(r.prepared!.map((p) => p.result)).toEqual(["Draft added to the Ask Client list", "Draft added to the Ask Client list"]);
     const again = await runAskClientTool(s.tabitha, s.biz.id, { items: [{ title: "Receipt or invoice for check #1043, $412.00, paid March 4, 2026", reason: "x" }] });
-    expect(again.prepared[0].result).toBe("Already on the Ask Client list");
+    expect(again.prepared![0].result).toBe("Already on the Ask Client list");
 
     let v = await askClientView(s.tabitha, s.biz.id);
     expect(v.drafts.map((d) => [d.source, d.status, d.kind])).toEqual([["COETHA", "DRAFT", "SUPPORTING"], ["COETHA", "DRAFT", "SUPPORTING"]]);

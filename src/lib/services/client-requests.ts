@@ -227,9 +227,9 @@ export async function sendClientRequest(actor: Actor | null, clientId: string, r
   if (actor) await assertCanSendClientRequests(actor, clientId);
   const draft = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, status: "DRAFT" } });
   if (!draft) throw new ValidationError("Only a draft request can be sent.");
-  if (draft.kind === "SUPPORTING" && !(await clientRolloutAuthorized())) throw new ValidationError("Client communications are on hold. Nothing goes to the client until Tabitha authorizes client communications and rollout in the Owner's Office.");
   // Unusual, sensitive or unclear requests: only Tabitha sends them, never Coetha on her own.
   if (draft.routing === "REVIEW" && !(actor && (await canApproveCoethaWork(actor)))) throw new ForbiddenError("Tabitha reviews this request before it goes to the client.");
+  if (draft.kind === "SUPPORTING" && !(await clientRolloutAuthorized())) throw new ValidationError("Client communications are on hold. Nothing goes to the client until Tabitha authorizes client communications and rollout in the Owner's Office.");
   if (!actor) {
     // Coetha never sends anything on her own for a client who prefers no Coetha.
     await assertCoethaAllowed(clientId);

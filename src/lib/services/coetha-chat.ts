@@ -172,18 +172,17 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
 /** The AI service's "slow down" answers: the question is kept and retried instead of failing. */
 export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEOUT"]);
 
-/** Read-only searches for everyone; prepare_entries only when the person asking is Tabitha. */
+/** Read-only searches for everyone; prepare_entries, memory and ask_client only when the person asking is Tabitha. */
 async function chatTools(actor: Actor, clientId: string, records: unknown, currentQuestion?: string) {
   const owner = await isPrimaryOwner(actor.id);
   const { PREPARE_TOOL, runPrepareTool } = await import("./coetha-decisions");
   const { MEMORY_TOOLS, runMemoryTool } = await import("./coetha-memory");
   const memoryNames = new Set(MEMORY_TOOLS.map((t) => t.name));
-  // Ask Client drafts: for anyone who may send this business requests (drafts only; never sent from chat).
+  // Ask Client drafts (drafts only; never sent from chat). Like her other preparing tools: Tabitha only.
   const { ASK_CLIENT_TOOL, runAskClientTool } = await import("./ask-client");
-  const { canSendClientRequests } = await import("./bk-permissions");
-  const asks = await canSendClientRequests(actor, clientId);
+  const asks = owner;
   return {
-    defs: [...RECORDS_TOOLS, ...(owner ? [PREPARE_TOOL, ...MEMORY_TOOLS] : []), ...(asks ? [ASK_CLIENT_TOOL] : [])],
+    defs: owner ? [...RECORDS_TOOLS, PREPARE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : RECORDS_TOOLS,
     run: (name: string, input: unknown) =>
       owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
         : owner && memoryNames.has(name) ? runMemoryTool(actor, clientId, name, input)
