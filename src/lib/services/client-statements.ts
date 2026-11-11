@@ -259,10 +259,25 @@ export async function clientStatementPdf(s: Built) {
   pdf.setCreator(safe(BUSINESS.displayName));
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const serif = await pdf.embedFont(StandardFonts.TimesRomanBold);
+  // The firm's letterhead on every page: logo mark, firm name, a gold rule.
+  const { LOGO_MARK_PNG_BASE64 } = await import("@/lib/brand-logo");
+  const logo = await pdf.embedPng(Buffer.from(LOGO_MARK_PNG_BASE64, "base64"));
+  const GOLD = rgb(200 / 255, 157 / 255, 41 / 255);
   let page: PDFPage = pdf.addPage([612, 792]);
   let y = 740;
   const center = (t: string, size: number, f: PDFFont, color = NAVY) => { const x = (612 - f.widthOfTextAtSize(safe(t), size)) / 2; page.drawText(safe(t), { x, y, size, font: f, color }); y -= size + 6; };
-  const header = () => { y = 740; center(name, 16, bold); center(s.title, 13, bold); center(s.period, 10, font, GRAY); center(s.basis, 10, font, GRAY); if (s.interim) center(s.interim, 10.5, bold, rgb(0.55, 0.35, 0.05)); y -= 10; };
+  const letterhead = () => {
+    const lw = 34;
+    const lh = (logo.height / logo.width) * lw;
+    page.drawImage(logo, { x: 60, y: 752 - lh, width: lw, height: lh });
+    const [firm1, ...firmRest] = BUSINESS.displayName.split(" & ");
+    page.drawText(safe(firm1.toUpperCase()), { x: 60 + lw + 10, y: 740, size: 14, font: serif, color: NAVY });
+    if (firmRest.length) page.drawText(safe(`& ${firmRest.join(" & ")}`.toUpperCase()), { x: 60 + lw + 10, y: 728, size: 7.5, font: serif, color: NAVY });
+    page.drawText("Bookkeeping & Accounting Services", { x: 552 - font.widthOfTextAtSize("Bookkeeping & Accounting Services", 8.5), y: 734, size: 8.5, font, color: GRAY });
+    page.drawLine({ start: { x: 60, y: 716 }, end: { x: 552, y: 716 }, thickness: 1.2, color: GOLD });
+  };
+  const header = () => { letterhead(); y = 690; center(name, 16, bold); center(s.title, 13, bold); center(s.period, 10, font, GRAY); center(s.basis, 10, font, GRAY); if (s.interim) center(s.interim, 10.5, bold, rgb(0.55, 0.35, 0.05)); y -= 10; };
   const need = (h: number) => { if (y - h < 60) { page = pdf.addPage([612, 792]); header(); } };
   const row = (label: string, amount: string | null, f = font, indent = 0, amount2?: string) => {
     need(16);
@@ -289,4 +304,235 @@ export async function clientStatementPdf(s: Built) {
   }
   for (const p of pdf.getPages()) p.drawText(safe(`Prepared by ${BUSINESS.displayName}`), { x: 60, y: 36, size: 8, font, color: GRAY });
   return { pdf: await pdf.save(), filename: safe(`${name} ${s.title} ${s.fileTag}.pdf`).replace(/[^\w.\- ()]/g, "_") };
+}
+
+// --- Financial Statements Package (the firm's layout) ---------------------------------------------
+
+/**
+ * The firm's Financial Statements Package for one business, built from the books, in the layout of
+ * the office's own packages: a cover (logo, "Financial Statements", the business, basis and
+ * period, prepared for / by / date / contents); a landscape Profit & Loss with each month of the
+ * fiscal year to date and a YTD column; and a Balance Sheet as of the month end. Every page carries
+ * the basis-of-presentation note and "TTurner & Associates, LLC • Confidential • Page x of y".
+ */
+export async function booksPackagePdf(clientId: string, year: number, month: number, opts: { draft?: boolean; preparedOn?: Date } = {}) {
+  const [book, client] = await Promise.all([
+    prisma.ledgerBook.findUnique({ where: { clientId }, select: { basis: true, fiscalYearStartMonth: true } }),
+    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { displayName: true, businessName: true, bookkeepingProfile: { select: { legalName: true } } } }),
+  ]);
+  if (!book) throw new ValidationError("This business's books aren't set up yet.");
+  const basis = book.basis as "CASH" | "ACCRUAL";
+  const basisLabel = basis === "CASH" ? "Cash Basis" : "Accrual Basis";
+  const name = client.bookkeepingProfile?.legalName || client.businessName || client.displayName;
+  const fyStartMonth = book.fiscalYearStartMonth;
+  const fyYear = month >= fyStartMonth ? year : year - 1;
+  // The months of the fiscal year through the month asked for.
+  const months: { y: number; m: number }[] = [];
+  for (let y = fyYear, m = fyStartMonth; ; ) { months.push({ y, m }); if (y === year && m === month) break; m++; if (m > 12) { m = 1; y++; } if (months.length > 12) break; }
+  const from = `${months[0].y}-${pad(months[0].m)}-01`, to = monthEnd(year, month);
+  const long = (ymd: string) => longDay(ymd);
+  const periodText = `${long(from).replace(/, \d{4}$/, "")} – ${long(to)}`;
+
+  // Profit & Loss by month.
+  const accounts = await prisma.ledgerAccount.findMany({ where: { clientId }, orderBy: { code: "asc" }, select: { id: true, name: true, type: true, subtype: true } });
+  const plAccts = accounts.filter((a) => a.type === "INCOME" || a.type === "EXPENSE");
+  const perMonth = await Promise.all(months.map((mm) => sums(clientId, { from: D(`${mm.y}-${pad(mm.m)}-01`), to: D(monthEnd(mm.y, mm.m)) }, basis)));
+  const amt = (a: (typeof plAccts)[number], s: Map<string, { dr: number; cr: number }>) => { const v = s.get(a.id); return v ? (a.type === "INCOME" ? v.cr - v.dr : v.dr - v.cr) : 0; };
+  type Line = { label: string; values: number[] };
+  const group = (pick: (a: (typeof plAccts)[number]) => boolean): Line[] => plAccts.filter(pick).map((a) => ({ label: accountName(a), values: perMonth.map((s) => amt(a, s)) })).filter((l) => l.values.some((v) => v !== 0));
+  const sum = (ls: Line[]) => months.map((_, i) => ls.reduce((n, l) => n + l.values[i], 0));
+  const income = group((a) => a.type === "INCOME" && a.subtype !== "OTHER_INCOME");
+  const cogs = group((a) => a.subtype === "COGS");
+  const opex = group((a) => a.type === "EXPENSE" && a.subtype !== "COGS" && a.subtype !== "OTHER_EXPENSE");
+  const otherInc = group((a) => a.subtype === "OTHER_INCOME");
+  const otherExp = group((a) => a.subtype === "OTHER_EXPENSE");
+  const tIncome = sum(income), tCogs = sum(cogs), tOpex = sum(opex), tOI = sum(otherInc), tOE = sum(otherExp);
+  const operating = months.map((_, i) => tIncome[i] - tCogs[i] - tOpex[i]);
+  const net = months.map((_, i) => operating[i] + tOI[i] - tOE[i]);
+
+  // Balance Sheet as of the month end (same rules as the single statement).
+  const bs = await buildBS({ clientId, basis, fiscalYearStartMonth: fyStartMonth, from, to, plPeriod: "", bsPeriod: "", glPeriod: "", interim: null, fileTag: "" });
+
+  const { LOGO_MARK_PNG_BASE64 } = await import("@/lib/brand-logo");
+  const pdf = await PDFDocument.create();
+  pdf.setTitle(safe(`${name} — Financial Statements — ${periodText}`));
+  const stamp = new Date(`${(opts.preparedOn ?? new Date()).toISOString().slice(0, 10)}T12:00:00Z`);
+  pdf.setCreationDate(stamp);
+  pdf.setModificationDate(stamp);
+  pdf.setAuthor(safe(BUSINESS.legalName));
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const italic = await pdf.embedFont(StandardFonts.HelveticaOblique);
+  const logo = await pdf.embedPng(Buffer.from(LOGO_MARK_PNG_BASE64, "base64"));
+  const TITLE = rgb(0.13, 0.25, 0.47);
+  const RED = rgb(0.75, 0.1, 0.1);
+  const BAND = rgb(0.93, 0.95, 0.98);
+  const firm = BUSINESS.legalName.replace(/^T\. Turner/, "TTurner");
+  const basisNote = `Basis of presentation. Prepared on the ${basis === "CASH" ? "cash" : "accrual"} basis from the business's books kept in ${BUSINESS.displayName}'s Client Connect for ${periodText}${basis === "CASH" ? "; income and expenses are recorded when cash is received or paid" : ""}. The Balance Sheet reflects the accounts kept in the books. Management-use summary; not audited or reviewed under AICPA standards.${opts.draft ? " DRAFT — for review; not final until approved." : ""}`;
+  const wrap = (text: string, f: PDFFont, size: number, width: number) => {
+    const words = safe(text).split(/\s+/); const lines: string[] = []; let cur = "";
+    for (const w of words) { const t = cur ? `${cur} ${w}` : w; if (f.widthOfTextAtSize(t, size) > width && cur) { lines.push(cur); cur = w; } else cur = t; }
+    if (cur) lines.push(cur); return lines;
+  };
+  const centerAt = (page: PDFPage, W: number, t: string, y: number, f: PDFFont, size: number, color = NAVY) => page.drawText(safe(t), { x: (W - f.widthOfTextAtSize(safe(t), size)) / 2, y, size, font: f, color });
+  const drawLogo = (page: PDFPage, W: number, top: number, width: number) => { const h = (logo.height / logo.width) * width; page.drawImage(logo, { x: (W - width) / 2, y: top - h, width, height: h }); return top - h; };
+
+  // 1. Cover (portrait).
+  {
+    const W = 612, H = 792;
+    const page = pdf.addPage([W, H]);
+    let y = drawLogo(page, W, H - 160, 90) - 26;
+    const serif = await pdf.embedFont(StandardFonts.TimesRomanBold);
+    const [firm1, ...firmRest] = BUSINESS.displayName.split(" & ");
+    centerAt(page, W, firm1.toUpperCase(), y, serif, 22); y -= 14;
+    centerAt(page, W, `& ${firmRest.join(" & ")}, LLC`.toUpperCase(), y, serif, 9); y -= 56;
+    centerAt(page, W, "Financial Statements", y, bold, 26, TITLE); y -= 24;
+    centerAt(page, W, name, y, bold, 14, rgb(0.25, 0.25, 0.28)); y -= 18;
+    centerAt(page, W, `${basisLabel} • ${periodText}`, y, font, 11, TITLE); y -= 18;
+    if (opts.draft) { centerAt(page, W, "DRAFT — prepared from the books, for review", y, bold, 10, rgb(0.55, 0.35, 0.05)); y -= 16; }
+    y -= 24;
+    const rows: [string, string][] = [["Prepared for:", name], ["Prepared by:", firm], ["Date prepared:", long((opts.preparedOn ?? new Date()).toISOString().slice(0, 10))], ["Contents:", "Profit & Loss • Profit & Loss by Month • Balance Sheet"]];
+    for (const [k, v] of rows) { page.drawText(k, { x: 236 - bold.widthOfTextAtSize(k, 9.5), y, size: 9.5, font: bold, color: NAVY }); page.drawText(safe(v), { x: 246, y, size: 9.5, font, color: rgb(0.15, 0.15, 0.18) }); y -= 18; }
+  }
+
+  const plain = (c: number) => `${c < 0 ? "(" : ""}${(Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${c < 0 ? ")" : ""}`;
+  const compiled = `${basisLabel} – Compiled from the books${opts.draft ? " – DRAFT" : ""}`;
+  // The statement header of the firm's layout: the business in large blue, the title lines, a navy
+  // band with the column headings.
+  const stmtHead = (page: PDFPage, W: number, title: string, when: string, heads: { label: string; x: number }[], left: number, right: number) => {
+    let y = 792 - 60;
+    centerAt(page, W, name, y, bold, 20, TITLE); y -= 20;
+    centerAt(page, W, title, y, font, 11, rgb(0.1, 0.1, 0.12)); y -= 14;
+    centerAt(page, W, when, y, font, 11, rgb(0.1, 0.1, 0.12)); y -= 14;
+    centerAt(page, W, compiled, y, italic, 11, rgb(0.1, 0.1, 0.12)); y -= 26;
+    page.drawRectangle({ x: left, y: y - 5, width: right - left, height: 18, color: NAVY });
+    for (const h of heads) page.drawText(h.label, { x: h.x - bold.widthOfTextAtSize(h.label, 9), y, size: 9, font: bold, color: rgb(1, 1, 1) });
+    return y - 22;
+  };
+
+  // 2. Profit & Loss — the month, year to date and % of revenue (portrait).
+  {
+    const W = 612;
+    let page = pdf.addPage([W, 792]);
+    const L = 72, R = W - 60, cMonth = 380, cYtd = 470, cPct = R - 8;
+    const ytd = (v: number[]) => v.reduce((n, x) => n + x, 0);
+    const last = months.length - 1;
+    const revenueYtd = ytd(tIncome);
+    const heads = [{ label: MONTH_NAMES[month - 1].slice(0, 3) + " " + year, x: cMonth }, { label: "Year to Date", x: cYtd }, { label: "% of Revenue", x: cPct }];
+    const when = `For the Month Ended ${long(to)} and Year to Date`;
+    let y = stmtHead(page, W, "Profit & Loss Statement", when, heads, L, R);
+    const need = () => { if (y < 70) { page = pdf.addPage([W, 792]); y = stmtHead(page, W, "Profit & Loss Statement (continued)", when, heads, L, R); } };
+    const line = (label: string, v: number[] | null, f = font, o: { indent?: number; rule?: boolean } = {}) => {
+      need();
+      page.drawText(safe(label).slice(0, 52), { x: L + (o.indent ?? 0), y, size: 9, font: f, color: rgb(0.1, 0.1, 0.12) });
+      if (v) {
+        const cells = [plain(v[last]), plain(ytd(v)), revenueYtd ? `${((ytd(v) / revenueYtd) * 100).toFixed(1)}%` : ""];
+        [cMonth, cYtd, cPct].forEach((x, k) => cells[k] && page.drawText(cells[k], { x: x - f.widthOfTextAtSize(cells[k], 9), y, size: 9, font: f, color: rgb(0.1, 0.1, 0.12) }));
+        if (o.rule) page.drawLine({ start: { x: cMonth - 70, y: y + 11 }, end: { x: cPct, y: y + 11 }, thickness: 0.7, color: rgb(0.1, 0.1, 0.12) });
+      }
+      y -= 16;
+    };
+    const block = (title: string, lines: Line[], total: number[], totalLabel: string) => {
+      if (!lines.length) return;
+      line(title, null, bold);
+      for (const l of lines) line(l.label, l.values, font, { indent: 12 });
+      line(totalLabel, total, bold, { rule: true });
+    };
+    block("REVENUE", income, tIncome, "Total Revenue");
+    block("COST OF GOODS SOLD", cogs, tCogs, "Total Cost of Goods Sold");
+    block("OPERATING EXPENSES", opex, tOpex, "Total Operating Expenses");
+    line("NET OPERATING INCOME", operating, bold, { rule: true });
+    if (otherInc.length || otherExp.length) {
+      block("OTHER INCOME", otherInc, tOI, "Total Other Income");
+      block("OTHER EXPENSES", otherExp, tOE, "Total Other Expenses");
+    }
+    line("NET INCOME", net, bold, { rule: true });
+    y -= 6;
+    for (const l of wrap(basisNote, font, 7.5, R - L)) { need(); page.drawText(l, { x: L, y, size: 7.5, font, color: GRAY }); y -= 10; }
+  }
+
+  // 3. Profit & Loss by month (landscape; each month of the year to date and YTD).
+  {
+    const W = 792, H = 612;
+    let page = pdf.addPage([W, H]);
+    const labelW = 190, x0 = 36, cols = months.length + 1;
+    const colW = (W - 72 - labelW) / cols;
+    const size = cols > 10 ? 7 : 8;
+    const colX = (i: number) => x0 + labelW + colW * (i + 1);
+    const head = () => {
+      let y = H - 44;
+      centerAt(page, W, name, y, bold, 16, TITLE); y -= 16;
+      centerAt(page, W, `Profit & Loss — Monthly Detail • ${periodText}`, y, font, 10, rgb(0.1, 0.1, 0.12)); y -= 13;
+      centerAt(page, W, compiled, y, italic, 10, rgb(0.1, 0.1, 0.12)); y -= 22;
+      page.drawRectangle({ x: x0 - 2, y: y - 5, width: W - 72 + 4, height: 16, color: NAVY });
+      page.drawText("Account", { x: x0 + 2, y, size, font: bold, color: rgb(1, 1, 1) });
+      months.forEach((mm, i) => { const t = MONTH_NAMES[mm.m - 1].slice(0, 3); page.drawText(t, { x: colX(i) - bold.widthOfTextAtSize(t, size), y, size, font: bold, color: rgb(1, 1, 1) }); });
+      page.drawText("YTD", { x: colX(months.length) - bold.widthOfTextAtSize("YTD", size), y, size, font: bold, color: rgb(1, 1, 1) });
+      return y - 18;
+    };
+    let y = head();
+    const row = (label: string, values: number[] | null, f = font, o: { band?: boolean; indent?: number } = {}) => {
+      if (y < 50) { page = pdf.addPage([W, H]); y = head(); }
+      if (o.band) page.drawRectangle({ x: x0 - 2, y: y - 4, width: W - 72 + 4, height: size + 7, color: BAND });
+      page.drawText(safe(label).slice(0, 48), { x: x0 + (o.indent ?? 0), y, size, font: f, color: rgb(0.12, 0.12, 0.15) });
+      if (values) [...values, values.reduce((n, v) => n + v, 0)].forEach((v, i) => { const t = plain(v); page.drawText(t, { x: colX(i) - f.widthOfTextAtSize(t, size), y, size, font: f, color: v < 0 ? RED : rgb(0.12, 0.12, 0.15) }); });
+      y -= size + 8;
+    };
+    const section = (title: string, lines: Line[], total: number[], totalLabel: string) => {
+      if (!lines.length) return;
+      row(title, null, bold);
+      for (const l of lines) row(l.label, l.values, font, { indent: 10 });
+      row(totalLabel, total, bold);
+    };
+    section("REVENUE", income, tIncome, "Total Revenue");
+    section("COST OF GOODS SOLD", cogs, tCogs, "Total Cost of Goods Sold");
+    section("OPERATING EXPENSES", opex, tOpex, "Total Operating Expenses");
+    row("NET OPERATING INCOME", operating, bold, { band: true });
+    if (otherInc.length || otherExp.length) {
+      section("OTHER INCOME", otherInc, tOI, "Total Other Income");
+      section("OTHER EXPENSES", otherExp, tOE, "Total Other Expenses");
+    }
+    row("NET INCOME", net, bold, { band: true });
+  }
+
+  // 4. Balance Sheet — Amount and Source / Note (portrait).
+  {
+    const W = 612;
+    let page = pdf.addPage([W, 792]);
+    const L = 72, R = W - 60, cAmt = 330, cNote = 346;
+    const heads = [{ label: "Amount", x: cAmt }, { label: "Source / Note", x: cNote + bold.widthOfTextAtSize("Source / Note", 9) }];
+    let y = stmtHead(page, W, "Balance Sheet", `As of ${long(to)}`, heads, L, R);
+    // Where each bank or card balance comes from: the month's approved reconciliation, else the books.
+    const regs = await prisma.bookkeepingAccount.findMany({ where: { clientId, ledgerAccountId: { not: null } }, select: { ledgerAccountId: true, reconciliations: { where: { year, month }, select: { status: true, endingBalanceCents: true } } } });
+    const noteFor = new Map<string, string>();
+    for (const r of regs) { const rec = r.reconciliations[0]; noteFor.set(r.ledgerAccountId!, rec?.status === "APPROVED" ? `Reconciled to the statement ending ${long(to)}` : rec?.endingBalanceCents != null ? "Statement balance on file; reconciliation in progress" : "Books balance; statement not reconciled yet"); }
+    const byLabel = new Map(accounts.map((a) => [accountName(a), a.id]));
+    const line = (label: string, cents: number | null, f = font, o: { indent?: number; note?: string; rule?: boolean; double?: boolean } = {}) => {
+      const noteLines = o.note ? wrap(o.note, font, 8, R - cNote) : [];
+      if (y < 70) { page = pdf.addPage([W, 792]); y = stmtHead(page, W, "Balance Sheet (continued)", `As of ${long(to)}`, heads, L, R); }
+      page.drawText(safe(label).slice(0, 44), { x: L + (o.indent ?? 0), y, size: 9, font: f, color: rgb(0.1, 0.1, 0.12) });
+      if (cents !== null) {
+        const t = plain(cents);
+        if (o.rule) page.drawLine({ start: { x: cAmt - 90, y: y + 11 }, end: { x: cAmt, y: y + 11 }, thickness: 0.7, color: rgb(0.1, 0.1, 0.12) });
+        page.drawText(t, { x: cAmt - f.widthOfTextAtSize(t, 9), y, size: 9, font: f, color: rgb(0.1, 0.1, 0.12) });
+        if (o.double) { page.drawLine({ start: { x: cAmt - 90, y: y - 4 }, end: { x: cAmt, y: y - 4 }, thickness: 0.7, color: rgb(0.1, 0.1, 0.12) }); page.drawLine({ start: { x: cAmt - 90, y: y - 6 }, end: { x: cAmt, y: y - 6 }, thickness: 0.7, color: rgb(0.1, 0.1, 0.12) }); }
+      }
+      noteLines.forEach((n, k) => page.drawText(n, { x: cNote, y: y - k * 10, size: 8, font, color: rgb(0.1, 0.1, 0.12) }));
+      y -= Math.max(16, noteLines.length * 10 + 6);
+    };
+    for (const sec of bs.sections) {
+      line(sec.title.toUpperCase(), null, bold);
+      for (const l of sec.lines) {
+        const id = byLabel.get(l.label);
+        const n = id && noteFor.get(id) ? noteFor.get(id) : l.label === "Net Income" ? "From the Profit & Loss (year to date)" : l.label === "Retained Earnings" ? "Prior years' results" : undefined;
+        line(l.label, l.amountCents, font, { indent: 12, note: n });
+      }
+      line(`TOTAL ${sec.title.toUpperCase()}`, sec.totalCents, bold, { rule: true, double: sec.title === "Assets" });
+    }
+    for (const t of bs.totals) line(t.label.toUpperCase(), t.amountCents, bold, { rule: true, double: true });
+  }
+
+  const pages = pdf.getPages();
+  pages.forEach((p, i) => p.drawText(safe(`${firm} • Confidential • Page ${i + 1} of ${pages.length}`), { x: 36, y: 22, size: 7.5, font: italic, color: GRAY }));
+  return { pdf: await pdf.save(), filename: safe(`${name} Financial Statements ${MONTH_NAMES[months[0].m - 1].slice(0, 3)}-${MONTH_NAMES[month - 1].slice(0, 3)} ${year}.pdf`).replace(/[^\w.\- ()]/g, "_"), periodText };
 }
