@@ -315,7 +315,7 @@ describe("Deliver an already-accepted return in one step", () => {
     expect((await pendingAcceptances()).map((p) => p.client.id)).toEqual([other.id]);
   });
 
-  it("TaxAct import sets Accepted only by TaxAct client ID (never by name); a later return upload then works directly", async () => {
+  it("TaxAct import sets Accepted by TaxAct client ID (a name nobody has is left for review); a later return upload then works directly", async () => {
     const { tabitha, daria, rosalind, other } = await setup();
     await prisma.client.update({ where: { id: rosalind.id }, data: { taxSoftwareId: "TA-55501" } });
     const mapping = { "Client ID": "clientRef", Name: "displayName", Year: "taxYear", Form: "returnType", Juris: "jurisdiction", Status: "status", "Status Date": "statusDate", "Submission ID": "submissionId" };
@@ -326,12 +326,12 @@ describe("Deliver an already-accepted return in one step", () => {
       statusFilter: [],
       rows: [
         { clientRef: "TA-55501", displayName: "Rosalind Pembrook", taxYear: "2025", returnType: "1040", jurisdiction: "Federal", status: "Accepted", statusDate: "04/10/2026 9:30 AM", submissionId: "7777772026100abcde" },
-        // Theo's name, no TaxAct ID: never matched by name.
-        { clientRef: "", displayName: "Theo Quillfeather", taxYear: "2025", returnType: "1040", jurisdiction: "Federal", status: "Accepted", statusDate: "04/10/2026", submissionId: "X" },
+        // No TaxAct ID and a name no client has: left for review (skipped here).
+        { clientRef: "", displayName: "Nobody Example", taxYear: "2025", returnType: "1040", jurisdiction: "Federal", status: "Accepted", statusDate: "04/10/2026", submissionId: "X" },
       ],
     });
     const rows = await prisma.taxImportRow.findMany({ where: { batchId: batch.id }, orderBy: { rowNumber: "asc" } });
-    expect(rows.map((r) => [r.match, r.clientId])).toEqual([["NEW_FILING", rosalind.id], ["ERROR", null]]);
+    expect(rows.map((r) => [r.match, r.clientId])).toEqual([["NEW_FILING", rosalind.id], ["NO_CLIENT", null]]);
     await decideTaxRow(daria, rows[1].id, "skip");
     expect(await commitTaxImport(daria, batch.id, false)).toEqual({ applied: 1, skipped: 1 });
     const f = await prisma.filingRecord.findFirstOrThrow({ where: { clientId: rosalind.id } });

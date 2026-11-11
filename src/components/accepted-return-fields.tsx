@@ -17,6 +17,8 @@ export type DeliveryContext = {
   draftKeys: string[];
   /** `${year}:${jurisdiction}:${ORIGINAL|AMENDED}` → the form numbers of existing filings. */
   existing: Record<string, string[]>;
+  /** `${year}:${jurisdiction}:${ORIGINAL|AMENDED}` → the Submission ID already on file (TaxAct import). */
+  refs?: Record<string, string>;
   /** year → the forms from that year's confirmed Tax Preparation case (null where the mapping isn't known for sure). */
   prepForms?: Record<string, { federal: string | null; state: string | null }>;
 };
@@ -75,6 +77,8 @@ export function AcceptedReturnFields({
     const list = ctx.existing[`${year}:${j}:${filingType}`] ?? [];
     return list.length === 1 ? list[0] : null;
   };
+  // Submission ID: the one already on file for that return (imported from TaxAct), unless typed over.
+  const refOnFile = (j: string) => ctx.refs?.[`${year}:${j}:${filingType}`] ?? "";
   // Then the confirmed Tax Preparation case for the year (original returns; its state form is for the client's own state).
   const prep = filingType === "ORIGINAL" ? ctx.prepForms?.[String(year)] : undefined;
   const fedForm = fed.form ?? onFile("FEDERAL") ?? (filingType === "AMENDED" && individual ? "1040-X" : prep?.federal ?? federalFormFor(ctx.clientType, ctx.entityType)) ?? "";
@@ -119,7 +123,7 @@ export function AcceptedReturnFields({
             <span className="text-sm text-slate-600">Form</span>
             <input className="input w-28" name="fed.returnType" value={fedForm} onChange={(e) => setFed({ ...fed, form: e.target.value })} placeholder="e.g. 1120-S" required={fed.on} aria-label="Federal form" />
             <span className="text-sm text-slate-600">Submission ID</span>
-            <input className="input w-60" name="fed.submissionId" value={fed.ref ?? ""} onChange={(e) => setFed({ ...fed, ref: e.target.value })} placeholder="IRS submission ID (optional)" aria-label="Federal submission ID" data-testid="fed-submission-id" />
+            <input className="input w-60" name="fed.submissionId" value={fed.ref ?? refOnFile("FEDERAL")} onChange={(e) => setFed({ ...fed, ref: e.target.value })} placeholder="IRS submission ID (optional)" aria-label="Federal submission ID" data-testid="fed-submission-id" />
           </div>
           {rows.map((r, i) => (
             <div key={i} className="flex flex-wrap items-center gap-2" data-testid={`row-state-${i}`}>
@@ -133,7 +137,7 @@ export function AcceptedReturnFields({
               <span className="text-sm text-slate-600">Form</span>
               <input className="input w-28" name={`st.${i}.returnType`} value={stForm(r)} onChange={(e) => set(i, { form: e.target.value })} placeholder="Type it" required={r.on && !onFile(r.code)} aria-label={`${r.code} form`} />
               <span className="text-sm text-slate-600">Submission ID</span>
-              <input className="input w-60" name={`st.${i}.submissionId`} value={r.ref ?? ""} onChange={(e) => set(i, { ref: e.target.value })} placeholder={`${r.code} submission ID (optional)`} aria-label={`${r.code} submission ID`} data-testid={`state-${i}-submission-id`} />
+              <input className="input w-60" name={`st.${i}.submissionId`} value={r.ref ?? refOnFile(r.code)} onChange={(e) => set(i, { ref: e.target.value })} placeholder={`${r.code} submission ID (optional)`} aria-label={`${r.code} submission ID`} data-testid={`state-${i}-submission-id`} />
             </div>
           ))}
           <button type="button" className="text-xs underline" onClick={() => setRows((rs) => [...rs, { code: "GA", on: true, form: null, acceptedOn: null, ref: null }])}>+ Another state</button>

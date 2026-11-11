@@ -19,7 +19,7 @@ const STATUSES = [
 
 const GUESS: [TaxImportField, RegExp][] = [
   ["clientRef", /client\s*(id|#|number)|account\s*id/i],
-  ["displayName", /^(client|taxpayer)?\s*name$/i],
+  ["displayName", /^((client|taxpayer|primary|business|entity)\s*)?name$|^taxpayer$/i],
   ["taxYear", /tax\s*year|^year$/i],
   ["returnType", /return\s*type|form|^type$/i],
   ["jurisdiction", /jurisdiction|state|federal|agency/i],
@@ -152,9 +152,9 @@ export function TaxImportWizard() {
               </tbody>
             </table>
           </div>
-          {!hasRef && <Notice tone="warn">Map the client ID column. Filings are never matched by name alone.</Notice>}
+          {!hasRef && !cols.some((c) => c.f === "displayName") && <Notice tone="warn">Map the client name column (or the TaxAct client ID column) so each row finds its client.</Notice>}
           {dupes.length > 0 && <Notice tone="error">Each field can come from one column only.</Notice>}
-          <Button onClick={submit} disabled={busy || !hasRef || dupes.length > 0 || !filter.length}>{busy ? "Checking…" : "Preview matches"}</Button>
+          <Button onClick={submit} disabled={busy || !(hasRef || cols.some((c) => c.f === "displayName")) || dupes.length > 0 || !filter.length}>{busy ? "Checking…" : "Preview matches"}</Button>
         </section>
       )}
     </div>

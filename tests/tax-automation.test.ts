@@ -61,7 +61,7 @@ describe("tax workspace", () => {
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "REJECTED", eventAt: new Date("2020-01-01") })).rejects.toThrow(/newer status/);
   });
 
-  it("imports by client ID only, previews before saving, filters queues, and never overwrites newer statuses", async () => {
+  it("imports by client ID (else by name), previews before saving, filters queues, and never overwrites newer statuses", async () => {
     const { staff, avery } = await setup();
     const rows = [
       { clientRef: "TA-1001", displayName: "Avery Lindqvist", taxYear: "2025", returnType: "1040", jurisdiction: "Federal", status: "Accepted", statusDate: "03/14/2026", submissionId: "SUB-1" },
@@ -71,11 +71,14 @@ describe("tax workspace", () => {
     ];
     const batch = await stageTaxImport(staff, { fileName: "efile.csv", source: "TaxAct", mapping: MAP, rows, statusFilter: ["ACCEPTED"] });
     const staged = await prisma.taxImportRow.findMany({ where: { batchId: batch.id }, orderBy: { rowNumber: "asc" } });
-    expect(staged.map((r) => r.match)).toEqual(["NEW_FILING", "FILTERED", "ERROR", "NO_CLIENT"]);
-    expect(staged[2].errors.join()).toMatch(/never matched by name/);
+    expect(staged.map((r) => r.match)).toEqual(["NEW_FILING", "FILTERED", "AMBIGUOUS", "NO_CLIENT"]);
+    // No client ID: matched by name, but two clients share this name, so it waits for a person to choose.
+    expect(staged[2].warnings.join()).toMatch(/fits more than one client/);
+    expect(staged[2].decision).toBeNull();
     expect(await prisma.filingRecord.count()).toBe(0); // preview only
 
     await expect(commitTaxImport(staff, batch.id, false)).rejects.toThrow(/Decide/);
+    await decideTaxRow(staff, staged[2].id, "skip");
     await decideTaxRow(staff, staged[3].id, "skip");
     const res = await commitTaxImport(staff, batch.id, false);
     expect(res.applied).toBe(1);

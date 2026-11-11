@@ -5,8 +5,8 @@ import type { FilingStatus, FilingType } from "@prisma/client";
 // so staff map columns; these helpers normalize the values.
 
 export const TAX_IMPORT_FIELDS = {
-  clientRef: "Client ID (TaxAct client ID or CRM ID) — required",
-  displayName: "Client name (shown for review only, never used to match)",
+  clientRef: "Client ID (TaxAct client ID or CRM ID), optional",
+  displayName: "Client / taxpayer name (matches the client when there is no client ID)",
   taxYear: "Tax year",
   returnType: "Return / form type (1040, 1120-S, 4868, 1040-X…)",
   jurisdiction: "Jurisdiction (Federal or state)",
