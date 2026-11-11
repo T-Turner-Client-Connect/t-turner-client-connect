@@ -9,7 +9,7 @@ import { portalViewer } from "@/lib/portal/viewer";
 import { PreviewDisabled } from "@/components/portal/preview-off";
 import { prisma } from "@/lib/prisma";
 import { MONTHS } from "@/lib/services/bookkeeping";
-import { REPORT_LABELS } from "@/lib/services/documents";
+import { REPORT_LABELS, portalPeriodDocumentsWhere } from "@/lib/services/documents";
 import { fmtDate } from "@/lib/format";
 import { PERIOD_TYPES, reportPeriod, type PeriodType } from "@/lib/bookkeeping-periods";
 import { reportCaption } from "@/lib/services/bookkeeping-clients";
@@ -32,7 +32,9 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
           where: { clientId: current.clientId },
           include: {
             // Published, scanned-clean files — plus the client's own uploads at any scan stage (listed, not opened, until clean).
-            documents: { where: { deletedAt: null, OR: [{ visibility: "PUBLISHED", scanStatus: "CLEAN" }, { uploadedByPortalId: { not: null } }] }, orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, file: { select: { originalName: true } } } },
+            // Only what this login may see (its categories, payroll only with payroll access), approved
+            // reports only, and the latest version — the same rules as every other document list.
+            documents: { where: portalPeriodDocumentsWhere(current, v.user?.id ?? null), orderBy: { createdAt: "desc" }, include: { uploadedByPortal: { select: { name: true } }, file: { select: { originalName: true } } } },
             // Drafts were never sent, and year-end requests have their own place: neither shows in a month.
             requests: { where: { status: { notIn: ["CANCELLED", "DRAFT"] }, kind: { not: "YEAR_END" }, AND: [clientFacingRequestWhere(true)] }, orderBy: { createdAt: "asc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } },
             // Questions our office asked about this month (answered in Messages).
