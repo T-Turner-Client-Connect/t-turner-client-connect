@@ -1,4 +1,5 @@
 import "server-only";
+import { joinFlyer } from "@/lib/news/flyers";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { assertAdmin, type Actor } from "@/lib/auth/actor";
@@ -80,6 +81,17 @@ export async function announcementsForClient(clientId: string, now = new Date())
     orderBy: [{ pinned: "desc" }, { publishedAt: "desc" }],
     take: 20,
   });
+  // Tabitha's welcome flyer is always first: the bookkeeping one for bookkeeping clients, the tax
+  // one for individual (tax) clients. Built in, so nobody has to post it; never shown twice.
+  const key = audiences.includes("BOOKKEEPING") ? "welcome-bookkeeping" : client.clientType === "INDIVIDUAL" ? "welcome-client-connect" : null;
+  if (key && !rows.some((r) => r.body.includes(`[[flyer:${key}]]`))) {
+    const welcome = {
+      id: `welcome-${key}`, title: "Welcome to TTurner Client Connect", body: joinFlyer("Your secure client portal with our office. Here's what you can do.", key),
+      clientId: null, publishedAt: new Date("2026-11-01T00:00:00Z"), expiresAt: null, audience: audiences.includes("BOOKKEEPING") ? "BOOKKEEPING" : "INDIVIDUAL",
+      topic: "GENERAL", pinned: true, createdById: "", createdAt: new Date("2026-11-01T00:00:00Z"), updatedAt: new Date("2026-11-01T00:00:00Z"),
+    } satisfies (typeof rows)[number];
+    return [welcome, ...rows];
+  }
   return rows;
 }
 

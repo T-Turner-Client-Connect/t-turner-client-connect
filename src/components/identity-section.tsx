@@ -85,7 +85,8 @@ function ViewLink({ href, type, canOpen, mode }: { href: string; type: IdType; c
 
 /** `previewAction`: View as Client — the client's upload form, disabled, posting only to the preview stand-in. */
 export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin, previewAction }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean; previewAction?: FormAction }) {
-  const canOpen = mode === "portal" ? !isAdminOnlyType(slot.type) : !!viewerIsAdmin || !isAdminOnlyType(slot.type);
+  // Identity files open only for our office; the portal shows status only.
+  const canOpen = mode === "portal" ? false : !!viewerIsAdmin || !isAdminOnlyType(slot.type);
   const t = ID_TYPES[slot.type];
   const { current, pending } = slot;
   const has = !!(current || pending.length);

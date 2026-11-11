@@ -11,6 +11,11 @@ export const FLYERS = {
     src: "/brand/flyers/welcome-client-connect.webp",
     alt: "Welcome Back, Clients! TTurner Client Connect, your secure client portal: access your tax information anytime, upload documents securely, retrieve current and prior year returns, schedule appointments, receive updates and reminders, and use the Resource Center.",
   },
+  "welcome-bookkeeping": {
+    label: "Welcome to TTurner Client Connect — Your Business Bookkeeping Portal",
+    src: "/brand/flyers/welcome-bookkeeping.webp",
+    alt: "Welcome to TTurner Client Connect, your business bookkeeping portal: monthly financials (P&L and balance sheet), bank balances at a glance, upload statements and receipts securely, payroll reports and approvals, secure messages with our office, and a document vault for every month and year. Know your numbers. Grow your business. All in one place!",
+  },
 } as const;
 
 export type FlyerKey = keyof typeof FLYERS;

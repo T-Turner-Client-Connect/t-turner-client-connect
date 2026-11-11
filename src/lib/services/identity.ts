@@ -25,8 +25,13 @@ export const ID_TYPES = {
   DRIVERS_LICENSE: { label: "Driver's license", expires: true, replaceReasons: ["Renewed license", "Name or address change", "Corrected information", "Unreadable copy", "Other"] },
   BIRTH_CERTIFICATE: { label: "Birth certificate", expires: false, replaceReasons: ["Corrected certificate", "Updated certificate", "Unreadable copy", "Other"] },
   SOCIAL_SECURITY_CARD: { label: "Social Security card", expires: false, replaceReasons: ["Name change", "Corrected information", "Unreadable copy", "Other"] },
+  PASSPORT: { label: "Passport", expires: true, replaceReasons: ["Renewed passport", "Name change", "Corrected information", "Unreadable copy", "Other"] },
 } as const;
 export type IdType = keyof typeof ID_TYPES;
+/** Kept when we have one, but never listed as missing (a passport is optional). */
+export const OPTIONAL_ID_TYPES: readonly IdType[] = ["PASSPORT"];
+/** The slots shown for one person: every required type, plus optional ones only when something is on file. */
+const slotTypesFor = (records: { type: string }[]) => (Object.keys(ID_TYPES) as IdType[]).filter((t) => !OPTIONAL_ID_TYPES.includes(t) || records.some((r) => r.type === t));
 export const isIdType = (t: string): t is IdType => t in ID_TYPES;
 
 // OWNER: one business owner on a business account (IdentityPerson.businessOwnerId). Their identity
@@ -62,10 +67,14 @@ export async function canStaffOpenIdentityFile(actor: { id: string; role: string
   return canStaffViewIdentity(actor, clientId);
 }
 
-/** Portal users may open only non-restricted identity files (driver's licenses), with identity access. */
+/**
+ * Identity files are for our office only (Tabitha's rule): once uploaded, no portal login can view,
+ * download or print one, of any type. Clients still see each document's status (on file, pending,
+ * missing, expired) and can upload or replace their own.
+ */
 export async function portalMayOpenIdentityFile(portalUserId: string, clientId: string, type: string | null) {
-  if (isAdminOnlyType(type)) return false;
-  return portalMayOpenIdentity(portalUserId, clientId);
+  void portalUserId; void clientId; void type;
+  return false;
 }
 
 /** Masked display for a Social Security card; the full number is never stored. */
@@ -338,7 +347,7 @@ export async function rejectIdentityDocument(actor: Actor, id: string, reason: s
  * A staff task to review each upload (closed on verify or decline). Assigned
  * to the client's staff member; the task text has no identity details.
  */
-async function openVerificationTask(recordId: string, uploaderStaffId: string | null) {
+export async function openVerificationTask(recordId: string, uploaderStaffId: string | null) {
   const rec = await prisma.identityDocument.findUniqueOrThrow({ where: { id: recordId }, include: { person: true, client: { select: { displayName: true, assignedToId: true } } } });
   const creator = uploaderStaffId ?? rec.client.assignedToId ?? (await prisma.user.findFirst({ where: { role: "ADMIN", active: true }, orderBy: { createdAt: "asc" }, select: { id: true } }))?.id;
   if (!creator) return;
@@ -396,7 +405,7 @@ export async function identityOverview(clientId: string) {
     .sort((a, b) => order[a.role] - order[b.role])
     .map((p) => ({
       person: p,
-      slots: (Object.keys(ID_TYPES) as IdType[]).map((type) => ({ type, ...summarizeSlot(records.filter((r) => r.personId === p.id && r.type === type)) })),
+      slots: slotTypesFor(records.filter((r) => r.personId === p.id)).map((type) => ({ type, ...summarizeSlot(records.filter((r) => r.personId === p.id && r.type === type)) })),
     }));
 }
 
@@ -419,7 +428,7 @@ export async function identityOverviewForViewer(clientId: string, portalUserId: 
     if (!people.length) return [];
     const tagged = new Set(docs.map((d) => d.id));
     const records = (await prisma.identityDocument.findMany({ where: { clientId, personId: { in: people.map((p) => p.id) } }, orderBy: { createdAt: "desc" } })).filter((r) => tagged.has(r.documentId));
-    return people.map((p) => ({ person: p, slots: (Object.keys(ID_TYPES) as IdType[]).map((type) => ({ type, ...summarizeSlot(records.filter((r) => r.personId === p.id && r.type === type)) })) }));
+    return people.map((p) => ({ person: p, slots: slotTypesFor(records.filter((r) => r.personId === p.id)).map((type) => ({ type, ...summarizeSlot(records.filter((r) => r.personId === p.id && r.type === type)) })) }));
   }
   return (await identityOverview(clientId)).filter((e) => !e.person.businessOwnerId);
 }
@@ -612,4 +621,104 @@ export async function identityReminderStatus() {
   ]);
   const confirmedAt = (ch: string) => confirmations.find((c) => (c.details as { channel?: string } | null)?.channel === ch)?.createdAt ?? null;
   return { enabled: process.env.NOTIFICATIONS_ENABLED === "true", recent, emailConfirmedAt: confirmedAt("EMAIL"), smsConfirmedAt: confirmedAt("SMS") };
+}
+
+// --- IRS Identity Protection PIN (optional) -------------------------------------------------
+
+/** The IRS page where a taxpayer signs in (with ID.me) to get this year's IP PIN. */
+export const IRS_IP_PIN_URL = "https://www.irs.gov/identity-theft-fraud-scams/get-an-identity-protection-pin";
+
+/** The IP PIN year needed now: the IRS issues a new one each calendar year, used on returns filed that year. */
+export const ipPinYear = (today = officeToday()) => Number(today.slice(0, 4));
+
+async function personOf(clientId: string, personId: string) {
+  const p = await prisma.identityPerson.findFirst({ where: { id: personId, clientId, archivedAt: null } });
+  if (!p) throw new ValidationError("That person isn't listed.");
+  return p;
+}
+
+/**
+ * Optional: only people the IRS gave an Identity Protection PIN need one, and only then is it
+ * required to e-file their return. Client (own account) or staff mark whether a person has one.
+ */
+export async function setHasIpPin(who: { staff: Actor } | { portal: PortalActor }, clientId: string, personId: string, on: boolean) {
+  if ("staff" in who) await requireStaff(who.staff, clientId);
+  else await requirePortal(who.portal, clientId, true);
+  const p = await personOf(clientId, personId);
+  await prisma.identityPerson.update({ where: { id: p.id }, data: { hasIpPin: on } });
+  await audit(prisma, { actorId: "staff" in who ? who.staff.id : null, action: "identity.ip_pin_flag", entityType: "IdentityPerson", entityId: p.id, clientId, details: { on, byClient: "portal" in who } });
+}
+
+/** Saves this year's IP PIN (6 digits), encrypted. The client never sees it again in the portal. */
+export async function saveIpPin(who: { staff: Actor } | { portal: PortalActor }, clientId: string, personId: string, pin: string, year = ipPinYear()) {
+  if ("staff" in who) await requireStaff(who.staff, clientId);
+  else await requirePortal(who.portal, clientId, true);
+  const p = await personOf(clientId, personId);
+  const v = (pin ?? "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(v)) throw new ValidationError("An IP PIN is 6 digits.");
+  const { encryptSecret } = await import("@/lib/crypto");
+  const data = { pinEnc: encryptSecret(v), enteredByPortalId: "portal" in who ? who.portal.id : null, enteredByStaffId: "staff" in who ? who.staff.id : null };
+  await prisma.$transaction([
+    prisma.identityPin.upsert({ where: { personId_year: { personId: p.id, year } }, create: { clientId, personId: p.id, year, ...data }, update: data }),
+    prisma.identityPerson.update({ where: { id: p.id }, data: { hasIpPin: true } }),
+  ]);
+  await audit(prisma, { actorId: "staff" in who ? who.staff.id : null, action: "identity.ip_pin_saved", entityType: "IdentityPerson", entityId: p.id, clientId, details: { year, byClient: "portal" in who } });
+}
+
+/** Which people have an IP PIN, and whether this year's is on file (never the PIN itself). */
+export async function ipPinStatus(clientId: string, year = ipPinYear()) {
+  const pins = await prisma.identityPin.findMany({ where: { clientId, year }, select: { personId: true, updatedAt: true } });
+  return { year, onFile: new Map(pins.map((x) => [x.personId, x.updatedAt])) };
+}
+
+/** Staff open a PIN to prepare the return (Admins and the assigned staff member); every view is logged. */
+export async function revealIpPin(actor: Actor, clientId: string, personId: string, year = ipPinYear()) {
+  await requireStaff(actor, clientId);
+  const row = await prisma.identityPin.findUnique({ where: { personId_year: { personId, year } } });
+  if (!row || row.clientId !== clientId) throw new ValidationError(`No ${year} IP PIN is on file.`);
+  const { decryptSecret } = await import("@/lib/crypto");
+  await audit(prisma, { actorId: actor.id, action: "identity.ip_pin_viewed", entityType: "IdentityPerson", entityId: personId, clientId, details: { year } });
+  return decryptSecret(row.pinEnc);
+}
+
+/**
+ * Identity is "Completed" when every required document is received (verified or pending review,
+ * not expired) and everyone with an IP PIN has this year's on file. Lists what is still needed.
+ */
+export function identityCompletion(overview: Awaited<ReturnType<typeof identityOverview>>, pins: { year: number; onFile: Map<string, Date> }) {
+  const missing: string[] = [];
+  for (const { person, items } of identityChecklistFor(overview)) {
+    for (const i of items) {
+      if (OPTIONAL_ID_TYPES.includes(i.type as IdType)) continue;
+      if (i.state === "NEEDED") missing.push(`${person.name}'s ${i.label.toLowerCase()}`);
+      if (i.state === "EXPIRED" && !i.replacementPending) missing.push(`${person.name}'s renewed ${i.label.toLowerCase()}`);
+    }
+    if (person.hasIpPin && !pins.onFile.has(person.id)) missing.push(`${person.name}'s ${pins.year} IP PIN`);
+  }
+  return { complete: missing.length === 0, missing };
+}
+
+/**
+ * After a client's questionnaire comes in: if anything is still missing from Identity, a staff task
+ * lists it, and (only once client communications are authorized) the client gets the usual
+ * generic portal notice. The portal itself always shows what's needed.
+ */
+export async function requestMissingIdentity(clientId: string) {
+  if (await isBusinessClient(clientId)) return null;
+  const [overview, pins] = await Promise.all([identityOverview(clientId), ipPinStatus(clientId)]);
+  const c = identityCompletion(overview.filter((e) => !e.person.businessOwnerId), pins);
+  if (c.complete) return c;
+  const client = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { displayName: true, assignedToId: true } });
+  const creator = client.assignedToId ?? (await prisma.user.findFirst({ where: { role: "ADMIN", active: true }, orderBy: { createdAt: "asc" }, select: { id: true } }))?.id;
+  const title = `Identity documents still needed — ${client.displayName}`;
+  if (creator && !(await prisma.task.count({ where: { clientId, title, status: "OPEN" } }))) {
+    await prisma.task.create({ data: { title, details: `Still needed in Identity Documents: ${c.missing.join("; ")}. The client sees these as needed in their portal.`, clientId, assigneeId: client.assignedToId, createdById: creator, priority: "NORMAL" } });
+  }
+  const { clientRolloutAuthorized } = await import("./owner-switches");
+  if (await clientRolloutAuthorized()) {
+    const grants = await prisma.portalAccess.findMany({ where: { clientId, revokedAt: null, canViewIdentity: true } });
+    for (const g of grants) await queuePortalNotification(g.portalUserId, "ID_NEEDS_ATTENTION", `id-missing:${clientId}:${ipPinYear()}:${c.missing.length}`);
+  }
+  await audit(prisma, { actorId: null, action: "identity.missing_requested", entityType: "Client", entityId: clientId, clientId, details: { items: c.missing.length } });
+  return c;
 }

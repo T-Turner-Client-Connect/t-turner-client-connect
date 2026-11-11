@@ -26,7 +26,7 @@ export async function payrollSetupAction(clientId: string, _prev: ActionState, f
 
 async function fileOf(fd: FormData) {
   const f = fd.get("file");
-  if (!(f instanceof File) || f.size === 0) throw new ValidationError("Choose the payroll register file (CSV or .xlsx).");
+  if (!(f instanceof File) || f.size === 0) throw new ValidationError("Choose the payroll register file (PDF, CSV or .xlsx).");
   return { bytes: new Uint8Array(await f.arrayBuffer()), fileName: f.name };
 }
 function mappingOf(fd: FormData): Mapping | null {

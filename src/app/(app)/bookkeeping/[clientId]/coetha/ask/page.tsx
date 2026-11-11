@@ -33,8 +33,19 @@ const STARTERS = [
   "Explain the biggest expense categories this month.",
 ];
 
-/** How many of the chat's newest messages the page shows before "See all messages". */
-const SHORT = 6;
+/** The chat's newest messages shown under the question box (the latest question and Coetha's answer), newest first. */
+const SHORT = 2;
+
+/** Coetha writes **bold** for headings and key figures; show it bold instead of the asterisks. */
+function CoethaText({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/(\*\*[^*\n]+\*\*)/g).map((part, i) =>
+        /^\*\*[^*\n]+\*\*$/.test(part) ? <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong> : <span key={i}>{part}</span>,
+      )}
+    </>
+  );
+}
 
 export default async function AskCoethaPage({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ chat?: string; all?: string; month?: string }> }) {
   await connection();
@@ -141,7 +152,7 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
                     </button>
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-slate-600">Statements: choose the account and month first; Coetha reads each one right away, brings in its transactions and fills in that month&apos;s reconciliation (a file already on file is never imported twice). Other files (check scans, statements, receipts, invoices; PDFs or pictures up to 60 MB each) are saved as staff-only documents for this business, and Coetha reads them in the background.</p>
+                <p className="mt-1 text-xs text-slate-600">For a statement, choose its account and month first. Files stay staff-only; nothing is imported twice.</p>
               </ActionForm>
             </section>
           ) : null}
@@ -165,9 +176,9 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
               </div>
             ) : (
               <>
-                {!showAll && v.chat.total > v.messages.length && <p className="mb-2 text-xs text-slate-600">Showing the latest {v.messages.length} of {v.chat.total} messages.</p>}
+                <p className="mb-2 text-xs text-slate-600">Newest first{!showAll && v.chat.total > v.messages.length ? ` · the latest ${v.messages.length} of ${v.chat.total} messages; older ones are under “See all” and in the chats on the left` : ""}.</p>
               <ol className="space-y-3">
-                {v.messages.map((m) => (
+                {[...v.messages].reverse().map((m) => (
                   <li key={m.id} className={clsx("flex", m.role === "USER" ? "justify-end" : "justify-start")} data-testid={m.role === "USER" ? "chat-question" : "chat-answer"}>
                     <div className={clsx("max-w-[min(42rem,92%)] rounded-2xl px-4 py-3 text-sm shadow-sm", m.role === "USER" ? "bg-navy-900 text-white" : "border border-gold-200 bg-white text-navy-900")}>
                       <p className={clsx("mb-1 flex flex-wrap items-center gap-x-2 text-xs", m.role === "USER" ? "text-navy-100" : "text-slate-600")}>
@@ -185,7 +196,7 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
                           ))}
                         </ul>
                       )}
-                      <div className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</div>
+                      <div className="whitespace-pre-wrap break-words leading-relaxed">{m.role === "COETHA" ? <CoethaText text={m.text} /> : m.text}</div>
                       {m.role === "USER" && m.jobIds.length === 0 && m.status === "WAITING" && (
                         <p className="mt-2 flex items-center gap-1 rounded-lg bg-white/10 p-2 text-xs font-semibold" data-testid="chat-busy"><Loader2 className="size-3.5 animate-spin" aria-hidden /> The AI service was busy. Your question is saved; Coetha will answer it here shortly. No need to send it again.</p>
                       )}
