@@ -516,11 +516,22 @@ export async function importBankCsv(actor: Actor, clientId: string, accountId: s
         matched++;
         continue;
       }
+      // Already brought in from another file of the same period (a bank CSV and the PDF statement
+      // word the same transaction differently)? Link it instead of adding a second one.
+      const f = await fileSourceMatch(tx, accountId, r, { importId: imp.id, first: dates[0], last: dates.at(-1)! });
+      if (f.match) {
+        await tx.bankTransaction.update({ where: { id: f.match.id }, data: { statementFingerprint: prints[i] } });
+        matched++;
+        continue;
+      }
+      const flag = m.ambiguous
+        ? { flag: "POSSIBLE_DUPLICATE", flagNote: "Looks like more than one row retrieved from the bank. Check before posting." }
+        : f.ambiguous ? { flag: "POSSIBLE_DUPLICATE", flagNote: "Another file for this period has a transaction like this one. Check before posting." } : {};
       await tx.bankTransaction.create({
-        data: { clientId, accountId, importId: imp.id, date: toDate(r.date), amountCents: r.amountCents, description: r.description, fingerprint: prints[i], source: "CSV", ...(m.ambiguous ? { flag: "POSSIBLE_DUPLICATE", flagNote: "Looks like more than one row retrieved from the bank. Check before posting." } : {}) },
+        data: { clientId, accountId, importId: imp.id, date: toDate(r.date), amountCents: r.amountCents, description: r.description, fingerprint: prints[i], source: "CSV", ...flag },
       });
       added++;
-      if (m.ambiguous) flagged++;
+      if (m.ambiguous || f.ambiguous) flagged++;
       seen.add(prints[i]);
     }
     // Rows before the opening date are already inside the opening balances: kept, but excluded with that reason.
@@ -556,6 +567,30 @@ export async function crossSourceMatch(tx: Tx, accountId: string, row: { date: s
   const score = (c: (typeof candidates)[number]) => (ymdOf(c.date) === row.date ? 2 : 0) + ([...words(c.description)].some((w) => mine.has(w)) ? 1 : 0) - Math.abs(c.date.getTime() - d) / 86_400_000 / 10;
   const ranked = candidates.map((c) => ({ c, s: score(c) })).sort((a, b) => b.s - a.s);
   // Identical rows (two $38.50 fees the same day) are interchangeable: link them one for one.
+  const same = (x: (typeof candidates)[number], y: (typeof candidates)[number]) => x.date.getTime() === y.date.getTime() && normDesc(x.description) === normDesc(y.description);
+  if (ranked.length > 1 && ranked[0].s - ranked[1].s < 0.5 && !same(ranked[0].c, ranked[1].c)) return { match: null, ambiguous: true };
+  return { match: ranked[0].c, ambiguous: false };
+}
+
+/**
+ * The one row already imported from ANOTHER file (bank CSV or PDF statement) that is the same
+ * transaction: same account and amount, dated within a few days, not yet linked to a file, and
+ * only when both files cover each other's date (so a row just outside one file's period is never
+ * merged with a different transaction). Several equally good candidates: nothing is merged and the
+ * new row is flagged for staff.
+ */
+export async function fileSourceMatch(tx: Tx, accountId: string, row: { date: string; amountCents: number; description: string }, file: { importId: string; first: string; last: string }) {
+  const d = toDate(row.date).getTime();
+  const lo = Math.max(d - MATCH_WINDOW_DAYS * 86_400_000, toDate(file.first).getTime());
+  const hi = Math.min(d + MATCH_WINDOW_DAYS * 86_400_000, toDate(file.last).getTime());
+  const candidates = (await tx.bankTransaction.findMany({
+    where: { accountId, amountCents: row.amountCents, providerId: null, statementFingerprint: null, importId: { not: file.importId }, date: { gte: new Date(lo), lte: new Date(hi) } },
+    include: { import: { select: { firstDate: true, lastDate: true } } },
+  })).filter((c) => !!c.import?.firstDate && !!c.import.lastDate && c.import.firstDate.getTime() <= d && c.import.lastDate.getTime() >= d);
+  if (!candidates.length) return { match: null, ambiguous: false };
+  const mine = words(row.description);
+  const score = (c: (typeof candidates)[number]) => (ymdOf(c.date) === row.date ? 2 : 0) + ([...words(c.description)].some((w) => mine.has(w)) ? 1 : 0) - Math.abs(c.date.getTime() - d) / 86_400_000 / 10;
+  const ranked = candidates.map((c) => ({ c, s: score(c) })).sort((a, b) => b.s - a.s);
   const same = (x: (typeof candidates)[number], y: (typeof candidates)[number]) => x.date.getTime() === y.date.getTime() && normDesc(x.description) === normDesc(y.description);
   if (ranked.length > 1 && ranked[0].s - ranked[1].s < 0.5 && !same(ranked[0].c, ranked[1].c)) return { match: null, ambiguous: true };
   return { match: ranked[0].c, ambiguous: false };
