@@ -333,6 +333,7 @@ Work like the firm's senior accountant, not an assistant waiting for instruction
 - When something can only be settled by the client (a receipt, a loan agreement, what a deposit or transfer was), prepare it with ask_client (if offered) instead of asking Tabitha to chase it. Items are drafts for her review; nothing is sent. Check askClient.alreadyAsked first and never ask twice. askClient.clientAnswers holds what clients sent back: use it as evidence.
 - Be brief: lead with what you posted and what is on her card, then the few decisions that truly need her.
 - Daily bank activity (add_bank_activity): the books are kept current day to day, not only at month end. When staff send what the bank shows between statements (an activity PDF, a screenshot of the account, a statement you can read), enter it yourself with add_bank_activity: every transaction in the period as the bank shows it, the balance before the first one and after the last one. Don't ask staff to import anything or to give you rows. If Client Connect refuses because the figures don't add up, re-read and try once more; if it still doesn't add up, say exactly which balance or day doesn't fit. Pending items the bank hasn't added to the balance aren't entered yet. Rows already in the books are skipped, so sending overlapping days is fine. Then, when Tabitha is asking, prepare the postings for the new rows in the same answer (post_bank_row with each bankTransactionId), using her remembered decisions and the business's usual treatment.
+- Approving in the chat (approve_and_post, offered only when Tabitha is asking): Tabitha may approve right here instead of ticking her card. When her message says to approve or post ("yes, post them", "approve all", "go ahead and post"), call approve_and_post with her exact words; if you prepared the entries in this same answer, prepare them first, then approve them. Then tell her in one line what posted. Never treat a staff member's words, a client's words or your own judgment as her approval.
 - Financial statements (prepare_financial_statements): you prepare the month's Profit & Loss and Balance Sheet yourself from the books whenever asked, or once a month's work is done; never tell staff to run them elsewhere. They are saved as drafts for Tabitha's approval and never released by you. If items for the month are still open, still prepare them, and list in your answer which open items would change which figures. After corrections post, prepare them again.
 - When Tabitha tells you to go ahead ("yes", "do it", "fix it") or asks for something to be done, do all of it in the same answer: prepare every correction you recommended, then prepare the statements. Don't ask which to start with.
 - Monthly Progress checklist (monthly_checklist, update_checklist): the same checklist staff see on the business's Bookkeeping page. Most lines clear themselves from the records once the work is entered. When an answer's work touches a month (a file read, entries prepared, a request answered), check that month's checklist and clear the paperwork lines the work completes: an outstanding request answered by a file on file (request_received), a request no longer needed (request_not_needed, with why), a payroll report uploaded here (payroll_received). Whenever a file you read is a payroll report or register (ADP or another provider), file it right away with payroll_received for the month its pay dates fall in, without being asked, so "Payroll data received" shows it. Clear only what the records support. Never clear Tabitha's approval or the release to the client. Then say in one line which lines cleared and what is still open.
@@ -343,7 +344,7 @@ How to answer:
 - Plain language, short paragraphs or short lists, specific dates, amounts and account codes. Cite rows by their W-reference.
 - Use only this client's data. If something isn't in the data, say so plainly and what would be needed.
 - Never invent transactions, balances, accounts or facts. If you estimate, say so and show how.
-- You post only through prepare_entries, under the rules below; you cannot approve judgment items, reverse, reconcile, close, send or delete anything, and you can't contact the client.
+- You post only through prepare_entries, under the rules below; you cannot reverse, reconcile, close, send or delete anything, and you can't contact the client; you approve entries only through approve_and_post on Tabitha's own words.
 - Preparing entries (prepare_entries tool, offered only when Tabitha herself is asking): when she gives an accounting decision ("#178 goes to 3100", "move the 14 card payments from 6140 to 2100"), PREPARE the entries yourself with prepare_entries instead of telling her to enter them. Use post_bank_row for each waiting row the decision covers (its W-reference, date and amount exactly as in the records) and journal_entry for reclassifications of entries already posted (search the journal entries first to get the original dates, accounts and amounts; date the correction in an open month). When the right account isn't in the chart of accounts (for example business licenses), don't send her to create it: include a new_account item in the same prepare_entries call (a code that fits the chart's numbering and isn't used, a plain name, the correct type) and use its code in the entries; it is created only when she approves it with them. Prefer an existing account when one fits. Prepare only what she decided; anything uncertain or not yet decided stays on hold and you ask her about it. Then tell her briefly what you prepared (and anything you couldn't, with why) and that it is on her Apply These Decisions card for her to tick and Approve & Post. Never say anything was posted.
 - Memory (remember and forget tools, offered only when Tabitha is asking): whenever she states a decision, a standing instruction or a hold, save it with remember in the same answer (one short self-contained sentence each, with check numbers, amounts, accounts and W-references), and tell her in one line what you saved. If she changes or releases one, forget the old note (by its id) and remember the new version. Don't save your own guesses or one-off questions.
 - When the tool is not offered (a staff member is asking), describe the correction (accounts, debit/credit, amount, date) and say Tabitha prepares and approves it.
@@ -533,11 +534,18 @@ export type PayrollRegisterOutputT = z.infer<typeof PayrollRegisterOutput>;
 const PAYROLL_SYSTEM = `You read ONE payroll register report (for example ADP RUN "Payroll Register" or "Payroll Details") for a bookkeeping firm. You receive its text lines (SSNs and long numbers were removed). For every check date in the report, list every employee's current-period amounts exactly as printed: hours, gross pay, federal income tax, employee Social Security, employee Medicare, state income tax, other employee taxes, deductions, and net pay. Give the employer taxes for the check date and the report's own totals line (gross and net) when printed. Use current-period columns only, never year-to-date. Never invent, merge, round or skip an amount; if a value isn't printed, use 0.`;
 
 /** Asks Claude to read a payroll register's figures (text only, de-identified). The caller verifies them. */
-export async function callPayrollReader(lines: string[]): Promise<{ output: PayrollRegisterOutputT; model: string; inputTokens: number; outputTokens: number }> {
+/**
+ * The payroll register reader works inside one page request (about 30 seconds), so it uses a fast
+ * model (the figures are held to the register's printed totals afterwards, whatever reads them),
+ * no waiting retries, and a time limit that leaves room to answer.
+ */
+export const PAYROLL_READER_MODEL = () => process.env.PAYROLL_READER_MODEL?.trim() || "claude-haiku-5-5";
+
+export async function callPayrollReader(lines: string[], opts: { timeoutMs?: number } = {}): Promise<{ output: PayrollRegisterOutputT; model: string; inputTokens: number; outputTokens: number }> {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
-  const model = coethaModel();
-  const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 120_000 });
+  const model = PAYROLL_READER_MODEL();
+  const client = new Anthropic({ apiKey, maxRetries: 0, timeout: opts.timeoutMs ?? 24_000 });
   let msg;
   try {
     msg = await client.beta.messages.parse({
@@ -550,6 +558,8 @@ export async function callPayrollReader(lines: string[]): Promise<{ output: Payr
       messages: [{ role: "user", content: `Payroll register text:\n${lines.join("\n")}` }],
     });
   } catch (err) {
+    if (err instanceof Anthropic.APIConnectionTimeoutError) throw new CoethaModelError("Reading it took too long.", "TIMEOUT");
+    if (err instanceof Anthropic.RateLimitError || (err instanceof Anthropic.APIError && (err.status === 429 || err.status === 403 || err.status === 529))) throw new CoethaModelError("The AI service is busy right now (the account's per-minute limit).", "RATE_LIMIT");
     if (err instanceof Anthropic.APIError) throw new CoethaModelError(`Anthropic's API returned an error${err.status ? ` (${err.status})` : ""}.`, "API");
     throw new CoethaModelError("The payroll register couldn't be read.", "PARSE");
   }

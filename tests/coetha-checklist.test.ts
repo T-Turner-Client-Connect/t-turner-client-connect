@@ -78,11 +78,11 @@ describe("Coetha and the Monthly Progress checklist", () => {
       "Marked received: Receipt for the $412.00 supply purchase on Oct 4",
       "Say in the note why the request isn't needed.",
       "Closed as not needed: Receipt for the $95.00 purchase on Oct 9",
-      "Filed as the 2026-10 payroll report: Sent to Coetha — payroll-register.pdf",
+      "Filed as the 2026-10 payroll report and shared on the client's Payroll page: Sent to Coetha — payroll-register.pdf",
     ]);
     expect((await line(s.biz.id, "RECEIPTS")).state).toBe("DONE");
     expect((await line(s.biz.id, "PAYROLL")).state).toBe("DONE");
-    expect(await prisma.document.findUniqueOrThrow({ where: { id: register.id } })).toMatchObject({ docType: "PAYROLL_REPORT", visibility: "STAFF_ONLY", year: 2026, month: 10 });
+    expect(await prisma.document.findUniqueOrThrow({ where: { id: register.id } })).toMatchObject({ docType: "PAYROLL_REPORT", visibility: "PUBLISHED", year: 2026, month: 10 });
     expect(await prisma.document.findUniqueOrThrow({ where: { id: receipt.id } })).toMatchObject({ requestId: a.id });
     expect(await prisma.auditLog.count({ where: { action: { startsWith: "coetha.checklist_" } } })).toBe(3);
 

@@ -114,6 +114,24 @@ export function chooseSources(plaid: PlaidRow[], manual: ClientManualBalance[], 
   return { showPlaid: plaid.filter((p) => !replaced.has(p.id)), showManual };
 }
 
+/** Each registered bank or card account's balance in the books, as office balances (as of the latest activity). */
+async function booksBalances(clientId: string): Promise<ClientManualBalance[]> {
+  const regs = await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null, ledgerAccountId: { not: null } }, select: { id: true, institution: true, nickname: true, last4: true, accountType: true, ledgerAccountId: true } });
+  const out: ClientManualBalance[] = [];
+  for (const r of regs) {
+    const kind = r.accountType === "CHECKING" || r.accountType === "SAVINGS" ? "CASH" : r.accountType === "CREDIT_CARD" ? "CREDIT" : null;
+    if (!kind) continue;
+    const [sum, last] = await Promise.all([
+      prisma.journalLine.aggregate({ where: { accountId: r.ledgerAccountId!, entry: { clientId } }, _sum: { debitCents: true, creditCents: true } }),
+      prisma.journalLine.findFirst({ where: { accountId: r.ledgerAccountId!, entry: { clientId } }, orderBy: { entry: { date: "desc" } }, select: { entry: { select: { date: true } } } }),
+    ]);
+    if (!last) continue;
+    const dr = sum._sum.debitCents ?? 0, cr = sum._sum.creditCents ?? 0;
+    out.push({ id: `books:${r.id}`, name: r.nickname || r.institution, institution: r.institution, last4: r.last4, kind, ledgerAccountId: r.ledgerAccountId, balanceSource: "OFFICE", balanceCents: kind === "CASH" ? dr - cr : cr - dr, asOf: last.entry.date, fromFile: true });
+  }
+  return out;
+}
+
 export async function bankFeed(clientId: string, opts: { transactions?: number; now?: Date } = {}): Promise<BankFeed> {
   const now = opts.now ?? new Date();
   const officeVisible = await clientBankBalancesVisible();
@@ -125,6 +143,9 @@ export async function bankFeed(clientId: string, opts: { transactions?: number; 
     }),
     officeVisible ? clientManualBalances(clientId) : Promise.resolve([] as ClientManualBalance[]),
   ]);
+  // No bank feed and no balance entered by the office: the balance per the books (the same figure
+  // staff see), dated to the books' latest bank activity. Only when Tabitha shows balances to clients.
+  if (officeVisible && !conns.length && !manual.some((m) => m.balanceCents !== null)) manual.push(...(await booksBalances(clientId)));
 
   const all: PlaidRow[] = conns.flatMap((c) => c.accounts.map((a) => ({ id: a.id, name: a.name, mask: a.mask, type: a.type, ledgerAccountId: a.ledgerAccountId, currentBalanceCents: a.currentBalanceCents, availableBalanceCents: a.availableBalanceCents, balanceAsOf: a.balanceAsOf, institution: c.institutionName, connStatus: c.status })));
   const { showPlaid, showManual } = chooseSources(all, manual, now);

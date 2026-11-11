@@ -27,7 +27,8 @@ describe("Coetha prepares the P&L and Balance Sheet from the books", () => {
 
     const r = await prepareStatementsFromBooks(tabitha, biz.id, "2026-10");
     expect(r.figures).toMatchObject({ netIncome: "$1,100.00" });
-    expect(r.saved).toEqual(["Profit & Loss v1 (draft, staff-only)", "Balance Sheet v1 (draft, staff-only)"]);
+    expect(r.saved).toEqual(["Profit & Loss v1 (draft, staff-only)", "Balance Sheet v1 (draft, staff-only)", "Financial Statements Package v1 (draft, staff-only)"]);
+    if (process.env.PACKAGE_SAMPLE) { const { booksPackagePdf } = await import("@/lib/services/client-statements"); const { writeFileSync } = await import("node:fs"); writeFileSync(process.env.PACKAGE_SAMPLE, (await booksPackagePdf(biz.id, 2026, 10, { draft: true })).pdf); }
     const docs = await prisma.document.findMany({ where: { clientId: biz.id, reportType: { in: ["PROFIT_AND_LOSS", "BALANCE_SHEET"] }, supersededAt: null } });
     expect(docs).toHaveLength(2);
     expect(docs.every((d) => d.visibility === "STAFF_ONLY")).toBe(true);
@@ -38,8 +39,8 @@ describe("Coetha prepares the P&L and Balance Sheet from the books", () => {
     expect(same.saved.every((x) => x.includes("unchanged"))).toBe(true);
     await postJournalEntry(tabitha, biz.id, { date: "2026-10-25", memo: "Fictional more sales", lines: [{ accountId: await acct("ASSET"), debit: "100.00" }, { accountId: await acct("INCOME"), credit: "100.00" }] });
     const again = await prepareStatementsFromBooks(tabitha, biz.id, "2026-10");
-    expect(again.saved).toEqual(["Profit & Loss v2 (draft, staff-only)", "Balance Sheet v2 (draft, staff-only)"]);
+    expect(again.saved).toEqual(["Profit & Loss v2 (draft, staff-only)", "Balance Sheet v2 (draft, staff-only)", "Financial Statements Package v2 (draft, staff-only)"]);
     expect(again.figures.netIncome).toBe("$1,200.00");
-    expect(await prisma.document.count({ where: { clientId: biz.id, reportType: { in: ["PROFIT_AND_LOSS", "BALANCE_SHEET"] }, supersededAt: null } })).toBe(2);
+    expect(await prisma.document.count({ where: { clientId: biz.id, reportType: { in: ["PROFIT_AND_LOSS", "BALANCE_SHEET", "FINANCIAL_PACKET"] }, supersededAt: null } })).toBe(3);
   });
 });

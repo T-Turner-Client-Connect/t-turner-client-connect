@@ -67,8 +67,8 @@ export function gridFromReading(out: PayrollRegisterOutputT): string[][] {
 }
 
 /** Whole pages per part, about this many text lines each (a part is one quick reading). */
-const CHUNK_LINES = 70;
-const MAX_CHUNKS = 12;
+const CHUNK_LINES = 45;
+const MAX_CHUNKS = 16;
 
 /** Groups whole pages into parts of about CHUNK_LINES lines (a page is never split). */
 export function pageChunks(pages: string[][]): string[][] {
@@ -141,7 +141,7 @@ export async function readPayrollPdf(actor: Actor, clientId: string, bytes: Uint
     const parts = await Promise.all(chunks.map((c) => callPayrollReader(c)));
     res = { output: mergeReadings(parts.map((p) => p.output)), model: parts[0].model, inputTokens: parts.reduce((n, p) => n + p.inputTokens, 0), outputTokens: parts.reduce((n, p) => n + p.outputTokens, 0) };
   } catch (err) {
-    if (err instanceof CoethaModelError) throw new PayrollPdfError(`Coetha couldn't read this PDF: ${err.message} Export the register as Excel (.xlsx) instead, or try again.`);
+    if (err instanceof CoethaModelError) throw new PayrollPdfError(`Coetha couldn't read this PDF: ${err.message} Try Preview again in a minute, or export the register from ADP as Excel (.xlsx), which imports right away.`);
     throw err;
   }
   const grid = gridFromReading(res.output);

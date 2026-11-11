@@ -208,7 +208,7 @@ export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEO
 /** Read-only searches and the monthly checklist for everyone; prepare_entries, memory and ask_client only when the person asking is Tabitha. */
 async function chatTools(actor: Actor, clientId: string, records: unknown, currentQuestion?: string) {
   const owner = await isPrimaryOwner(actor.id);
-  const { PREPARE_TOOL, runPrepareTool } = await import("./coetha-decisions");
+  const { PREPARE_TOOL, runPrepareTool, APPROVE_TOOL, runApproveTool } = await import("./coetha-decisions");
   const { MEMORY_TOOLS, runMemoryTool } = await import("./coetha-memory");
   const memoryNames = new Set(MEMORY_TOOLS.map((t) => t.name));
   // Ask Client drafts (drafts only; never sent from chat). Like her other preparing tools: Tabitha only.
@@ -229,9 +229,10 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
     }
   };
   return {
-    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, PREPARE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL],
+    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, PREPARE_TOOL, APPROVE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL],
     run: (name: string, input: unknown) =>
       owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
+        : owner && name === APPROVE_TOOL.name ? runApproveTool(actor, clientId, input, currentQuestion)
         : owner && memoryNames.has(name) ? runMemoryTool(actor, clientId, name, input)
           : asks && name === ASK_CLIENT_TOOL.name ? runAskClientTool(actor, clientId, input)
             : CHECKLIST_TOOL_NAMES.has(name) ? runChecklistTool(actor, clientId, name, input)

@@ -4,7 +4,7 @@ import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { ValidationError } from "./clients";
 import { assertLedger, usd } from "./ledger";
-import { booksStatements, clientStatementPdf } from "./client-statements";
+import { booksPackagePdf, booksStatements, clientStatementPdf } from "./client-statements";
 import { uploadMonthlyReport } from "./bookkeeping-clients";
 import { monthlyChecklist } from "./monthly-workflow";
 
@@ -32,6 +32,17 @@ export async function prepareStatementsFromBooks(actor: Actor, clientId: string,
       saved.push({ reportType, version: cur?.version ?? 1, documentId: cur?.id ?? "", unchanged: true });
     }
   }
+  // The Financial Statements Package (cover, monthly P&L with YTD, Balance Sheet) in the firm's layout.
+  {
+    const { pdf: bytes } = await booksPackagePdf(clientId, y, m, { draft: true });
+    try {
+      const r = await uploadMonthlyReport(actor, { clientId, year: y, month: m, reportType: "FINANCIAL_PACKET", periodType: "MONTH", basis, bytes, originalName: `financial-statements-${ym}.pdf` });
+      saved.push({ reportType: "FINANCIAL_PACKET", version: r.version, documentId: r.document.id, unchanged: false });
+    } catch (err) {
+      if (!(err instanceof ValidationError) || !/already saved/.test(err.message)) throw err;
+      saved.push({ reportType: "FINANCIAL_PACKET", version: 0, documentId: "", unchanged: true });
+    }
+  }
   const net = pl.totals.find((t) => t.label === "Net Income")?.amountCents ?? 0;
   const sec = (title: string) => bs.sections.find((x) => x.title === title)?.totalCents ?? 0;
   const checklist = await monthlyChecklist(clientId, y, m);
@@ -39,7 +50,7 @@ export async function prepareStatementsFromBooks(actor: Actor, clientId: string,
   await audit(prisma, { actorId: actor.id, action: "coetha.statements_prepared", entityType: "Client", entityId: clientId, clientId, details: { month: ym, saved, openItems: open.length } });
   return {
     month: ym,
-    saved: saved.map((s) => `${s.reportType === "PROFIT_AND_LOSS" ? "Profit & Loss" : "Balance Sheet"} v${s.version} (draft, staff-only${s.unchanged ? "; unchanged since the last draft" : ""})`),
+    saved: saved.filter((s) => s.version > 0 || !s.unchanged).map((s) => `${s.reportType === "PROFIT_AND_LOSS" ? "Profit & Loss" : s.reportType === "BALANCE_SHEET" ? "Balance Sheet" : "Financial Statements Package"} v${s.version} (draft, staff-only${s.unchanged ? "; unchanged since the last draft" : ""})`),
     figures: {
       income: usd(pl.sections.find((x) => x.title === "Income")?.totalCents ?? 0),
       expenses: usd(pl.sections.find((x) => x.title === "Expenses")?.totalCents ?? 0),
@@ -49,6 +60,7 @@ export async function prepareStatementsFromBooks(actor: Actor, clientId: string,
       totalEquity: usd(sec("Equity")),
     },
     stillOpenThisMonth: open,
+    package: "The Financial Statements Package (cover with the firm's logo, contents, P&L and Balance Sheet) is on the Statements page: \"Financial Statements Package (PDF)\".",
     note: "Saved as drafts on the Statements page for Tabitha's review; nothing was released to the client. If entries change, prepare them again (a new version replaces the draft).",
   };
 }

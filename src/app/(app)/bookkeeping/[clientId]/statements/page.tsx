@@ -160,7 +160,10 @@ export default async function StatementsPage({ params, searchParams }: { params:
             </ActionForm>
           ) : <p className="mt-1 text-xs text-slate-600">Only Tabitha releases interim statements.</p>}
         </div>
-        {period && <p className="mt-2 text-xs text-slate-600"><a className="underline" href={`/api/bookkeeping/packet?period=${period.id}&type=MONTH`} target="_blank" rel="noopener">Preview the month&apos;s packet PDF</a> · Statements are always drafts until Tabitha approves; nothing reaches the client before she does.</p>}
+        {period && reports.length > 0 && (
+          <a className={clsx(goldBtn, "mt-3 inline-flex")} href={`/api/bookkeeping/packet?period=${period.id}&type=MONTH`} target="_blank" rel="noopener" data-testid="statement-package">Financial Statements Package (PDF)</a>
+        )}
+        {period && <p className="mt-2 text-xs text-slate-600">The package has the cover page with your logo, the contents, and each statement in order. Statements are always drafts until Tabitha approves; nothing reaches the client before she does.</p>}
       </section>
 
       {/* The one upload path */}
