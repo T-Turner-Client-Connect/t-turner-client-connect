@@ -487,21 +487,9 @@ export async function authorizeDownload(token: string, viewer: { staffId?: strin
       const staff = await prisma.user.findUnique({ where: { id: viewer.staffId }, select: { id: true, role: true, active: true } });
       return staff?.active && (await canStaffOpenIdentityFile(staff, doc.clientId, doc.docType)) ? doc : null;
     }
-    // Social Security cards and birth certificates never open for portal users.
+    // Identity files are for our office only (Tabitha's rule): no portal login opens one, of any
+    // type, including a business owner's own. The portal shows each document's status only.
     if (!viewer.portalUserId) return null;
-    // A business owner's identity document opens only for that owner's own login.
-    if (doc.businessOwnerId) {
-      const { isAdminOnlyType } = await import("./identity");
-      if (isAdminOnlyType(doc.docType)) return null;
-      const mine = await prisma.businessOwner.count({ where: { id: doc.businessOwnerId, clientId: doc.clientId, portalUserId: viewer.portalUserId, archivedAt: null } });
-      if (!mine) return null;
-      try {
-        await requireClientAccess(viewer.portalUserId, doc.clientId);
-      } catch {
-        return null;
-      }
-      return doc;
-    }
     return (await portalMayOpenIdentityFile(viewer.portalUserId, doc.clientId, doc.docType)) ? doc : null;
   }
   if (viewer.portalUserId) {

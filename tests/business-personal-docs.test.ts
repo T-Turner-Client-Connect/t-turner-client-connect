@@ -191,8 +191,9 @@ describe("business-only owners send their own personal tax documents", () => {
     const doc = await prisma.document.findUniqueOrThrow({ where: { id: rec.documentId } });
     expect(doc).toMatchObject({ category: "IDENTITY", businessOwnerId: a.owner.id });
     expect((await prisma.documentRequest.findFirstOrThrow({ where: { clientId: biz.id, docType: "DRIVERS_LICENSE" } })).status).toBe("SUBMITTED");
-    // Opens for A, Tabitha and the assigned staff member; never for B.
-    expect(await canOpen(doc.id, { portalUserId: a.login.id })).toBe(true);
+    // Once uploaded, identity files are office-only: Tabitha and the assigned staff member open it;
+    // neither partner does (not even A, who sent it).
+    expect(await canOpen(doc.id, { portalUserId: a.login.id })).toBe(false);
     expect(await canOpen(doc.id, { portalUserId: b.login.id })).toBe(false);
     expect(await canOpen(doc.id, { staffId: tabitha.id })).toBe(true);
     expect(await canOpen(doc.id, { staffId: daria.id })).toBe(true);

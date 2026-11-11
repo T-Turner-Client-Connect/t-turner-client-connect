@@ -128,3 +128,80 @@ export async function confirmReminderReceivedAction(channel: "EMAIL" | "SMS", _p
     return "Recorded.";
   });
 }
+
+/** "Move Jotform ID documents to Identity" for one client (staff with identity access). */
+export async function moveQuestionnaireIdentityAction(clientId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { moveQuestionnaireIdentity } = await import("@/lib/services/identity-import");
+    const r = await moveQuestionnaireIdentity(actor, clientId);
+    revalidatePath(`/clients/${clientId}`);
+    const parts = [`${r.filed.length} filed into Identity Documents`];
+    if (r.left.length) parts.push(`${r.left.length} need staff to file (${[...new Set(r.left.map((x) => x.reason))].join(" ")})`);
+    if (r.unrecognized) parts.push(`${r.unrecognized} other questionnaire uploads aren't identity documents or don't say which; file any of those below`);
+    return `${parts.join("; ")}.`;
+  });
+}
+
+/** File one questionnaire upload into Identity by hand: what it is and whose it is. */
+export async function fileQuestionnaireUploadAction(clientId: string, documentId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { fileQuestionnaireUploadByHand } = await import("@/lib/services/identity-import");
+    const r = await fileQuestionnaireUploadByHand(actor, clientId, documentId, { type: str(fd, "type"), personId: str(fd, "personId") });
+    revalidatePath(`/clients/${clientId}`);
+    return `Filed: ${r.label}. It's Pending Verification.`;
+  });
+}
+
+/** Optional IRS Identity Protection PIN: whether this person has one (client or staff). */
+export async function portalIpPinFlagAction(clientId: string, personId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requirePortalUser();
+  return run(async () => {
+    const { setHasIpPin } = await import("@/lib/services/identity");
+    const on = str(fd, "has") === "yes";
+    await setHasIpPin({ portal: user }, clientId, personId, on);
+    revalidatePath("/client", "layout");
+    return on ? "Noted. Please add this year's IP PIN below." : "Noted: no IP PIN.";
+  });
+}
+
+/** This year's IP PIN, saved encrypted (the portal never shows it again). */
+export async function portalIpPinSaveAction(clientId: string, personId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requirePortalUser();
+  return run(async () => {
+    const { saveIpPin } = await import("@/lib/services/identity");
+    await saveIpPin({ portal: user }, clientId, personId, str(fd, "pin"));
+    revalidatePath("/client", "layout");
+    return "Saved securely. Thank you.";
+  });
+}
+
+export async function staffIpPinFlagAction(clientId: string, personId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { setHasIpPin } = await import("@/lib/services/identity");
+    await setHasIpPin({ staff: actor }, clientId, personId, str(fd, "has") === "yes");
+    revalidatePath(`/clients/${clientId}`);
+    return "Saved.";
+  });
+}
+
+export async function staffIpPinSaveAction(clientId: string, personId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { saveIpPin } = await import("@/lib/services/identity");
+    await saveIpPin({ staff: actor }, clientId, personId, str(fd, "pin"));
+    revalidatePath(`/clients/${clientId}`);
+    return "IP PIN saved (encrypted).";
+  });
+}
+
+/** Staff view one IP PIN to prepare the return; the view is logged. */
+export async function staffIpPinRevealAction(clientId: string, personId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { revealIpPin } = await import("@/lib/services/identity");
+    return `IP PIN: ${await revealIpPin(actor, clientId, personId)} (this view was logged)`;
+  });
+}
