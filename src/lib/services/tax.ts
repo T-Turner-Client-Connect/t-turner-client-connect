@@ -223,6 +223,18 @@ export async function attachFilingDocument(actor: Actor, filingId: string, docum
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
   const doc = await prisma.document.findFirst({ where: { id: documentId, clientId: f.clientId, deletedAt: null } });
   if (!doc) throw new ValidationError("Document not found for this client.");
+  // Only a tax acknowledgment, notice or correspondence belongs on a filing. Re-labeling anything
+  // else as TAXES would let it skip its own release step (statements, returns, identity, nonprofit).
+  const { RETURN_DOC_TYPES, STATEMENT_TYPES } = await import("./documents");
+  if (
+    !["TAXES", "CLIENT_UPLOADS", "OTHER"].includes(doc.category) ||
+    doc.reportType ||
+    doc.filingDocType === "RETURN" ||
+    doc.docType === "NONPROFIT_ITEM" ||
+    (doc.docType && (STATEMENT_TYPES.includes(doc.docType) || RETURN_DOC_TYPES.includes(doc.docType)))
+  ) {
+    throw new ValidationError("Only a tax acknowledgment, notice or correspondence can be attached to a filing. Returns, financial statements, identity, nonprofit, contract and bookkeeping documents keep their own release steps.");
+  }
   await prisma.document.update({ where: { id: documentId }, data: { filingId, filingDocType: docType, category: "TAXES", year: f.taxYear } });
   await audit(prisma, { actorId: actor.id, action: "filing.document_attached", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { documentId, docType } });
 }
@@ -234,11 +246,19 @@ export async function attachFilingDocument(actor: Actor, filingId: string, docum
 export async function publishFilingUpdate(actor: Actor, filingId: string, channels: ("EMAIL" | "SMS")[] | "portal_only") {
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId }, include: { documents: { where: { deletedAt: null } } } });
   // A tax return reaches the client only through Tabitha's release (never as a side effect of publishing the filing).
-  const docIds = f.documents.filter((d) => d.scanStatus === "CLEAN" && d.filingDocType !== "RETURN").map((d) => d.id);
+  // Every other document passes the same checks as the Publish button; anything that fails stays staff-only.
+  const { publishBlocker } = await import("./documents");
+  const docIds: string[] = [];
+  const heldBack: string[] = [];
+  for (const d of f.documents) {
+    if (d.scanStatus !== "CLEAN" || d.filingDocType === "RETURN") continue;
+    if (await publishBlocker(actor, d)) heldBack.push(d.id);
+    else docIds.push(d.id);
+  }
   await prisma.$transaction([
     prisma.filingRecord.update({ where: { id: filingId }, data: { visibleToClient: true } }),
     prisma.document.updateMany({ where: { id: { in: docIds }, visibility: "STAFF_ONLY" }, data: { visibility: "PUBLISHED", publishedAt: new Date() } }),
-    prisma.auditLog.create({ data: { actorId: actor.id, action: "filing.published", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { documents: docIds.length, notify: channels } } }),
+    prisma.auditLog.create({ data: { actorId: actor.id, action: "filing.published", entityType: "FilingRecord", entityId: filingId, clientId: f.clientId, details: { documents: docIds.length, heldBack, notify: channels } } }),
   ]);
   if (channels !== "portal_only") {
     const grants = await effectiveGrantsFor(f.clientId);
