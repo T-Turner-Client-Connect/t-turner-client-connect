@@ -261,6 +261,8 @@ export const ASK_CLIENT_TOOL = {
             title: { type: "string", description: "What is needed, e.g. \"Receipt or invoice for check #1043, $412.00, paid March 4, 2026\"." },
             reason: { type: "string", description: "Why it's needed, in plain words for the client." },
             instructions: { type: "string", description: "Optional: what will do (e.g. \"A photo of the receipt is fine\" or \"If you have no document, a short explanation is fine\")." },
+            month: { type: "string", description: "Optional: the accounting month it belongs to, YYYY-MM (e.g. \"2026-03\")." },
+            account_last4: { type: "string", description: "Optional: the last 4 digits of the business's bank or card account the transaction is on." },
           },
           required: ["title", "reason"],
         },
@@ -271,14 +273,21 @@ export const ASK_CLIENT_TOOL = {
 };
 
 export async function runAskClientTool(actor: Actor, clientId: string, input: unknown) {
-  const q = (input && typeof input === "object" ? input : {}) as { items?: { title?: string; reason?: string; instructions?: string }[] };
+  const q = (input && typeof input === "object" ? input : {}) as { items?: { title?: string; reason?: string; instructions?: string; month?: string; account_last4?: string }[] };
+  const accounts = await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null }, select: { id: true, last4: true } });
   const items = Array.isArray(q.items) ? q.items.slice(0, 25) : [];
   if (!items.length) return { error: "No items to prepare." };
   const out: { title: string; result: string }[] = [];
   for (const i of items) {
     const title = String(i.title ?? "").trim();
     try {
-      const r = await addAskItem(actor, clientId, { title, reason: i.reason ?? null, instructions: i.instructions ?? null }, { source: "COETHA" });
+      // The month and account, when Coetha names them and they're this business's own.
+      const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(i.month ?? "")) ? String(i.month) : null;
+      const last4 = String(i.account_last4 ?? "").replace(/\D/g, "").slice(-4);
+      const acct = last4.length === 4 ? accounts.filter((a) => a.last4 === last4) : [];
+      const [y, m] = month ? month.split("-").map(Number) : [0, 0];
+      const period = month ? { start: `${month}-01`, end: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) } : {};
+      const r = await addAskItem(actor, clientId, { title, reason: i.reason ?? null, instructions: i.instructions ?? null, bookkeepingAccountId: acct.length === 1 ? acct[0].id : null, ...period }, { source: "COETHA" });
       out.push({ title, result: r.created ? "Draft added to the Ask Client list" : r.request ? "Already on the Ask Client list" : "Already received" });
     } catch (err) {
       out.push({ title, result: err instanceof ValidationError ? err.message : "Couldn't be prepared" });
