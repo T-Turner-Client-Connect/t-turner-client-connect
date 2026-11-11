@@ -189,7 +189,9 @@ describe("news and countdowns", () => {
     await saveAnnouncement(tab, { ...base, title: "Pinned hours", audience: "ALL", topic: "OFFICE_HOURS", pinned: true, publishAt: new Date(Date.now() - 86400_000) });
     await saveAnnouncement(tab, { ...base, title: "Later", audience: "ALL", publishAt: new Date(Date.now() + 86400_000) });
     await saveAnnouncement(tab, { ...base, title: "Over", audience: "ALL", publishAt: new Date(Date.now() - 2 * 86400_000), expiresAt: new Date(Date.now() - 60_000) });
-    expect((await announcementsForClient(client.id)).map((a) => a.title)).toEqual(["Pinned hours", "Everyone"]);
+    // An individual (tax) client always sees the built-in welcome flyer first; a business without
+    // bookkeeping doesn't.
+    expect((await announcementsForClient(client.id)).map((a) => a.title)).toEqual(["Welcome to TTurner Client Connect", "Pinned hours", "Everyone"]);
     expect((await announcementsForClient(biz.id)).map((a) => a.title)).toEqual(["Pinned hours", "Businesses", "Everyone"]);
     expect(await prisma.notification.count()).toBe(0);
     const daria = await makeUser("STAFF");
