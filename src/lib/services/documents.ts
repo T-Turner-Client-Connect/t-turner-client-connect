@@ -1,7 +1,7 @@
 import "server-only";
 import type { Coverage } from "@/lib/bk-uploads";
 import { createHash, randomUUID } from "node:crypto";
-import type { DocumentCategory, DocumentVisibility, ReportType } from "@prisma/client";
+import type { Document, DocumentCategory, DocumentVisibility, ReportType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { assertAdmin, ForbiddenError, type Actor } from "@/lib/auth/actor";
@@ -274,19 +274,38 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
   }
 }
 
+/**
+ * Every rule that keeps a document from reaching a client outside its own release step, in one
+ * place: the Publish button, a filing update and a message attachment all apply it. Null = it may
+ * be published. (A file that hasn't scanned clean is published but never opens until it does.)
+ */
+export async function publishBlocker(
+  actor: Actor,
+  doc: Pick<Document, "clientId" | "category" | "scanStatus" | "reportType" | "reviewStatus" | "docType" | "filingDocType" | "publishedAt" | "year" | "supersededAt">,
+): Promise<ValidationError | null> {
+  if (doc.scanStatus === "INFECTED") return new ValidationError("Infected files can't be published.");
+  if (doc.category === "BOOKKEEPING" && doc.reportType && doc.reviewStatus !== "APPROVED") return new ValidationError("Tabitha must approve this financial report before it's published.");
+  // Bookkeeping files without the report workflow (e.g. a P&L saved with no report type) never publish here.
+  if (doc.category === "BOOKKEEPING" && !doc.reportType) return new ValidationError(FINANCIAL_GATE);
+  // Financial statements by category label, wherever they were filed, also need the report workflow.
+  if (!doc.reportType && doc.docType && STATEMENT_TYPES.includes(doc.docType)) return new ValidationError(FINANCIAL_GATE);
+  if (doc.filingDocType === "RETURN" || (doc.docType && RETURN_DOC_TYPES.includes(doc.docType) && !doc.publishedAt)) return returnGate(actor, doc.clientId, { year: doc.year, docType: doc.docType });
+  if (doc.category === "IDENTITY") return new ValidationError("Identity documents aren't published.");
+  if (doc.docType === "NONPROFIT_ITEM") return new ValidationError(NONPROFIT_GATE);
+  if (doc.supersededAt) return new ValidationError("A newer version of this report exists. Deliver the newest version instead.");
+  // A financial report needs Tabitha's approval wherever it was filed (a report re-labeled out of
+  // Bookkeeping, e.g. as a tax document, keeps its report type and still needs the approval).
+  if (doc.reportType && doc.reviewStatus !== "APPROVED") return new ValidationError("Tabitha must approve this financial report before it's published.");
+  return null;
+}
+
 export async function setVisibility(actor: Actor, documentId: string, visibility: DocumentVisibility) {
   const doc = await prisma.document.findUnique({ where: { id: documentId } });
   if (!doc || doc.deletedAt) throw new ValidationError("Document not found.");
-  if (visibility === "PUBLISHED" && doc.scanStatus === "INFECTED") throw new ValidationError("Infected files can't be published.");
-  if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && doc.reportType && doc.reviewStatus !== "APPROVED") throw new ValidationError("Tabitha must approve this financial report before it's published.");
-  // Bookkeeping files without the report workflow (e.g. a P&L saved with no report type) never publish here.
-  if (visibility === "PUBLISHED" && doc.category === "BOOKKEEPING" && !doc.reportType) throw new ValidationError(FINANCIAL_GATE);
-  // Financial statements by category label, wherever they were filed, also need the report workflow.
-  if (visibility === "PUBLISHED" && !doc.reportType && doc.docType && STATEMENT_TYPES.includes(doc.docType)) throw new ValidationError(FINANCIAL_GATE);
-  if (visibility === "PUBLISHED" && (doc.filingDocType === "RETURN" || (doc.docType && RETURN_DOC_TYPES.includes(doc.docType) && !doc.publishedAt))) throw await returnGate(actor, doc.clientId, { year: doc.year, docType: doc.docType });
-  if (visibility === "PUBLISHED" && doc.category === "IDENTITY") throw new ValidationError("Identity documents aren't published.");
-  if (visibility === "PUBLISHED" && doc.docType === "NONPROFIT_ITEM") throw new ValidationError(NONPROFIT_GATE);
-  if (visibility === "PUBLISHED" && doc.supersededAt) throw new ValidationError("A newer version of this report exists. Deliver the newest version instead.");
+  if (visibility === "PUBLISHED") {
+    const blocked = await publishBlocker(actor, doc);
+    if (blocked) throw blocked;
+  }
   await prisma.$transaction([
     prisma.document.update({ where: { id: documentId }, data: { visibility, publishedAt: visibility === "PUBLISHED" ? doc.publishedAt ?? new Date() : null } }),
     prisma.documentAccessLog.create({ data: { documentId, action: visibility === "PUBLISHED" ? "PUBLISH" : "UNPUBLISH", staffUserId: actor.id } }),

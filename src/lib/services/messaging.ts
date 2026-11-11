@@ -101,6 +101,12 @@ export async function staffSendMessage(
     });
     if (blocked) throw new ValidationError("That attachment can't be sent: identity documents never go in messages, and financial reports need Tabitha's approval first.");
     if (input.channel !== "PORTAL") throw new ValidationError("Attachments can only be sent through the secure portal.");
+    // And every rule of the Publish button (returns, nonprofit items, superseded reports...).
+    const { publishBlocker } = await import("./documents");
+    for (const d of docs) {
+      const b = await publishBlocker(actor, d);
+      if (b) throw new ValidationError(`“${d.title}” can't be sent as an attachment: ${b.message}`);
+    }
   }
   const isNote = input.channel === "INTERNAL_NOTE";
 
