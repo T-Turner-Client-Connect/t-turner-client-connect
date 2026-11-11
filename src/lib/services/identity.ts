@@ -321,6 +321,66 @@ export async function uploadIdentityDocument(who: { staff: Actor } | { portal: P
  * expiration date confirmed; a Social Security card may record only the last
  * four digits. The previous verified document of that kind becomes Replaced.
  */
+/**
+ * Puts an identity document on the right person (e.g. a child's Social Security card that a
+ * questionnaire upload filed on the parent). The same record and file move; nothing is copied.
+ * A document that was verified stays verified on its new person when that person has no
+ * verified one of its kind yet; otherwise it waits for verification. If it was the person's
+ * current document, their previous verified copy (if any) becomes current again.
+ */
+export async function moveIdentityDocument(actor: Actor, id: string, toPersonId: string) {
+  const rec = await prisma.identityDocument.findUniqueOrThrow({ where: { id } });
+  await requireStaff(actor, rec.clientId);
+  if (isAdminOnlyType(rec.type)) assertAdmin(actor);
+  if (rec.status === "REJECTED") throw new ValidationError("A declined document can't be moved; upload it on the right person instead.");
+  const to = await prisma.identityPerson.findFirst({ where: { id: toPersonId, clientId: rec.clientId, archivedAt: null } });
+  if (!to) throw new ValidationError("Choose a person listed for this client.");
+  if (to.id === rec.personId) throw new ValidationError("It's already on that person.");
+  const wasCurrent = rec.status === "VERIFIED" || rec.status === "EXPIRED";
+  const targetVerified = await prisma.identityDocument.count({ where: { personId: to.id, type: rec.type, status: "VERIFIED" } });
+  const status = rec.verifiedAt && !targetVerified && rec.status !== "PENDING_VERIFICATION" ? (rec.status === "EXPIRED" ? "EXPIRED" : "VERIFIED") : "PENDING_VERIFICATION";
+  const moved = await prisma.$transaction(async (tx) => {
+    const m = await tx.identityDocument.update({ where: { id }, data: { personId: to.id, status, replacedAt: null } });
+    await tx.document.update({ where: { id: rec.documentId }, data: { businessOwnerId: to.businessOwnerId ?? null } });
+    // The person it came from: their last verified copy becomes current again.
+    if (wasCurrent) {
+      const prev = await tx.identityDocument.findFirst({ where: { personId: rec.personId, type: rec.type, status: "REPLACED", verifiedAt: { not: null } }, orderBy: { verifiedAt: "desc" } });
+      if (prev) await tx.identityDocument.update({ where: { id: prev.id }, data: { status: "VERIFIED", replacedAt: null } });
+    }
+    await audit(tx, { actorId: actor.id, action: "identity.moved", entityType: "IdentityDocument", entityId: id, clientId: rec.clientId, details: { type: rec.type, fromPersonId: rec.personId, toPersonId: to.id, toRole: to.role, status } });
+    return m;
+  });
+  if (status === "PENDING_VERIFICATION" && !rec.verificationTaskId) await openVerificationTask(id, actor.id);
+  return moved;
+}
+
+/**
+ * Removes an identity document filed by mistake or no longer wanted (e.g. an old license once the
+ * new one is in). Admin only, with a reason. The file goes to the owner's "Recently deleted" list
+ * (recoverable for 30 days, as every deletion); the record leaves the person's list. If it was the
+ * person's current document, their previous verified copy becomes current again.
+ */
+export async function removeIdentityDocument(actor: Actor, id: string, reason: string) {
+  assertAdmin(actor);
+  const why = reason.trim().slice(0, 300);
+  if (!why) throw new ValidationError("Say why this document is being removed.");
+  const rec = await prisma.identityDocument.findUniqueOrThrow({ where: { id } });
+  await requireStaff(actor, rec.clientId);
+  if (rec.status === "REMOVED") throw new ValidationError("This document was already removed.");
+  const { deleteDocument } = await import("./documents");
+  await deleteDocument(actor, rec.documentId, `Identity document removed: ${why}`);
+  const wasCurrent = rec.status === "VERIFIED" || rec.status === "EXPIRED";
+  await prisma.$transaction(async (tx) => {
+    await tx.identityDocument.update({ where: { id }, data: { status: "REMOVED", replacedAt: new Date() } });
+    if (rec.verificationTaskId) await tx.task.updateMany({ where: { id: rec.verificationTaskId, status: "OPEN" }, data: { status: "DONE", completedAt: new Date() } });
+    if (wasCurrent) {
+      const prev = await tx.identityDocument.findFirst({ where: { personId: rec.personId, type: rec.type, status: "REPLACED", verifiedAt: { not: null } }, orderBy: { verifiedAt: "desc" } });
+      if (prev) await tx.identityDocument.update({ where: { id: prev.id }, data: { status: "VERIFIED", replacedAt: null } });
+    }
+    await audit(tx, { actorId: actor.id, action: "identity.removed", entityType: "IdentityDocument", entityId: id, clientId: rec.clientId, details: { type: rec.type, reason: why, wasCurrent } });
+  });
+}
+
 export async function verifyIdentityDocument(actor: Actor, id: string, input: { expiresOn?: string | null; last4?: string | null }) {
   const rec = await prisma.identityDocument.findUniqueOrThrow({ where: { id }, include: { person: true } });
   await requireStaff(actor, rec.clientId);
@@ -418,7 +478,7 @@ export async function identityOverview(clientId: string) {
   await ensureClientPerson(clientId);
   const [people, records] = await Promise.all([
     prisma.identityPerson.findMany({ where: { clientId, archivedAt: null }, orderBy: [{ createdAt: "asc" }] }),
-    prisma.identityDocument.findMany({ where: { clientId }, orderBy: { createdAt: "desc" } }),
+    prisma.identityDocument.findMany({ where: { clientId, status: { not: "REMOVED" } }, orderBy: { createdAt: "desc" } }),
   ]);
   const order = { CLIENT: 0, SPOUSE: 1, DEPENDENT: 2, OWNER: 3 } as Record<string, number>;
   return people
