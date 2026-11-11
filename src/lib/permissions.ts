@@ -25,6 +25,7 @@ export const ACTION_LABELS = {
   delete_history: "Delete history",
   integrations: "Change integrations",
   settings: "Change billing settings",
+  reveal_ein: "Reveal EIN",
   all_clients: "All clients",
 } as const;
 
@@ -148,6 +149,17 @@ export const AREAS = [
       { key: "edit", description: "Prepare tax work.", reserved: true },
       { key: "all_clients", description: "Send completed tax returns to any client's vault (office-wide), not only the clients assigned to them. Granted by Tabitha only." },
       { key: "approve", description: "Authorize and submit returns and release returns to clients. Tabitha only.", ownerOnly: true },
+    ],
+  },
+  {
+    key: "compliance",
+    label: "Tax & Compliance Center",
+    description: "Compliance entities, obligations, the Tax Due Board, filing evidence and client approvals. Nothing in Client Connect files a return or makes a payment.",
+    actions: [
+      { key: "view", description: "Open the Tax Due Board, entity profiles, obligations, calendars and the Missing Information report (read-only)." },
+      { key: "manage", description: "Edit entity profiles, accounts & portals; prepare periods, upload returns and evidence, send returns for client approval and record submitted / accepted / paid with evidence." },
+      { key: "reveal_ein", description: "Reveal an entity's full EIN (each reveal needs a reason and is logged)." },
+      { key: "approve", description: "Activate, suspend, close or deactivate obligations, edit the rules library and turn the compliance notification switches on or off. Tabitha only.", ownerOnly: true },
     ],
   },
   {

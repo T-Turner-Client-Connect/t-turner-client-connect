@@ -9,6 +9,8 @@ import { downloadToken } from "@/lib/services/documents";
 import { todayCentral } from "@/lib/services/ledger";
 import { FREQUENCIES } from "@/lib/payroll/schedule";
 
+import { ComplianceTaxesTab } from "@/components/compliance/payroll-taxes-tab";
+
 export const metadata = { title: "ADP Payroll & Taxes" };
 
 const TABS = [
@@ -92,7 +94,7 @@ export default async function PayrollTaxesPage({ searchParams }: { searchParams:
       <div className="mt-4" data-testid={`tab-${tab}`}>
         {tab === "payroll" && <PayrollTab manage={manage} />}
         {tab === "taxes" && (
-          <EmptyState title="Taxes">Tax obligations (MAT, Jefferson County, Birmingham, Huntsville) arrive in the next stage.</EmptyState>
+          <ComplianceTaxesTab actor={actor} />
         )}
         {tab === "due" && <DueTab month={month} today={today} />}
         {tab === "approvals" && <ApprovalsTab />}

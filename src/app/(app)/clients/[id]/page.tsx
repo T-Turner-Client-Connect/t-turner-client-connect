@@ -27,6 +27,8 @@ import { AgreementsInvoicesTab } from "@/components/client-tabs/agreements-invoi
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
 import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { can } from "@/lib/auth/permissions";
+import { complianceAccess } from "@/lib/services/compliance/access";
+import { ComplianceTab } from "@/components/client-tabs/compliance";
 import { CommPrefsStaffCard } from "@/components/client-tabs/comm-prefs-staff";
 import { OwnersCard } from "@/components/client-tabs/owners-card";
 import { businessViewEligible } from "@/lib/portal/access";
@@ -44,6 +46,8 @@ const TABS = [
   { key: "documents", label: "Documents" },
   { key: "bookkeeping", label: "Bookkeeping" },
   { key: "taxes", label: "Taxes" },
+  // Tax & Compliance Center: only for staff with compliance access.
+  { key: "compliance", label: "Tax & Compliance" },
   { key: "services", label: "Agreements & Invoices" },
   { key: "appointments", label: "Appointments" },
   // Owner's Office invoices: only for staff holding Billing and invoicing → View.
@@ -58,7 +62,8 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
   // Bookkeeping clients open on their Client Overview dashboard; the full profile stays one click away (?tab=overview).
   if (!sp.tab && (await prisma.bookkeepingProfile.count({ where: { clientId: id, active: true } }))) redirect(`/bookkeeping/${id}`);
   const seesInvoices = await can(user, "billing", "view");
-  const tabs = TABS.filter((t) => t.key !== "invoices" || seesInvoices);
+  const seesCompliance = (await complianceAccess(user)).level !== "NONE";
+  const tabs = TABS.filter((t) => (t.key !== "invoices" || seesInvoices) && (t.key !== "compliance" || seesCompliance));
   const tab = tabs.find((t) => t.key === sp.tab)?.key ?? "overview";
   const client = await prisma.client.findUnique({
     where: { id },
@@ -160,6 +165,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       {tab === "taxes" && <TaxesTab clientId={id} user={user} taxYear={Number(sp.taxYear) || undefined} deliver={sp.deliver ? { year: Number(sp.year) || undefined, state: sp.jur === "state", amended: sp.amended === "1" } : undefined} />}
       {tab === "services" && <AgreementsInvoicesTab clientId={id} user={user} />}
       {tab === "appointments" && <AppointmentsTab clientId={id} />}
+      {tab === "compliance" && seesCompliance && <ComplianceTab clientId={id} actor={user} />}
       {tab === "invoices" && seesInvoices && <InvoicesTab clientId={id} actor={user} />}
       {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} actor={user} />}
       {tab === "overview" && (
