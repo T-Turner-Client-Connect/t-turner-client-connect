@@ -17,6 +17,7 @@ import { CLIENT_STATUS_LABEL, clientInterimStatements, clientStatementStatus, le
 import { rangeText } from "@/lib/services/client-requests";
 import { registryLabel } from "@/lib/services/bank-accounts";
 import { clientFacingRequestWhere } from "@/lib/services/client-request-scope";
+import { clientVisibleConversationWhere } from "@/lib/portal/access";
 
 export const metadata = { title: "Bookkeeping & requests" };
 
@@ -36,7 +37,7 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
             // Drafts were never sent, and year-end requests have their own place: neither shows in a month.
             requests: { where: { status: { notIn: ["CANCELLED", "DRAFT"] }, kind: { not: "YEAR_END" }, AND: [clientFacingRequestWhere(true)] }, orderBy: { createdAt: "asc" }, include: { bookkeepingAccount: { select: { institution: true, nickname: true, last4: true, accountType: true } } } },
             // Questions our office asked about this month (answered in Messages).
-            conversations: { where: { questionStatus: { not: null } }, orderBy: { createdAt: "asc" }, select: { id: true, subject: true, questionStatus: true, responseDueAt: true } },
+            conversations: { where: { questionStatus: { not: null }, ...clientVisibleConversationWhere(v.user?.id ?? null) }, orderBy: { createdAt: "asc" }, select: { id: true, subject: true, questionStatus: true, responseDueAt: true } },
           },
           orderBy: [{ year: "desc" }, { month: "desc" }],
         })

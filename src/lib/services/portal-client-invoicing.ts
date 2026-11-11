@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError } from "@/lib/auth/actor";
-import { conversationScope, requireClientAccess } from "@/lib/portal/access";
+import { clientVisibleConversationWhere, requireClientAccess } from "@/lib/portal/access";
 import type { PortalActor } from "@/lib/portal/session";
 import { money } from "@/lib/billing/pricing";
 import { ValidationError } from "./clients";
@@ -90,7 +90,7 @@ export async function clientInvoicingFor(clientId: string, today = todayCentral(
 /** The client's own recent customer-invoice requests (threads this login may see), newest first. */
 async function recentRequests(clientId: string, portalUserId: string | null) {
   const rows = await prisma.conversation.findMany({
-    where: { clientId, subject: { startsWith: CUSTOMER_INVOICE_SUBJECT }, ...conversationScope(portalUserId) },
+    where: { clientId, subject: { startsWith: CUSTOMER_INVOICE_SUBJECT }, ...clientVisibleConversationWhere(portalUserId) },
     orderBy: { createdAt: "desc" },
     take: 5,
     select: { id: true, subject: true, createdAt: true, awaitingStaff: true, closedAt: true },

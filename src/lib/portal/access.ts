@@ -171,3 +171,12 @@ export function requestVisibleWhere(portalUserId: string | null): Prisma.Documen
 export function conversationScope(portalUserId: string | null): Prisma.ConversationWhereInput {
   return portalUserId ? { OR: [{ privateToPortalUserId: null }, { privateToPortalUserId: portalUserId }] } : { privateToPortalUserId: null };
 }
+
+/**
+ * A conversation a client login may see listed anywhere in the portal (its subject included):
+ * a thread with at least one PORTAL message, shared or private to this login. Threads that only
+ * hold staff notes, emails or texts are never listed, so their subjects stay staff-side.
+ */
+export function clientVisibleConversationWhere(portalUserId: string | null): Prisma.ConversationWhereInput {
+  return { AND: [{ messages: { some: { channel: "PORTAL" } } }, conversationScope(portalUserId)] };
+}
