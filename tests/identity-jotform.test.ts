@@ -4,7 +4,7 @@ import { createClient } from "@/lib/services/clients";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { authorizeDownload, downloadToken, staffUploadDocument } from "@/lib/services/documents";
 import { linkSubmission, taxYearStatuses } from "@/lib/services/tax-center";
-import { ensureClientPerson, identityCompletion, identityOverview, ipPinStatus, revealIpPin, saveIpPin, setHasIpPin, uploadIdentityDocument } from "@/lib/services/identity";
+import { addPerson, ensureClientPerson, identityCompletion, moveIdentityDocument, removeIdentityDocument, verifyIdentityDocument, identityOverview, ipPinStatus, revealIpPin, saveIpPin, setHasIpPin, uploadIdentityDocument } from "@/lib/services/identity";
 import { classifyIdQuestion, fileQuestionnaireUploadByHand, moveQuestionnaireIdentity, spouseNameFrom } from "@/lib/services/identity-import";
 
 // Fictional clients, people and files only. A fake Jotform API serves the submissions and files.
@@ -189,5 +189,36 @@ describe("IRS IP PIN, Completed, and missing items", () => {
     expect(await prisma.document.count({ where: { clientId: s.client.id } })).toBe(1);
     // The same file again: already in Identity, said plainly.
     await expect(uploadIdentityDocument({ staff: s.staff }, { clientId: s.client.id, personId: person.id, type: "BIRTH_CERTIFICATE", bytes, originalName: "bc.pdf", replacementReason: "again" })).rejects.toThrow(/already in Identity Documents/);
+  });
+
+  it("a card filed on the wrong person moves to the right one (keeping its verification); Admins can remove a document, and the previous copy becomes current", async () => {
+    const s = await setup();
+    const parent = await ensureClientPerson(s.client.id);
+    const child = await addPerson({ staff: s.admin }, s.client.id, { role: "DEPENDENT", name: "Demi Example" });
+    const card = (n: number) => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, n, 0x0a]);
+    const a = await uploadIdentityDocument({ staff: s.admin }, { clientId: s.client.id, personId: parent.id, type: "SOCIAL_SECURITY_CARD", bytes: card(1), originalName: "a.pdf" });
+    await prisma.document.update({ where: { id: a.documentId }, data: { scanStatus: "CLEAN" } });
+    await verifyIdentityDocument(s.admin, a.id, { last4: "0604" });
+    const b = await uploadIdentityDocument({ staff: s.admin }, { clientId: s.client.id, personId: parent.id, type: "SOCIAL_SECURITY_CARD", bytes: card(2), originalName: "b.pdf", replacementReason: "questionnaire" });
+    await prisma.document.update({ where: { id: b.documentId }, data: { scanStatus: "CLEAN" } });
+    await verifyIdentityDocument(s.admin, b.id, { last4: "8890" });
+    expect((await prisma.identityDocument.findUniqueOrThrow({ where: { id: a.id } })).status).toBe("REPLACED");
+
+    // The child's card (replaced on the parent) moves to the child and stays verified there.
+    await expect(moveIdentityDocument(s.staff, a.id, child.id)).rejects.toThrow(); // Admin-only document
+    await moveIdentityDocument(s.admin, a.id, child.id);
+    expect(await prisma.identityDocument.findUniqueOrThrow({ where: { id: a.id } })).toMatchObject({ personId: child.id, status: "VERIFIED" });
+    expect((await prisma.identityDocument.findUniqueOrThrow({ where: { id: b.id } })).status).toBe("VERIFIED");
+
+    // Removing needs an Admin and a reason; the file goes to Recently deleted, the record leaves the list.
+    await expect(removeIdentityDocument(s.staff, b.id, "wrong")).rejects.toThrow();
+    await expect(removeIdentityDocument(s.admin, b.id, " ")).rejects.toThrow(/why/);
+    await removeIdentityDocument(s.admin, b.id, "Filed by mistake (fictional)");
+    expect((await prisma.document.findUniqueOrThrow({ where: { id: b.documentId } })).deletedAt).not.toBeNull();
+    const ov = await identityOverview(s.client.id);
+    const parentCard = ov.find((o) => o.person.id === parent.id)!.slots.find((x) => x.type === "SOCIAL_SECURITY_CARD")!;
+    expect(parentCard.current).toBeNull();
+    expect(parentCard.history).toHaveLength(0);
+    expect(ov.find((o) => o.person.id === child.id)!.slots.find((x) => x.type === "SOCIAL_SECURITY_CARD")!.current?.id).toBe(a.id);
   });
 });

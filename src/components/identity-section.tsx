@@ -1,7 +1,7 @@
 import { BadgeCheck, Clock, IdCard, ShieldCheck, UserRound } from "lucide-react";
 import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Field } from "@/components/ui";
-import { portalAddPersonAction, portalIdentityUploadAction, rejectIdentityAction, staffAddPersonAction, staffIdentityUploadAction, staffRemovePersonAction, verifyIdentityAction } from "@/app/actions/identity";
+import { moveIdentityAction, removeIdentityAction, portalAddPersonAction, portalIdentityUploadAction, rejectIdentityAction, staffAddPersonAction, staffIdentityUploadAction, staffRemovePersonAction, verifyIdentityAction } from "@/app/actions/identity";
 import { ID_ROLES, ID_STATUS, ID_TYPES, isAdminOnlyType, maskedSsn, type identityOverview, type IdRole, type IdType } from "@/lib/services/identity";
 import { fmtIso } from "@/lib/tax/deadlines";
 import { fmtDateTime } from "@/lib/format";
@@ -60,10 +60,11 @@ function ViewLink({ href, type, canOpen, mode }: { href: string; type: IdType; c
       </span>
     );
   }
-  if (!isAdminOnlyType(type)) return <a className="text-sm font-semibold underline" href={href} target="_blank" rel="noopener">View</a>;
+  const dl = `${href}${href.includes("?") ? "&" : "?"}download=1`;
+  if (!isAdminOnlyType(type)) return <span className="inline-flex gap-3 text-sm font-semibold"><a className="underline" href={href} target="_blank" rel="noopener">View</a><a className="underline" href={dl} data-download>Download</a></span>;
   return (
     <details className="text-sm" data-ss-view>
-      <summary className="cursor-pointer font-semibold underline">Open (Admin)</summary>
+      <summary className="cursor-pointer font-semibold underline">View / Download (Admin)</summary>
       <form method="get" action={href} target="_blank" className="mt-1 space-y-1 rounded-lg border border-red-200 bg-red-50 p-2">
         <p className="text-xs text-red-900">
           {type === "SOCIAL_SECURITY_CARD" ? <>This image shows the <strong>full Social Security number</strong>.</> : <>Birth certificates are Admin-only.</>} Every opening is logged with your reason.
@@ -76,19 +77,41 @@ function ViewLink({ href, type, canOpen, mode }: { href: string; type: IdType; c
           <option>Client request</option>
           <option>Agency correspondence</option>
         </select>
-        <label className="flex items-center gap-1 text-xs"><input type="checkbox" name="download" value="1" /> Download instead of view</label>
-        <button type="submit" className="rounded-md bg-navy-900 px-3 py-1 text-xs font-semibold text-white">Open</button>
+        <span className="flex gap-2">
+          <button type="submit" className="rounded-md bg-navy-900 px-3 py-1 text-xs font-semibold text-white">View</button>
+          <button type="submit" name="download" value="1" className="rounded-md border border-navy-900 bg-white px-3 py-1 text-xs font-semibold text-navy-900">Download</button>
+        </span>
       </form>
     </details>
   );
 }
 
 /** `previewAction`: View as Client — the client's upload form, disabled, posting only to the preview stand-in. */
-export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin, previewAction }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean; previewAction?: FormAction }) {
+export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, viewerIsAdmin, previewAction, people = [] }: { slot: Slot; mode: "portal" | "staff"; clientId: string; personId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean; previewAction?: FormAction; /** Everyone listed for the client: a document filed on the wrong person can be moved. */ people?: { id: string; label: string }[] }) {
   // Identity files open only for our office; the portal shows status only.
   const canOpen = mode === "portal" ? false : !!viewerIsAdmin || !isAdminOnlyType(slot.type);
   const t = ID_TYPES[slot.type];
   const { current, pending } = slot;
+  const others = people.filter((p) => p.id !== personId);
+  // Staff who may open this kind of document may move it to the right person.
+  const canMove = mode === "staff" && !readOnly && canOpen && others.length > 0;
+  // Admins can remove a document filed by mistake or replaced (recoverable for 30 days).
+  const canRemove = mode === "staff" && !readOnly && !!viewerIsAdmin;
+  const removeIt = (id: string) => canRemove && (
+    <details className="inline-block text-xs">
+      <summary className="cursor-pointer font-semibold text-red-800 underline">Remove</summary>
+      <ActionForm action={removeIdentityAction.bind(null, clientId, id)} className="mt-1 flex flex-wrap items-center gap-1" showSuccess={false} confirm="Remove this document? It goes to Recently deleted (recoverable for 30 days).">
+        <input className="input w-56 py-0.5 text-xs" name="reason" placeholder="Why? e.g. old license, wrong person" required aria-label="Reason for removing" />
+        <button type="submit" className="font-semibold text-red-800 underline">Remove</button>
+      </ActionForm>
+    </details>
+  );
+  const moveTo = (id: string) => canMove && (
+    <ActionForm action={moveIdentityAction.bind(null, clientId, id)} className="inline-flex items-center gap-1" showSuccess={false} confirm="Move this document to the person you chose?">
+      <select className="input w-auto py-0.5 text-xs" name="toPersonId" defaultValue="" required aria-label="Move to"><option value="" disabled>Move to…</option>{others.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select>
+      <button type="submit" className="text-xs font-semibold underline">Move</button>
+    </ActionForm>
+  );
   const has = !!(current || pending.length);
   const status = current?.status ?? (pending.length ? "PENDING_VERIFICATION" : null);
   return (
@@ -109,6 +132,8 @@ export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, vie
         <span className="flex flex-wrap items-center gap-2">
           {status && <Badge tone={TONE[status]}>{status === "VERIFIED" ? "✓ Verified" : ID_STATUS[status as keyof typeof ID_STATUS]}</Badge>}
           {current && !readOnly && <ViewLink href={canOpen ? linkFor(current.documentId) : ""} type={slot.type} canOpen={canOpen} mode={mode} />}
+          {current && moveTo(current.id)}
+          {current && removeIt(current.id)}
         </span>
       </div>
 
@@ -118,6 +143,8 @@ export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, vie
             <Clock className="size-4 text-amber-700" aria-hidden />
             <strong>Pending verification</strong> · uploaded {fmtDateTime(p.createdAt)}{p.replacementReason && ` · ${p.replacementReason}`}{p.type === "DRIVERS_LICENSE" && p.expiresOn && ` · expires ${fmtIso(p.expiresOn, { month: "short", day: "numeric", year: "numeric" })}`}
             {!readOnly && <ViewLink href={canOpen ? linkFor(p.documentId) : ""} type={p.type as IdType} canOpen={canOpen} mode={mode} />}
+            {moveTo(p.id)}
+            {removeIt(p.id)}
           </div>
           {mode === "staff" && !readOnly && !canOpen && <p className="mt-1 text-xs text-slate-600">An Admin reviews this document.</p>}
           {mode === "staff" && !readOnly && canOpen && (
@@ -154,6 +181,8 @@ export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, vie
               <li key={h.id}>
                 {fmtDateTime(h.createdAt)} · <Badge tone={TONE[h.status]}>{ID_STATUS[h.status as keyof typeof ID_STATUS]}</Badge> {detail(h, mode)}{h.replacementReason && ` · ${h.replacementReason}`}{h.rejectedReason && ` · ${h.rejectedReason}`}
                 {h.id === current?.id && <strong> · current</strong>}
+                {h.id !== current?.id && !readOnly && canOpen && <span className="ml-2 inline-block align-middle"><ViewLink href={linkFor(h.documentId)} type={h.type as IdType} canOpen mode={mode} /></span>}
+                {h.id !== current?.id && <span className="ml-2 inline-flex gap-2">{h.status !== "REJECTED" && moveTo(h.id)}{removeIt(h.id)}</span>}
               </li>
             ))}
           </ul>
@@ -166,6 +195,7 @@ export function SlotRow({ slot, mode, clientId, personId, linkFor, readOnly, vie
 /** Identity Documents for one client: the client, spouse and each dependent. */
 export function IdentitySection({ overview, mode, clientId, linkFor, readOnly, viewerIsAdmin }: { overview: Overview; mode: "portal" | "staff"; clientId: string; linkFor: (documentId: string) => string; readOnly?: boolean; viewerIsAdmin?: boolean }) {
   const hasSpouse = overview.some((o) => o.person.role === "SPOUSE");
+  const people = overview.map((o) => ({ id: o.person.id, label: `${o.person.name} (${ID_ROLES[o.person.role as keyof typeof ID_ROLES]})` }));
   return (
     <div className="space-y-4" data-testid="identity-section">
       <p className="flex items-start gap-2 rounded-xl border border-ivory-200 bg-white p-3 text-sm text-slate-700">
@@ -179,7 +209,7 @@ export function IdentitySection({ overview, mode, clientId, linkFor, readOnly, v
             {person.name} <span className="text-sm font-normal text-slate-500">· {ID_ROLES[person.role as IdRole]}</span>
           </h3>
           <ul className="divide-y divide-navy-100">
-            {slots.map((s) => <SlotRow key={s.type} slot={s} mode={mode} clientId={clientId} personId={person.id} linkFor={linkFor} readOnly={readOnly} viewerIsAdmin={viewerIsAdmin} />)}
+            {slots.map((s) => <SlotRow key={s.type} slot={s} mode={mode} clientId={clientId} personId={person.id} linkFor={linkFor} readOnly={readOnly} viewerIsAdmin={viewerIsAdmin} people={people} />)}
           </ul>
           {mode === "staff" && !readOnly && person.role !== "CLIENT" && (
             <details className="mt-2 text-sm">
