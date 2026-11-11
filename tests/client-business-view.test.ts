@@ -8,6 +8,7 @@ import { accessibleClients, requireClientAccess } from "@/lib/portal/access";
 import { loadPortalHome } from "@/lib/portal/views";
 import { homeTiles } from "@/components/portal/home-view";
 import { portalUploadDocument } from "@/lib/services/documents";
+import { staffSendMessage } from "@/lib/services/messaging";
 import { postJournalEntry, setupLedger } from "@/lib/services/ledger";
 import { createDocumentRequest, openPeriod, setRequestStatus } from "@/lib/services/bookkeeping";
 import { checklistStatus } from "@/lib/services/business-tax-requests";
@@ -339,7 +340,10 @@ describe("What we need from you (conditional requests)", () => {
     const { tabitha, bakery, login } = await world();
     await managed(bakery.id);
     await createDocumentRequest(tabitha, { clientId: bakery.id, title: "Loan statement for the fictional oven" });
-    await prisma.conversation.create({ data: { clientId: bakery.id, subject: "What was the fictional $84.50 charge?", questionStatus: "OPEN" } });
+    // A question the office sent the client through the portal (a thread with no portal message is
+    // staff-only and never shows in the portal).
+    const asked = await staffSendMessage(tabitha, { clientId: bakery.id, subject: "What was the fictional $84.50 charge?", body: "Please tell us what this was.", channel: "PORTAL" });
+    await prisma.conversation.update({ where: { id: asked.conversationId }, data: { questionStatus: "OPEN" } });
     const d = await portalBusinessDashboard(login, bakery.id);
     const office = d.checklist.find((c) => c.fromOffice)!;
     expect(office).toMatchObject({ title: "Loan statement for the fictional oven", status: "NEEDED", docType: null });

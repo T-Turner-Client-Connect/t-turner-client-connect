@@ -3,7 +3,7 @@ import { clientReceivableWhere } from "@/lib/services/documents";
 import { startOfDay } from "date-fns";
 import type { PortalAccess } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { conversationScope, k1VisibleWhere, portalDocumentScope, requestVisibleWhere } from "./access";
+import { clientVisibleConversationWhere, conversationScope, k1VisibleWhere, portalDocumentScope, requestVisibleWhere } from "./access";
 import { serviceProfile } from "@/lib/services/service-profile";
 import { clientFacingRequestWhere } from "@/lib/services/client-request-scope";
 import { announcementsForClient, countdownsFor } from "@/lib/services/news";
@@ -70,7 +70,7 @@ export async function loadPortalHome(clientId: string, perms: Perms, viewerPorta
     viewerPortalUserId ? isPortalVerified(viewerPortalUserId) : true,
     perms.canMessage
       ? prisma.conversation.findMany({
-          where: { clientId, ...conversationScope(viewerPortalUserId) },
+          where: { clientId, ...clientVisibleConversationWhere(viewerPortalUserId) },
           orderBy: { lastMessageAt: "desc" },
           take: 2,
           select: {
