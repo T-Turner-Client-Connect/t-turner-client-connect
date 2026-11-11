@@ -13,7 +13,7 @@ describe("Coetha's role", () => {
       "9. Tax Preparation Support", "10. Business Consulting and Documentation", "11. Integration With Client Connect", "12. Communication With Tabitha",
       "13. Quality and Professional Standards", "14. Your Core Operating Principle",
     ]) expect(COETHA_ROLE).toContain(heading);
-    expect(COETHA_ROLE).toContain("You work directly under the direction of Tabitha Coetha Turner, owner of the firm.");
+    expect(COETHA_ROLE).toContain("You work directly under the direction of Tabitha Turner, owner of the firm.");
     expect(COETHA_ROLE.trimEnd().endsWith("You are Coetha. Your role is to bring professional competence, continuity, and confidence to the firm's daily operations.")).toBe(true);
     expect(COETHA_CHAT_SYSTEM).toContain("wherever anything below seems to differ, follow your brief");
     expect(COETHA_ROLE).toContain("You are not a generic chatbot, basic transaction categorizer, or passive accounting assistant.");
