@@ -135,7 +135,7 @@ export async function questionnaireUrl(clientId: string, clientType: string, tax
 type JotAnswer = { name?: string; text?: string; type?: string; answer?: unknown; prettyFormat?: string };
 export type JotSubmission = { id?: string; form_id?: string; created_at?: string; answers?: Record<string, JotAnswer> };
 
-async function fetchSubmission(submissionId: string): Promise<JotSubmission> {
+export async function fetchSubmission(submissionId: string): Promise<JotSubmission> {
   const c = jotformConfig();
   if (!c.apiKey) throw new ValidationError("Jotform isn't connected yet (JOTFORM_API_KEY), so the submission can't be read.");
   if (!/^\d{6,25}$/.test(submissionId)) throw new ValidationError("Enter the numeric Jotform submission ID.");
@@ -154,11 +154,13 @@ export function summarize(sub: JotSubmission) {
   const emails: string[] = [];
   const names: string[] = [];
   const files: string[] = [];
+  // The question each uploaded file was sent under (e.g. "Spouse's driver's license").
+  const fileQuestions: Record<string, string> = {};
   for (const a of answers) {
     const v = a.answer;
     if (v == null || v === "") continue;
     if (a.type === "control_fileupload") {
-      for (const u of Array.isArray(v) ? v : [v]) if (typeof u === "string") files.push(u);
+      for (const u of Array.isArray(v) ? v : [v]) if (typeof u === "string") { files.push(u); fileQuestions[u] = String(a.text || a.name || "").slice(0, 300); }
       continue;
     }
     const text = a.prettyFormat || (typeof v === "string" ? v : typeof v === "object" ? Object.values(v as Record<string, unknown>).filter((x) => typeof x === "string" && x).join(" ") : String(v));
@@ -167,7 +169,7 @@ export function summarize(sub: JotSubmission) {
     if (a.name === jotformConfig().refField) continue;
     if (text) pairs.push({ q: (a.text || a.name || "Question").slice(0, 300), a: text.slice(0, 4000) });
   }
-  return { pairs, emails, names, files };
+  return { pairs, emails, names, files, fileQuestions };
 }
 
 async function clientEmails(clientId: string) {
@@ -193,6 +195,7 @@ export async function previewSubmission(actor: Actor, submissionId: string) {
 async function importFiles(urls: string[], ctx: { clientId: string; taxYear: number; staff: Actor | null; visibility: "STAFF_ONLY" | "PUBLISHED" }) {
   const c = jotformConfig();
   const ids: string[] = [];
+  const items: { url: string; documentId: string }[] = [];
   const skipped: string[] = [];
   for (const raw of urls.slice(0, 20)) {
     let url: URL;
@@ -240,12 +243,24 @@ async function importFiles(urls: string[], ctx: { clientId: string; taxYear: num
         return d;
       });
       ids.push(doc.id);
+      items.push({ url: raw, documentId: doc.id });
     } catch (err) {
       if (err instanceof ValidationError) skipped.push(name);
       else throw err;
     }
   }
-  return { ids, skipped };
+  return { ids, skipped, items };
+}
+
+/** Uploads that are identity documents go straight into the client's Identity Documents. */
+async function fileIdentityUploads(actor: Actor | null, clientId: string, s: ReturnType<typeof summarize>, items: { url: string; documentId: string }[], submittedAt: Date | null) {
+  if (items.length) {
+    const { fileSubmissionIdentity, spouseNameFrom } = await import("./identity-import");
+    await fileSubmissionIdentity(actor, { clientId, takenAt: submittedAt ?? new Date(), spouseName: spouseNameFrom(s.pairs), items: items.map((i) => ({ documentId: i.documentId, question: s.fileQuestions[i.url] ?? null })) });
+  }
+  // Anything still missing from Identity is requested (staff task; client notice once authorized).
+  const { requestMissingIdentity } = await import("./identity");
+  await requestMissingIdentity(clientId).catch(() => null);
 }
 
 /**
@@ -268,7 +283,7 @@ export async function linkSubmission(actor: Actor, input: { clientId: string; ta
     if (!/^\d{6,25}$/.test(submissionId)) throw new ValidationError("Enter the numeric Jotform submission ID.");
     source = "staff_verified";
   }
-  const s = sub ? summarize(sub) : { pairs: [], emails: [], names: [], files: [] };
+  const s = sub ? summarize(sub) : { pairs: [], emails: [], names: [], files: [], fileQuestions: {} as Record<string, string> };
   const emailMatch = s.emails.some((e) => emails.has(e));
   // A valid signed questionnaire link for this exact client and year counts as a match.
   if (!emailMatch && !input.signedRef) {
@@ -281,7 +296,7 @@ export async function linkSubmission(actor: Actor, input: { clientId: string; ta
     }
   }
   const q = sub ? await prisma.taxQuestionnaire.findFirst({ where: { jotformFormId: sub.form_id } }) : null;
-  const files = sub ? await importFiles(s.files, { clientId: client.id, taxYear: input.taxYear, staff: actor, visibility: "STAFF_ONLY" }) : { ids: [], skipped: [] };
+  const files = sub ? await importFiles(s.files, { clientId: client.id, taxYear: input.taxYear, staff: actor, visibility: "STAFF_ONLY" }) : { ids: [], skipped: [], items: [] };
   const row = await prisma.questionnaireSubmission.create({
     data: {
       clientId: client.id,
@@ -298,6 +313,7 @@ export async function linkSubmission(actor: Actor, input: { clientId: string; ta
     },
   });
   await audit(prisma, { actorId: actor.id, action: "questionnaire.linked", entityType: "QuestionnaireSubmission", entityId: row.id, clientId: client.id, details: { submissionId, taxYear: input.taxYear, source, files: files.ids.length, skipped: files.skipped.length, emailMatch } });
+  await fileIdentityUploads(actor, client.id, s, files.items, row.submittedAt);
   return { row, imported: files.ids.length, skipped: files.skipped };
 }
 
@@ -315,8 +331,8 @@ export async function recordQuestionnaireWebhook(sub: JotSubmission, ref: string
   const client = await prisma.client.findUnique({ where: { id: parsed.clientId } });
   if (!client) return "Client not found; ignored";
   const s = summarize(sub);
-  // The client's own uploads come back to them, held for staff review.
-  const files = await importFiles(s.files, { clientId: client.id, taxYear: parsed.taxYear, staff: null, visibility: "PUBLISHED" });
+  // Questionnaire uploads are for our office only (Tabitha's rule): staff-only, never in the portal.
+  const files = await importFiles(s.files, { clientId: client.id, taxYear: parsed.taxYear, staff: null, visibility: "STAFF_ONLY" });
   const row = await prisma.questionnaireSubmission.create({
     data: {
       clientId: client.id,
@@ -332,6 +348,7 @@ export async function recordQuestionnaireWebhook(sub: JotSubmission, ref: string
     },
   });
   await audit(prisma, { actorId: null, action: "questionnaire.submitted", entityType: "QuestionnaireSubmission", entityId: row.id, clientId: client.id, details: { taxYear: parsed.taxYear, files: files.ids.length } });
+  await fileIdentityUploads(null, client.id, s, files.items, row.submittedAt);
   for (const id of files.ids) await queueStaffAlert({ documentId: id });
   return "Recorded";
 }
@@ -357,6 +374,17 @@ export async function setTaxYearProgress(actor: Actor, clientId: string, taxYear
 const PREP_STEP: Record<string, string> = { AWAITING_INFORMATION: "Waiting on information", IN_PROGRESS: "In progress", UNDER_REVIEW: "Under review", AWAITING_SIGNATURE: "Waiting for your signature", READY_TO_FILE: "Ready to file" };
 const FILE_STEP: Record<string, string> = { NOT_SUBMITTED: "Not filed yet", SUBMITTED: "Filed", PENDING_ACKNOWLEDGMENT: "Filed — waiting for the agency", ACCEPTED: "Filed", REJECTED: "Needs correction" };
 
+/** The questionnaire year from which missing identity documents must be uploaded to finish it. */
+export const IDENTITY_REQUIRED_FROM = 2026;
+
+/** What's still missing from Identity Documents (individual accounts only). */
+async function identityGap(clientId: string) {
+  const { identityCompletion, identityOverview, ipPinStatus, isBusinessClient } = await import("./identity");
+  if (await isBusinessClient(clientId)) return null;
+  const [overview, pins] = await Promise.all([identityOverview(clientId), ipPinStatus(clientId)]);
+  return identityCompletion(overview.filter((e) => !e.person.businessOwnerId), pins);
+}
+
 /** One row per tax year with the five separate steps. */
 export async function taxYearStatuses(clientId: string, years: number[]) {
   const [subs, progress, filings, uploads] = await Promise.all([
@@ -365,6 +393,8 @@ export async function taxYearStatuses(clientId: string, years: number[]) {
     prisma.filingRecord.findMany({ where: { clientId, taxYear: { in: years }, filingType: "ORIGINAL", visibleToClient: true }, orderBy: { jurisdiction: "asc" } }),
     prisma.document.groupBy({ by: ["year"], where: { clientId, deletedAt: null, year: { in: years }, uploadedByPortalId: { not: null } }, _count: true }),
   ]);
+  // From the 2026 questionnaire on, it's finished only once Identity Documents are complete.
+  const identity = years.some((y) => y >= IDENTITY_REQUIRED_FROM) ? await identityGap(clientId) : null;
   return years.map((year) => {
     const sub = subs.find((s) => s.taxYear === year);
     const p = progress.find((x) => x.taxYear === year);
@@ -376,7 +406,11 @@ export async function taxYearStatuses(clientId: string, years: number[]) {
     return {
       year,
       steps: [
-        { key: "questionnaire", label: "Questionnaire", value: sub || accepted ? "Completed" : "Not completed", done: !!sub || accepted },
+        (() => {
+          const needsId = !accepted && year >= IDENTITY_REQUIRED_FROM && !!identity && !identity.complete;
+          if (sub && needsId) return { key: "questionnaire", label: "Questionnaire", value: `Upload your missing identity documents to finish: ${identity!.missing.join("; ")}`, done: false };
+          return { key: "questionnaire", label: "Questionnaire", value: sub || accepted ? "Completed" : "Not completed", done: !!sub || accepted };
+        })(),
         { key: "documents", label: "Documents", value: accepted ? DOCUMENTS_STATUS.ALL_RECEIVED : docs === "NOT_STARTED" && uploaded ? `${uploaded} uploaded — our team will confirm` : DOCUMENTS_STATUS[docs], done: docs === "ALL_RECEIVED" || accepted },
         { key: "preparation", label: "Return preparation", value: fed ? PREP_STEP[fed.prepStatus] : "Not started", done: fed?.prepStatus === "READY_TO_FILE" || (!!fed && fed.filingStatus !== "NOT_SUBMITTED") },
         { key: "filing", label: "Filing", value: fed ? FILE_STEP[fed.filingStatus] : "Not filed yet", done: !!fed && ["SUBMITTED", "PENDING_ACKNOWLEDGMENT", "ACCEPTED"].includes(fed.filingStatus) },

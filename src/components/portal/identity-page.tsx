@@ -151,7 +151,7 @@ export function IdentityPageView({ overview, clientId, linkFor, ownerOnly = fals
         <ShieldCheck className="size-10 shrink-0 text-gold-400" aria-hidden />
         <div className="min-w-0">
           <p className="font-serif text-xl font-bold text-white">Secure &amp; Permanent Records</p>
-          <p className="text-sm text-navy-100">Kept separate from yearly tax folders and reused every tax year. Every file is malware-scanned, encrypted before storage, and each view is logged. Social Security cards and birth certificates are viewable only by an Admin — never in the client portal.</p>
+          <p className="text-sm text-navy-100">Kept separate from yearly tax folders and reused every tax year. Every file is malware-scanned, encrypted before storage, and each view is logged. For your safety, they&apos;re viewable only by our office — never in the client portal.</p>
         </div>
       </section>
 
@@ -201,7 +201,7 @@ export function IdentityPageView({ overview, clientId, linkFor, ownerOnly = fals
         <ul className="list-disc space-y-1.5 pl-5 text-[15px] text-navy-800" data-testid="identity-reminders">
           <li>Upload your renewed driver&apos;s license before it expires — we remind you 60, 30 and 7 days ahead.</li>
           <li>New uploads stay <strong>Pending Verification</strong> until our team reviews them.</li>
-          <li>Social Security cards and birth certificates are kept securely by our office and can&apos;t be viewed or downloaded in the portal.</li>
+          <li>For your safety, identity documents are kept by our office only. Once uploaded they can&apos;t be viewed or downloaded in the portal; you&apos;ll always see whether each one is on file.</li>
           <li>These records are permanent — no need to upload them again each tax year.</li>
         </ul>
       </NavyCard>

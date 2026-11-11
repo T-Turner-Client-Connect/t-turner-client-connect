@@ -3011,9 +3011,30 @@ model IdentityPerson {
   businessOwner   BusinessOwner? @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
   archivedAt      DateTime?
   createdAt       DateTime       @default(now())
+  // The IRS gave this person an Identity Protection PIN (a new one every year).
+  hasIpPin        Boolean        @default(false)
 
   documents IdentityDocument[]
+  ipPins    IdentityPin[]
 
+  @@index([clientId])
+}
+
+/// One person's IRS Identity Protection PIN for one calendar year, encrypted. Only our office sees it.
+model IdentityPin {
+  id                String         @id @default(cuid())
+  clientId          String
+  personId          String
+  person            IdentityPerson @relation(fields: [personId], references: [id], onDelete: Restrict)
+  // The calendar year the IRS issued it for (it is used on returns filed that year).
+  year              Int
+  pinEnc            String
+  enteredByPortalId String?
+  enteredByStaffId  String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@unique([personId, year])
   @@index([clientId])
 }
 
