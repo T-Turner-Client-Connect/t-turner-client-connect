@@ -1417,6 +1417,10 @@ model DocumentRequest {
   // to, and answered by, that owner's login only. Null = an ordinary request for the account.
   businessOwnerId      String?
   businessOwner        BusinessOwner?      @relation(fields: [businessOwnerId], references: [id], onDelete: Restrict)
+  // Ask Client: the client's written explanation (evidence for the office, never authorization to post).
+  clientExplanation    String?
+  explainedAt          DateTime?
+  explainedByPortalId  String?
 
   documents Document[]
 
