@@ -95,7 +95,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
   const tiles = [
     { label: "Banking & Accounts", icon: Landmark, href: `${base}/banking`, badge: 0 },
     { label: "Credit Cards", icon: CreditCard, href: `${base}/banking#group-CREDIT_CARD`, badge: 0 },
-    { label: "Reconciliations", icon: SquareCheckBig, href: `${base}/banking/reconciliation?month=${ym}`, badge: 0 },
+    { label: "Reconciliations", icon: SquareCheckBig, href: `${base}/coetha/ask?month=${ym}#reconciliation`, badge: 0 },
     { label: "Requests & Items Needed", icon: FileText, href: `${base}/records`, badge: requestsNeeded },
     { label: "Recommendations", icon: Lightbulb, href: `${base}/coetha`, badge: recommendations },
   ];
@@ -173,7 +173,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
             {o.close.steps.map((s) => {
               const red = s.key === "RELEASED" && s.state !== "DONE";
               const tone = s.state === "DONE" ? PILL.DONE : red ? PILL.MISSING : PILL[s.state ?? "NOT_DUE"];
-              const action = s.key === "RECONCILED" && s.state !== "DONE" ? { label: "Review", href: `${base}/banking/reconciliation?month=${ym}` }
+              const action = s.key === "RECONCILED" && s.state !== "DONE" ? { label: "Review", href: `${base}/coetha/ask?month=${ym}#reconciliation` }
                 : s.key === "PREPARED" && s.state !== "NA" ? { label: s.state === "DONE" ? "View" : "View Draft", href: `${base}/statements?year=${sel.year}&month=${sel.month}` }
                 : s.key === "APPROVAL" && s.state === "IN_PROGRESS" ? { label: "Review", href: `${base}/statements?year=${sel.year}&month=${sel.month}` }
                 : s.key === "CATEGORIZED" && s.state === "IN_PROGRESS" ? { label: "Review", href: `${base}/books?tab=bank` }
@@ -270,7 +270,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
                           <td className="whitespace-nowrap pr-2">{r.lastSync ? fmtShort(r.lastSync) : "—"}</td>
                           <td className="pr-2"><span className={clsx("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold", tone)}>{rec?.status === "APPROVED" ? <CheckCircle2 className="size-3.5" aria-hidden /> : null}{st}</span></td>
                           <td className="whitespace-nowrap pr-2 text-right tabular-nums">{usd(balances.get(r.id) ?? 0)}</td>
-                          <td><Link href={`${base}/banking/reconciliation?month=${ym}`} aria-label={`Open ${registryLabel(r)}`}><ChevronRight className="size-4 text-navy-800" aria-hidden /></Link></td>
+                          <td><Link href={`${base}/coetha/ask?month=${ym}#reconciliation`} aria-label={`Open ${registryLabel(r)}`}><ChevronRight className="size-4 text-navy-800" aria-hidden /></Link></td>
                         </tr>
                       );
                     })}
@@ -278,7 +278,7 @@ export default async function BookkeepingDashboard({ params, searchParams }: { p
                 </table>
               </div>
             )}
-            <Link href={`${base}/banking/reconciliation?month=${ym}`} className="mt-2 flex items-center justify-end gap-1 text-sm font-semibold text-navy-900 underline decoration-gold-500">View All {rows.length} Accounts &amp; Reconciliations <ArrowRight className="size-4" aria-hidden /></Link>
+            <Link href={`${base}/coetha/ask?month=${ym}#reconciliation`} className="mt-2 flex items-center justify-end gap-1 text-sm font-semibold text-navy-900 underline decoration-gold-500">View All {rows.length} Accounts &amp; Reconciliations <ArrowRight className="size-4" aria-hidden /></Link>
           </div>
         </div>
       </section>

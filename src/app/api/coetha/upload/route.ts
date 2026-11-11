@@ -20,7 +20,10 @@ export async function POST(req: Request) {
       return Response.json(await putChunk(actor, String(fd.get("uploadId") ?? ""), Number(fd.get("index")), new Uint8Array(await part.arrayBuffer())));
     }
     if (step === "finish") {
-      const r = await finishUpload(actor, String(fd.get("uploadId") ?? ""));
+      // Optional: the file is a bank or card statement for this account and month.
+      const accountId = String(fd.get("accountId") ?? "");
+      const month = String(fd.get("month") ?? "");
+      const r = await finishUpload(actor, String(fd.get("uploadId") ?? ""), { statement: accountId ? { accountId, month } : null });
       await kickBackgroundReading();
       return Response.json(r);
     }

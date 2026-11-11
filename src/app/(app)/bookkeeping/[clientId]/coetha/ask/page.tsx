@@ -2,14 +2,14 @@ import Link from "next/link";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { Brain, ClipboardCheck, Download, FileSearch, KeyRound, Loader2, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
+import { Brain, ClipboardCheck, Download, FileSearch, KeyRound, Loader2, MessageSquarePlus, MessagesSquare, Paperclip, Power, ShieldCheck, Sparkles } from "lucide-react";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { BusinessTabs } from "@/components/business-tabs";
 import { ActionForm } from "@/components/action-form";
 import { canUseLedger } from "@/lib/services/ledger";
 import { COETHA_NO_KEY } from "@/lib/services/coetha";
-import { COETHA_CHAT_PRIVACY, coethaChatView, MAX_QUESTION } from "@/lib/services/coetha-chat";
+import { COETHA_CHAT_PRIVACY, coethaChatView, MAX_QUESTION, newChatKey } from "@/lib/services/coetha-chat";
 import { applyDecisionsAction, forgetMemoryAction, reverseAutoPostedAction, askCoethaAction, prepareFromDocumentAction, retryReadingAction, summarizeAgainAction } from "@/app/actions/coetha";
 import { applyDecisionsView } from "@/lib/services/coetha-decisions";
 import { memoryView } from "@/lib/services/coetha-memory";
@@ -18,6 +18,9 @@ import { CoethaReadingPoller } from "@/components/coetha-reading-poller";
 import { fmtDateTime } from "@/lib/format";
 import { downloadToken } from "@/lib/services/documents";
 import { CoethaUploadButton } from "@/components/coetha-upload-button";
+import { ReconciliationPanel } from "@/components/bk/reconciliation-panel";
+import { canManageBanking } from "@/lib/services/bk-permissions";
+import { reconciles, registryLabel } from "@/lib/services/bank-accounts";
 
 export const metadata = { title: "Ask Coetha" };
 
@@ -30,10 +33,15 @@ const STARTERS = [
   "Explain the biggest expense categories this month.",
 ];
 
-export default async function AskCoethaPage({ params }: { params: Promise<{ clientId: string }> }) {
+/** How many of the chat's newest messages the page shows before "See all messages". */
+const SHORT = 6;
+
+export default async function AskCoethaPage({ params, searchParams }: { params: Promise<{ clientId: string }>; searchParams: Promise<{ chat?: string; all?: string; month?: string }> }) {
   await connection();
   const user = await requireUser();
   const { clientId } = await params;
+  const sp = await searchParams;
+  const showAll = sp.all === "1";
   const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, displayName: true, businessName: true } });
   if (!client) notFound();
   const biz = client.businessName || client.displayName;
@@ -44,11 +52,19 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
       <>
         <p className="mb-2 text-sm"><Link className="underline" href={base}>← Client Overview</Link></p>
         <div className={clsx(card, "p-6 text-navy-900")} data-testid="coetha-chat-no-access">Only Admins and the staff member assigned to {biz} can talk with Coetha about this business&apos;s books.</div>
+        <div className="mt-4"><ReconciliationPanel user={user} clientId={clientId} month={sp.month} pagePath={`${base}/coetha/ask`} /></div>
       </>
     );
   }
 
-  const v = await coethaChatView(user, clientId);
+  const v = await coethaChatView(user, clientId, { chat: sp.chat, limit: showAll ? 500 : SHORT });
+  // Statements can be uploaded right here, to an account and month, by staff who manage its banking.
+  const statementAccounts = (await canManageBanking(user, clientId))
+    ? (await prisma.bookkeepingAccount.findMany({ where: { clientId, active: true, parentAccountId: null }, orderBy: { createdAt: "asc" } })).filter((a) => reconciles(a.accountType)).map((a) => ({ id: a.id, label: registryLabel(a) }))
+    : [];
+  const lm = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - 1, 1));
+  const lastMonth = sp.month ?? `${lm.getUTCFullYear()}-${String(lm.getUTCMonth() + 1).padStart(2, "0")}`;
+  const chatHref = (key: string, all = false) => `${base}/coetha/ask?chat=${encodeURIComponent(key)}${all ? "&all=1" : ""}`;
   const reading = await readingView(user, clientId);
   const apply = await applyDecisionsView(user, clientId);
   const memory = await memoryView(user, clientId);
@@ -64,16 +80,11 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
       </p>
       <BusinessTabs clientId={clientId} base="/bookkeeping" isAdmin={user.role === "ADMIN"} />
 
-      <section className="rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-5 py-5 text-white ring-1 ring-gold-500/40 sm:px-8">
-        <div className="flex min-w-0 items-start gap-4">
-          <span className="mt-1 flex size-12 shrink-0 items-center justify-center rounded-lg border-2 border-gold-400"><MessagesSquare className="size-7 text-gold-400" aria-hidden /></span>
-          <div className="min-w-0">
-            <h1 className="font-serif text-2xl font-bold leading-tight text-white sm:text-3xl">Ask Coetha</h1>
-            <p className="mt-1 border-t border-gold-500/40 pt-1 text-base text-navy-100">Client: <strong className="text-white" data-testid="coetha-chat-client">{biz}</strong></p>
-            <p className="mt-2 text-sm text-navy-100">Talk with Coetha about this business&apos;s books only. She answers from its ledger and can explain, check and suggest, but she can&apos;t post or change anything. Corrections still go through Coetha&apos;s drafts and Tabitha&apos;s approval.</p>
-          </div>
-        </div>
-      </section>
+      <header className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl bg-gradient-to-br from-navy-900 via-navy-950 to-navy-900 px-4 py-3 text-white ring-1 ring-gold-500/40">
+        <MessagesSquare className="size-6 shrink-0 text-gold-400" aria-hidden />
+        <h1 className="font-serif text-xl font-bold leading-tight text-white sm:text-2xl">Ask Coetha</h1>
+        <p className="min-w-0 text-sm text-navy-100">Client: <strong className="text-white" data-testid="coetha-chat-client">{biz}</strong> · this business&apos;s books only</p>
+      </header>
 
       {v.optedOut && <div className={clsx(card, "p-4 text-sm text-navy-900")} data-testid="coetha-chat-opted-out">This client prefers no Coetha, so Coetha can&apos;t be asked about their books.</div>}
       {!v.status.enabled && (
@@ -90,87 +101,142 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
       )}
       {!v.hasBook && <div className={clsx(card, "p-4 text-sm text-navy-900")}>Set up this business&apos;s books first in <Link className="font-semibold underline" href={`${base}/books`}>Books &amp; Ledger</Link>.</div>}
 
-      {/* The conversation */}
-      <section className={clsx(card, "p-4 sm:p-5")} aria-label="Conversation with Coetha" data-testid="coetha-chat-thread">
-        {v.messages.length === 0 ? (
-          <div className="text-sm text-navy-900">
-            <p className="font-semibold">No conversation yet for {biz}.</p>
-            <p className="mt-1 text-slate-600">Some questions you could ask:</p>
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-700">
-              {STARTERS.map((s) => <li key={s}>{s}</li>)}
+      <ReconciliationPanel user={user} clientId={clientId} month={sp.month} pagePath={`${base}/coetha/ask`} />
+
+      {/* Chats: older conversations on the side, the open chat (short) with the question box on top */}
+      <div className="grid min-w-0 gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]">
+        <aside className={clsx(card, "p-3 lg:sticky lg:top-4 lg:self-start")} aria-label="Chats with Coetha" data-testid="coetha-chat-list">
+          <Link href={chatHref(newChatKey())} className="mb-2 flex items-center justify-center gap-2 rounded-lg bg-navy-900 px-3 py-2 text-sm font-semibold text-white hover:bg-navy-800" data-testid="coetha-new-chat"><MessageSquarePlus className="size-4" aria-hidden /> New chat</Link>
+          <p className="px-1 text-xs text-slate-600">What Coetha remembers carries into every chat.</p>
+          {v.chats.length === 0 ? <p className="mt-2 px-1 text-sm text-slate-600">No chats yet.</p> : (
+            <ul className="mt-2 max-h-64 space-y-1 overflow-y-auto lg:max-h-[32rem]">
+              {v.chats.map((c) => (
+                <li key={c.key}>
+                  <Link href={chatHref(c.key)} aria-current={c.key === v.chat.key ? "page" : undefined} className={clsx("block rounded-lg px-2 py-1.5 text-sm", c.key === v.chat.key ? "bg-gold-100 font-semibold text-navy-950 ring-1 ring-gold-300" : "text-navy-900 hover:bg-ivory-100")} data-testid="coetha-chat-link">
+                    <span className="line-clamp-2 break-words">{c.title}</span>
+                    <span className="block text-xs font-normal text-slate-600">{fmtDateTime(c.lastAt)} · {c.count} message{c.count === 1 ? "" : "s"}</span>
+                  </Link>
+                </li>
+              ))}
             </ul>
-          </div>
-        ) : (
-          <ol className="space-y-3">
-            {v.messages.map((m) => (
-              <li key={m.id} className={clsx("flex", m.role === "USER" ? "justify-end" : "justify-start")} data-testid={m.role === "USER" ? "chat-question" : "chat-answer"}>
-                <div className={clsx("max-w-[min(42rem,92%)] rounded-2xl px-4 py-3 text-sm shadow-sm", m.role === "USER" ? "bg-navy-900 text-white" : "border border-gold-200 bg-white text-navy-900")}>
-                  <p className={clsx("mb-1 flex flex-wrap items-center gap-x-2 text-xs", m.role === "USER" ? "text-navy-100" : "text-slate-600")}>
-                    {m.role === "COETHA" && <Sparkles className="size-3.5 text-gold-600" aria-hidden />}
-                    <span className="font-semibold">{m.author}</span>
-                    <span>{fmtDateTime(m.createdAt)}</span>
-                  </p>
-                  {m.attachments.length > 0 && (
-                    <ul className="mb-1 space-y-0.5 text-xs" data-testid="chat-attachment">
-                      {m.attachments.map((f, k) => (
-                        <li key={k} className="flex items-center gap-1">
-                          <Paperclip className="size-3.5 shrink-0" aria-hidden />
-                          {f.documentId ? <a className="truncate underline" href={`/api/documents/${downloadToken(f.documentId, { staffId: user.id })}`} target="_blank" rel="noopener">{f.name}</a> : <span className="truncate">{f.name}</span>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <div className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</div>
-                  {m.role === "USER" && m.jobIds.length === 0 && m.status === "WAITING" && (
-                    <p className="mt-2 flex items-center gap-1 rounded-lg bg-white/10 p-2 text-xs font-semibold" data-testid="chat-busy"><Loader2 className="size-3.5 animate-spin" aria-hidden /> The AI service was busy. Your question is saved; Coetha will answer it here shortly. No need to send it again.</p>
-                  )}
-                  {m.role === "USER" && m.jobIds.length === 0 && m.status === "FAILED" && (
-                    <p className="mt-2 rounded-lg bg-white/10 p-2 text-xs font-semibold">Coetha couldn&apos;t answer this one after several tries (the AI service stayed busy). Send it again in a few minutes.</p>
-                  )}
-                  {m.jobIds.length > 0 && (
-                    <div className="mt-2 space-y-1 rounded-lg bg-white/10 p-2 text-xs" data-testid="chat-reading">
-                      {m.status === "WAITING" && <p className="flex items-center gap-1 font-semibold"><Loader2 className="size-3.5 animate-spin" aria-hidden /> Coetha is reading. You can leave this page; her answer will appear here.</p>}
-                      {m.status === "FAILED" && <p className="font-semibold">Coetha couldn&apos;t finish this answer. What she read is below; ask again to get her answer.</p>}
-                      {m.role === "USER" && m.status !== "WAITING" && m.jobIds.every((id) => jobOf.get(id)?.status === "DONE" || jobOf.get(id)?.status === "FAILED") && (
-                        <ActionForm action={summarizeAgainAction.bind(null, clientId, m.id)} className="mb-1" showSuccess={false}>
-                          <button type="submit" className="rounded border border-current px-2 py-0.5 font-semibold" data-testid="summarize-again">Summarize Again</button>
-                        </ActionForm>
-                      )}
-                      {m.jobIds.map((id) => {
-                        const j = jobOf.get(id);
-                        if (!j) return null;
-                        return (
-                          <div key={id} data-testid="chat-reading-file">
-                            <p className="flex flex-wrap items-center gap-x-2">
-                              <FileSearch className="size-3.5" aria-hidden />
-                              <span className="font-semibold">{j.name}</span>
-                              <span>
-                                {j.status === "QUEUED" && "waiting to be read"}
-                                {j.status === "READING" && (j.pages ? `reading: ${j.pagesDone} of ${j.pages} pages` : "starting")}
-                                {j.status === "DONE" && `read${j.pages ? ` (${j.pages} page${j.pages === 1 ? "" : "s"})` : ""}${j.findings.length ? `, ${j.findings.length} item${j.findings.length === 1 ? "" : "s"} found` : ""}`}
-                                {j.status === "FAILED" && <>couldn&apos;t be read: {j.error}</>}
-                              </span>
-                            </p>
-                            {j.status === "FAILED" && (
-                              <ActionForm action={retryReadingAction.bind(null, clientId, j.id)} className="mt-1" showSuccess={false}>
-                                <button type="submit" className="rounded border border-current px-2 py-0.5 font-semibold" data-testid="reading-retry">Try again</button>
-                              </ActionForm>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+          )}
+        </aside>
+
+        <div className="min-w-0 space-y-3">
+          {v.canAsk ? (
+            <section className={clsx(card, "p-3 sm:p-4")} data-testid="coetha-chat-ask">
+              <ActionForm action={askCoethaAction.bind(null, clientId)} resetOnSuccess showSuccess={false} idempotent>
+                <input type="hidden" name="chat" value={v.chat.key} />
+                <label htmlFor="coetha-question" className="block text-sm font-semibold text-navy-900">{v.chat.isNew ? "Start a new chat" : "Continue this chat"} about {biz}&apos;s books</label>
+                <div className="mt-1 grid gap-2 sm:grid-cols-[1fr_auto]">
+                  <textarea id="coetha-question" name="question" maxLength={MAX_QUESTION} rows={2} className="w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-base text-navy-900 focus:border-gold-500 focus:outline-none focus:ring-2 focus:ring-gold-300" placeholder="Ask a question, or upload files and Coetha will read them" data-testid="coetha-chat-input" />
+                  <div className="flex flex-col gap-2 sm:w-48">
+                    <CoethaUploadButton clientId={clientId} accounts={statementAccounts} defaultMonth={lastMonth} />
+                    <button type="submit" className="group inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-2 text-sm font-semibold text-navy-950 shadow hover:to-gold-600 disabled:opacity-70" data-testid="coetha-chat-send">
+                      <Sparkles className="size-4" aria-hidden />
+                      <span className="group-disabled:hidden">Ask Coetha</span>
+                      <span className="hidden group-disabled:inline">Coetha is thinking…</span>
+                    </button>
+                  </div>
                 </div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
+                <p className="mt-1 text-xs text-slate-600">Statements: choose the account and month first; Coetha reads each one right away, brings in its transactions and fills in that month&apos;s reconciliation (a file already on file is never imported twice). Other files (check scans, statements, receipts, invoices; PDFs or pictures up to 60 MB each) are saved as staff-only documents for this business, and Coetha reads them in the background.</p>
+              </ActionForm>
+            </section>
+          ) : null}
+
+          <section className={clsx(card, "p-3 sm:p-4")} aria-label="Conversation with Coetha" data-testid="coetha-chat-thread">
+            <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="min-w-0 break-words font-serif text-base font-bold text-navy-900" data-testid="coetha-chat-title">{v.chat.title}</h2>
+              {v.chat.total > SHORT && (
+                showAll
+                  ? <Link className="text-xs font-semibold text-navy-900 underline" href={chatHref(v.chat.key)} data-testid="coetha-chat-fewer">Show the latest only</Link>
+                  : <Link className="text-xs font-semibold text-navy-900 underline" href={chatHref(v.chat.key, true)} data-testid="coetha-chat-all">See all {v.chat.total} messages</Link>
+              )}
+            </div>
+            {v.messages.length === 0 ? (
+              <div className="text-sm text-navy-900">
+                <p className="font-semibold">{v.chats.length ? "A fresh chat. Coetha still remembers your decisions and instructions for this business." : `No conversation yet for ${biz}.`}</p>
+                <p className="mt-1 text-slate-600">Some questions you could ask:</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-700">
+                  {STARTERS.map((q) => <li key={q}>{q}</li>)}
+                </ul>
+              </div>
+            ) : (
+              <>
+                {!showAll && v.chat.total > v.messages.length && <p className="mb-2 text-xs text-slate-600">Showing the latest {v.messages.length} of {v.chat.total} messages.</p>}
+              <ol className="space-y-3">
+                {v.messages.map((m) => (
+                  <li key={m.id} className={clsx("flex", m.role === "USER" ? "justify-end" : "justify-start")} data-testid={m.role === "USER" ? "chat-question" : "chat-answer"}>
+                    <div className={clsx("max-w-[min(42rem,92%)] rounded-2xl px-4 py-3 text-sm shadow-sm", m.role === "USER" ? "bg-navy-900 text-white" : "border border-gold-200 bg-white text-navy-900")}>
+                      <p className={clsx("mb-1 flex flex-wrap items-center gap-x-2 text-xs", m.role === "USER" ? "text-navy-100" : "text-slate-600")}>
+                        {m.role === "COETHA" && <Sparkles className="size-3.5 text-gold-600" aria-hidden />}
+                        <span className="font-semibold">{m.author}</span>
+                        <span>{fmtDateTime(m.createdAt)}</span>
+                      </p>
+                      {m.attachments.length > 0 && (
+                        <ul className="mb-1 space-y-0.5 text-xs" data-testid="chat-attachment">
+                          {m.attachments.map((f, k) => (
+                            <li key={k} className="flex items-center gap-1">
+                              <Paperclip className="size-3.5 shrink-0" aria-hidden />
+                              {f.documentId ? <a className="truncate underline" href={`/api/documents/${downloadToken(f.documentId, { staffId: user.id })}`} target="_blank" rel="noopener">{f.name}</a> : <span className="truncate">{f.name}</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</div>
+                      {m.role === "USER" && m.jobIds.length === 0 && m.status === "WAITING" && (
+                        <p className="mt-2 flex items-center gap-1 rounded-lg bg-white/10 p-2 text-xs font-semibold" data-testid="chat-busy"><Loader2 className="size-3.5 animate-spin" aria-hidden /> The AI service was busy. Your question is saved; Coetha will answer it here shortly. No need to send it again.</p>
+                      )}
+                      {m.role === "USER" && m.jobIds.length === 0 && m.status === "FAILED" && (
+                        <p className="mt-2 rounded-lg bg-white/10 p-2 text-xs font-semibold">Coetha couldn&apos;t answer this one after several tries (the AI service stayed busy). Send it again in a few minutes.</p>
+                      )}
+                      {m.jobIds.length > 0 && (
+                        <div className="mt-2 space-y-1 rounded-lg bg-white/10 p-2 text-xs" data-testid="chat-reading">
+                          {m.status === "WAITING" && <p className="flex items-center gap-1 font-semibold"><Loader2 className="size-3.5 animate-spin" aria-hidden /> Coetha is reading. You can leave this page; her answer will appear here.</p>}
+                          {m.status === "FAILED" && <p className="font-semibold">Coetha couldn&apos;t finish this answer. What she read is below; ask again to get her answer.</p>}
+                          {m.role === "USER" && m.status !== "WAITING" && m.jobIds.every((id) => jobOf.get(id)?.status === "DONE" || jobOf.get(id)?.status === "FAILED") && (
+                            <ActionForm action={summarizeAgainAction.bind(null, clientId, m.id)} className="mb-1" showSuccess={false}>
+                              <button type="submit" className="rounded border border-current px-2 py-0.5 font-semibold" data-testid="summarize-again">Summarize Again</button>
+                            </ActionForm>
+                          )}
+                          {m.jobIds.map((id) => {
+                            const j = jobOf.get(id);
+                            if (!j) return null;
+                            return (
+                              <div key={id} data-testid="chat-reading-file">
+                                <p className="flex flex-wrap items-center gap-x-2">
+                                  <FileSearch className="size-3.5" aria-hidden />
+                                  <span className="font-semibold">{j.name}</span>
+                                  <span>
+                                    {j.status === "QUEUED" && "waiting to be read"}
+                                    {j.status === "READING" && (j.pages ? `reading: ${j.pagesDone} of ${j.pages} pages` : "starting")}
+                                    {j.status === "DONE" && `read${j.pages ? ` (${j.pages} page${j.pages === 1 ? "" : "s"})` : ""}${j.findings.length ? `, ${j.findings.length} item${j.findings.length === 1 ? "" : "s"} found` : ""}`}
+                                    {j.status === "FAILED" && <>couldn&apos;t be read: {j.error}</>}
+                                  </span>
+                                </p>
+                                {j.status === "FAILED" && (
+                                  <ActionForm action={retryReadingAction.bind(null, clientId, j.id)} className="mt-1" showSuccess={false}>
+                                    <button type="submit" className="rounded border border-current px-2 py-0.5 font-semibold" data-testid="reading-retry">Try again</button>
+                                  </ActionForm>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+              </>
+            )}
+          </section>
+        </div>
+      </div>
 
       {/* What Coetha remembers for this business */}
       <section className={clsx(card, "p-4 sm:p-5")} data-testid="coetha-memory">
-        <details open={memory.length > 0 && memory.length <= 8}>
+        <details>
           <summary className="flex cursor-pointer items-center gap-2 font-serif text-lg font-bold text-navy-900"><Brain className="size-5 text-gold-600" aria-hidden /> What Coetha remembers for {biz} <span className="rounded-full bg-navy-900 px-2 py-0.5 font-sans text-xs font-bold text-white">{memory.length}</span></summary>
           <p className="mt-1 text-xs text-slate-600">Your decisions, standing instructions and holds. Coetha applies them to every question about this business, so you don&apos;t have to repeat them. Tell her &ldquo;remember …&rdquo; to add one; she saves only what you state. Removing one keeps it in the history.</p>
           {memory.length === 0 ? <p className="mt-2 text-sm text-slate-600">Nothing yet.</p> : (
@@ -195,7 +261,7 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
       {/* What Coetha posted on her own (routine items and Tabitha's stated decisions), reversible */}
       {apply.autoPosted.length > 0 && (
         <section className={clsx(card, "p-4 sm:p-5")} data-testid="auto-posted">
-          <details open>
+          <details>
             <summary className="flex cursor-pointer items-center gap-2 font-serif text-lg font-bold text-navy-900"><ClipboardCheck className="size-5 text-emerald-600" aria-hidden /> Posted automatically (last 14 days) <span className="rounded-full bg-emerald-700 px-2 py-0.5 font-sans text-xs font-bold text-white">{apply.autoPosted.length}</span></summary>
             <p className="mt-1 text-xs text-slate-600">Routine items and decisions you stated, posted by Coetha through the ledger (open months only, never twice). Reverse any of them; the bank row goes back to review.</p>
             <ul className="mt-2 divide-y divide-ivory-200 text-sm">
@@ -323,26 +389,6 @@ export default async function AskCoethaPage({ params }: { params: Promise<{ clie
       )}
       <CoethaReadingPoller clientId={clientId} active={waiting || reading.active} />
 
-      {/* Ask */}
-      {v.canAsk ? (
-        <section className={clsx(card, "p-4 sm:p-5")} data-testid="coetha-chat-ask">
-          <ActionForm action={askCoethaAction.bind(null, clientId)} resetOnSuccess showSuccess={false} idempotent>
-            <label htmlFor="coetha-question" className="block text-sm font-semibold text-navy-900">Your question about {biz}&apos;s books</label>
-            <div className="mt-1 grid gap-2 sm:grid-cols-[1fr_auto]">
-              <textarea id="coetha-question" name="question" maxLength={MAX_QUESTION} rows={3} className="w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-base text-navy-900 focus:border-gold-500 focus:outline-none focus:ring-2 focus:ring-gold-300" placeholder="Ask a question, or upload files and Coetha will read them" data-testid="coetha-chat-input" />
-              <div className="flex flex-col gap-2 sm:w-48">
-              <CoethaUploadButton clientId={clientId} />
-              <button type="submit" className="group inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-2 text-sm font-semibold text-navy-950 shadow hover:to-gold-600 disabled:opacity-70" data-testid="coetha-chat-send">
-                <Sparkles className="size-4" aria-hidden />
-                <span className="group-disabled:hidden">Ask Coetha</span>
-                <span className="hidden group-disabled:inline">Coetha is thinking…</span>
-              </button>
-              </div>
-            </div>
-            <p className="mt-2 text-xs text-slate-600">Coetha sees this business&apos;s books only. Upload as many files as you need: check scans, bank statements, receipts or invoices (PDFs or pictures, up to 60 MB each). They&apos;re saved with this business as staff-only documents, and Coetha reads them in the background; you can leave this page and come back for her answer.</p>
-          </ActionForm>
-        </section>
-      ) : null}
 
       <p className="flex items-start gap-2 rounded-xl bg-ivory-100 p-3 text-xs text-navy-800 ring-1 ring-ivory-200" data-testid="coetha-chat-privacy"><ShieldCheck className="size-4 shrink-0 text-gold-600" aria-hidden /> {COETHA_CHAT_PRIVACY}</p>
     </div>

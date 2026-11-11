@@ -7,7 +7,7 @@ import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { setCoethaOptOut } from "@/lib/services/coetha-opt-out";
 import { COETHA_NO_KEY, COETHA_OFF } from "@/lib/services/coetha";
-import { askCoetha, chatFileType, cleanQuestion, coethaChatView, MAX_CHAT_FILE, MAX_CHAT_FILES, MAX_QUESTION } from "@/lib/services/coetha-chat";
+import { askCoetha, chatFileType, chatKey, cleanQuestion, coethaChatView, EARLIER_CHAT, MAX_CHAT_FILE, MAX_CHAT_FILES, MAX_QUESTION, newChatKey } from "@/lib/services/coetha-chat";
 
 // A local stand-in for Anthropic's Messages API. Nothing leaves this test: any other host fails.
 // Fictional businesses, people and transactions only.
@@ -286,5 +286,46 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     }
     expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: r.questionId } })).status).toBe("FAILED");
     expect(await prisma.auditLog.count({ where: { action: "coetha.answer_attempt", entityId: r.questionId } })).toBe(6);
+  });
+});
+
+describe("Ask Coetha chats: start fresh, keep the older ones to re-read", () => {
+  it("a new chat starts without the earlier messages as context, older chats stay listed and open, and the page shows a short chat with the total for See all", async () => {
+    const s = await setup();
+    // Messages from before chats existed (no chat id) form one "Earlier conversation".
+    await askCoetha(s.tabitha, s.vessel.id, "What is the Office Depot charge?", today);
+    await askCoetha(s.tabitha, s.vessel.id, "And the ATM withdrawal?", today);
+    expect(sent[1].messages).toHaveLength(3);
+
+    // A new chat: only its own messages go with the question.
+    const fresh = newChatKey();
+    expect(chatKey(fresh)).toBe(fresh);
+    await askCoetha(s.tabitha, s.vessel.id, "Start over: what is left to close October?", { ...today, chat: fresh });
+    expect(sent[2].messages).toEqual([{ role: "user", content: "Start over: what is left to close October?" }]);
+    await askCoetha(s.tabitha, s.vessel.id, "Thanks. Anything else?", { ...today, chat: fresh });
+    expect(sent[3].messages.map((m) => m.content)).toEqual(["Start over: what is left to close October?", expect.stringContaining("You asked"), "Thanks. Anything else?"]);
+
+    // The list: newest chat first, titled by its first question; the earlier one is still there.
+    const v = await coethaChatView(s.daria, s.vessel.id, { limit: 2 });
+    expect(v.chats.map((c) => [c.key, c.title, c.count])).toEqual([[fresh, "Start over: what is left to close October?", 4], [EARLIER_CHAT, "Earlier conversation", 4]]);
+    // By default the most recent chat is open, shortened to the newest messages, with its total.
+    expect(v.chat).toMatchObject({ key: fresh, total: 4, isNew: false });
+    expect(v.messages.map((m) => m.text)).toEqual(["Thanks. Anything else?", expect.stringContaining("Anything else?")]);
+    // Clicking the older chat opens it in full to re-read.
+    const old = await coethaChatView(s.daria, s.vessel.id, { chat: EARLIER_CHAT });
+    expect(old.messages.map((m) => m.text)[0]).toBe("What is the Office Depot charge?");
+    expect(old.messages).toHaveLength(4);
+    // Continuing the older chat sends that chat's messages, not the new one's.
+    await askCoetha(s.tabitha, s.vessel.id, "Back to the ATM one: owner draw?", { ...today, chat: EARLIER_CHAT });
+    expect(sent[4].messages[0].content).toBe("What is the Office Depot charge?");
+    expect(JSON.stringify(sent[4].messages)).not.toContain("close October");
+
+    // A not-yet-used chat id shows an empty new chat; a malformed one falls back to the latest chat.
+    const blank = await coethaChatView(s.daria, s.vessel.id, { chat: newChatKey() });
+    expect(blank.chat.isNew).toBe(true);
+    expect(blank.messages).toHaveLength(0);
+    expect(chatKey("../../etc")).toBeNull();
+    // Each business has its own chats.
+    expect((await coethaChatView(s.tabitha, s.harbor.id)).chats).toHaveLength(0);
   });
 });

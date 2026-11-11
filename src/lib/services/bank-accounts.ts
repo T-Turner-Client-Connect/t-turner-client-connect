@@ -368,7 +368,7 @@ export async function prepareReconciliation(clientId: string, registryId: string
   const w = statementWindow(year, month, r.statementDay);
   const kind = isLiabilityType(r.accountType) ? "LIABILITY" : "ASSET";
   const rows = r.ledgerAccountId
-    ? await prisma.bankTransaction.findMany({ where: { clientId, accountId: r.ledgerAccountId, status: { not: "EXCLUDED" }, date: { gte: toDate(w.start), lte: toDate(w.end) } }, select: { amountCents: true, status: true, flag: true, description: true } })
+    ? await prisma.bankTransaction.findMany({ where: { clientId, accountId: r.ledgerAccountId, status: { not: "EXCLUDED" }, date: { gte: toDate(w.start), lte: toDate(w.end) } }, select: { amountCents: true, status: true, flag: true, description: true, date: true } })
     : [];
   const prev = prevYm(year, month);
   const before = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: r.id, year: prev.y, month: prev.m } } });
@@ -393,6 +393,14 @@ export async function prepareReconciliation(clientId: string, registryId: string
   const unmatched = rows.filter((x) => x.status === "UNREVIEWED").length;
   const exceptions: string[] = [];
   if (math.differenceCents) exceptions.push(`Difference of ${usd(math.differenceCents)} between the statement and the imported activity — a transaction may be missing or duplicated.`);
+  // A difference equal to a transaction that appears twice points at a duplicate (e.g. a deposit imported twice).
+  if (math.differenceCents) {
+    const dup = rows.find((x) => Math.abs(x.amountCents) === Math.abs(math.differenceCents!) && rows.some((y) => y !== x && y.amountCents === x.amountCents && Math.abs(y.date.getTime() - x.date.getTime()) <= 3 * 86_400_000));
+    if (dup) exceptions.push(`The difference equals a ${usd(Math.abs(dup.amountCents))} ${kind === "ASSET" ? (dup.amountCents > 0 ? "deposit" : "withdrawal") : "transaction"} on ${ymdOf(dup.date)} that appears twice — one may be a duplicate.`);
+  }
+  // Each month must pick up where the last one ended.
+  const gap = before?.endingBalanceCents != null && beginning != null && beginning !== before.endingBalanceCents;
+  if (gap) exceptions.push(`This month's beginning balance (${usd(beginning!)}) doesn't match last month's ending balance (${usd(before!.endingBalanceCents!)}). A statement may be missing or a balance was entered wrong.`);
   if (!rows.length && today > w.end) exceptions.push("No transactions imported for this statement period. Check the bank feed or the statement.");
   if (liab?.liabilityOverdue) exceptions.push("The card issuer reports this account's payment as overdue.");
   const flagged = rows.filter((x) => x.flag).length;
@@ -403,7 +411,7 @@ export async function prepareReconciliation(clientId: string, registryId: string
   let status: string;
   if (today <= w.end) status = "NOT_DUE";
   else if (ending == null || beginning == null) status = "AWAITING_DATA";
-  else if (math.differenceCents !== 0) status = "EXCEPTION";
+  else if (math.differenceCents !== 0 || gap) status = "EXCEPTION";
   else if (unmatched > 0 || flagged > 0) status = "IN_PROGRESS";
   else status = "READY";
   const data = {
