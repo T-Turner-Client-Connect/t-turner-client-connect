@@ -126,19 +126,29 @@ async function applyUpdate(actor: Actor, clientId: string, u: Update): Promise<s
   }
   if (action === "payroll_received") {
     if (!monthOk(u.month)) return "Give the payroll month as YYYY-MM.";
-    const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId }, select: { payroll: true } });
-    if (!profile?.payroll) return "Payroll isn't turned on for this business, so there's no payroll line to clear.";
-    const doc = await prisma.document.findFirst({ where: { id: str(u.documentId, 60), clientId, deletedAt: null }, select: { id: true, docType: true, category: true, title: true } });
-    if (!doc) return "That file isn't on file for this business.";
-    if (doc.category === "IDENTITY") return "That file can't be filed as a payroll report.";
-    if (doc.docType && doc.docType !== "BK_OTHER" && doc.docType !== "PAYROLL_REPORT") return "That file is already filed as something else.";
-    const { y, m, from, to } = monthBounds(u.month);
-    // Payroll reports stay staff-only (they list employees' pay).
-    await prisma.document.update({ where: { id: doc.id }, data: { category: "BOOKKEEPING", docType: "PAYROLL_REPORT", visibility: "STAFF_ONLY", year: y, month: m, periodStart: from, periodEnd: to, reportPeriodType: "MONTH" } });
-    await audit(prisma, { actorId: actor.id, action: "coetha.checklist_payroll_received", entityType: "Document", entityId: doc.id, clientId, details: { month: u.month, note: note || null } });
-    return `Filed as the ${u.month} payroll report: ${doc.title}`;
+    return filePayrollReport(actor, clientId, str(u.documentId, 60), u.month, note || null);
   }
   return "Unknown update. Use request_received, request_not_needed or payroll_received.";
+}
+
+/**
+ * Files a document already on file for this business (for example an ADP payroll register
+ * uploaded in Ask Coetha) as the month's payroll report: the same record, labeled, dated to the
+ * month and kept staff-only. The Monthly Progress "Payroll data received" line then shows it.
+ */
+export async function filePayrollReport(actor: Actor, clientId: string, documentId: string, ym: string, note: string | null = null): Promise<string> {
+  if (!monthOk(ym)) return "Give the payroll month as YYYY-MM.";
+  const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId }, select: { payroll: true } });
+  if (!profile?.payroll) return "Payroll isn't turned on for this business, so there's no payroll line to clear.";
+  const doc = await prisma.document.findFirst({ where: { id: documentId, clientId, deletedAt: null }, select: { id: true, docType: true, category: true, title: true } });
+  if (!doc) return "That file isn't on file for this business.";
+  if (doc.category === "IDENTITY") return "That file can't be filed as a payroll report.";
+  if (doc.docType && doc.docType !== "BK_OTHER" && doc.docType !== "PAYROLL_REPORT") return "That file is already filed as something else.";
+  const { y, m, from, to } = monthBounds(ym);
+  // Payroll reports stay staff-only (they list employees' pay).
+  await prisma.document.update({ where: { id: doc.id }, data: { category: "BOOKKEEPING", docType: "PAYROLL_REPORT", visibility: "STAFF_ONLY", year: y, month: m, periodStart: from, periodEnd: to, reportPeriodType: "MONTH" } });
+  await audit(prisma, { actorId: actor.id, action: "coetha.checklist_payroll_received", entityType: "Document", entityId: doc.id, clientId, details: { month: ym, note } });
+  return `Filed as the ${ym} payroll report: ${doc.title}`;
 }
 
 /** Runs one checklist tool call for ONE business. Clearing needs the same permission as handling the business's document requests. */

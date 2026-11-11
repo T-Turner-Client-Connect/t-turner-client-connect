@@ -125,18 +125,19 @@ async function readUploadedStatement(actor: Actor, clientId: string, documentId:
  * Puts the file back together, saves it as a staff-only bookkeeping document (or reuses the copy
  * already on file) and queues its reading job. Returns the document and job.
  */
-export async function finishUpload(actor: Actor, uploadId: string, opts: { statement?: { accountId: string; month: string } | null } = {}) {
+export async function finishUpload(actor: Actor, uploadId: string, opts: { statement?: { accountId: string; month: string } | null; payrollMonth?: string | null } = {}) {
   const u = await ownUpload(actor, uploadId);
   if (u.documentId) {
     const job = await prisma.coethaDocJob.findUniqueOrThrow({ where: { documentId: u.documentId } });
     return { documentId: u.documentId, jobId: job.id, reused: false, name: u.name, statement: null };
   }
   // A statement is checked before anything is put together (the account must be this business's).
-  if (opts.statement) {
+  if (opts.payrollMonth && !/^\d{4}-(0[1-9]|1[0-2])$/.test(opts.payrollMonth)) throw new ValidationError("Choose the payroll month.");
+  if (opts.statement || opts.payrollMonth) {
     const { assertCanSendClientRequests } = await import("./bk-permissions");
     await assertCanSendClientRequests(actor, u.clientId);
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(opts.statement.month)) throw new ValidationError("Choose the statement month.");
-    if (!(await prisma.bookkeepingAccount.count({ where: { id: opts.statement.accountId, clientId: u.clientId, active: true } }))) throw new ValidationError("Choose one of this business's registered accounts.");
+    if (opts.statement && !/^\d{4}-(0[1-9]|1[0-2])$/.test(opts.statement.month)) throw new ValidationError("Choose the statement month.");
+    if (opts.statement && !(await prisma.bookkeepingAccount.count({ where: { id: opts.statement.accountId, clientId: u.clientId, active: true } }))) throw new ValidationError("Choose one of this business's registered accounts.");
   }
   const parts = new Set((u.parts as number[]) ?? []);
   for (let i = 0; i < u.chunks; i++) if (!parts.has(i)) throw new ValidationError("Part of the file is missing. Try again.");
@@ -167,6 +168,11 @@ export async function finishUpload(actor: Actor, uploadId: string, opts: { state
   // away, so its transactions come in and its balances fill that month's reconciliation.
   let statement: string | null = null;
   if (opts.statement) statement = await readUploadedStatement(actor, u.clientId, documentId, opts.statement);
+  // A payroll report (e.g. the ADP register) for a month: filed as that month's payroll report.
+  if (opts.payrollMonth) {
+    const { filePayrollReport } = await import("./coetha-checklist");
+    statement = await filePayrollReport(actor, u.clientId, documentId, opts.payrollMonth);
+  }
   return { documentId, jobId: job.id, reused, name: u.name, statement };
 }
 
