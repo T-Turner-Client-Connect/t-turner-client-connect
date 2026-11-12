@@ -220,13 +220,18 @@ async function readableCategories(actor: Actor, clientId: string) {
   return cats;
 }
 
+// Which statement a file is comes from the client's own account it's filed under (checking, savings,
+// credit card — any bank); words are only a fallback for files not linked to an account. No bank
+// name ever decides the kind (the same bank holds checking and card accounts).
+const ACCOUNT_KINDS: Record<string, string[]> = { bank: ["CHECKING", "SAVINGS"], card: ["CREDIT_CARD"] };
 const KIND_WORDS: Record<string, RegExp> = {
-  bank: /bank|checking|savings|statement|stmt|deposit/i,
-  card: /card|visa|master|amex|american express|discover|chase|credit/i,
-  payroll: /payroll|adp|paychex|gusto|wage|941|940|w-?2|w-?3|register|pay stub|paystub/i,
-  report: /profit|loss|p&l|balance sheet|general ledger|ledger|journal|trial balance|financial/i,
+  bank: /checking|savings|bank statement|business statement|account statement|stmt/i,
+  card: /credit card|card statement|\bvisa\b|mastercard|\bamex\b|american express|discover card/i,
+  payroll: /payroll|\badp\b|paychex|gusto|wage|\b94[01]\b|w-?2|w-?3|register|pay stub|paystub/i,
+  report: /profit|loss|p&l|balance sheet|general ledger|ledger|journal|trial balance|financial statement/i,
   receipt: /receipt|invoice|bill|purchase/i,
 };
+const ACCOUNT_LABEL: Record<string, string> = { CHECKING: "checking", SAVINGS: "savings", CREDIT_CARD: "credit card", LINE_OF_CREDIT: "line of credit", LOAN: "loan", MERCHANT: "merchant account", OTHER: "account" };
 
 export const FIND_FILES_TOOL = {
   name: "find_documents_on_file",
@@ -237,6 +242,7 @@ export const FIND_FILES_TOOL = {
     properties: {
       kind: { type: "string", enum: ["bank", "card", "payroll", "report", "receipt", "any"] },
       text: { type: "string", description: "Words in the title or file name, e.g. CHECKINGSTATEMENT or December" },
+      ending: { type: "string", description: "Last 4 digits of the account the statement is for" },
       year: { type: "integer" },
       month: { type: "integer", description: "1-12" },
       offset: { type: "integer" },
@@ -246,20 +252,27 @@ export const FIND_FILES_TOOL = {
 
 export async function findFilesOnFile(actor: Actor, clientId: string, input: unknown) {
   await assertCoethaReader(actor, clientId);
-  const q = (input && typeof input === "object" ? input : {}) as { kind?: string; text?: string; year?: number; month?: number; offset?: number };
+  const q = (input && typeof input === "object" ? input : {}) as { kind?: string; text?: string; ending?: string; year?: number; month?: number; offset?: number };
   const categories = await readableCategories(actor, clientId);
   const docs = await prisma.document.findMany({
     where: { clientId, deletedAt: null, category: { in: categories }, scanStatus: { not: "INFECTED" } },
     orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
     take: 1000,
-    select: { id: true, title: true, category: true, docType: true, reportType: true, year: true, month: true, createdAt: true, file: { select: { originalName: true, mimeType: true } } },
+    select: { id: true, title: true, category: true, docType: true, reportType: true, year: true, month: true, createdAt: true, file: { select: { originalName: true, mimeType: true } }, bookkeepingAccount: { select: { institution: true, accountType: true, last4: true, nickname: true } } },
   });
   const words = (q.text ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1);
   const kind = q.kind && q.kind !== "any" ? KIND_WORDS[q.kind] : null;
   const hits = docs.filter((d) => {
     const hay = `${d.title} ${d.file?.originalName ?? ""} ${d.docType ?? ""} ${d.reportType ?? ""} ${d.category}`.toLowerCase();
     if (words.length && !words.every((w) => hay.includes(w))) return false;
-    if (kind && !kind.test(hay) && !(q.kind === "payroll" && d.category === "PAYROLL")) return false;
+    const acct = d.bookkeepingAccount;
+    if (q.kind && q.kind !== "any") {
+      const byAccount = acct && ACCOUNT_KINDS[q.kind] ? ACCOUNT_KINDS[q.kind].includes(acct.accountType) : null;
+      if (byAccount === false) return false;
+      if (byAccount === null && !(kind?.test(hay) || (q.kind === "payroll" && d.category === "PAYROLL") || (q.kind === "bank" && d.docType === "BANK_STATEMENT" && !/card/i.test(hay)))) return false;
+    }
+    const ending = (q.ending ?? "").replace(/\D/g, "").slice(-4);
+    if (ending && acct?.last4 !== ending && !hay.includes(ending)) return false;
     if (Number.isInteger(q.year) && d.year !== q.year && !(d.year == null && hay.includes(String(q.year)))) return false;
     if (Number.isInteger(q.month) && d.month && d.month !== q.month) return false;
     return true;
@@ -272,6 +285,7 @@ export async function findFilesOnFile(actor: Actor, clientId: string, input: unk
     total: hits.length,
     documents: page.map((d) => ({
       id: d.id, title: scrub(d.title, 120), file: scrub(d.file?.originalName ?? "", 120), category: d.category.toLowerCase(), type: d.docType ?? d.reportType ?? null,
+      account: d.bookkeepingAccount ? `${scrub(d.bookkeepingAccount.nickname || d.bookkeepingAccount.institution, 60)} ${ACCOUNT_LABEL[d.bookkeepingAccount.accountType] ?? "account"}${d.bookkeepingAccount.last4 ? ` ending ${d.bookkeepingAccount.last4}` : ""}` : null,
       period: d.year ? `${d.year}${d.month ? `-${String(d.month).padStart(2, "0")}` : ""}` : null, added: ymdOf(d.createdAt),
       read: jobOf.get(d.id)?.status === "DONE" ? "read" : jobOf.get(d.id)?.status === "FAILED" ? `couldn't be read: ${jobOf.get(d.id)?.error ?? ""}` : jobOf.get(d.id) ? "reading" : "not read yet",
     })),

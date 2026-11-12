@@ -81,6 +81,14 @@ async function setup() {
   const ret = await put(willow.id, "2024 business return", await textPdf(["Form 1120-S 2024", ...Array.from({ length: 12 }, () => "U.S. Income Tax Return for an S Corporation line text")]), { category: "OTHER", year: 2024 });
   await prisma.document.update({ where: { id: ret.id }, data: { category: "TAXES" } });
   const other = await put(harbor.id, "Harbor checking statement December 2025", await textPdf(["Harbor bank statement", ...Array.from({ length: 14 }, (_, i) => `12/${String(i + 1).padStart(2, "0")}/2025  SECRET HARBOR ROW ${i}  -10.00`)]), { category: "BOOKKEEPING", year: 2025, month: 12 });
+  // Both businesses bank at the same (fictional) bank: one checking ending 1000 each, plus a card at that bank for Willow.
+  const acct = (clientId: string, accountType: string, last4: string) => prisma.bookkeepingAccount.create({ data: { clientId, institution: "Fictional National Bank", accountType, last4 } });
+  const wChecking = await acct(willow.id, "CHECKING", "1000");
+  const wCard = await acct(willow.id, "CREDIT_CARD", "4321");
+  const hChecking = await acct(harbor.id, "CHECKING", "1000");
+  await prisma.document.update({ where: { id: dec.id }, data: { bookkeepingAccountId: wChecking.id } });
+  await prisma.document.update({ where: { id: card.id }, data: { bookkeepingAccountId: wCard.id } });
+  await prisma.document.update({ where: { id: other.id }, data: { bookkeepingAccountId: hChecking.id } });
   calls = 0; // the uploads' virus-scan calls above don't count
   return { tabitha, daria, stranger, willow, harbor, dec, jan24, card, payroll, scan, ret, other };
 }
@@ -94,6 +102,12 @@ describe("Coetha finds and reads accounting documents already stored in Client C
     expect((await findFilesOnFile(s.daria, s.willow.id, { kind: "bank", year: 2024 })).documents.map((d) => d.id)).toEqual([s.jan24.id]);
     expect((await findFilesOnFile(s.daria, s.willow.id, { kind: "card" })).documents.map((d) => d.id)).toContain(s.card.id);
     expect((await findFilesOnFile(s.daria, s.willow.id, { kind: "payroll", year: 2026, month: 1 })).documents.map((d) => d.id)).toEqual([s.payroll.id]);
+    // The kind comes from the client's own account, never the bank's name: same bank, checking vs card.
+    const bank = await findFilesOnFile(s.daria, s.willow.id, { kind: "bank", ending: "1000" });
+    expect(bank.documents.map((d) => [d.id, d.account])).toEqual([[s.dec.id, "Fictional National Bank checking ending 1000"]]);
+    expect((await findFilesOnFile(s.daria, s.willow.id, { kind: "card", year: 2025 })).documents.map((d) => d.account)).toEqual(["Fictional National Bank credit card ending 4321"]);
+    // Another business with an account at the same bank, same last four: never mixed in.
+    expect((await findFilesOnFile(s.tabitha, s.harbor.id, { kind: "bank", ending: "1000" })).documents.map((d) => d.id)).toEqual([s.other.id]);
     // Tax returns and other businesses' files are never listed.
     const all = (await findFilesOnFile(s.daria, s.willow.id, {})).documents.map((d) => d.id);
     expect(all).not.toContain(s.ret.id);
