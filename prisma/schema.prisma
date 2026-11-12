@@ -3743,70 +3743,6 @@ model PaymentFeeSetting {
 /// A completed return uploaded through the bulk screen, waiting for staff to
 /// confirm the client, business, tax year, return type and jurisdiction.
 /// Until confirmed it belongs to no client and stays staff-only.
-/// A completed return whose identity couldn't be confirmed at upload (a scan without text, a close
-/// but different name, no EIN on file…). Held encrypted, outside every client record, until Tabitha or
-/// an Admin verifies it; removed after the hold expires. Rejected uploads are never stored at all.
-model ReturnUploadHold {
-  id           String    @id @default(cuid())
-  clientId     String
-  taxYear      Int
-  // FEDERAL or a two-letter state code (or ANY when the upload didn't say).
-  jurisdiction String
-  // ORIGINAL | AMENDED
-  filingType   String
-  returnType   String?
-  storageKey   String
-  sha256       String
-  originalName String
-  // [{code, message}] — why it couldn't be verified.
-  reasons      Json
-  readYear     Int?
-  readName     String?
-  // PENDING | VERIFIED | DISCARDED | EXPIRED
-  status       String    @default("PENDING")
-  uploadedById String
-  reviewedById String?
-  reviewedAt   DateTime?
-  reviewNote   String?
-  expiresAt    DateTime
-  createdAt    DateTime  @default(now())
-
-  @@index([clientId, status])
-  @@index([status, expiresAt])
-}
-
-/// A held return an authorized reviewer matched to this client, year and return: the same file is
-/// accepted when it is uploaded again.
-model ReturnVerification {
-  id           String   @id @default(cuid())
-  clientId     String
-  taxYear      Int
-  jurisdiction String
-  filingType   String
-  sha256       String
-  holdId       String?
-  verifiedById String
-  nameChange   Boolean  @default(false)
-  note         String
-  createdAt    DateTime @default(now())
-
-  @@unique([clientId, taxYear, jurisdiction, filingType, sha256])
-}
-
-/// A confirmed former or alternate legal name of a client (e.g. a name change), so returns printed
-/// under that name are recognized as this client's.
-model ClientNameAlias {
-  id        String   @id @default(cuid())
-  clientId  String
-  first     String
-  last      String
-  note      String
-  addedById String
-  createdAt DateTime @default(now())
-
-  @@index([clientId])
-}
-
 model ReturnIntake {
   id                String    @id @default(cuid())
   fileId            String    @unique
@@ -6913,4 +6849,73 @@ model CoethaReference {
   createdAt   DateTime   @default(now())
 
   @@index([clientId, createdAt])
+}
+
+// Tables from the return upload check (#198), which was removed at Tabitha's request.
+// Kept because the migration was already applied; nothing reads or writes them.
+/// A completed return uploaded through the bulk screen, waiting for staff to
+/// confirm the client, business, tax year, return type and jurisdiction.
+/// Until confirmed it belongs to no client and stays staff-only.
+/// A completed return whose identity couldn't be confirmed at upload (a scan without text, a close
+/// but different name, no EIN on file…). Held encrypted, outside every client record, until Tabitha or
+/// an Admin verifies it; removed after the hold expires. Rejected uploads are never stored at all.
+model ReturnUploadHold {
+  id           String    @id @default(cuid())
+  clientId     String
+  taxYear      Int
+  // FEDERAL or a two-letter state code (or ANY when the upload didn't say).
+  jurisdiction String
+  // ORIGINAL | AMENDED
+  filingType   String
+  returnType   String?
+  storageKey   String
+  sha256       String
+  originalName String
+  // [{code, message}] — why it couldn't be verified.
+  reasons      Json
+  readYear     Int?
+  readName     String?
+  // PENDING | VERIFIED | DISCARDED | EXPIRED
+  status       String    @default("PENDING")
+  uploadedById String
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+
+  @@index([clientId, status])
+  @@index([status, expiresAt])
+}
+
+/// A held return an authorized reviewer matched to this client, year and return: the same file is
+/// accepted when it is uploaded again.
+model ReturnVerification {
+  id           String   @id @default(cuid())
+  clientId     String
+  taxYear      Int
+  jurisdiction String
+  filingType   String
+  sha256       String
+  holdId       String?
+  verifiedById String
+  nameChange   Boolean  @default(false)
+  note         String
+  createdAt    DateTime @default(now())
+
+  @@unique([clientId, taxYear, jurisdiction, filingType, sha256])
+}
+
+/// A confirmed former or alternate legal name of a client (e.g. a name change), so returns printed
+/// under that name are recognized as this client's.
+model ClientNameAlias {
+  id        String   @id @default(cuid())
+  clientId  String
+  first     String
+  last      String
+  note      String
+  addedById String
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
 }
