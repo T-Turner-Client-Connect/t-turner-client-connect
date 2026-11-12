@@ -87,6 +87,8 @@ export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: str
     // Coetha Accounting Review: internal findings, requests and approvals across bookkeeping clients.
     { href: "/owner/coetha-review", label: "Coetha Accounting Review", show: access.isOwner || c("coetha", "view") },
     { href: "/owner/automation", label: "Coetha & bank feeds", show: access.isOwner },
+    // Office Files: Tabitha's private records across clients (Bookkeeping Clients Status). Owner only, not grantable.
+    { href: "/owner/office-files", label: "Office Files", show: access.isOwner },
     // Quarterly access reviews and staff offboarding: Tabitha's alone (not grantable).
     { href: "/owner/access-review", label: "Access review", show: access.isOwner },
     // Client Letters: Tabitha prepares, reviews and sends approved letters (owner only, not grantable).

@@ -38,7 +38,7 @@ const CARD_TYPES = ["CREDIT_CARD", "LINE_OF_CREDIT", "LOAN"];
 type SyncState = { state: ItemState; detail: string };
 
 /** Whether one account's transactions for the month are in: a working bank feed counts, with no "statement missing". */
-async function accountSynced(clientId: string, a: { id: string; ledgerAccountId: string | null; accountType: string }, y: number, m: number, today: string): Promise<SyncState> {
+export async function accountSynced(clientId: string, a: { id: string; ledgerAccountId: string | null; accountType: string }, y: number, m: number, today: string): Promise<SyncState> {
   const end = monthEnd(y, m);
   if (today <= end) return { state: "NOT_DUE", detail: "Month in progress" };
   if (!a.ledgerAccountId) return { state: "MISSING", detail: "No GL account assigned" };
