@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, managed, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
-import { categorizeBankTransaction, closeBooksThrough, importBankCsv, profitAndLoss, reopenBooks, setupLedger } from "@/lib/services/ledger";
+import { categorizeBankTransaction, closeBooksThrough, importBankCsv, profitAndLoss, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { askCoetha } from "@/lib/services/coetha-chat";
 import { applyDecisionsView, approveDecisions, DECISIONS_MODEL, prepareDecisions, prepareFromDocument, removeDecisions, reverseAutoPosted } from "@/lib/services/coetha-decisions";
