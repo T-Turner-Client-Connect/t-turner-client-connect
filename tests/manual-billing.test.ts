@@ -5,6 +5,7 @@ import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
 import { saveBilling } from "@/lib/services/bookkeeping-profile";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
+import { businessDashboardFor } from "@/lib/services/portal-business";
 import { manualBillingView, manualLedger, markMonthsPaid, nonSquareRecurring, portalManualBilling, recordManualPayment, voidManualPayment } from "@/lib/services/manual-billing";
 
 // Fictional office-billed client ($350 monthly, due on the 5th).
@@ -201,5 +202,23 @@ describe("Owner's Office shows the same balance as the client's billing page and
     expect((await portal())!.overdueCents).toBe(owed - 79500);
     const totals = (await nonSquareRecurring(tabitha)).totals;
     expect(totals.overdueCents).toBe((await nonSquareRecurring(tabitha)).rows.reduce((n, r) => n + r.overdueCents, 0));
+  });
+});
+
+describe("the client's home page My Account card", () => {
+  it("shows the monthly billing kept outside Square: past due, never 'all set'", async () => {
+    const { tabitha, rich } = await setup();
+    await prisma.client.update({ where: { id: rich.id }, data: { businessAccess: "ACTIVE" } });
+    const perms = { canViewBilling: true, canUpload: true, canMessage: true };
+    const behind = (await businessDashboardFor(rich.id, null, perms, null)).account!;
+    // Three months owed at $350 (billing started two months ago; this month's due date passed or not, at least two are past due).
+    expect(behind.balanceCents).toBeGreaterThanOrEqual(70000);
+    expect(behind.plan).toMatchObject({ title: "Monthly bookkeeping", amountCents: 35000, status: { tone: "red", label: expect.stringMatching(/past due/) } });
+    expect(behind.openCount).toBeGreaterThanOrEqual(1);
+    // Paid up: the card says so.
+    await markMonthsPaid(tabitha, rich.id, { months: [month(-2), month(-1), month(0), month(1)], amountEach: "350", method: "CASH", dateMode: "DUE_DATE" });
+    const upToDate = (await businessDashboardFor(rich.id, null, perms, null)).account!;
+    expect(upToDate.balanceCents).toBe(0);
+    expect(upToDate.plan?.status.tone).not.toBe("red");
   });
 });

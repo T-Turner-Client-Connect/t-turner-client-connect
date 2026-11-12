@@ -356,7 +356,7 @@ export function BusinessDashboardView({ d, tiles, q, base, linkFor, personalQ, r
                   )}
                   <div>
                     <p className="font-serif text-xl font-bold text-navy-900" data-testid="my-account-balance">{usdc(d.account.balanceCents)}</p>
-                    <p className="text-sm text-navy-800">{d.account.openCount ? `${d.account.openCount} open invoice${d.account.openCount === 1 ? "" : "s"}${d.account.nextDue ? ` · due ${dayLabel(d.account.nextDue)}` : ""}` : "No balance due — you're all set!"}</p>
+                    <p className="text-sm text-navy-800" data-testid="my-account-note">{d.account.plan?.status.tone === "red" ? <span className="font-semibold text-red-700">{d.account.plan.status.label}</span> : d.account.balanceCents > 0 ? `${d.account.openCount} open invoice${d.account.openCount === 1 ? "" : "s"}${d.account.nextDue ? ` · due ${dayLabel(d.account.nextDue)}` : ""}` : "No balance due — you're all set!"}</p>
                     {d.account.latest && <p className="mt-1 text-xs text-slate-600">Latest: {d.account.latest.number}{d.account.latest.title ? ` · ${d.account.latest.title}` : ""} · {d.account.latest.status === "QUOTE_OFFERED" ? "Ready for review" : INVOICE_STATUS[d.account.latest.status as keyof typeof INVOICE_STATUS]?.label ?? ""}</p>}
                   </div>
                 </div>

@@ -19,6 +19,7 @@ import { clientReceivableWhere, REPORT_LABELS } from "./documents";
 import { profitAndLossFor } from "./ledger";
 import { publishedBillingFor } from "./owner-billing";
 import { paymentStatus, scheduleText, squareBillingFor, todayCentral } from "./square-billing";
+import { manualBillingFor } from "./manual-billing";
 
 /**
  * The client portal's Business dashboard for a business with a business view: an owner-approved
@@ -275,8 +276,23 @@ export async function businessDashboardFor(clientId: string, month: string | nul
     const dues = outstanding.map((b) => b.dueDate).filter((d): d is string => !!d).sort();
     const latest = bills[0];
     const a = square.arrangements.find((x) => x.syncedAt) ?? null;
-    const plan: Plan | null = a ? { title: a.title, amountCents: a.amountCents, schedule: scheduleText(a), nextDue: a.nextDueDate ? ymd(a.nextDueDate) : null, status: paymentStatus(a), autopay: a.autopay } : null;
-    account = { openCount: outstanding.length, balanceCents: outstanding.reduce((t, b) => t + (b.balanceCents ?? 0), 0), nextDue: dues[0] ?? null, latest: latest ? { number: latest.number, title: latest.title, status: latest.status } : null, plan };
+    let plan: Plan | null = a ? { title: a.title, amountCents: a.amountCents, schedule: scheduleText(a), nextDue: a.nextDueDate ? ymd(a.nextDueDate) : null, status: paymentStatus(a), autopay: a.autopay } : null;
+    // Monthly billing paid outside Square (cash, check, Zelle...): the same ledger as the Billing
+    // page and the Owner's Office, so the home card never says "all set" while months are past due.
+    const manual = a ? null : await manualBillingFor(clientId);
+    let balanceCents = outstanding.reduce((t, b) => t + (b.balanceCents ?? 0), 0);
+    let openCount = outstanding.length;
+    if (manual) {
+      plan = { title: "Monthly bookkeeping", amountCents: manual.feeCents, schedule: manual.billingDay ? `Monthly · due on day ${manual.billingDay}` : "Monthly", nextDue: manual.next?.due ?? null, status: manual.status ?? { label: "Paid — up to date", tone: "green" }, autopay: false };
+      balanceCents += manual.overdueCents;
+      if (manual.overdueCents > 0) {
+        openCount++;
+        const oldest = manual.overdueDue;
+        if (oldest) dues.unshift(oldest);
+      }
+    }
+    dues.sort();
+    account = { openCount, balanceCents, nextDue: dues[0] ?? plan?.nextDue ?? null, latest: latest ? { number: latest.number, title: latest.title, status: latest.status } : null, plan };
   }
 
   // Latest released statements (newest month with any delivered report).
