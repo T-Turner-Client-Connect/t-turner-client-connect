@@ -242,3 +242,29 @@ export async function postOpeningFromStatementAction(clientId: string, ledgerAcc
     return `${r.corrected ? "Opening corrected with an adjusting entry (the original stays in the history): " : "Opening balance "}$${(r.cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })} ${r.corrected ? "recorded on the bank account" : "posted"} on ${r.date}.`;
   });
 }
+
+/** Tabitha or an Admin confirms a held statement is this account's, then its transactions are read. */
+export async function confirmStatementAccountAction(clientId: string, documentId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { confirmStatementAccount } = await import("@/lib/services/statement-account-check");
+    await confirmStatementAccount(actor, clientId, documentId, str(fd, "note"));
+    const r = await readStatementTransactions(actor, clientId, documentId);
+    refresh(clientId);
+    revalidatePath(`/bookkeeping/${clientId}/books`);
+    return `Confirmed. ${statementReadMessage(r)}`;
+  });
+}
+
+/** Re-checks every statement on file against the account it was filed under (report only; nothing is changed). */
+export async function reviewStatementAssignmentsAction(clientId: string, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { reviewStatementAssignments } = await import("@/lib/services/statement-account-check");
+    const r = await reviewStatementAssignments(actor, clientId);
+    refresh(clientId);
+    if (!r.length) return "There are no statements on file for this business's accounts.";
+    const count = (s: string) => r.filter((x) => x.status === s).length;
+    return `${r.length} statement${r.length === 1 ? "" : "s"} checked: ${count("VERIFIED") + count("CONFIRMED")} confirmed for the account they're filed under, ${count("MISMATCH")} filed under the wrong account or client, ${count("NEEDS_CONFIRMATION")} need verification, ${count("UNREADABLE")} couldn't be read. Nothing was moved or changed; the ones needing attention are listed below.`;
+  });
+}

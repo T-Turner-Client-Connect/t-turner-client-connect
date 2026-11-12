@@ -28,7 +28,7 @@ import { STATEMENT_DOC_TYPES } from "./client-request-scope";
 
 export type StatementReadResult =
   | { ok: true; read: number; added: number; duplicates: number; beginningCents: number; endingCents: number; via: "PDF" | "COETHA"; periodStart: string | null }
-  | { ok: false; read: number; problems: string[] };
+  | { ok: false; read: number; problems: string[]; accountCheck?: "MISMATCH" | "NEEDS_CONFIRMATION" };
 
 export async function readStatementTransactions(actor: Actor, clientId: string, documentId: string): Promise<StatementReadResult> {
   await assertLedger(actor, clientId, "banking", "edit");
@@ -50,6 +50,11 @@ export async function readStatementTransactions(actor: Actor, clientId: string, 
   if (!bytes) throw new ValidationError("The statement file couldn't be opened.");
   const lines = await pdfLines(bytes);
   if (!lines?.length) throw new ValidationError("No text could be read from this PDF. If it's a scanned image, ask the bank for the electronic statement or import a CSV.");
+
+  // Whose statement is it? The name and last 4 printed on it must be this business's and this account's.
+  const { verifyStatementAccount } = await import("./statement-account-check");
+  const owner = await verifyStatementAccount(actor.id, clientId, { ...doc, clientId }, lines);
+  if (!owner.ok) return { ok: false, read: 0, problems: owner.reasons, accountCheck: owner.status as "MISMATCH" | "NEEDS_CONFIRMATION" };
 
   const parsed = parseStatementLines(lines, { liability });
   let txns: StatementTxn[] = parsed.transactions;
@@ -106,6 +111,8 @@ export async function readStatementTransactions(actor: Actor, clientId: string, 
 
 /** One line for the person who uploaded or pressed "Read transactions". */
 export function statementReadMessage(r: StatementReadResult): string {
+  if (!r.ok && r.accountCheck === "MISMATCH") return `Stopped: this statement doesn't belong to this account. ${r.problems.join(" ")} Nothing was imported.`;
+  if (!r.ok && r.accountCheck === "NEEDS_CONFIRMATION") return `Held for verification, nothing imported: ${r.problems.join(" ")} Tabitha or an Admin can confirm it's this account under Reconciliation → Statements held for verification.`;
   if (!r.ok) return `The statement was filed, but its transactions couldn't be read reliably, so none were imported: ${r.problems.slice(0, 2).join(" ")} Import the month's CSV from the bank instead.`;
   const dup = r.duplicates ? ` ${r.duplicates} were already in the books and were skipped.` : "";
   return `Read ${r.read} transaction${r.read === 1 ? "" : "s"} from the statement (they match its ${usd(r.beginningCents)} beginning and ${usd(r.endingCents)} ending balance to the cent) and added ${r.added} for review.${dup} Nothing was posted.`;

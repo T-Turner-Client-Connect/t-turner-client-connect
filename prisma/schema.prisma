@@ -6914,3 +6914,24 @@ model CoethaReference {
 
   @@index([clientId, createdAt])
 }
+
+// Is a bank or card statement this client's and this account's? Read from the statement itself
+// (account holder name and the account number's last 4), never from the bank's name alone.
+// VERIFIED | MISMATCH (never imported, no override) | NEEDS_CONFIRMATION | CONFIRMED (Tabitha or an Admin).
+model StatementAccountCheck {
+  id            String    @id @default(cuid())
+  documentId    String    @unique
+  clientId      String
+  // The BookkeepingAccount or ManualBankAccount the statement was filed under when checked.
+  accountId     String?
+  status        String
+  reasons       Json      @default("[]")
+  readLast4     String?
+  confirmedById String?
+  confirmedAt   DateTime?
+  confirmNote   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([clientId, status])
+}
