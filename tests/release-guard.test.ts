@@ -1,10 +1,15 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, afterEach } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { attachFilingDocument, createFiling, publishFilingUpdate } from "@/lib/services/tax";
 import { authorizeDownload, downloadToken, setVisibility, staffUploadDocument } from "@/lib/services/documents";
 import { staffSendMessage } from "@/lib/services/messaging";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
+import { setReturnGate } from "@/lib/services/return-gate";
+
+// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
+beforeEach(() => setReturnGate(async () => "VERIFIED"));
+afterEach(() => setReturnGate(null));
 
 // Fictional clients only. The release rules of the Publish button now apply to every path that
 // can put a document in front of a client: filing updates, filing attachments, message attachments.
@@ -19,9 +24,9 @@ async function setup() {
   const login = await acceptPortalInvite(token!, "Client-Pass-12345");
   const filing = await createFiling(staff, { clientId: client.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
   // Staff-only documents, scanned clean.
-  const doc = async (title: string, data: { category: "TAXES" | "BOOKKEEPING" | "IDENTITY" | "OTHER"; docType?: string; reportType?: "PROFIT_AND_LOSS" }) => {
+  const doc = async (title: string, data: { category: "TAXES" | "BOOKKEEPING" | "IDENTITY" | "OTHER"; docType?: string; reportType?: "PROFIT_AND_LOSS"; year?: number }) => {
     // Identity files have their own upload; the fictional record is created as OTHER and then marked IDENTITY.
-    const d = await staffUploadDocument(staff, { clientId: client.id, category: data.category === "IDENTITY" ? "OTHER" : data.category, title, visibility: "STAFF_ONLY", bytes: pdf(title), originalName: `${title}.pdf`, notify: false, docType: data.docType ?? null, reportType: data.reportType ?? null });
+    const d = await staffUploadDocument(staff, { clientId: client.id, category: data.category === "IDENTITY" ? "OTHER" : data.category, title, visibility: "STAFF_ONLY", bytes: pdf(title), originalName: `${title}.pdf`, notify: false, docType: data.docType ?? null, reportType: data.reportType ?? null, year: data.year ?? null });
     return prisma.document.update({ where: { id: d.id }, data: { scanStatus: "CLEAN", category: data.category } });
   };
   return { staff, client, login, filing, doc };
@@ -34,7 +39,7 @@ describe("No document reaches a client without its release checks", () => {
     const pnl = await s.doc("Unapproved P&L", { category: "BOOKKEEPING", reportType: "PROFIT_AND_LOSS" });
     const license = await s.doc("Driver license", { category: "IDENTITY", docType: "DRIVERS_LICENSE" });
     const nonprofit = await s.doc("Board minutes", { category: "OTHER", docType: "NONPROFIT_ITEM" });
-    const returnCopy = await s.doc("2025 return", { category: "TAXES", docType: "FEDERAL_RETURN" });
+    const returnCopy = await s.doc("2025 return", { category: "TAXES", docType: "FEDERAL_RETURN", year: 2025 });
     for (const d of [pnl, license, nonprofit, returnCopy]) {
       await expect(attachFilingDocument(s.staff, s.filing.id, d.id, "OFFICIAL_ACK")).rejects.toThrow(/Only a tax acknowledgment, notice or correspondence/);
       // Nothing was relabeled: the document keeps its own category and release step.
@@ -75,7 +80,7 @@ describe("No document reaches a client without its release checks", () => {
   it("message attachments follow the same rules (a nonprofit item or an unreleased return can't go out in a message)", async () => {
     const s = await setup();
     const nonprofit = await s.doc("Board minutes", { category: "OTHER", docType: "NONPROFIT_ITEM" });
-    const returnCopy = await s.doc("2025 return", { category: "TAXES", docType: "FEDERAL_RETURN" });
+    const returnCopy = await s.doc("2025 return", { category: "TAXES", docType: "FEDERAL_RETURN", year: 2025 });
     for (const d of [nonprofit, returnCopy]) {
       await expect(staffSendMessage(s.staff, { clientId: s.client.id, subject: "Your file", body: "Attached.", channel: "PORTAL", attachmentIds: [d.id] })).rejects.toThrow(/can't be sent as an attachment/);
       expect(await visibility(d.id)).toBe("STAFF_ONLY");

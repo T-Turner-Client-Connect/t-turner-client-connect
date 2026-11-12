@@ -32,6 +32,11 @@ import {
   withdrawAcceptanceRequest,
   type DeliverInput,
 } from "@/lib/services/accepted-returns";
+import { setReturnGate } from "@/lib/services/return-gate";
+
+// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
+beforeEach(() => setReturnGate(async () => "VERIFIED"));
+afterEach(() => setReturnGate(null));
 
 // Every person, business, ID and amount here is fictional.
 const pdf = (tag: string | number = Math.random()) => new TextEncoder().encode(`%PDF-1.4\n% fictional ${tag}\n`);
