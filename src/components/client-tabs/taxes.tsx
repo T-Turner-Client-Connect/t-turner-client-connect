@@ -19,6 +19,7 @@ import { AMENDMENT_LABELS, FILING_LABELS, filingStatusLabel, filingTitle, PREP_L
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { ClientProgressNote, TaxCenterStaff } from "./tax-center-staff";
 import { TaxPrepCases } from "./tax-prep-cases";
+import { HeldReturns } from "./held-returns";
 import { TaxSummaryStaff } from "./tax-summary-staff";
 import { summaryRequirement } from "@/lib/services/tax-summary";
 import { taxSeasonProgress, yearStrip } from "@/lib/services/tax-season";
@@ -137,6 +138,7 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
         </ol>
       </header>
 
+      <HeldReturns clientId={clientId} user={user} />
       {season.allDone && season.doneLine ? (
         <details className="rounded-xl border border-emerald-200 bg-emerald-50 p-3" data-testid="season-done" open={!!deliver}>
           <summary className="cursor-pointer text-lg font-semibold text-emerald-900">✓ {season.doneLine}</summary>

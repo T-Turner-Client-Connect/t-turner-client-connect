@@ -10,6 +10,11 @@ import { confirmAcceptances, convertToReturnCopy, deliverAcceptedReturn, pending
 import { deliveryFrom, fileIn, summarize } from "@/lib/tax/delivery-form";
 import { federalFormFor, stateFormFor } from "@/lib/tax/accepted";
 import { federalFirst, portalJurisdictionLabel } from "@/lib/tax/normalize";
+import { setReturnGate } from "@/lib/services/return-gate";
+
+// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
+beforeEach(() => setReturnGate(async () => "VERIFIED"));
+afterEach(() => setReturnGate(null));
 
 /**
  * End to end through the "Finish & Send a Return" form, the way the browser
