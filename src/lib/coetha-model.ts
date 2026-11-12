@@ -452,9 +452,33 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], to
     }
     messages.push({ role: "user", content: results });
   }
+  const textOf = (m: Anthropic.Beta.BetaMessage) => m.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
+  // A reply with no written answer (it can happen right after her searches, when she may not search
+  // again): ask her once more, plainly, to write the answer from what she already has.
+  if (msg.stop_reason !== "refusal" && !textOf(msg)) {
+    const said = msg.content.filter((b) => b.type !== "tool_use") as Anthropic.Beta.BetaContentBlockParam[];
+    if (said.length) messages.push({ role: "assistant", content: said });
+    messages.push({ role: "user", content: "Please write your answer now, in plain text, from what you already have. Don't search again." });
+    try {
+      msg = await client.beta.messages.create({
+        model,
+        max_tokens: 4000,
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default",
+        output_config: { effort: "low" },
+        system,
+        messages,
+        ...(tools?.defs.length ? { tools: tools.defs, tool_choice: { type: "none" as const } } : {}),
+      });
+    } catch (err) {
+      throw chatError(err, model);
+    }
+    inputTokens += msg.usage.input_tokens ?? 0;
+    outputTokens += msg.usage.output_tokens ?? 0;
+  }
   const requestId: string | null = (msg as { _request_id?: string | null })._request_id ?? msg.id ?? null;
   if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to answer this question.", "REFUSAL");
-  let text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
+  let text = textOf(msg);
   if (!text) throw new CoethaModelError("Coetha didn't return an answer. Try asking again.", "EMPTY");
   if (msg.stop_reason === "max_tokens") text += "\n\n(Coetha's answer was cut off because it was long. Ask a narrower follow-up question for the rest.)";
   return { text, inputTokens, outputTokens, requestId, model: msg.model || model, searches };
