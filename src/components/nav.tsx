@@ -119,7 +119,7 @@ function WorkspaceLinks({ id, onNavigate }: { id: string; onNavigate?: () => voi
     { href: `${base}/books?tab=journal`, label: "General Ledger", icon: BookOpen, active: pathname === `${base}/books` && (tab === "journal" || tab === "accounts" || !tab || tab === "overview") },
     { href: `${base}/payroll`, label: "Payroll & ADP", icon: UsersRound, active: pathname === `${base}/payroll` },
     { href: `/clients/${id}?tab=taxes`, label: "Taxes & Compliance", icon: ClipboardList, active: false },
-    { href: `${base}/licenses`, label: "Business Licenses", icon: FileBadge, active: pathname === `${base}/licenses` },
+    { href: `${base}/business-taxes`, label: "Business Taxes & Licenses", icon: FileBadge, active: pathname === `${base}/business-taxes` || pathname === `${base}/licenses` },
     { href: `${base}/year-end`, label: "W-2 / 1099 Center", icon: FileSpreadsheet, active: pathname === `${base}/year-end` },
     { href: `${base}/books?tab=invoicing`, label: "Invoicing & Payments", icon: ReceiptText, active: pathname === `${base}/books` && tab === "invoicing" },
     { href: `${base}/books?tab=reports`, label: "Financial Statements", icon: FileBarChart, active: pathname === `${base}/books` && tab === "reports" },

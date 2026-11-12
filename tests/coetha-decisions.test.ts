@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, managed, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { createClient } from "@/lib/services/clients";
-import { categorizeBankTransaction, closeBooksThrough, importBankCsv, profitAndLoss, setupLedger } from "@/lib/services/ledger";
+import { categorizeBankTransaction, closeBooksThrough, importBankCsv, profitAndLoss, reopenBooks, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { askCoetha } from "@/lib/services/coetha-chat";
 import { applyDecisionsView, approveDecisions, DECISIONS_MODEL, prepareDecisions, prepareFromDocument, removeDecisions, reverseAutoPosted } from "@/lib/services/coetha-decisions";
@@ -164,7 +164,10 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
       { type: "post_bank_row", ref: "W99", date: "2026-09-02", amount: -1, accountCode: "6300" },
       { type: "post_bank_row", ref: "W2", accountCode: "6400" },
     ], "chat");
-    expect(r.map((x) => x.ok)).toEqual([false, false, false, false, false, false]);
+    // A correction dated in the closed month it belongs to is prepared, marked, and never auto-posted.
+    expect(r.map((x) => x.ok)).toEqual([false, true, false, false, false, false]);
+    expect(r[1].message).toMatch(/closed month: the books are closed through 2026-09-30; reopen through 2026-09-14 or earlier/);
+    expect((await applyDecisionsView(s.tabitha, s.biz.id)).entries.find((e) => e.id === r[1].proposalId)).toMatchObject({ closedMonth: "2026-09-30" });
     expect(r[5].message).toMatch(/give the row's date and amount/);
     expect(r[0].message).toMatch(/closed through 2026-09-30/);
     expect(r[2].message).toMatch(/must be equal/);
@@ -174,6 +177,12 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
     const out = await approveDecisions(s.tabitha, s.biz.id, [prepared[0].proposalId!]);
     expect(out[0]).toMatchObject({ result: "SKIPPED", message: expect.stringMatching(/closed through/) });
     expect(await counts()).toEqual(before);
+    const closedFix = await approveDecisions(s.tabitha, s.biz.id, [r[1].proposalId!]);
+    expect(closedFix[0]).toMatchObject({ result: "SKIPPED", message: expect.stringMatching(/closed through/) });
+    // Tabitha reopens September: the correction posts in September.
+    await reopenBooks(s.tabitha, s.biz.id, { through: "2026-08-31", reason: "Fictional payroll correction" });
+    expect((await approveDecisions(s.tabitha, s.biz.id, [r[1].proposalId!]))[0]).toMatchObject({ result: "APPROVED" });
+    expect(await prisma.journalEntry.count({ where: { clientId: s.biz.id, memo: "Too late", date: new Date("2026-09-15T00:00:00Z") } })).toBe(1);
     // Another business's decisions can't be approved from this one.
     await expect(approveDecisions(s.tabitha, s.other.id, [prepared[0].proposalId!])).rejects.toThrow(/isn't a prepared decision for this business/);
   });

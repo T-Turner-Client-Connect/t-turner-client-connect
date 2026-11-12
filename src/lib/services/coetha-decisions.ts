@@ -102,6 +102,7 @@ async function autoPost(clientId: string, proposalId: string, basis: string): Pr
 const cents = (n: unknown) => (typeof n === "number" && Number.isFinite(n) ? Math.round(n * 100) : 0);
 const isYmd = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`));
 const usd = (c: number) => `$${(Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const prevDay = (ymd: string) => new Date(Date.parse(`${ymd}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 const clip = (s: unknown, n: number) => (typeof s === "string" ? s.trim().slice(0, n) : "");
 
 /** The waiting rows in the same order Ask Coetha numbers them (W1, W2, ...). */
@@ -208,8 +209,10 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
     }
     if (it.type === "journal_entry") {
       if (!isYmd(it.date)) { fail("An entry needs a valid date (YYYY-MM-DD)."); continue; }
-      const closed = openDateProblem(it.date);
-      if (closed) { fail(`The entry dated ${it.date} can't be posted: ${closed}. Date it in an open month.`); continue; }
+      // A correction belongs in the month it corrects. In a closed month it is still prepared, marked,
+      // and waits for Tabitha to reopen that month (General Ledger) before she approves it.
+      if (opening && it.date < opening) { fail(`The entry dated ${it.date} can't be posted: it's before the opening balances (${opening}).`); continue; }
+      const inClosedMonth = !!locked && it.date <= locked;
       const lines: { accountId: string | null; pendingAccountProposalId: string | null; accountCode: string; accountName: string; debitCents: number; creditCents: number; description: string }[] = [];
       let bad: string | null = null;
       for (const l of it.lines ?? []) {
@@ -236,8 +239,8 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       const label = `${it.date} "${memo}" ${usd(dr)}: ${lines.map((l) => `${l.debitCents ? "Dr" : "Cr"} ${l.accountCode}`).join(", ")}`;
       // A correction posts by itself only when Tabitha said so in her own words.
       const jBasis = it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? "your decision" : it.basis === "senior_accountant" && clip(it.reason, 300) ? "Coetha's judgment" : null;
-      const posted = lines.every((l) => l.accountId) && jBasis ? await autoPost(clientId, p.id, jBasis) : false;
-      results.push({ index, ok: true, message: posted ? `Posted automatically (your decision): ${label}` : `On your Apply These Decisions card: ${label}`, proposalId: p.id, posted });
+      const posted = !inClosedMonth && lines.every((l) => l.accountId) && jBasis ? await autoPost(clientId, p.id, jBasis) : false;
+      results.push({ index, ok: true, message: posted ? `Posted automatically (${jBasis}): ${label}` : inClosedMonth ? `On your Apply These Decisions card (closed month: the books are closed through ${locked}; reopen through ${prevDay(it.date)} or earlier before approving): ${label}` : `On your Apply These Decisions card: ${label}`, proposalId: p.id, posted });
       continue;
     }
     fail("Unknown kind of entry.");
@@ -277,6 +280,8 @@ type NewAccountPayload = { code: string; name: string; type: string; subtype: st
 /** Every prepared decision waiting for Approve & Post, with its lines and the effect on the statements. */
 export async function applyDecisionsView(actor: Actor, clientId: string) {
   await assertLedger(actor, clientId);
+  const lockedThrough = (await prisma.ledgerBook.findUnique({ where: { clientId }, select: { lockedThrough: true } }))?.lockedThrough;
+  const closedThrough = lockedThrough ? ymdOf(lockedThrough) : null;
   const open = await prisma.coethaProposal.findMany({ where: { clientId, model: DECISIONS_MODEL, status: "PROPOSED", kind: { in: ["NEW_ACCOUNT", "CATEGORY", "ADJUSTING_ENTRY"] } }, orderBy: { createdAt: "asc" }, take: 300 });
   const accounts = await prisma.ledgerAccount.findMany({ where: { clientId }, select: { id: true, code: true, name: true, type: true } });
   const acct = new Map(accounts.map((a) => [a.id, a]));
@@ -292,7 +297,7 @@ export async function applyDecisionsView(actor: Actor, clientId: string) {
   const entries = open.map((p) => {
     if (p.kind === "NEW_ACCOUNT") {
       const d = p.payload as NewAccountPayload;
-      return { id: p.id, kind: "NEW_ACCOUNT" as const, date: "", title: `New account ${d.code} ${d.name} (${TYPE_WORD[d.type] ?? d.type})`, amountCents: 0, reason: p.reason, source: (p.payload as { source?: string }).source === "documents" ? "From a document" : "From your decision in Ask Coetha", stale: false, bankRow: false, newAccount: { code: d.code, name: d.name, type: TYPE_WORD[d.type] ?? d.type }, needs: [] as string[], lines: [] as { account: string; debitCents: number; creditCents: number }[] };
+      return { id: p.id, kind: "NEW_ACCOUNT" as const, date: "", title: `New account ${d.code} ${d.name} (${TYPE_WORD[d.type] ?? d.type})`, amountCents: 0, reason: p.reason, source: (p.payload as { source?: string }).source === "documents" ? "From a document" : "From your decision in Ask Coetha", stale: false, closedMonth: null as string | null, bankRow: false, newAccount: { code: d.code, name: d.name, type: TYPE_WORD[d.type] ?? d.type }, needs: [] as string[], lines: [] as { account: string; debitCents: number; creditCents: number }[] };
     }
     let lines: Line[] = [];
     let date = "", title = "", amountCents = 0, stale = false;
@@ -317,6 +322,8 @@ export async function applyDecisionsView(actor: Actor, clientId: string) {
     const source = (p.payload as { source?: string }).source === "documents" ? "From a document" : "From your decision in Ask Coetha";
     return {
       id: p.id, kind: p.kind as "CATEGORY" | "ADJUSTING_ENTRY", date, title, amountCents, reason: p.reason, source, stale,
+      // Dated in a month the books are closed through: reopen it before approving.
+      closedMonth: !!closedThrough && !!date && date <= closedThrough ? closedThrough : null,
       bankRow: p.kind === "CATEGORY", newAccount: null,
       // The new accounts this entry needs approved with it.
       needs: [...new Set(shown.map(({ i }) => i?.pending).filter((x): x is string => !!x))],
@@ -446,7 +453,7 @@ export const PREPARE_TOOL = {
             accountType: { type: "string", enum: ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"], description: "new_account: the account type" },
             ref: { type: "string", description: "post_bank_row: the waiting row's W-reference, e.g. W28 (date and amount are required with it)" },
             bankTransactionId: { type: "string", description: "post_bank_row: instead of ref, the row id add_bank_activity returned for a row it just entered" },
-            date: { type: "string", description: "YYYY-MM-DD. post_bank_row: the row's date; journal_entry: the entry date (in an open month)" },
+            date: { type: "string", description: "YYYY-MM-DD. post_bank_row: the row's date; journal_entry: the date of the month it belongs to (a correction of March payroll is dated in March, even if March is closed)" },
             amount: { type: "number", description: "post_bank_row: the row's amount in dollars as shown in the records" },
             accountCode: { type: "string", description: "post_bank_row: the account it is posted to; new_account: the new account's code" },
             memo: { type: "string" },

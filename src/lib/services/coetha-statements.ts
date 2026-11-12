@@ -79,3 +79,67 @@ export async function runStatementsTool(actor: Actor, clientId: string, input: u
     return { error: err instanceof Error && (err.name === "ForbiddenError" || err instanceof ValidationError) ? err.message : "The statements couldn't be prepared." };
   }
 }
+
+// --- Automatic monthly statements ------------------------------------------------------------------
+
+const ymOf = (y: number, m: number) => `${y}-${String(m).padStart(2, "0")}`;
+const lastOfMonth = (y: number, m: number) => new Date(Date.UTC(y, m, 0));
+
+/**
+ * The month's statements, built without anyone asking: once a month has ended, has posted entries
+ * and every bank row dated in it is reviewed (nothing left to categorize), Client Connect builds the
+ * P&L, Balance Sheet and Financial Statements Package from the books as drafts for Tabitha's
+ * approval — the same drafts as prepare_financial_statements. When entries for the month (or
+ * earlier) are posted or reversed later, it builds a new version. Never for a month Tabitha marked
+ * complete, never over a packet she already approved or released, and nothing is released.
+ */
+export async function monthsReadyForStatements(clientId: string, today: string, lookbackMonths = 12) {
+  const profile = await prisma.bookkeepingProfile.findUnique({ where: { clientId }, select: { active: true, frequency: true } });
+  const book = await prisma.ledgerBook.findUnique({ where: { clientId }, select: { clientId: true } });
+  if (!profile?.active || !book) return [];
+  const [ty, tm] = today.split("-").map(Number);
+  const out: string[] = [];
+  for (let i = lookbackMonths; i >= 1; i--) {
+    const d = new Date(Date.UTC(ty, tm - 1 - i, 1));
+    const y = d.getUTCFullYear(), m = d.getUTCMonth() + 1;
+    if (profile.frequency === "QUARTERLY" && m % 3 !== 0) continue;
+    const start = new Date(Date.UTC(y, m - 1, 1)), end = lastOfMonth(y, m);
+    const period = await prisma.bookkeepingPeriod.findFirst({ where: { clientId, year: y, month: m }, select: { status: true } });
+    if (period?.status === "COMPLETE") continue;
+    const [entries, waiting, lastChange] = await Promise.all([
+      prisma.journalEntry.count({ where: { clientId, date: { gte: start, lte: end } } }),
+      prisma.bankTransaction.count({ where: { clientId, date: { gte: start, lte: end }, status: "UNREVIEWED" } }),
+      prisma.journalEntry.findFirst({ where: { clientId, date: { lte: end } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+    ]);
+    if (!entries || waiting) continue;
+    const packet = await prisma.document.findFirst({ where: { clientId, reportType: "FINANCIAL_PACKET", year: y, month: m, deletedAt: null, supersededAt: null }, orderBy: { createdAt: "desc" }, select: { createdAt: true, reviewStatus: true, visibility: true } });
+    if (packet && (packet.reviewStatus === "APPROVED" || packet.visibility === "PUBLISHED")) continue;
+    if (packet && lastChange && lastChange.createdAt <= packet.createdAt) continue;
+    out.push(ymOf(y, m));
+  }
+  return out;
+}
+
+/** The scheduled run: every bookkeeping client, oldest months first, within a time budget. */
+export async function runAutomaticStatements(opts: { today?: string; budgetMs?: number; owner?: Actor | null } = {}) {
+  const today = opts.today ?? new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+  const owner = opts.owner !== undefined ? opts.owner : (await prisma.ownerAccess.findFirst({ where: { isPrimary: true, revokedAt: null, user: { active: true } }, select: { user: { select: { id: true, role: true, name: true, email: true } } } }))?.user ?? null;
+  if (!owner) return { built: [], skipped: "no owner" };
+  const started = Date.now(), budget = opts.budgetMs ?? 20_000;
+  const clients = await prisma.bookkeepingProfile.findMany({ where: { active: true, client: { archivedAt: null, ledgerBook: { isNot: null } } }, select: { clientId: true }, orderBy: { clientId: "asc" } });
+  const built: { clientId: string; month: string }[] = [];
+  const failed: { clientId: string; month: string; error: string }[] = [];
+  for (const { clientId } of clients) {
+    for (const month of await monthsReadyForStatements(clientId, today)) {
+      if (Date.now() - started > budget) return { built, failed, more: true };
+      try {
+        await prepareStatementsFromBooks(owner as Actor, clientId, month);
+        await audit(prisma, { actorId: owner.id, action: "statements.auto_prepared", entityType: "Client", entityId: clientId, clientId, details: { month } });
+        built.push({ clientId, month });
+      } catch (e) {
+        failed.push({ clientId, month, error: e instanceof Error ? e.message.slice(0, 200) : "failed" });
+      }
+    }
+  }
+  return { built, failed, more: false };
+}

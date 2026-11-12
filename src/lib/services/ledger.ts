@@ -234,7 +234,7 @@ type PostInput = { date: string; memo: string; lines: LineInput[]; source: strin
 
 function assertOpenDate(book: { openingDate: Date | null; lockedThrough: Date | null }, date: string, what = "post") {
   if (!isYmd(date)) throw new ValidationError("Enter a valid date.");
-  if (book.lockedThrough && date <= ymdOf(book.lockedThrough)) throw new ValidationError(`The books are closed through ${ymdOf(book.lockedThrough)} (approved statements), so nothing can be ${what === "post" ? "posted" : "reversed"} on or before that date. Record a correction as an adjusting entry in an open period.`);
+  if (book.lockedThrough && date <= ymdOf(book.lockedThrough)) throw new ValidationError(`The books are closed through ${ymdOf(book.lockedThrough)} (approved statements), so nothing can be ${what === "post" ? "posted" : "reversed"} on or before that date. Reopen the month first (General Ledger → Reopen) to post a correction in it.`);
   if (book.openingDate && date < ymdOf(book.openingDate)) throw new ValidationError(`Entries can't be dated before the opening balances (${ymdOf(book.openingDate)}).`);
 }
 
