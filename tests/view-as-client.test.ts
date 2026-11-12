@@ -437,7 +437,8 @@ describe("the preview shows exactly what the client's login sees", () => {
     h.jar.clear();
     await startPreview(hauling.id, sam.id);
     await expect(render("taxes/summary/", { account: hauling.id })).rejects.toSatisfy((e) => nextTarget(e)?.startsWith("/client?account=") ?? false);
-  });
+    // 23 pages rendered twice each (real and preview): more than the 5-second default on a busy machine.
+  }, 30_000);
 
   it("an authorized contact's preview shows that contact's narrower access", async () => {
     const { bakery, casey } = await world();
