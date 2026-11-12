@@ -197,6 +197,9 @@ export async function chatTools(actor: Actor, clientId: string, records: unknown
   // person asking must be allowed to import bank transactions for this business.
   const { BANK_ACTIVITY_TOOL, addBankActivity } = await import("./coetha-bank-activity");
   const { STATEMENTS_TOOL, runStatementsTool } = await import("./coetha-statements");
+  // A whole bookkeeping assignment: verified duplicate removal and reconciliation from the statements on file.
+  const { DUPLICATES_TOOL, RECONCILE_TOOL, runBookkeepingTool } = await import("./coetha-bookkeeping");
+  const bookkeeping = new Set([DUPLICATES_TOOL.name, RECONCILE_TOOL.name]);
   // Documents already on file (a stored bank statement): read in the background, answered in this chat.
   const { FIND_FILES_TOOL, findFilesOnFile, READ_FILES_TOOL, runReadFilesTool } = await import("./coetha-reading");
   const enterActivity = async (input: unknown) => {
@@ -207,7 +210,7 @@ export async function chatTools(actor: Actor, clientId: string, records: unknown
     }
   };
   return {
-    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, FIND_FILES_TOOL, READ_FILES_TOOL, PREPARE_TOOL, APPROVE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, FIND_FILES_TOOL, READ_FILES_TOOL],
+    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, DUPLICATES_TOOL, RECONCILE_TOOL, FIND_FILES_TOOL, READ_FILES_TOOL, PREPARE_TOOL, APPROVE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, DUPLICATES_TOOL, RECONCILE_TOOL, FIND_FILES_TOOL, READ_FILES_TOOL],
     run: (name: string, input: unknown) =>
       owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
         : owner && name === APPROVE_TOOL.name ? runApproveTool(actor, clientId, input, currentQuestion)
@@ -216,6 +219,7 @@ export async function chatTools(actor: Actor, clientId: string, records: unknown
             : CHECKLIST_TOOL_NAMES.has(name) ? runChecklistTool(actor, clientId, name, input)
               : name === BANK_ACTIVITY_TOOL.name ? enterActivity(input)
                 : name === STATEMENTS_TOOL.name ? runStatementsTool(actor, clientId, input)
+                : bookkeeping.has(name) ? runBookkeepingTool(actor, clientId, name, input)
                 : name === READ_FILES_TOOL.name ? runReadFilesTool(actor, clientId, input, reading)
                 : name === FIND_FILES_TOOL.name ? findFilesOnFile(actor, clientId, input).catch((e) => ({ problem: e instanceof Error ? e.message : "Not allowed." }))
               : runRecordsTool(clientId, name, input),
