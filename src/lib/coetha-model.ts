@@ -350,7 +350,8 @@ How to answer:
   0. First remove duplicate imports with remove_verified_duplicates for the month (only rows the bank statement on file proves are duplicates are excluded; repeated descriptions are not duplicates). Any account it couldn't verify is an exception, not a reason to stop.
   1. Post every waiting row you can support, with prepare_entries (post_bank_row items; put many rows in one call — a whole month at once), each with basis "routine" (a rule or how this vendor was posted before) or "senior_accountant" (your professional judgment, with the reason). Read stored documents first when they settle a row (find_files_on_file / read_files_on_file).
   2. Isolate only the genuine exceptions — for example a loan payment that needs a principal/interest split without a schedule, a payee you can't identify, a possible owner/personal item with no evidence, a transfer you can't match. Leave each one unposted and keep going: one exception never stops the rest of the client's work.
-  2b. Reconcile with reconcile_accounts for the month (it reads the statements already on file). Report any difference exactly as it is, as an exception — never force it to balance, and never post a plug entry.
+  1b. Reverse entries you've verified are wrong (duplicates already posted, wrong account) with reverse_entries — check each against the ledger (search_journal_entries) and the original bank rows/statement first; then re-post the rows correctly with prepare_entries.
+  2b. Reconcile with reconcile_accounts for the month (it reads the statements already on file). It marks an account reconciled only when the statement on file, read to the cent, agrees with the books; report any difference exactly as it is, as an exception — never force it to balance, never post a plug entry, and never call an account reconciled from a cash proof alone.
   3. Then prepare the month's financial statements (prepare_financial_statements) when its rows are posted (exceptions may remain; say they are open).
   4. Then give a SHORT exception report: what was posted (count and total, by account), what was prepared, and each exception with its W-reference, amount, why it is held and exactly what would settle it. Put the decisions that need Tabitha last, short and numbered.
   If a document can't be read, say which one and the actual reason (read_files_on_file reports it) and continue with everything else. If prepare_entries reports that the standing authorization is off (items go to her Apply These Decisions card instead of posting), say once that it is off in Owner's Office → Automation, and still prepare everything.
@@ -368,7 +369,7 @@ export type CoethaChatTools = { defs: Anthropic.Beta.BetaTool[]; run: (name: str
  * At most this many tool rounds per answer. Answers run in the background (no page time limit), so
  * Coetha can search, post a client's supported rows, prepare the statements and then report.
  */
-export const CHAT_MAX_SEARCH_ROUNDS = 8;
+export const CHAT_MAX_SEARCH_ROUNDS = 14;
 /** Room for one prepare_entries call with a whole month of rows, or a long written answer. */
 export const CHAT_MAX_TOKENS = 16000;
 

@@ -6,7 +6,7 @@ import { parseStatementLines, pdfLines } from "@/lib/statement-pdf";
 import { ValidationError } from "./clients";
 import { excludeBankTransaction, usd, ymdOf } from "./ledger";
 import { readDocumentBytes } from "./documents";
-import { prepareReconciliation, statementWindow } from "./bank-accounts";
+import { approveReconciliation, prepareReconciliation, statementWindow } from "./bank-accounts";
 import { STATEMENT_DOC_TYPES } from "./client-request-scope";
 
 /**
@@ -101,15 +101,37 @@ export async function reconcileAccounts(actor: Actor, clientId: string, input: {
   for (const a of accounts) {
     const label = `${a.institution}${a.nickname ? ` ${a.nickname}` : ""}${a.last4 ? ` ••${a.last4}` : ""}`;
     const doc = await statementOnFile(clientId, a.id, year, month);
-    let statement = "No statement on file for this month.";
+    let statement = "No statement on file for this month: this account stays pending; everything else continues.";
+    let verified = false;
     if (doc) {
-      try { statement = statementReadMessage(await readStatementTransactions(actor, clientId, doc.id)); } catch (err) { statement = err instanceof Error ? err.message : "The statement couldn't be read."; }
+      try {
+        const read = await readStatementTransactions(actor, clientId, doc.id);
+        statement = statementReadMessage(read);
+        // Verified: the statement on file was read to the cent (beginning + every transaction = ending).
+        verified = read.ok;
+      } catch (err) { statement = err instanceof Error ? err.message : "The statement couldn't be read."; }
     }
-    const rec = await prepareReconciliation(clientId, a.id, year, month, { preparedById: actor.id });
+    let rec = await prepareReconciliation(clientId, a.id, year, month, { preparedById: actor.id });
     if (!rec) continue;
-    out.push({ account: label, statement, status: rec.status, beginning: rec.beginningBalanceCents != null ? usd(rec.beginningBalanceCents) : null, ending: rec.endingBalanceCents != null ? usd(rec.endingBalanceCents) : null, difference: rec.differenceCents != null ? usd(rec.differenceCents) : null, unmatched: rec.unmatchedCount, exceptions: rec.exceptions });
+    let completed: string | null = null;
+    // Under Tabitha's standing authorization Coetha completes a reconciliation ONLY when the balances
+    // come from the bank's own statement on file, read to the cent, AND the books agree with it
+    // (every row reviewed, difference zero, nothing flagged). A cash proof alone never counts.
+    if (rec.status === "READY" && verified && rec.statementDocumentId === doc?.id) {
+      const { coethaAutoPostOn } = await import("./owner-switches");
+      const { ownerActor } = await import("./coetha-decisions");
+      const owner = (await coethaAutoPostOn()) ? await ownerActor() : null;
+      if (owner) {
+        try {
+          rec = await approveReconciliation(owner, clientId, rec.id);
+          completed = "Reconciled: the statement on file and the books agree to the cent.";
+          await audit(prisma, { actorId: owner.id, action: "coetha.reconciliation_completed", entityType: "AccountReconciliation", entityId: rec.id, clientId, details: { account: label, month: input.month, statementDocumentId: doc?.id ?? null, endingCents: rec.endingBalanceCents, requestedById: actor.id } });
+        } catch (err) { completed = `Not marked reconciled: ${err instanceof Error ? err.message : "the books don't agree with the statement yet"}`; }
+      } else completed = "Balanced against the statement, but the standing authorization is off (Owner's Office → Automation), so it waits for Tabitha's approval.";
+    }
+    out.push({ account: label, statement, statementVerified: verified, completed, status: rec.status, beginning: rec.beginningBalanceCents != null ? usd(rec.beginningBalanceCents) : null, ending: rec.endingBalanceCents != null ? usd(rec.endingBalanceCents) : null, difference: rec.differenceCents != null ? usd(rec.differenceCents) : null, unmatched: rec.unmatchedCount, exceptions: rec.exceptions });
   }
-  return { month: input.month, accounts: out, note: "Differences are reported as they are; nothing was forced to balance. Approval is Tabitha's." };
+  return { month: input.month, accounts: out, note: "Differences are reported as they are; nothing was forced to balance. An account is marked reconciled only when its statement on file, read to the cent, agrees with the books." };
 }
 
 export const DUPLICATES_TOOL = {
@@ -128,8 +150,53 @@ export async function runBookkeepingTool(actor: Actor, clientId: string, name: s
   const i = (input && typeof input === "object" ? input : {}) as { month?: string; dryRun?: boolean };
   try {
     if (name === DUPLICATES_TOOL.name) return await removeVerifiedDuplicates(actor, clientId, { month: String(i.month ?? ""), dryRun: !!i.dryRun });
+    if (name === "reverse_entries") return await reverseEntries(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: { entryId?: string; reason?: string }[] }).items) : []);
     return await reconcileAccounts(actor, clientId, { month: String(i.month ?? "") });
   } catch (err) {
     return { error: err instanceof ForbiddenError || err instanceof ValidationError ? err.message : "That couldn't be completed." };
   }
 }
+
+
+/**
+ * Reverses journal entries Coetha has found to be wrong (posted twice, to the wrong account, …),
+ * under Tabitha's standing authorization: each with its reason and evidence, dated in the entry's
+ * own month (a closed operational month is reopened and closed again; a month whose statements were
+ * approved or released, or whose tax return was filed, is left for Tabitha). The original entry and
+ * its reversal both stay on the books; the bank rows behind it go back to review.
+ */
+export async function reverseEntries(actor: Actor, clientId: string, items: { entryId?: string; reason?: string }[]) {
+  const { coethaAutoPostOn } = await import("./owner-switches");
+  const { ownerActor, closedMonthEscalation, withMonthsOpened } = await import("./coetha-decisions");
+  const { reverseEntry } = await import("./ledger");
+  const { assertLedgerWrite } = await import("./ledger");
+  await assertLedgerWrite(actor, clientId);
+  const owner = (await coethaAutoPostOn()) ? await ownerActor() : null;
+  const results: { entryId: string; ok: boolean; message: string; reversalId?: string }[] = [];
+  for (const it of items.slice(0, 50)) {
+    const entryId = String(it.entryId ?? "");
+    const reason = String(it.reason ?? "").trim();
+    const e = entryId ? await prisma.journalEntry.findFirst({ where: { id: entryId, clientId }, include: { reversedBy: { select: { id: true } }, lines: true } }) : null;
+    if (!e) { results.push({ entryId, ok: false, message: "That entry isn't one of this business's entries." }); continue; }
+    if (reason.length < 15) { results.push({ entryId, ok: false, message: "Give the reason and the evidence (for example the duplicate entry or the statement line)." }); continue; }
+    if (e.reversedBy) { results.push({ entryId, ok: false, message: "Already reversed." }); continue; }
+    if (!owner) { results.push({ entryId, ok: false, message: "The standing authorization is off (Owner's Office → Automation), so this reversal waits for Tabitha." }); continue; }
+    const date = ymdOf(e.date);
+    const why = await closedMonthEscalation(clientId, date);
+    if (why) { results.push({ entryId, ok: false, message: `Left for Tabitha: ${why}.` }); continue; }
+    try {
+      const r = await withMonthsOpened(owner, clientId, date, `Coetha's standing authorization: reversal of a supported incorrect entry dated ${date}`, () => reverseEntry(owner, clientId, e.id, { date, reason: `Coetha (standing authorization): ${reason}`.slice(0, 300) }));
+      await audit(prisma, { actorId: owner.id, action: "coetha.entry_reversed", entityType: "JournalEntry", entityId: e.id, clientId, details: { reversalId: r.id, reason: reason.slice(0, 300), amountCents: e.lines.reduce((n, l) => n + l.debitCents, 0), requestedById: actor.id } });
+      results.push({ entryId, ok: true, message: `Reversed (${usd(e.lines.reduce((n, l) => n + l.debitCents, 0))}, ${date}); its bank rows are back in review.`, reversalId: r.id });
+    } catch (err) {
+      results.push({ entryId, ok: false, message: err instanceof Error ? err.message : "The reversal couldn't be posted." });
+    }
+  }
+  return { results };
+}
+
+export const REVERSE_TOOL = {
+  name: "reverse_entries",
+  description: "Reverse journal entries you have verified are wrong (posted twice, posted to the wrong account, posted from a duplicate bank row), under Tabitha's standing authorization. Give each entry's entryId (from search_journal_entries) and the reason with its evidence. Each reversal is dated in the entry's own month; both entries stay on the books with an audit trail, and the bank rows go back to review so they can be posted correctly. Months whose statements were approved or released, or whose tax return was filed, are left for Tabitha. Verify against the ledger and the original transactions first.",
+  input_schema: { type: "object" as const, properties: { items: { type: "array", items: { type: "object", properties: { entryId: { type: "string" }, reason: { type: "string" } }, required: ["entryId", "reason"] } } }, required: ["items"] },
+};

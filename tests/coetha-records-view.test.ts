@@ -126,7 +126,7 @@ describe("Ask Coetha's complete read-only view of the records", () => {
 
     // A model that keeps asking to search is stopped: the last round can't search.
     sent = [];
-    script = Array.from({ length: 10 }, (_, i) => (req: Req) => (req.tool_choice?.type === "none" ? text("Answer from what I have.") : search("search_journal_entries", {}, `tu_${i}`)));
+    script = Array.from({ length: CHAT_MAX_SEARCH_ROUNDS + 2 }, (_, i) => (req: Req) => (req.tool_choice?.type === "none" ? text("Answer from what I have.") : search("search_journal_entries", {}, `tu_${i}`)));
     await askCoetha(s.daria, s.willow.id, "Search everything", { today: "2026-11-10" });
     expect(sent).toHaveLength(CHAT_MAX_SEARCH_ROUNDS + 1);
     expect(sent[sent.length - 1].tool_choice).toEqual({ type: "none" });

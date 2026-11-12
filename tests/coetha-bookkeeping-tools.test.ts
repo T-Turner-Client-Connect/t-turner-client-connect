@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { makeUser, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
-import { setupLedger } from "@/lib/services/ledger";
+import { postJournalEntry, postOpeningBalances, setupLedger } from "@/lib/services/ledger";
+import { setOwnerSwitch } from "@/lib/services/owner-switches";
+import { askCoetha } from "@/lib/services/coetha-chat";
 import { registerAccount } from "@/lib/services/bank-accounts";
 import { staffUploadStatement } from "@/lib/services/client-requests";
 import { readStatementTransactions } from "@/lib/services/statement-import";
@@ -95,5 +97,71 @@ describe("Coetha's bookkeeping tools change the books, verified against the stat
     const rec = await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id, year: 2026, month: 10 } });
     expect(rec.status).not.toBe("APPROVED");
     expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id } })).toBe(before);
+  });
+});
+
+
+describe("A whole bookkeeping assignment, done by Coetha (database checked, not her wording)", () => {
+  let plan: { name: string; input: unknown }[] = [];
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test-fictional-key";
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url);
+      if (u.host !== "api.anthropic.com") throw new Error(`Unexpected request: ${u.href}`);
+      const req = JSON.parse(String(init?.body ?? "")) as { messages: { content: unknown }[] };
+      const done = req.messages.filter((m) => Array.isArray(m.content) && (m.content as { type: string }[])[0]?.type === "tool_result").length;
+      const step = plan[done];
+      const content = step ? [{ type: "tool_use", id: `toolu_${done}`, name: step.name, input: step.input }] : [{ type: "text", text: "October done. Exceptions: none." }];
+      return new Response(JSON.stringify({ id: "m", type: "message", role: "assistant", model: "claude-test", content, stop_reason: step ? "tool_use" : "end_turn", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10 } }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+  });
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env.ANTHROPIC_API_KEY; });
+
+  it("excludes duplicates, reverses a wrong entry, posts the month, reconciles against the statement and prepares the statements", async () => {
+    const w = await world();
+    await setOwnerSwitch(w.tabitha, "coetha", true);
+    await setOwnerSwitch(w.tabitha, "coethaAutoPost", true);
+    const acct = (type: string) => prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, type }, orderBy: { code: "asc" } });
+    const [exp, inc] = [await acct("EXPENSE"), await acct("INCOME")];
+    await postOpeningBalances(w.tabitha, w.biz.id, { date: "2026-10-01", balances: [{ accountId: w.gl, amount: "1000.00" }] });
+    // A wrong manual entry (a fee posted by hand that the bank never charged).
+    const wrong = await postJournalEntry(w.tabitha, w.biz.id, { date: "2026-10-30", memo: "Bank fee entered twice (fictional)", lines: [{ accountId: exp.id, debit: "35.00" }, { accountId: w.gl, credit: "35.00" }] });
+    // Two duplicate imports of statement rows.
+    for (const [d, c] of [["2026-10-03", -8456], ["2026-10-20", -15000]] as const) {
+      await prisma.bankTransaction.create({ data: { clientId: w.biz.id, accountId: w.gl, date: new Date(`${d}T00:00:00Z`), amountCents: c, description: `DUP FEED ${d}`, fingerprint: `dup-${d}`, source: "PLAID" } });
+    }
+    const rows = [["W1", "2026-10-02", 2000, inc], ["W2", "2026-10-03", -84.56, exp], ["W3", "2026-10-05", -200, exp], ["W4", "2026-10-09", -1000, exp], ["W5", "2026-10-12", -250, exp], ["W6", "2026-10-15", 500, inc], ["W7", "2026-10-20", -150, exp], ["W8", "2026-10-30", -35, exp]] as const;
+    plan = [
+      { name: "remove_verified_duplicates", input: { month: "2026-10" } },
+      { name: "reverse_entries", input: { items: [{ entryId: wrong.id, reason: "Entered by hand; the October statement shows only one $35.00 fee, already in the bank rows." }] } },
+      { name: "prepare_entries", input: { items: rows.map(([ref, date, amount, a]) => ({ type: "post_bank_row", ref, date, amount, accountCode: a.code, basis: "senior_accountant", reason: "Matches the October statement line." })) } },
+      { name: "reconcile_accounts", input: { month: "2026-10" } },
+      { name: "prepare_financial_statements", input: { month: "2026-10" } },
+    ];
+    const r = await askCoetha(w.tabitha, w.biz.id, "Complete October for this client.");
+    expect(r.queued).toBe(false);
+    // Duplicates excluded (kept, with the reason), the wrong entry reversed, every statement row posted.
+    expect(await prisma.bankTransaction.count({ where: { clientId: w.biz.id, status: "EXCLUDED" } })).toBe(2);
+    expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id, reversalOfId: wrong.id } })).toBe(1);
+    expect(await prisma.bankTransaction.count({ where: { clientId: w.biz.id, status: "POSTED" } })).toBe(8);
+    expect(await prisma.bankTransaction.count({ where: { clientId: w.biz.id, status: "UNREVIEWED" } })).toBe(0);
+    // Reconciled: the statement read to the cent and the books agree; recorded with an audit entry.
+    const rec = await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id, year: 2026, month: 10 } });
+    expect(rec).toMatchObject({ status: "APPROVED", differenceCents: 0, endingBalanceCents: 178044 });
+    expect(await prisma.auditLog.count({ where: { action: "coetha.reconciliation_completed", clientId: w.biz.id } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "coetha.entry_reversed", clientId: w.biz.id } })).toBe(1);
+    // Draft statements saved (not released).
+    const docs = await prisma.document.findMany({ where: { clientId: w.biz.id, reportType: { in: ["PROFIT_AND_LOSS", "BALANCE_SHEET"] }, year: 2026, month: 10 } });
+    expect(docs).toHaveLength(2);
+    expect(docs.every((d) => d.visibility === "STAFF_ONLY")).toBe(true);
+  });
+
+  it("an account is never marked reconciled without its statement, even when the book balance looks right", async () => {
+    const w = await world();
+    await setOwnerSwitch(w.tabitha, "coethaAutoPost", true);
+    await prisma.document.updateMany({ where: { clientId: w.biz.id, docType: { in: ["BANK_STATEMENT", "CARD_STATEMENT"] } }, data: { deletedAt: new Date() } });
+    const r = await reconcileAccounts(w.tabitha, w.biz.id, { month: "2026-10" });
+    expect(r.accounts[0].statementVerified).toBe(false);
+    expect((await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id } })).status).not.toBe("APPROVED");
   });
 });

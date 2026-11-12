@@ -211,12 +211,12 @@ export async function searchJournalEntries(clientId: string, q: EntrySearch) {
   const offset = Math.max(0, Math.min(100_000, Math.floor(num(q.offset) ?? 0)));
   const [total, entries] = await Promise.all([
     prisma.journalEntry.count({ where }),
-    prisma.journalEntry.findMany({ where, orderBy: [{ date: "asc" }, { id: "asc" }], skip: offset, take: SEARCH_PAGE, select: { date: true, memo: true, source: true, reversalOfId: true, reversedBy: { select: { id: true } }, lines: { select: { debitCents: true, creditCents: true, account: { select: { code: true, name: true } } } } } }),
+    prisma.journalEntry.findMany({ where, orderBy: [{ date: "asc" }, { id: "asc" }], skip: offset, take: SEARCH_PAGE, select: { id: true, date: true, memo: true, source: true, reversalOfId: true, reversedBy: { select: { id: true } }, lines: { select: { debitCents: true, creditCents: true, account: { select: { code: true, name: true } } } } } }),
   ]);
   return {
     total, offset, returned: entries.length, ...(offset + entries.length < total ? { next: `Call again with offset ${offset + entries.length} for more.` } : {}),
     entries: entries.map((e) => ({
-      date: ymdOf(e.date), memo: scrub(e.memo), source: e.source, adjusting: e.source === "ADJUSTMENT", isReversal: !!e.reversalOfId, reversed: !!e.reversedBy,
+      entryId: e.id, date: ymdOf(e.date), memo: scrub(e.memo), source: e.source, adjusting: e.source === "ADJUSTMENT", isReversal: !!e.reversalOfId, reversed: !!e.reversedBy,
       lines: e.lines.map((l) => ({ account: `${l.account.code} ${scrub(l.account.name)}`, debit: usd(l.debitCents), credit: usd(l.creditCents) })),
     })),
   };
