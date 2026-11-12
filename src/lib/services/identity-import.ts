@@ -22,7 +22,7 @@ import { canStaffViewIdentity, ensureClientPerson, ID_ROLES, ID_TYPES, openVerif
  * - The most recent document of a kind is the one on file; an older one is kept as history.
  */
 
-export type IdFiling = { type: IdType; role: Exclude<IdRole, "OWNER"> };
+export type IdFiling = { type: IdType; role: Exclude<IdRole, "OWNER">; /** "Dependent (2) …": which dependent the question is about. */ index?: number };
 
 /** The identity document a Jotform upload question asks for, and whose it is; null when unclear. */
 export function classifyIdQuestion(question: string): IdFiling | null {
@@ -37,8 +37,11 @@ export function classifyIdQuestion(question: string): IdFiling | null {
           ? "DRIVERS_LICENSE"
           : null;
   if (!type) return null;
+  // "Upload Social Security Card(s)": several people's cards in one upload — whose can't be told.
+  if (/cards?\s*\(s\)|\bcards\b|certificates\b/.test(q)) return null;
   const role = /spouse|wife|husband/.test(q) ? "SPOUSE" : /dependent|child|children|\bkid|\bson\b|daughter/.test(q) ? "DEPENDENT" : "CLIENT";
-  return { type, role };
+  const n = role === "DEPENDENT" ? /dependent\s*\(?\s*(\d)\s*\)?/.exec(q)?.[1] : undefined;
+  return n ? { type, role, index: Number(n) } : { type, role };
 }
 
 /** The spouse's name from the questionnaire's answers (a "spouse … name" question), if any. */
@@ -48,7 +51,7 @@ export function spouseNameFrom(pairs: { q: string; a: string }[]) {
   return name && /[a-z]/i.test(name) ? name : null;
 }
 
-async function personFor(clientId: string, role: IdFiling["role"], spouseName: string | null) {
+async function personFor(clientId: string, role: IdFiling["role"], spouseName: string | null, index?: number) {
   if (role === "CLIENT") return ensureClientPerson(clientId);
   if (role === "SPOUSE") {
     const existing = await prisma.identityPerson.findFirst({ where: { clientId, role: "SPOUSE", archivedAt: null } });
@@ -56,7 +59,9 @@ async function personFor(clientId: string, role: IdFiling["role"], spouseName: s
     if (!spouseName) return null;
     return prisma.identityPerson.create({ data: { clientId, role: "SPOUSE", name: spouseName } });
   }
-  // Dependents: only when there is exactly one on file (the question doesn't say which child).
+  // Dependents: only when there is exactly one on file (the question doesn't say which child), and
+  // never for "Dependent (2)" or later — that is another child than the one on file.
+  if (index && index > 1) return null;
   const deps = await prisma.identityPerson.findMany({ where: { clientId, role: "DEPENDENT", archivedAt: null } });
   return deps.length === 1 ? deps[0] : null;
 }
@@ -77,7 +82,7 @@ export async function fileIntoIdentity(actor: Actor | null, input: { clientId: s
   if (doc.scanStatus === "INFECTED") return { documentId, filed: false, label, reason: "The file failed the malware scan." };
   const person = input.personId
     ? await prisma.identityPerson.findFirst({ where: { id: input.personId, clientId, archivedAt: null } })
-    : await personFor(clientId, filing.role, input.spouseName ?? null);
+    : await personFor(clientId, filing.role, input.spouseName ?? null, filing.index);
   if (!person) return { documentId, filed: false, label, reason: filing.role === "SPOUSE" ? "No spouse is listed and the questionnaire doesn't give the spouse's name." : "The questionnaire doesn't say which dependent it is." };
 
   // Re-store the same bytes encrypted (identity files are always encrypted at rest).
