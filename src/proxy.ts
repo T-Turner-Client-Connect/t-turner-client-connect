@@ -12,7 +12,9 @@ const PUBLIC_STAFF = ["/welcome", "/staff/login", "/staff/setup", "/staff/invite
 const PUBLIC_PORTAL = ["/client/login", "/client/signup", "/client/activate", "/client/invite/", "/client/forgot-password", "/client/reset-password/"];
 // Webhooks authenticate themselves (shared secret + provider API verification).
 // One-click unsubscribe (RFC 8058) is authorized by its signed token.
-const PUBLIC_API = ["/api/webhooks/", "/api/cron/", "/api/unsubscribe/"];
+// Netlify's own function endpoints (background functions such as Coetha's reader) authenticate
+// with CRON_SECRET; a redirect to the sign-in page would stop them from ever running.
+const PUBLIC_API = ["/api/webhooks/", "/api/cron/", "/api/unsubscribe/", "/.netlify/"];
 
 const has = (req: NextRequest, names: string[]) => names.some((n) => req.cookies.has(n));
 
@@ -50,5 +52,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image).*)"],
+  matcher: ["/((?!_next/static|_next/image|\\.netlify/).*)"],
 };
