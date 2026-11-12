@@ -86,3 +86,44 @@ export async function bookkeepingQueueStatus(clientIds: string[]) {
   }
   return out;
 }
+
+const normName = (s: string) => ` ${s.toLowerCase().replace(/\([^)]*\)/g, " ").replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").replace(/\b(llc|inc|co|corp|ltd|the|pllc|company)\b/g, " ").replace(/\s+/g, " ").trim()} `;
+
+/** The assignment for the months a financial package on file covers. */
+export const historyText = (title: string, documentId: string) =>
+  `Enter the months covered by the financial package on file “${title}” (document ${documentId}) that aren't in the books yet, under my standing authorization: read it, map each line to the chart (adding any missing account), enter each month with import_prior_months, and compare its ending cash with the books. Don't enter any month already in the books. Then give me a short exception report (lines you couldn't map, amounts that don't tie, any cash difference) — nothing else.`;
+
+/**
+ * One financial package the office already prepared (any layout): matched to its bookkeeping client
+ * by the business name printed in it, saved as a staff-only document (the same file is never saved
+ * twice), and queued for Coetha to enter the months it covers. Unmatched or ambiguous files are
+ * reported, never guessed.
+ */
+export async function uploadPriorPackage(actor: Actor, file: { bytes: Uint8Array; originalName: string }, opts: { clientId?: string | null } = {}) {
+  if (!(await isPrimaryOwner(actor.id))) throw new ForbiddenError("Only Tabitha uploads prior financial packages.");
+  const { pdfLines } = await import("@/lib/statement-pdf");
+  const lines = (await pdfLines(file.bytes)) ?? [];
+  if (!lines.length) throw new ValidationError(`“${file.originalName}” has no readable text.`);
+  const head = normName(lines.slice(0, 40).join(" "));
+  const profiles = await prisma.bookkeepingProfile.findMany({ where: { active: true }, select: { clientId: true, client: { select: { displayName: true, businessName: true } } } });
+  let clientId = opts.clientId ?? null;
+  if (!clientId) {
+    const hits = profiles.filter((p) => [p.client.businessName, p.client.displayName].some((n) => n && normName(n).trim().length >= 4 && head.includes(normName(n))));
+    if (hits.length !== 1) return { file: file.originalName, matched: false as const, why: hits.length ? `matches ${hits.length} clients` : "no bookkeeping client's name was found in it" };
+    clientId = hits[0].clientId;
+  }
+  const client = profiles.find((p) => p.clientId === clientId);
+  if (!client) throw new ValidationError("That isn't an active bookkeeping client.");
+  const { sha256Of, staffUploadDocument } = await import("./documents");
+  const existing = await prisma.document.findFirst({ where: { clientId, deletedAt: null, file: { sha256: sha256Of(file.bytes) } }, select: { id: true, title: true } });
+  const doc = existing ?? (await staffUploadDocument(actor, { clientId, category: "BOOKKEEPING", title: `Financial package (prior months) — ${file.originalName}`.slice(0, 200), visibility: "STAFF_ONLY", bytes: file.bytes, originalName: file.originalName, notify: false }));
+  const chat = bookkeepingChat(clientId);
+  const text = historyText(doc.title, doc.id);
+  const queuedAlready = await prisma.coethaChatMessage.findFirst({ where: { clientId, chatId: chat, role: "USER", text, OR: [{ status: "WAITING" }, { status: "ANSWERED" }] }, select: { id: true } });
+  if (!queuedAlready) {
+    const { askCoetha } = await import("./coetha-chat");
+    await askCoetha(actor, clientId, text, { chat, inline: false });
+  }
+  await audit(prisma, { actorId: actor.id, action: "coetha.prior_package_queued", entityType: "Document", entityId: doc.id, clientId, details: { file: file.originalName, reused: !!existing } });
+  return { file: file.originalName, matched: true as const, client: client.client.displayName, documentId: doc.id };
+}
