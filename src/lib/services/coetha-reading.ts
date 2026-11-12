@@ -1,4 +1,5 @@
 import "server-only";
+import type { DocumentCategory } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
@@ -190,7 +191,7 @@ async function queueJob(actor: Pick<Actor, "id">, clientId: string, documentId: 
 /** Queues documents already on file (for example a scan sent earlier) for Coetha to read. */
 export async function readDocumentsOnFile(actor: Actor, clientId: string, documentIds: string[]) {
   await assertCoethaReader(actor, clientId);
-  const docs = await prisma.document.findMany({ where: { id: { in: documentIds }, clientId, deletedAt: null, category: "BOOKKEEPING" }, select: { id: true, title: true, file: { select: { mimeType: true, originalName: true } } } });
+  const docs = await prisma.document.findMany({ where: { id: { in: documentIds }, clientId, deletedAt: null, category: { in: ["BOOKKEEPING", "CLIENT_UPLOADS"] } }, select: { id: true, title: true, file: { select: { mimeType: true, originalName: true } } } });
   if (docs.length !== new Set(documentIds).size) throw new ValidationError("One of those documents isn't on file for this business.");
   const jobs = [];
   for (const d of docs) {
@@ -198,6 +199,168 @@ export async function readDocumentsOnFile(actor: Actor, clientId: string, docume
     jobs.push(await queueJob(actor, clientId, d.id, d.file.originalName || d.title));
   }
   return jobs;
+}
+
+// --- Documents already on file: Coetha finds and reads them herself --------------------------------
+
+/**
+ * The stored documents Coetha may use as this business's accountant, for the person asking:
+ * bookkeeping files (bank and card statements, reports, receipts, invoices), the client's uploads
+ * and other files; payroll files only for someone allowed to do this business's payroll work.
+ * Never identity documents, owner-only K-1s or personal files, or tax returns.
+ */
+async function readableCategories(actor: Actor, clientId: string) {
+  const cats: DocumentCategory[] = ["BOOKKEEPING", "CLIENT_UPLOADS", "OTHER"];
+  try {
+    await (await import("./payroll")).assertPayrollWork(actor, clientId);
+    cats.push("PAYROLL");
+  } catch {
+    /* no payroll access: payroll files stay out */
+  }
+  return cats;
+}
+
+const KIND_WORDS: Record<string, RegExp> = {
+  bank: /bank|checking|savings|statement|stmt|deposit/i,
+  card: /card|visa|master|amex|american express|discover|chase|credit/i,
+  payroll: /payroll|adp|paychex|gusto|wage|941|940|w-?2|w-?3|register|pay stub|paystub/i,
+  report: /profit|loss|p&l|balance sheet|general ledger|ledger|journal|trial balance|financial/i,
+  receipt: /receipt|invoice|bill|purchase/i,
+};
+
+export const FIND_FILES_TOOL = {
+  name: "find_documents_on_file",
+  description:
+    "Find documents already stored in Client Connect for this business that you may use: bank and credit card statements (any year), payroll reports, P&L / balance sheet / ledger reports, receipts, invoices and other uploads. Returns ids to use with read_documents_on_file. Read-only.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      kind: { type: "string", enum: ["bank", "card", "payroll", "report", "receipt", "any"] },
+      text: { type: "string", description: "Words in the title or file name, e.g. CHECKINGSTATEMENT or December" },
+      year: { type: "integer" },
+      month: { type: "integer", description: "1-12" },
+      offset: { type: "integer" },
+    },
+  },
+};
+
+export async function findFilesOnFile(actor: Actor, clientId: string, input: unknown) {
+  await assertCoethaReader(actor, clientId);
+  const q = (input && typeof input === "object" ? input : {}) as { kind?: string; text?: string; year?: number; month?: number; offset?: number };
+  const categories = await readableCategories(actor, clientId);
+  const docs = await prisma.document.findMany({
+    where: { clientId, deletedAt: null, category: { in: categories }, scanStatus: { not: "INFECTED" } },
+    orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
+    take: 1000,
+    select: { id: true, title: true, category: true, docType: true, reportType: true, year: true, month: true, createdAt: true, file: { select: { originalName: true, mimeType: true } } },
+  });
+  const words = (q.text ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1);
+  const kind = q.kind && q.kind !== "any" ? KIND_WORDS[q.kind] : null;
+  const hits = docs.filter((d) => {
+    const hay = `${d.title} ${d.file?.originalName ?? ""} ${d.docType ?? ""} ${d.reportType ?? ""} ${d.category}`.toLowerCase();
+    if (words.length && !words.every((w) => hay.includes(w))) return false;
+    if (kind && !kind.test(hay) && !(q.kind === "payroll" && d.category === "PAYROLL")) return false;
+    if (Number.isInteger(q.year) && d.year !== q.year && !(d.year == null && hay.includes(String(q.year)))) return false;
+    if (Number.isInteger(q.month) && d.month && d.month !== q.month) return false;
+    return true;
+  });
+  const offset = Math.max(0, Number(q.offset) || 0);
+  const page = hits.slice(offset, offset + 50);
+  const jobs = await prisma.coethaDocJob.findMany({ where: { documentId: { in: page.map((d) => d.id) } }, select: { documentId: true, status: true, error: true } });
+  const jobOf = new Map(jobs.map((j) => [j.documentId, j]));
+  return {
+    total: hits.length,
+    documents: page.map((d) => ({
+      id: d.id, title: scrub(d.title, 120), file: scrub(d.file?.originalName ?? "", 120), category: d.category.toLowerCase(), type: d.docType ?? d.reportType ?? null,
+      period: d.year ? `${d.year}${d.month ? `-${String(d.month).padStart(2, "0")}` : ""}` : null, added: ymdOf(d.createdAt),
+      read: jobOf.get(d.id)?.status === "DONE" ? "read" : jobOf.get(d.id)?.status === "FAILED" ? `couldn't be read: ${jobOf.get(d.id)?.error ?? ""}` : jobOf.get(d.id) ? "reading" : "not read yet",
+    })),
+  };
+}
+
+export const READ_FILES_TOOL = {
+  name: "read_documents_on_file",
+  description:
+    "Read the contents of documents already stored for this business (ids from find_documents_on_file or documentsOnFile). A PDF with text (most bank, card and payroll statements) is returned right away as its text, with long numbers cut to the last 4 digits. A scan or picture is read in the background: your answer about it is then written automatically in this chat. Read-only; nothing in the books changes.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      documentIds: { type: "array", items: { type: "string" }, description: "Up to 5 ids" },
+      question: { type: "string", description: "What you need from them (used if a scan has to be read in the background)" },
+    },
+    required: ["documentIds"],
+  },
+};
+
+const INLINE_LIMIT = 90_000;
+
+/**
+ * Reads documents on file for Coetha, as the person asking, within this business's accounting scope.
+ * Text PDFs: extracted now (and kept, so it's done once). Scans and pictures: background reading,
+ * answered in this chat. A file that can't be read says exactly why.
+ */
+export async function runReadFilesTool(actor: Actor, clientId: string, input: unknown, opts: { chat?: string | null; alreadyRead?: string[] } = {}) {
+  const q = (input && typeof input === "object" ? input : {}) as { documentIds?: unknown; question?: unknown };
+  const ids = Array.isArray(q.documentIds) ? [...new Set(q.documentIds.filter((x): x is string => typeof x === "string"))].slice(0, 5) : [];
+  if (!ids.length) return { problem: "Give the ids of the documents to read (from find_documents_on_file)." };
+  try {
+    await assertCoethaReader(actor, clientId);
+  } catch (err) {
+    return { problem: err instanceof ValidationError || err instanceof ForbiddenError ? err.message : "Not allowed." };
+  }
+  const categories = await readableCategories(actor, clientId);
+  const docs = await prisma.document.findMany({ where: { id: { in: ids }, clientId, deletedAt: null }, select: { id: true, title: true, category: true, file: { select: { originalName: true, mimeType: true } } } });
+  const out: { id: string; title: string; text?: string; truncated?: boolean; status: string; problem?: string }[] = [];
+  const background: { id: string; name: string }[] = [];
+  let room = INLINE_LIMIT;
+  for (const id of ids) {
+    const d = docs.find((x) => x.id === id);
+    if (!d) { out.push({ id, title: "", status: "not found", problem: "No document with that id is on file for this business." }); continue; }
+    const title = scrub(d.title, 120);
+    if (!categories.includes(d.category)) { out.push({ id, title, status: "not allowed", problem: d.category === "PAYROLL" ? "Payroll files open only for someone allowed to do this business's payroll work." : "That document isn't an accounting record Coetha may read." }); continue; }
+    if (!d.file || !TYPES.includes(d.file.mimeType as FileType)) { out.push({ id, title, status: "unsupported", problem: "It isn't a PDF or a picture, so it can't be read." }); continue; }
+    try {
+      let job = await prisma.coethaDocJob.findUnique({ where: { documentId: id } });
+      if (!job || (job.status !== "DONE" && !job.kind)) {
+        // Work out now whether it's a text PDF; if so, its text is kept and returned at once.
+        const file = await documentBytes(id);
+        if (!file) { out.push({ id, title, status: "waiting", problem: "It's still being virus-scanned; try again in a minute." }); continue; }
+        job ??= await queueJob(actor, clientId, id, d.file.originalName || d.title);
+        if (file.type === "application/pdf") {
+          const { pdfLines } = await import("@/lib/statement-pdf");
+          const text = ((await pdfLines(file.bytes)) ?? []).map((l) => scrub(l, 400)).filter(Boolean).join("\n");
+          if (text.replace(/\s/g, "").length >= PDF_TEXT_MIN) {
+            const { PDFDocument } = await import("pdf-lib");
+            const pages = (await PDFDocument.load(file.bytes, { ignoreEncryption: true })).getPageCount();
+            job = await prisma.coethaDocJob.update({ where: { id: job.id }, data: { kind: "PDF_TEXT", pages, pagesDone: pages, text: text.slice(0, MAX_TEXT), status: "DONE", finishedAt: new Date(), leaseUntil: null, attempts: 0, error: null } });
+          }
+        }
+      }
+      await audit(prisma, { actorId: actor.id, action: "coetha.document_read", entityType: "Document", entityId: id, clientId, details: { kind: job.kind } });
+      if (job.status === "DONE" && job.kind === "PDF_TEXT" && job.text) {
+        const text = job.text.slice(0, Math.max(0, room));
+        room -= text.length;
+        out.push({ id, title, status: "read", text, truncated: text.length < job.text.length });
+      } else if (job.status === "DONE") {
+        out.push({ id, title, status: "read", text: await documentsText([job]) });
+      } else if (job.status === "FAILED") {
+        out.push({ id, title, status: "couldn't be read", problem: job.error ?? "The reader couldn't read it." });
+      } else if (opts.alreadyRead?.includes(id)) {
+        out.push({ id, title, status: "being read for this question" });
+      } else {
+        background.push({ id: job.id, name: job.name });
+        out.push({ id, title, status: "reading in the background (a scan or picture)" });
+      }
+    } catch (err) {
+      out.push({ id, title, status: "couldn't be read", problem: err instanceof ValidationError ? err.message : "The file couldn't be opened from storage." });
+    }
+  }
+  if (background.length) {
+    const question = typeof q.question === "string" && q.question.trim() ? q.question.trim().slice(0, 1500) : "Read these documents and tell me what they show.";
+    await askAboutDocuments(actor, clientId, question, background.map((b) => b.id), opts.chat ?? null);
+    await kickBackgroundReading();
+  }
+  return { documents: out, ...(background.length ? { note: "Scans are being read in the background; the answer about them will appear in this chat when they are read." } : {}) };
 }
 
 /**

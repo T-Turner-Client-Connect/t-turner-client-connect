@@ -81,7 +81,7 @@ export async function recordsSnapshot(actor: Actor, clientId: string) {
     import("./coetha-records").then((m) => m.judgmentGroups(clientId)),
     import("./coetha-records").then((m) => m.compareWithReference(actor, clientId)),
     import("./coetha-records").then((m) => m.familyPostingsToUndo(clientId)),
-    prisma.document.findMany({ where: { clientId, category: "BOOKKEEPING", deletedAt: null }, orderBy: [{ year: "asc" }, { month: "asc" }, { createdAt: "asc" }], take: 400, select: { title: true, docType: true, year: true, month: true, createdAt: true, bookkeepingAccount: { select: { ledgerAccountId: true, nickname: true } } } }),
+    prisma.document.findMany({ where: { clientId, category: "BOOKKEEPING", deletedAt: null }, orderBy: [{ year: "asc" }, { month: "asc" }, { createdAt: "asc" }], take: 400, select: { id: true, title: true, docType: true, year: true, month: true, createdAt: true, bookkeepingAccount: { select: { ledgerAccountId: true, nickname: true } } } }),
     import("./coetha-records").then((m) => m.routineSummary(clientId)),
   ]);
 
@@ -145,8 +145,9 @@ export async function recordsSnapshot(actor: Actor, clientId: string) {
         proposedAccount: f.proposedAccount, why: f.reason, evidenceNeeded: f.evidenceNeeded,
       })),
     readFromDocumentsAlreadyPosted: findings.filter((f) => f.bankTransactionId && !wRef.has(f.bankTransactionId)).length,
+    // Each document's id lets Coetha read it with read_documents_on_file (no upload needed).
     documentsOnFile: docs.map((d) => ({
-      title: scrub(d.title, 120), type: d.docType, period: d.year ? `${d.year}${d.month ? `-${String(d.month).padStart(2, "0")}` : ""}` : null,
+      id: d.id, title: scrub(d.title, 120), type: d.docType, period: d.year ? `${d.year}${d.month ? `-${String(d.month).padStart(2, "0")}` : ""}` : null,
       account: d.bookkeepingAccount?.ledgerAccountId ? label(d.bookkeepingAccount.ledgerAccountId) : d.bookkeepingAccount?.nickname ? scrub(d.bookkeepingAccount.nickname) : null,
       added: ymdOf(d.createdAt),
     })),

@@ -80,7 +80,7 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(recordsBlock.cache_control).toEqual({ type: "ephemeral" });
     // A staff member asking: read-only searches of this business, and the monthly checklist (clearing
     // a line is checked against the person asking).
-    expect((sent[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist", "add_bank_activity", "prepare_financial_statements"]);
+    expect((sent[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist", "add_bank_activity", "prepare_financial_statements", "find_documents_on_file", "read_documents_on_file"]);
     expect(sent[0].messages).toEqual([{ role: "user", content: "What is the Office Depot charge?" }]);
 
     await askCoetha(s.tabitha, s.vessel.id, "And the ATM withdrawal?", today);

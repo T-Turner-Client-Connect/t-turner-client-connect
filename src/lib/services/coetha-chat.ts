@@ -149,7 +149,7 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
     const turns: CoethaChatTurn[] = [...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })), { role: "user", text: q }];
     let res;
     try {
-      res = await callCoethaChat(books, turns, await chatTools(actor, clientId, records, q), parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
+      res = await callCoethaChat(books, turns, await chatTools(actor, clientId, records, q, { chat: opts.chat ?? null }), parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
     } catch (err) {
       const code = err instanceof CoethaModelError ? err.code : "ERROR";
       // The AI service is busy (its per-minute limit, or a refusal/connection drop right after it):
@@ -206,7 +206,7 @@ export async function coolingDown() {
 export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEOUT"]);
 
 /** Read-only searches and the monthly checklist for everyone; prepare_entries, memory and ask_client only when the person asking is Tabitha. */
-async function chatTools(actor: Actor, clientId: string, records: unknown, currentQuestion?: string) {
+async function chatTools(actor: Actor, clientId: string, records: unknown, currentQuestion?: string, reading: { chat?: string | null; alreadyRead?: string[] } = {}) {
   const owner = await isPrimaryOwner(actor.id);
   const { PREPARE_TOOL, runPrepareTool, APPROVE_TOOL, runApproveTool } = await import("./coetha-decisions");
   const { MEMORY_TOOLS, runMemoryTool } = await import("./coetha-memory");
@@ -221,6 +221,8 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
   // person asking must be allowed to import bank transactions for this business.
   const { BANK_ACTIVITY_TOOL, addBankActivity } = await import("./coetha-bank-activity");
   const { STATEMENTS_TOOL, runStatementsTool } = await import("./coetha-statements");
+  // Documents already on file (a stored bank statement): read in the background, answered in this chat.
+  const { FIND_FILES_TOOL, findFilesOnFile, READ_FILES_TOOL, runReadFilesTool } = await import("./coetha-reading");
   const enterActivity = async (input: unknown) => {
     try {
       return await addBankActivity(actor, clientId, (input && typeof input === "object" ? input : {}) as Record<string, unknown>);
@@ -229,7 +231,7 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
     }
   };
   return {
-    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, PREPARE_TOOL, APPROVE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL],
+    defs: owner ? [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, FIND_FILES_TOOL, READ_FILES_TOOL, PREPARE_TOOL, APPROVE_TOOL, ...MEMORY_TOOLS, ASK_CLIENT_TOOL] : [...RECORDS_TOOLS, ...CHECKLIST_TOOLS, BANK_ACTIVITY_TOOL, STATEMENTS_TOOL, FIND_FILES_TOOL, READ_FILES_TOOL],
     run: (name: string, input: unknown) =>
       owner && name === PREPARE_TOOL.name ? runPrepareTool(actor, clientId, input, currentQuestion)
         : owner && name === APPROVE_TOOL.name ? runApproveTool(actor, clientId, input, currentQuestion)
@@ -238,6 +240,8 @@ async function chatTools(actor: Actor, clientId: string, records: unknown, curre
             : CHECKLIST_TOOL_NAMES.has(name) ? runChecklistTool(actor, clientId, name, input)
               : name === BANK_ACTIVITY_TOOL.name ? enterActivity(input)
                 : name === STATEMENTS_TOOL.name ? runStatementsTool(actor, clientId, input)
+                : name === READ_FILES_TOOL.name ? runReadFilesTool(actor, clientId, input, reading)
+                : name === FIND_FILES_TOOL.name ? findFilesOnFile(actor, clientId, input).catch((e) => ({ problem: e instanceof Error ? e.message : "Not allowed." }))
               : runRecordsTool(clientId, name, input),
     records,
     asker: owner ? ("owner" as const) : ("staff" as const),
@@ -273,7 +277,9 @@ export async function answerQuestion(asker: Actor, clientId: string, questionId:
   ];
   // Quick (a worker with little time left): one round of tools, so Coetha can still prepare
   // entries, save what Tabitha decided and clear checklist lines, then she answers.
-  const res = await callCoethaChat(books, turns, { ...(await chatTools(asker, clientId, records)), ...(opts.quick ? { maxRounds: 1 } : {}) });
+  // Documents attached to this question are already read: she isn't offered to read them again.
+  const attached = Array.isArray(question.attachments) ? (question.attachments as { documentId?: string }[]).map((a) => a.documentId).filter((x): x is string => !!x) : [];
+  const res = await callCoethaChat(books, turns, { ...(await chatTools(asker, clientId, records, undefined, { chat: question.chatId, alreadyRead: attached })), ...(opts.quick ? { maxRounds: 1 } : {}) });
   const answered = await prisma.coethaChatMessage.create({ data: { clientId, chatId: question.chatId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(question.createdAt.getTime() + 1) } });
   await audit(prisma, { actorId: asker.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId, background: true, searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
   return answered;
