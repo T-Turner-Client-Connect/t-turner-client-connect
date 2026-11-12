@@ -9,6 +9,11 @@ import { fileReturn } from "@/lib/services/tax-returns";
 import { editFilingDetails, moveFilingDocument, removeFiling } from "@/lib/services/accepted-returns";
 import * as taxActions from "@/app/actions/tax";
 import { TaxesTab } from "@/components/client-tabs/taxes";
+import { setReturnGate } from "@/lib/services/return-gate";
+
+// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
+beforeEach(() => setReturnGate(async () => "VERIFIED"));
+afterEach(() => setReturnGate(null));
 
 /**
  * #122 + #124 reconciled: one correction control per filing card ("Edit filing

@@ -5,6 +5,11 @@ import { createClient } from "@/lib/services/clients";
 import { attachFilingDocument, correctFilingForm, createFiling, setFilingStatusByStaff } from "@/lib/services/tax";
 import { staffUploadDocument } from "@/lib/services/documents";
 import { fileReturn } from "@/lib/services/tax-returns";
+import { setReturnGate } from "@/lib/services/return-gate";
+
+// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
+beforeEach(() => setReturnGate(async () => "VERIFIED"));
+afterEach(() => setReturnGate(null));
 
 const pdf = (tag: string) => new TextEncoder().encode(`%PDF-1.4\n% fictional state return ${tag}\n`);
 
