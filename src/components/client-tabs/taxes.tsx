@@ -26,6 +26,9 @@ import type { ReactNode } from "react";
 
 const DOC_TYPE = { RETURN: "Return", OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Agency notice", CORRESPONDENCE: "Correspondence", FIRM_SUMMARY: "Our summary" } as const;
 
+/** The earliest tax year offered as a button on the Taxes tab. */
+const FIRST_CHOICE_YEAR = 2020;
+
 export type DeliverPrefill = { year?: number; state?: boolean; amended?: boolean };
 
 /** One step of the season: open while there's work to do, a one-line "✓ Done" header (expandable) once it's done. */
@@ -68,7 +71,8 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
   const latestCase = Object.keys(ctx.prepForms ?? {}).map(Number).filter((y) => y <= thisYear).sort((a, b) => b - a)[0];
   const selectedYear = deliver?.year ?? taxYear ?? latestCase ?? thisYear - 1;
   const [season, strip] = await Promise.all([taxSeasonProgress(clientId, selectedYear), yearStrip(clientId, selectedYear)]);
-  const yearChoices = Array.from(new Set([thisYear, thisYear - 1, thisYear - 2, selectedYear, ...years])).sort((a, b) => b - a);
+  // Every year back to FIRST_CHOICE_YEAR (prior-year and amended returns, matching Retrieve Tax Filings), plus any year on file.
+  const yearChoices = Array.from(new Set([...Array.from({ length: Math.max(0, thisYear - FIRST_CHOICE_YEAR + 1) }, (_, i) => thisYear - i), selectedYear, ...years])).sort((a, b) => b - a);
 
   const steps = (
     <>
