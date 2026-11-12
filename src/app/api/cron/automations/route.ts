@@ -10,6 +10,7 @@ import { runBillingSchedules } from "@/lib/services/billing-schedules";
 import { runAccessReviewReminders } from "@/lib/services/access-review";
 import { generateCycles } from "@/lib/services/payroll-taxes";
 import { runPayrollReminders } from "@/lib/services/payroll-reminders";
+import { auditDeadlineAlerts } from "@/lib/services/audit-center";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {
@@ -46,5 +47,7 @@ export async function POST(req: Request) {
   // own switch are on; nothing here submits payroll, files taxes or moves money.
   const payrollCycles = await generateCycles().catch(() => ({ error: "failed" }));
   const payrollReminders = await runPayrollReminders().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders });
+  // Audit response deadlines 14 and 7 days out, and passed: one office task each (idempotent).
+  const auditDeadlines = await auditDeadlineAlerts().catch(() => ({ error: "failed" }));
+  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders, auditDeadlines });
 }
