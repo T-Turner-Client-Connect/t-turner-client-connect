@@ -85,7 +85,6 @@ export async function fileReturn(actor: Actor, input: ReturnFields & { bytes: Ui
   const same = await prisma.document.findMany({ where: { clientId: f.clientId, deletedAt: null, file: { sha256: sha256Of(input.bytes) } }, select: { filingId: true, filingDocType: true, year: true } });
   const combined = same.length > 0 && same.every((d) => d.filingDocType === "RETURN" && d.year === f.taxYear && d.filingId !== filing.id);
   const doc = await staffUploadDocument(actor, {
-    returnCheck: { jurisdiction: f.jurisdiction, filingType: f.filingType, returnType: f.returnType },
     duplicateChecked: combined, clientId: f.clientId, category: "TAXES", title: `${f.taxYear} ${f.returnType} — ${f.jurisdiction === "FEDERAL" ? "Federal" : f.jurisdiction}${f.filingType === "AMENDED" ? " (amended)" : ""}`, year: f.taxYear, visibility: "STAFF_ONLY", docType: docTypeFor(f), bytes: input.bytes, originalName: input.originalName });
   const version = (previous?.version ?? (previous ? 1 : 0)) + 1;
   await prisma.document.update({ where: { id: doc.id }, data: { filingId: filing.id, filingDocType: "RETURN", reviewStatus: "DRAFT", version, replacesId: previous?.id ?? null } });
