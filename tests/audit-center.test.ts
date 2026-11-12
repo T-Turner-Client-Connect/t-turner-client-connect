@@ -9,6 +9,11 @@ import {
   addAuditItem, auditCaseView, auditDeadlineAlerts, buildAuditPackage, checkItem, linkAuditDocument, openAuditByClient, openAuditByStaff, portalAuditCase,
   portalAuditPackage, portalAudits, recordAuditSubmission, releaseAuditPackage, requestAuditDocument, setAuditStatus, splitNoticeToNewAudit, staffAuditCase, updateAuditDetails, updateAuditItem, uploadForAudit,
 } from "@/lib/services/audit-center";
+import { setReturnGate } from "@/lib/services/return-gate";
+
+// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
+beforeEach(() => setReturnGate(async () => "VERIFIED"));
+afterEach(() => setReturnGate(null));
 
 // Fictional taxpayers, agencies and figures only.
 async function pdfOf(text: string) {
