@@ -107,6 +107,12 @@ function validateOpen(input: AuditOpenInput) {
   return { kind: input.kind as AuditKind, stateCode, taxYear, receivedOn, responseDueOn };
 }
 
+/** Coetha picks up the audit's work in the background (loaded lazily: coetha-audit imports this module). */
+async function queueCoetha(caseId: string, rereview = false) {
+  const { queueAuditWork } = await import("./coetha-audit");
+  await queueAuditWork(caseId, { rereview });
+}
+
 /** The filed return under examination: the jurisdiction's original return for the year, as stored. */
 async function filedReturn(clientId: string, taxYear: number, kind: AuditKind, stateCode: string | null) {
   const f = await prisma.filingRecord.findFirst({ where: { clientId, taxYear, jurisdiction: kind === "FEDERAL" ? "FEDERAL" : stateCode ?? "-", filingType: "ORIGINAL" }, orderBy: { createdAt: "desc" }, select: { id: true } });
@@ -128,6 +134,7 @@ async function addNoticeToAudit(caseId: string, docIds: string[], by: { portalUs
   await prisma.document.updateMany({ where: { id: { in: docIds } }, data: { noticeCaseId: caseId, title: `Additional notice — ${AUDIT_KINDS[c.auditKind as AuditKind]}${c.stateCode ? ` (${c.stateCode})` : ""} ${c.taxYear}` } });
   await audit(prisma, { actorId: by.actorId ?? null, action: "audit.notice_added", entityType: "NoticeCase", entityId: caseId, clientId: c.clientId, details: { documentIds: docIds, portalUserId: by.portalUserId ?? null } });
   await alertOffice(caseId, `notice:${docIds[0]}`, "Additional audit notice received", "Added to the open audit for the same agency and tax year (not a new case). Coetha checks whether it is part of this audit.", { urgent: true });
+  await queueCoetha(caseId);
 }
 
 /** A client opens a Federal or State audit in their portal and uploads the notice. */
@@ -154,7 +161,8 @@ export async function openAuditByClient(user: PortalActor, clientId: string, inp
     await prisma.document.update({ where: { id: doc.id }, data: { noticeCaseId: kase.id } });
   }
   await audit(prisma, { actorId: null, action: "audit.opened_by_client", entityType: "NoticeCase", entityId: kase.id, clientId, details: { portalUserId: user.id, kind: v.kind, stateCode: v.stateCode, taxYear: v.taxYear, files: files.length } });
-  await alertOffice(kase.id, "opened", `${AUDIT_KINDS[v.kind]}${v.stateCode ? ` (${v.stateCode})` : ""} notice uploaded for ${v.taxYear}`, "The client uploaded an audit notice in the portal.", { urgent: true });
+  await alertOffice(kase.id, "opened", `${AUDIT_KINDS[v.kind]}${v.stateCode ? ` (${v.stateCode})` : ""} notice uploaded for ${v.taxYear}`, "The client uploaded an audit notice in the portal. Coetha is reading it.", { urgent: true });
+  await queueCoetha(kase.id);
   return kase;
 }
 
@@ -181,6 +189,7 @@ export async function openAuditByStaff(actor: Actor, clientId: string, input: Au
   }
   await audit(prisma, { actorId: actor.id, action: "audit.opened_by_staff", entityType: "NoticeCase", entityId: kase.id, clientId, details: { kind: v.kind, stateCode: v.stateCode, taxYear: v.taxYear, files: files.length } });
   await alertOffice(kase.id, "opened", `${AUDIT_KINDS[v.kind]}${v.stateCode ? ` (${v.stateCode})` : ""} opened for ${v.taxYear}`, `Opened by ${actor.name}.`);
+  if (files.length) await queueCoetha(kase.id);
   return kase;
 }
 
@@ -211,6 +220,7 @@ export async function addAuditItem(actor: Actor, caseId: string, input: { label:
   const item = await prisma.auditItem.create({ data: { caseId, position, label, schedule: clip(input.schedule, 60), returnLine: clip(input.returnLine, 40), reportedCents: parseMoney(input.reported), requested: clip(input.requested, 1000), createdById: actor.id } });
   await audit(prisma, { actorId: actor.id, action: "audit.item_added", entityType: "AuditItem", entityId: item.id, clientId: c.clientId, details: { caseId, label, reportedCents: item.reportedCents } });
   await refreshAuditStatus(caseId);
+  await queueCoetha(caseId, true);
   return item;
 }
 
@@ -300,6 +310,7 @@ export async function uploadForAudit(user: PortalActor, clientId: string, caseId
   }
   await audit(prisma, { actorId: null, action: "audit.client_uploaded", entityType: "NoticeCase", entityId: caseId, clientId, details: { portalUserId: user.id, requestId, files: docs.length } });
   await refreshAuditStatus(caseId);
+  await queueCoetha(caseId);
   return docs;
 }
 
@@ -410,6 +421,8 @@ const ACTIVITY: Record<string, string> = {
   "audit.package_downloaded": "Client downloaded the package",
   "audit.submitted_by_client": "Client recorded the submission",
   "audit.agency_correspondence": "Agency correspondence added",
+  "audit.notice_read": "Coetha read the notice",
+  "audit.document_reviewed": "Coetha reviewed a document",
 };
 
 /** The audit's complete history, newest first. */

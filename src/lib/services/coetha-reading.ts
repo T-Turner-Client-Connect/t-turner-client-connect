@@ -481,7 +481,7 @@ async function unreviewed(jobIds: string[]) {
 export async function workOnce(opts: { clientId?: string; now?: Date } = {}) {
   const now = opts.now ?? new Date();
   const job = await claimJob(now, opts.clientId);
-  let did: "read" | "review" | "answer" | null = null;
+  let did: "read" | "review" | "answer" | "audit" | null = null;
   if (job) {
     try { await stepJob(job, PAGES_PER_STEP); } catch (err) { await failStep(job.id, err); }
     did = "read";
@@ -489,19 +489,22 @@ export async function workOnce(opts: { clientId?: string; now?: Date } = {}) {
     did = "review";
   } else if (await answerReadyQuestions(1, true, opts.clientId)) {
     did = "answer";
+  } else if (!opts.clientId && (await (await import("./coetha-audit")).workAuditOnce(now))) {
+    did = "audit";
   }
   const where = opts.clientId ? { clientId: opts.clientId } : {};
   const left = await prisma.coethaDocJob.count({ where: { ...where, status: { in: ["QUEUED", "READING"] } } });
   const toReview = await prisma.coethaDocFinding.count({ where: { ...where, kind: "CHECK", reviewedAt: null, job: { status: "DONE" } } });
   const waiting = await prisma.coethaChatMessage.count({ where: { ...where, status: "WAITING" } });
-  return { did, more: left > 0 || toReview > 0 || waiting > 0 };
+  const audits = opts.clientId ? 0 : await (await import("./coetha-audit")).auditWorkLeft();
+  return { did, more: left > 0 || toReview > 0 || waiting > 0 || audits > 0 };
 }
 
 /** Units of work until the budget is used (tests and local runs; the hosting calls workOnce per request). */
 export async function workReading(budgetMs = 20_000, opts: { clientId?: string; now?: () => Date } = {}) {
   const started = Date.now();
   let units = 0;
-  let r = { did: null as "read" | "review" | "answer" | null, more: true };
+  let r = { did: null as "read" | "review" | "answer" | "audit" | null, more: true };
   while (Date.now() - started < budgetMs) {
     r = await workOnce({ clientId: opts.clientId, now: opts.now?.() });
     if (!r.did) break;

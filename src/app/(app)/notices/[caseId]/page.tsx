@@ -119,6 +119,25 @@ export default async function AuditCasePage({ params }: { params: Promise<{ case
         </div>
 
         <div className="space-y-4">
+          {(() => {
+            const r = (a.coethaReading ?? {}) as { pending?: boolean; blocked?: string | null; lastRun?: string; notices?: Record<string, { unclear?: string[]; error?: string }>; reviewed?: Record<string, { matched: number }> };
+            const notices = Object.values(r.notices ?? {});
+            const reviewed = Object.values(r.reviewed ?? {});
+            const unclear = notices.flatMap((n) => n.unclear ?? []);
+            return (
+              <Card title="Coetha's work">
+                <p className="text-sm" data-testid="coetha-audit-progress">
+                  {r.blocked ? <Badge tone="amber">Not working: {r.blocked}</Badge> : r.pending ? <Badge tone="navy">Working</Badge> : r.lastRun ? <Badge tone="green">Up to date</Badge> : <Badge tone="gray">Not started</Badge>}
+                </p>
+                <ul className="mt-2 space-y-0.5 text-xs text-slate-700">
+                  <li>Notices read: {notices.filter((n) => !n.error).length}{notices.some((n) => n.error) ? ` (${notices.filter((n) => n.error).length} couldn't be read)` : ""}</li>
+                  <li>Documents reviewed: {reviewed.length} · matched to items: {reviewed.filter((d) => d.matched > 0).length}</li>
+                  {r.lastRun && <li>Last finished: {fmtDateTime(new Date(r.lastRun))}</li>}
+                </ul>
+                {unclear.length > 0 && <div className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"><p className="font-semibold">Flagged for Tabitha</p><ul className="list-disc pl-4">{unclear.map((u) => <li key={u}>{u}</li>)}</ul></div>}
+              </Card>
+            );
+          })()}
           <Card title="Audit package">
             {a.package ? (
               <p className="text-sm">Version {a.package.version ?? 1} built {fmtDate(a.package.createdAt)} · <a className="underline" href={link(a.package.id)} target="_blank" rel="noreferrer">Open</a>{a.releasedAt ? <> · <Badge tone="green">Released {fmtDate(a.releasedAt)}</Badge></> : <> · <Badge tone="amber">Not released</Badge></>}</p>

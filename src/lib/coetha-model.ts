@@ -360,7 +360,7 @@ export const CHAT_MAX_SEARCH_ROUNDS = 3;
 const CHAT_SEARCH_BUDGET_MS = 35_000;
 
 /** An API failure as the plain-language error staff see. */
-function chatError(err: unknown, model: string): CoethaModelError {
+export function chatError(err: unknown, model: string): CoethaModelError {
   // The service's own reason goes to the server log (no client data is in it) so a refusal can be traced.
   if (err instanceof Anthropic.APIError) console.error(`coetha: AI service HTTP ${err.status ?? "?"}: ${String(err.message).slice(0, 300)}`);
   if (err instanceof Anthropic.AuthenticationError) return new CoethaModelError("The Anthropic API key was refused. Check ANTHROPIC_API_KEY in Netlify.", "AUTH");
