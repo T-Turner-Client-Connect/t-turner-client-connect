@@ -226,6 +226,7 @@ export async function manualBillingFor(clientId: string) {
     next: v.ledger?.next ?? null,
     status: v.ledger?.status ?? null,
     overdueCents: v.ledger?.overdueCents ?? 0,
+    overdueDue: v.ledger?.periods.find((p) => p.state === "OVERDUE")?.due ?? null,
     payments: v.live.map((p) => ({ id: p.id, paidOn: p.paidOn, amountCents: p.amountCents, method: PAY_METHODS[p.method as PayMethod] ?? p.method, periodMonth: p.periodMonth })),
   };
 }
