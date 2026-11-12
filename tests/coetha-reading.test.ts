@@ -6,8 +6,9 @@ import { createClient } from "@/lib/services/clients";
 import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { coethaChatView } from "@/lib/services/coetha-chat";
-import { askAboutDocuments, findingsSheet, finishUpload, MAX_ATTEMPTS, putChunk, readingView, retryJob, startUpload, summarizeAgain, workOnce, workReading } from "@/lib/services/coetha-reading";
+import { askAboutDocuments, failureCode, failureText, findingsSheet, finishUpload, MAX_ATTEMPTS, putChunk, readingView, retryJob, startUpload, summarizeAgain, workOnce, workReading } from "@/lib/services/coetha-reading";
 import { ValidationError } from "@/lib/services/clients";
+import { CoethaModelError } from "@/lib/coetha-model";
 
 // Fictional businesses, checks and scans only. A local stand-in for Anthropic's Messages API:
 // the document reader reports one check per page, numbered from the page's own width (each
@@ -323,5 +324,11 @@ describe("Coetha reads documents in the background", () => {
     expect(f).toHaveLength(2);
     expect(f.every((x) => x.reviewedAt && x.reviewGroup === "NEEDS_DOCS" && /couldn't review/.test(x.reason ?? ""))).toBe(true);
     expect(await prisma.auditLog.count({ where: { action: "coetha.review_failed", entityId: up2.jobId } })).toBe(3);
+  });
+  it("a failed answer's reason is recorded (kind and first line only)", () => {
+    expect([failureCode(new CoethaModelError("Anthropic rejected the request.", "BAD_REQUEST")), failureText(new CoethaModelError("Anthropic rejected the request.", "BAD_REQUEST"))]).toEqual(["BAD_REQUEST", "Anthropic rejected the request."]);
+    expect(failureCode(new TypeError("x is undefined"))).toBe("TypeError");
+    expect(failureText(new Error("\nInvalid call:\n\n  where: {}\nmore\nand more"))).toBe("Invalid call: where: {}");
+    expect(failureText("x".repeat(400))).toHaveLength(300);
   });
 });

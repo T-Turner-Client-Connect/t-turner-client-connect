@@ -586,17 +586,23 @@ export async function answerReadyQuestions(limit = 1, quick = true, clientId?: s
     } catch (err) {
       const { BUSY_CODES } = await import("./coetha-chat");
       const busy = err instanceof CoethaModelError && BUSY_CODES.has(err.code);
+      // The reason goes to the server log (our own messages and error names; no client data), so a failed answer can be traced.
+      console.error(`coetha-reading: answer ${m.id} failed (${failureCode(err)}): ${failureText(err)}`);
       if (busy) await (await import("./coetha-chat")).startCooldown();
       // Busy: it stays waiting and is tried again in a minute (up to MAX_BUSY_TRIES).
       // Otherwise the question stays visible with its findings; it can be asked again.
       if (!busy || tries + 1 >= MAX_BUSY_TRIES) await prisma.coethaChatMessage.update({ where: { id: m.id }, data: { status: "FAILED" } });
-      await audit(prisma, { actorId: m.authorId, action: "coetha.chat_failed", entityType: "CoethaChatMessage", entityId: m.id, clientId: m.clientId, details: { code: err instanceof CoethaModelError ? err.code : "ERROR" } });
+      await audit(prisma, { actorId: m.authorId, action: "coetha.chat_failed", entityType: "CoethaChatMessage", entityId: m.id, clientId: m.clientId, details: { code: failureCode(err), reason: failureText(err) } });
     } finally {
       await releaseLock(hold);
     }
   }
   return n;
 }
+
+/** Why an answer failed, for the server log and the audit trail: the error's kind and its first line (cut short). */
+export const failureCode = (err: unknown) => (err instanceof CoethaModelError ? err.code : err instanceof Error ? err.name : "ERROR");
+export const failureText = (err: unknown) => (err instanceof Error ? err.message : String(err)).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 2).join(" ").slice(0, 300);
 
 const money = (c: number | null) => (c == null ? "" : ` $${(c / 100).toFixed(2)}`);
 
