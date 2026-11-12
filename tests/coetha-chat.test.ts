@@ -14,7 +14,7 @@ import { askCoetha, chatFileType, chatKey, cleanQuestion, coethaChatView, EARLIE
 type Block = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
 type Req = { model: string; system: { type: string; text: string }[]; messages: { role: string; content: string | Block[] }[]; tools?: unknown; max_tokens: number };
 let sent: Req[] = [];
-let mode: "ok" | "refusal" | "error" | "long" | "busy" = "ok";
+let mode: "ok" | "refusal" | "error" | "long" | "busy" | "emptyOnce" | "empty" = "ok";
 
 beforeEach(async () => {
   await resetDb();
@@ -31,7 +31,9 @@ beforeEach(async () => {
     if (mode === "error") return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "bad" } }), { status: 400, headers });
     const last = req.messages[req.messages.length - 1].content;
     const text = `You asked: ${last}. Office Depot (T1) is $84.20 to 6300 Office Supplies.`;
-    const content = mode === "refusal" ? [] : [{ type: "text", text }];
+    // "emptyOnce": the first reply has no text (as happens after her searches); the next one answers.
+    const blank = mode === "empty" || (mode === "emptyOnce" && sent.length === 1);
+    const content = mode === "refusal" || blank ? [] : [{ type: "text", text }];
     const stop = mode === "refusal" ? "refusal" : mode === "long" ? "max_tokens" : "end_turn";
     return new Response(JSON.stringify({ id: "msg_fictional_chat", type: "message", role: "assistant", model: req.model, content, stop_reason: stop, stop_sequence: null, usage: { input_tokens: 2100, output_tokens: 90 } }), { status: 200, headers });
   }));
@@ -151,6 +153,21 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     mode = "long";
     const r = await askCoetha(s.daria, s.vessel.id, "Hello", today);
     expect(r.text).toMatch(/cut off/);
+  });
+
+  it("a reply with no written answer is asked for once more, then answered; still nothing says so", async () => {
+    const s = await setup();
+    mode = "emptyOnce";
+    const r = await askCoetha(s.daria, s.vessel.id, "What is T1?", today);
+    expect(r.text).toMatch(/Office Depot/);
+    expect(sent).toHaveLength(2);
+    const retry = sent[1].messages[sent[1].messages.length - 1];
+    expect(retry).toMatchObject({ role: "user", content: expect.stringMatching(/write your answer now/) });
+    expect(sent[1].tools ? (sent[1] as { tool_choice?: { type: string } }).tool_choice : { type: "none" }).toEqual({ type: "none" });
+    sent = [];
+    mode = "empty";
+    await expect(askCoetha(s.daria, s.vessel.id, "Hello", today)).rejects.toThrow(/didn't return an answer/);
+    expect(sent).toHaveLength(2);
   });
 
   it("a file (check image or PDF) goes with the question, is kept as a staff-only document for that business only, and nothing is posted", async () => {
