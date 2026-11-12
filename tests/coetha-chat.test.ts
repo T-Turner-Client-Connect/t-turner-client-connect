@@ -80,7 +80,7 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(recordsBlock.cache_control).toEqual({ type: "ephemeral" });
     // A staff member asking: read-only searches of this business, and the monthly checklist (clearing
     // a line is checked against the person asking).
-    expect((sent[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist", "add_bank_activity", "prepare_financial_statements", "find_documents_on_file", "read_documents_on_file"]);
+    expect((sent[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist", "add_bank_activity", "prepare_financial_statements", "remove_verified_duplicates", "reconcile_accounts", "find_documents_on_file", "read_documents_on_file"]);
     expect(sent[0].messages).toEqual([{ role: "user", content: "What is the Office Depot charge?" }]);
 
     await askCoetha(s.tabitha, s.vessel.id, "And the ATM withdrawal?", today);
@@ -142,13 +142,15 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(() => cleanQuestion("x".repeat(MAX_QUESTION + 1))).toThrow(/under/);
   });
 
-  it("a failed or refused answer saves nothing and says so; a cut-off answer is marked", async () => {
+  it("a failed or refused answer is kept in the chat, marked failed, and says so; a cut-off answer is marked", async () => {
     const s = await setup();
     mode = "error";
-    await expect(askCoetha(s.daria, s.vessel.id, "Hello", today)).rejects.toThrow(/couldn't answer.*wasn't saved/);
+    await expect(askCoetha(s.daria, s.vessel.id, "Hello", today)).rejects.toThrow(/couldn't answer.*kept in the chat/);
     mode = "refusal";
     await expect(askCoetha(s.daria, s.vessel.id, "Hello", today)).rejects.toThrow(/declined/);
-    expect(await prisma.coethaChatMessage.count()).toBe(0);
+    // Both questions stay in the chat, marked failed (no answer is saved for either).
+    expect(await prisma.coethaChatMessage.count({ where: { role: "USER", status: "FAILED" } })).toBe(2);
+    expect(await prisma.coethaChatMessage.count({ where: { role: "COETHA" } })).toBe(0);
     expect(await prisma.auditLog.count({ where: { action: "coetha.chat_failed" } })).toBe(2);
     mode = "long";
     const r = await askCoetha(s.daria, s.vessel.id, "Hello", today);
@@ -195,7 +197,7 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(await prisma.journalEntry.count()).toBe(before);
   });
 
-  it("a PDF goes as a document; other files, oversized files and failed answers save nothing", async () => {
+  it("a PDF goes as a document; other files and oversized files are refused before anything is saved; a re-sent file isn't stored twice", async () => {
     const s = await setup();
     const pdf = new TextEncoder().encode("%PDF-1.4\n%fictional\n");
     await askCoetha(s.daria, s.vessel.id, "What is this?", { ...today, files: [{ bytes: pdf, originalName: "stmt.pdf", mimeType: "application/pdf" }] });
@@ -205,9 +207,11 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     await expect(askCoetha(s.daria, s.vessel.id, "Hi", { ...today, files: [{ bytes: new TextEncoder().encode("not a pdf"), originalName: "x.pdf", mimeType: "application/pdf" }] })).rejects.toThrow(/PDF or a picture/);
     await expect(askCoetha(s.daria, s.vessel.id, "Hi", { ...today, files: [{ bytes: new Uint8Array(MAX_CHAT_FILE + 1), originalName: "big.pdf", mimeType: "application/pdf" }] })).rejects.toThrow(/under 5 MB/);
     mode = "error";
-    await expect(askCoetha(s.daria, s.vessel.id, "Hi", { ...today, files: [{ bytes: pdf, originalName: "again.pdf", mimeType: "application/pdf" }] })).rejects.toThrow(/wasn't saved/);
+    // The same file again (after a failed answer): the copy on file is reused, never stored twice.
+    await expect(askCoetha(s.daria, s.vessel.id, "Hi", { ...today, files: [{ bytes: pdf, originalName: "again.pdf", mimeType: "application/pdf" }] })).rejects.toThrow(/couldn't answer/);
     expect(await prisma.document.count()).toBe(docs);
-    expect(await prisma.coethaChatMessage.count({ where: { role: "USER" } })).toBe(1);
+    expect(await prisma.coethaChatMessage.count({ where: { role: "USER", status: "ANSWERED" } })).toBe(1);
+    expect(await prisma.coethaChatMessage.count({ where: { role: "USER", status: "FAILED" } })).toBe(1);
     // Someone without access to the books can't send a file either.
     mode = "ok";
     await expect(askCoetha(s.stranger, s.vessel.id, "Hi", { ...today, files: [{ bytes: pdf, originalName: "x.pdf", mimeType: "application/pdf" }] })).rejects.toBeInstanceOf(ForbiddenError);
@@ -264,35 +268,25 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
     expect(await prisma.document.count()).toBe(docs);
   });
 
-  it("when the AI service is busy the question is saved, answered in the background a minute later, and never lost", async () => {
+  it("when the AI service is busy the question is saved, retried in the background, and never lost", async () => {
     const s = await setup();
-    const { workOnce } = await import("@/lib/services/coetha-reading");
+    const { runAnswerNow } = await import("@/lib/services/coetha-answer");
     mode = "busy";
     const r = await askCoetha(s.tabitha, s.vessel.id, "Is the Office Depot charge posted?", today);
     expect(r).toMatchObject({ queued: true, answerId: null });
     const q = await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: r.questionId } });
     expect(q).toMatchObject({ role: "USER", status: "WAITING", text: "Is the Office Depot charge posted?" });
     expect(await prisma.auditLog.count({ where: { action: "coetha.chat_queued", entityId: q.id } })).toBe(1);
-
-    // While the service is cooling down, nothing is sent at all.
-    expect(await prisma.jobLock.count({ where: { name: "coetha-cooldown", lockedUntil: { gt: new Date() } } })).toBe(1);
+    const run = await prisma.coethaAnswerRun.findUniqueOrThrow({ where: { questionId: q.id } });
+    expect(run).toMatchObject({ status: "QUEUED", phase: "RETRYING", attempts: 1 });
+    // Before its retry time nothing is sent again.
     const before = sent.length;
-    await workOnce({ clientId: s.vessel.id });
+    await runAnswerNow(run.id);
     expect(sent.length).toBe(before);
-    await prisma.jobLock.deleteMany({ where: { name: "coetha-cooldown" } });
-    // The background worker tries; still busy: it stays waiting and isn't retried within the minute.
-    await workOnce({ clientId: s.vessel.id });
-    await prisma.jobLock.deleteMany({ where: { name: "coetha-cooldown" } });
-    expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: q.id } })).status).toBe("WAITING");
-    const calls = sent.length;
-    await workOnce({ clientId: s.vessel.id });
-    expect(sent.length).toBe(calls);
-
-    // A minute later the service answers: the reply is placed right after the question, with her tools.
-    await prisma.auditLog.updateMany({ where: { action: "coetha.answer_attempt", entityId: q.id }, data: { createdAt: new Date(Date.now() - 2 * 60_000) } });
-    await prisma.jobLock.deleteMany({ where: { name: "coetha-cooldown" } });
+    // At its retry time the service answers: the reply is placed right after the question, with her tools.
     mode = "ok";
-    await workOnce({ clientId: s.vessel.id });
+    await prisma.coethaAnswerRun.update({ where: { id: run.id }, data: { notBefore: new Date(Date.now() - 1000) } });
+    await runAnswerNow(run.id);
     expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: q.id } })).status).toBe("ANSWERED");
     const v = await coethaChatView(s.tabitha, s.vessel.id);
     expect(v.messages.map((m) => m.role)).toEqual(["USER", "COETHA"]);
@@ -303,16 +297,16 @@ describe("Ask Coetha: a back-and-forth conversation about one client's books", (
 
   it("a question the AI service keeps refusing stops after several tries and says so", async () => {
     const s = await setup();
-    const { workOnce } = await import("@/lib/services/coetha-reading");
+    const { runAnswerNow } = await import("@/lib/services/coetha-answer");
     mode = "busy";
     const r = await askCoetha(s.tabitha, s.vessel.id, "Anything waiting?", today);
-    for (let i = 0; i < 18; i++) {
-      await prisma.auditLog.updateMany({ where: { action: "coetha.answer_attempt", entityId: r.questionId }, data: { createdAt: new Date(Date.now() - 2 * 60_000) } });
-      await prisma.jobLock.deleteMany({ where: { name: "coetha-cooldown" } });
-      await workOnce({ clientId: s.vessel.id });
+    const run = await prisma.coethaAnswerRun.findUniqueOrThrow({ where: { questionId: r.questionId } });
+    for (let i = 0; i < 8; i++) {
+      await prisma.coethaAnswerRun.updateMany({ where: { id: run.id, status: "QUEUED" }, data: { notBefore: new Date(Date.now() - 1000) } });
+      await runAnswerNow(run.id);
     }
     expect((await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: r.questionId } })).status).toBe("FAILED");
-    expect(await prisma.auditLog.count({ where: { action: "coetha.answer_attempt", entityId: r.questionId } })).toBe(15);
+    expect(await prisma.coethaAnswerRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "FAILED", attempts: 5 });
   });
 });
 

@@ -140,9 +140,13 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
   const attachments: { documentId: string; name: string }[] = [];
   if (typed.length) {
     const { staffUploadDocument } = await import("./documents");
+    const { createHash } = await import("node:crypto");
     for (const f of typed) {
       const name = f.originalName.slice(0, 200);
-      const doc = await staffUploadDocument(actor, { clientId, category: "BOOKKEEPING", title: `Sent to Coetha — ${name}`.slice(0, 200), visibility: "STAFF_ONLY", bytes: f.bytes, originalName: f.originalName, notify: false });
+      // The same file sent again (for example after a failed answer) uses the copy already on file.
+      const sha256 = createHash("sha256").update(f.bytes).digest("hex");
+      const existing = await prisma.document.findFirst({ where: { clientId, deletedAt: null, file: { sha256 } }, select: { id: true } });
+      const doc = existing ?? (await staffUploadDocument(actor, { clientId, category: "BOOKKEEPING", title: `Sent to Coetha — ${name}`.slice(0, 200), visibility: "STAFF_ONLY", bytes: f.bytes, originalName: f.originalName, notify: false }));
       attachments.push({ documentId: doc.id, name });
     }
   }
