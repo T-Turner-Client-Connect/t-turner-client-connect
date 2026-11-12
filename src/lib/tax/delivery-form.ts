@@ -27,7 +27,7 @@ export async function filingsFrom(fd: FormData, p = ""): Promise<AcceptedFilingI
   return out;
 }
 
-export const ownerFrom = (fd: FormData) => ({ form8879Confirmed: fd.get("form8879") === "on", overrideReason: str(fd, "overrideReason") || null });
+export const ownerFrom = (fd: FormData) => ({ form8879Confirmed: fd.get("form8879") === "on", overrideReason: str(fd, "overrideReason") || null, filingNow: fd.get("filingNow") === "on" });
 
 /** The inline result: "Sent to client: 2025 1040 Federal + 2025 40 AL". */
 export function summarize(r: { results: DeliveryResult[]; owner: boolean }, taxYear: number) {

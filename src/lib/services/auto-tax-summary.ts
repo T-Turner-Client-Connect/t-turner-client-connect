@@ -322,7 +322,7 @@ export type F8879Status = "NONE" | "WAITING" | "SENT" | "SIGNED" | "NEEDS_RESIGN
 export const F8879_LABEL: Record<F8879Status, string> = { NONE: "—", WAITING: "Waiting to send", SENT: "Sent", SIGNED: "Signed ✓", NEEDS_RESIGN: "Needs re-signing", MISMATCH: "Numbers don't match" };
 
 /** Where the 8879 stands for this summary version. */
-export function form8879Status(s: { id: string; status: string; figuresHash: string; returnTotals: unknown }): { status: F8879Status; signedAt: string | null; sentAt: string | null; flags: string[] } {
+export function form8879Status(s: { id: string; status: string; figuresHash: string; returnTotals: unknown; taxYear?: number; filingType?: string }): { status: F8879Status; signedAt: string | null; sentAt: string | null; flags: string[] } {
   const m = autoMeta(s)?.form8879;
   const base = { signedAt: m?.signedAt ?? null, sentAt: m?.sentAt ?? null, flags: m?.flags ?? [] };
   if (m?.documentId && m.signedAt) {
@@ -331,6 +331,8 @@ export function form8879Status(s: { id: string; status: string; figuresHash: str
     return { ...base, status: "SIGNED" };
   }
   if (s.status !== "CLIENT_APPROVED") return { ...base, status: "NONE" };
+  // Returns for 2022–2025 were filed before the 8879 rules here: never "waiting to send" (a signed one on file still shows above).
+  if (s.taxYear != null && s.taxYear < 2026 && (s.filingType ?? "ORIGINAL") === "ORIGINAL" && !m?.sentAt) return { ...base, status: "NONE" };
   if (m?.sentAt && m.summaryId === s.id) return { ...base, status: "SENT" };
   return { ...base, status: "WAITING" };
 }
