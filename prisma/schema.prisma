@@ -343,6 +343,7 @@ model Client {
   taxYearProgress        TaxYearProgress[]
   manualBillingPayments  ManualBillingPayment[]
   businessLicenses       BusinessLicense[]
+  businessTaxes          BusinessTaxObligation[]
   yearEndFilings         YearEndFiling[]
   payrollImports         PayrollImport[]
   payrollRuns            PayrollRun[]
@@ -4919,6 +4920,59 @@ model BusinessLicense {
   updatedAt     DateTime  @updatedAt
 
   @@index([clientId, renewalDate])
+}
+
+/// A tax or filing one business owes on a schedule (sales, use, local, liquor, lodging, Business
+/// Privilege Tax, payroll returns, property tax...). Staff-only. Due dates follow the frequency and
+/// due day set here; each period filed is a BusinessTaxFiling. Removing keeps the history (archivedAt).
+model BusinessTaxObligation {
+  id              String              @id @default(cuid())
+  clientId        String
+  client          Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  /// Catalog key (business-taxes.ts TAX_CATALOG) or OTHER
+  kind            String
+  name            String
+  agency          String?
+  accountNumber   String?
+  /// MONTHLY | QUARTERLY | SEMIANNUAL | ANNUAL
+  frequency       String
+  /// Day of the month the return is due (31 = last day of the month)
+  dueDay          Int
+  /// ANNUAL only: the month (1-12) it is due
+  dueMonth        Int?
+  /// ANNUAL only: true when the filing covers the year before the due date (a tax return); false for a renewal
+  coversPriorYear Boolean             @default(true)
+  /// Periods due on or after this date are tracked (earlier ones are never shown as overdue)
+  trackFrom       DateTime            @db.Date
+  note            String?
+  archivedAt      DateTime?
+  createdById     String
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  filings         BusinessTaxFiling[]
+
+  @@index([clientId])
+}
+
+/// One period of a BusinessTaxObligation marked filed (or not required), with what was paid.
+model BusinessTaxFiling {
+  id           String                @id @default(cuid())
+  obligationId String
+  obligation   BusinessTaxObligation @relation(fields: [obligationId], references: [id], onDelete: Cascade)
+  /// 2026-10 | 2026-Q3 | 2026-H2 | 2026
+  period       String
+  dueDate      DateTime              @db.Date
+  /// FILED | NOT_REQUIRED
+  status       String
+  amountCents  Int?
+  confirmation String?
+  filedOn      DateTime?             @db.Date
+  note         String?
+  recordedById String
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@unique([obligationId, period])
 }
 
 /// Year-end W-2 / 1099 work for one client and tax year.

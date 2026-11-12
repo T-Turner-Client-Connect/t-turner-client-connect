@@ -9,6 +9,7 @@ import { canUseLedger, profitAndLoss } from "./ledger";
 import { canManageBilling } from "./bookkeeping-profile";
 import { squareBillingFor, todayCentral } from "./square-billing";
 import { manualBillingView } from "./manual-billing";
+import { businessTaxDeadlines } from "./business-taxes";
 
 /**
  * The bookkeeping client's landing page ("Client Overview"). Every figure comes from records
@@ -149,10 +150,11 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
     : null;
 
   // --- Deadlines, licenses, year-end --------------------------------------------------------
-  const [clientDeadlines, licenses, yearEnd] = await Promise.all([
+  const [clientDeadlines, licenses, yearEnd, taxDeadlines] = await Promise.all([
     prisma.clientDeadline.findMany({ where: { clientId, dueAt: { gte: new Date(`${addDays(today, -30)}T00:00:00Z`) } }, orderBy: { dueAt: "asc" }, take: 20 }),
     prisma.businessLicense.findMany({ where: { clientId, archivedAt: null }, orderBy: [{ renewalDate: "asc" }, { name: "asc" }] }),
     prisma.yearEndFiling.findMany({ where: { clientId }, orderBy: { taxYear: "desc" }, take: 1 }),
+    businessTaxDeadlines(clientId, today),
   ]);
   const filings = clientDeadlines.map((d) => ({ title: d.title, date: ymd(d.dueAt) })).filter((d) => d.date >= today);
   const filingsDueSoon = filings.filter((d) => daysBetween(today, d.date) <= 30).length;
@@ -163,6 +165,7 @@ export async function businessOverview(actor: Actor, clientId: string, month?: s
   const deadlines: Deadline[] = [];
   if (payroll?.next) deadlines.push({ date: payroll.next, title: `Payroll${payroll.provider ? ` – ${payroll.provider}` : ""} (Pay Date)`, status: deadlineStatus(payroll.next, today, true) });
   for (const d of filings) deadlines.push({ date: d.date, title: d.title, status: deadlineStatus(d.date, today) });
+  for (const t of taxDeadlines) deadlines.push({ date: t.date, title: t.title, status: deadlineStatus(t.date, today) });
   for (const l of licenseRows) if (l.renewal && daysBetween(today, l.renewal) <= 120) deadlines.push({ date: l.renewal, title: `${l.name} renewal`, status: deadlineStatus(l.renewal, today) });
   if (ye && ye.stage !== "FILED") {
     const y = ye.taxYear;
