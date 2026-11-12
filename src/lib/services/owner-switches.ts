@@ -13,7 +13,7 @@ import { isReportApprover } from "./bookkeeping-clients";
 
 export type OwnerSwitch = "liveBanking" | "coetha" | "coethaAutoSend" | "coethaAutoPost" | "portalInvites" | "taxSummaryAutoSend" | "clientRollout" | "clientBankBalances";
 
-export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", coethaAutoPost: "Coetha posts routine bookkeeping automatically", portalInvites: "Portal invitations authorized", taxSummaryAutoSend: "Send tax summaries automatically", clientRollout: "Client rollout authorized", clientBankBalances: "Show office-entered bank balances to clients" };
+export const SWITCH_LABEL: Record<OwnerSwitch, string> = { liveBanking: "Live bank connections", coetha: "Coetha AI", coethaAutoSend: "Coetha sends routine document requests automatically", coethaAutoPost: "Coetha's standing authorization (posts supported entries and corrections)", portalInvites: "Portal invitations authorized", taxSummaryAutoSend: "Send tax summaries automatically", clientRollout: "Client rollout authorized", clientBankBalances: "Show office-entered bank balances to clients" };
 const LABEL = SWITCH_LABEL;
 const ACTION: Record<OwnerSwitch, string> = { liveBanking: "banking.live_connections", coetha: "coetha.enabled", coethaAutoSend: "coetha.auto_send_requests", coethaAutoPost: "coetha.auto_post", portalInvites: "portal_invites.authorized", taxSummaryAutoSend: "tax.summary_auto_send", clientRollout: "client_letters.rollout_authorized", clientBankBalances: "banking.client_balances_visible" };
 
