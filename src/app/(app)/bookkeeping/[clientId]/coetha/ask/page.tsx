@@ -79,6 +79,8 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
   const lastMonth = sp.month ?? `${lm.getUTCFullYear()}-${String(lm.getUTCMonth() + 1).padStart(2, "0")}`;
   const chatHref = (key: string, all = false) => `${base}/coetha/ask?chat=${encodeURIComponent(key)}${all ? "&all=1" : ""}`;
   const reading = await readingView(user, clientId);
+  const { answerStatus } = await import("@/lib/services/coetha-answer");
+  const runOf = new Map((await answerStatus(clientId)).map((r) => [r.questionId, r]));
   const apply = await applyDecisionsView(user, clientId);
   const memory = await memoryView(user, clientId);
   const jobOf = new Map(reading.jobs.map((j) => [j.id, j]));
@@ -197,11 +199,16 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
                         </ul>
                       )}
                       <div className="whitespace-pre-wrap break-words leading-relaxed">{m.role === "COETHA" ? <CoethaText text={m.text} /> : m.text}</div>
-                      {m.role === "USER" && m.jobIds.length === 0 && m.status === "WAITING" && (
-                        <p className="mt-2 flex items-center gap-1 rounded-lg bg-white/10 p-2 text-xs font-semibold" data-testid="chat-busy"><Loader2 className="size-3.5 animate-spin" aria-hidden /> The AI service was busy. Your question is saved; Coetha will answer it here shortly. No need to send it again.</p>
-                      )}
-                      {m.role === "USER" && m.jobIds.length === 0 && m.status === "FAILED" && (
-                        <p className="mt-2 rounded-lg bg-white/10 p-2 text-xs font-semibold">Coetha couldn&apos;t answer this one after several tries (the AI service stayed busy). Send it again in a few minutes.</p>
+                      {m.role === "USER" && m.status === "WAITING" && (m.jobIds.length === 0 || runOf.has(m.id)) && (() => {
+                        const r = runOf.get(m.id);
+                        return (
+                          <p className="mt-2 flex items-center gap-1 rounded-lg bg-white/10 p-2 text-xs font-semibold" data-testid="chat-status" data-phase={r?.phase ?? "WAITING"}>
+                            <Loader2 className="size-3.5 animate-spin" aria-hidden /> {r ? r.label : "Waiting for Coetha"}{r?.waitingAhead ? ` (${r.waitingAhead} question${r.waitingAhead === 1 ? "" : "s"} ahead)` : ""}{r?.phase === "RETRYING" && r.notBefore ? `, next try ${new Date(r.notBefore).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" })}` : ""}. You can leave this page; her answer will appear here.
+                          </p>
+                        );
+                      })()}
+                      {m.role === "USER" && m.status === "FAILED" && m.jobIds.length === 0 && (
+                        <p className="mt-2 rounded-lg bg-white/10 p-2 text-xs font-semibold" data-testid="chat-failed">Coetha couldn&apos;t finish this answer{runOf.get(m.id)?.error ? `: ${runOf.get(m.id)!.error}` : "."} Ask it again.</p>
                       )}
                       {m.jobIds.length > 0 && (
                         <div className="mt-2 space-y-1 rounded-lg bg-white/10 p-2 text-xs" data-testid="chat-reading">

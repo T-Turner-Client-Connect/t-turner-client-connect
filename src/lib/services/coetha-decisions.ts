@@ -121,7 +121,7 @@ export async function withMonthsOpened<T>(owner: Actor, clientId: string, earlie
 type AutoPost = { posted: boolean; held?: string };
 
 async function autoPost(clientId: string, proposalId: string, basis: string): Promise<AutoPost> {
-  if (!(await coethaAutoPostOn())) return { posted: false };
+  if (!(await coethaAutoPostOn())) return { posted: false, held: "standing authorization is off in Owner's Office → Automation, so it waits for your Approve & Post" };
   const owner = await ownerActor();
   if (!owner) return { posted: false };
   const date = ((await prisma.coethaProposal.findUnique({ where: { id: proposalId }, select: { payload: true } }))?.payload as { date?: string } | null)?.date ?? "";
@@ -489,7 +489,7 @@ export async function reverseAutoPosted(actor: Actor, clientId: string, proposal
 export const PREPARE_TOOL = {
   name: "prepare_entries",
   description:
-    "Prepare entries for Tabitha's approval from accounting decisions SHE stated in this conversation. Each item becomes a draft on her Apply These Decisions card; nothing is posted until she ticks it and clicks Approve & Post. Use post_bank_row for a waiting bank row (by its W-reference, with its date and amount exactly as in the records) and journal_entry for reclassifications or corrections of entries already posted (balanced debits and credits by account code). When the right account doesn't exist in the chart, add a new_account item (a code that fits the chart's numbering, a plain name and the correct type) in the same call and use its code in the entries; it is created only if she approves it. Never prepare anything she hasn't decided; leave uncertain items for her.",
+    "Post or prepare entries for ONE business (offered only when Tabitha is asking). Under her standing authorization, items with basis routine (a rule or how this vendor was posted before), senior_accountant (your professional judgment, with the reason) or tabitha_said (her exact words in quote) are POSTED immediately; anything else waits on her Apply These Decisions card. The result says, item by item, what was posted and what is waiting. Use post_bank_row for a waiting bank row (its W-reference, with its date and amount exactly as in the records; many rows in one call) and journal_entry for reclassifications or corrections of entries already posted (balanced debits and credits by account code). When the right account doesn't exist in the chart, add a new_account item (a code that fits the chart's numbering, a plain name and the correct type) in the same call and use its code in the entries. Leave out only genuine exceptions (no evidence for any treatment); they stay waiting for her.",
   input_schema: {
     type: "object" as const,
     properties: {

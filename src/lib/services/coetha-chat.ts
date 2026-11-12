@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
-import { CHAT_FILE_TYPES, callCoethaChat, CoethaModelError, coethaKeyPresent, type CoethaChatTurn } from "@/lib/coetha-model";
+import { CHAT_FILE_TYPES, CoethaModelError, coethaKeyPresent } from "@/lib/coetha-model";
 import { ValidationError } from "./clients";
 import { assertLedger, assertManagedBusiness, bookOf } from "./ledger";
 import { coethaOn } from "./owner-switches";
@@ -114,7 +114,7 @@ export function cleanQuestion(q: string): string {
 }
 
 /** Asks Coetha one question about this client's books and saves both sides of the exchange. */
-export async function askCoetha(actor: Actor, clientId: string, question: string, opts: { today?: string; files?: ChatFile[]; chat?: string | null } = {}) {
+export async function askCoetha(actor: Actor, clientId: string, question: string, opts: { today?: string; files?: ChatFile[]; chat?: string | null; inline?: boolean } = {}) {
   const chatId = chatIdOf(chatKey(opts.chat));
   await assertLedger(actor, clientId);
   await assertManagedBusiness(clientId);
@@ -135,57 +135,33 @@ export async function askCoetha(actor: Actor, clientId: string, question: string
   const raw = parts.reduce((n, p) => n + ("raw" in p ? p.raw : 0), 0);
   if (raw > MAX_CHAT_RAW) throw new ValidationError("Pictures and scanned PDFs can be up to 3 MB in all for one question. Send a smaller picture, just the pages you need, or one file at a time.");
   const q = cleanQuestion(question.trim() || (files.length ? `Please read the attached file${files.length > 1 ? "s" : ""} and tell me what ${files.length > 1 ? "they show" : "it shows"} and how it should be recorded.` : ""));
-  const lock = `coetha-chat:${clientId}`;
-  if (!(await takeLock(lock, 120))) throw new ValidationError("Coetha is still answering the last question for this business. Try again in a moment.");
-  try {
-    const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId, chatId }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true, attachmentName: true, attachments: true } })).reverse();
-    const built = await buildCoethaInput(actor, clientId, { today: opts.today });
-    // The batch a Coetha run categorizes is capped and skips drafted rows; the complete records replace it.
-    const { toCategorize: _batch, recentPosted: _recent, ...books } = built.input;
-    void _batch; void _recent;
-    const records = await recordsSnapshot(actor, clientId);
-    // Earlier files aren't sent again; Coetha sees which were attached and her answer about them.
-    const names = (m: { attachmentName: string | null; attachments: unknown }) => (Array.isArray(m.attachments) ? (m.attachments as { name: string }[]).map((a) => a.name) : m.attachmentName ? [m.attachmentName] : []);
-    const turns: CoethaChatTurn[] = [...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })), { role: "user", text: q }];
-    let res;
-    try {
-      res = await callCoethaChat(books, turns, await chatTools(actor, clientId, records, q, { chat: opts.chat ?? null }), parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })));
-    } catch (err) {
-      const code = err instanceof CoethaModelError ? err.code : "ERROR";
-      // The AI service is busy (its per-minute limit, or a refusal/connection drop right after it):
-      // the question is kept and answered in the background a minute later, never lost.
-      if (BUSY_CODES.has(code)) await startCooldown();
-      if (BUSY_CODES.has(code) && !typed.length) {
-        const queued = await prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "USER", text: q, authorId: actor.id, status: "WAITING", jobIds: [] } });
-        await audit(prisma, { actorId: actor.id, action: "coetha.chat_queued", entityType: "CoethaChatMessage", entityId: queued.id, clientId, details: { code } });
-        return { questionId: queued.id, answerId: null, text: null, queued: true as const };
-      }
-      await audit(prisma, { actorId: actor.id, action: "coetha.chat_failed", entityType: "LedgerBook", entityId: clientId, clientId, details: { code } });
-      throw new ValidationError(`Coetha couldn't answer: ${err instanceof CoethaModelError ? err.message : "something went wrong."} Your question wasn't saved; you can send it again.`);
+  // The question and its files are saved first; Coetha answers in the background (coetha-answer),
+  // so the page never waits on the AI service and a long answer is never cut off.
+  const attachments: { documentId: string; name: string }[] = [];
+  if (typed.length) {
+    const { staffUploadDocument } = await import("./documents");
+    for (const f of typed) {
+      const name = f.originalName.slice(0, 200);
+      const doc = await staffUploadDocument(actor, { clientId, category: "BOOKKEEPING", title: `Sent to Coetha — ${name}`.slice(0, 200), visibility: "STAFF_ONLY", bytes: f.bytes, originalName: f.originalName, notify: false });
+      attachments.push({ documentId: doc.id, name });
     }
-    // The files are kept only once Coetha has answered (a failed question saves nothing).
-    const attachments: { documentId: string; name: string }[] = [];
-    if (typed.length) {
-      const { staffUploadDocument } = await import("./documents");
-      for (const f of typed) {
-        const name = f.originalName.slice(0, 200);
-        const doc = await staffUploadDocument(actor, { clientId, category: "BOOKKEEPING", title: `Sent to Coetha — ${name}`.slice(0, 200), visibility: "STAFF_ONLY", bytes: f.bytes, originalName: f.originalName, notify: false });
-        attachments.push({ documentId: doc.id, name });
-      }
-    }
-    const documentId = attachments[0]?.documentId ?? null;
-    const attachmentName = attachments[0]?.name ?? null;
-    // Explicit times keep the question just before its answer in the thread.
-    const at = Date.now();
-    const [asked, answered] = await prisma.$transaction([
-      prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "USER", text: q, authorId: actor.id, documentId, attachmentName, ...(attachments.length ? { attachments } : {}), createdAt: new Date(at) } }),
-      prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(at + 1) } }),
-    ]);
-    await audit(prisma, { actorId: actor.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId: asked.id, documentIds: attachments.map((a) => a.documentId), searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
-    return { questionId: asked.id, answerId: answered.id as string | null, text: answered.text as string | null, queued: false as const };
-  } finally {
-    await releaseLock(lock);
   }
+  const asked = await prisma.coethaChatMessage.create({ data: { clientId, chatId, role: "USER", text: q, authorId: actor.id, status: "WAITING", jobIds: [], documentId: attachments[0]?.documentId ?? null, attachmentName: attachments[0]?.name ?? null, ...(attachments.length ? { attachments } : {}) } });
+  const { queueAnswer, runAnswerNow, kickAnswers } = await import("./coetha-answer");
+  const run = await queueAnswer(asked, { files: parts.map((p) => ("text" in p ? { name: p.name, text: p.text } : { mediaType: p.mediaType, base64: p.base64 })) });
+  await audit(prisma, { actorId: actor.id, action: "coetha.chat_queued", entityType: "CoethaChatMessage", entityId: asked.id, clientId, details: { files: attachments.length } });
+  if (opts.inline ?? !!process.env.VITEST) {
+    // Tests and local runs: answered in this process.
+    const done = await runAnswerNow(run.id);
+    if (done.status === "DONE" && done.answerId) {
+      const answer = await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: done.answerId } });
+      return { questionId: asked.id, answerId: answer.id as string | null, text: answer.text as string | null, queued: false as const };
+    }
+    if (done.status === "FAILED") throw new ValidationError(`Coetha couldn't answer: ${done.error ?? "something went wrong."} Your question is kept in the chat; you can ask again.`);
+    return { questionId: asked.id, answerId: null, text: null, queued: true as const };
+  }
+  await kickAnswers();
+  return { questionId: asked.id, answerId: null, text: null, queued: true as const };
 }
 
 /**
@@ -206,7 +182,7 @@ export async function coolingDown() {
 export const BUSY_CODES = new Set(["RATE_LIMIT", "PERMISSION", "NETWORK", "TIMEOUT"]);
 
 /** Read-only searches and the monthly checklist for everyone; prepare_entries, memory and ask_client only when the person asking is Tabitha. */
-async function chatTools(actor: Actor, clientId: string, records: unknown, currentQuestion?: string, reading: { chat?: string | null; alreadyRead?: string[] } = {}) {
+export async function chatTools(actor: Actor, clientId: string, records: unknown, currentQuestion?: string, reading: { chat?: string | null; alreadyRead?: string[] } = {}) {
   const owner = await isPrimaryOwner(actor.id);
   const { PREPARE_TOOL, runPrepareTool, APPROVE_TOOL, runApproveTool } = await import("./coetha-decisions");
   const { MEMORY_TOOLS, runMemoryTool } = await import("./coetha-memory");
@@ -261,28 +237,14 @@ export async function assertCanAsk(clientId: string) {
  * documents. The answer is placed right after the question in the thread. With quick: true (a
  * worker with little time left) Coetha gets one round of her tools, then answers.
  */
-export async function answerQuestion(asker: Actor, clientId: string, questionId: string, documentsRead: string, opts: { quick?: boolean } = {}) {
+export async function answerQuestion(asker: Actor, clientId: string, questionId: string, documentsRead: string) {
   await assertLedger(asker, clientId);
-  await assertCanAsk(clientId);
   const question = await prisma.coethaChatMessage.findFirstOrThrow({ where: { id: questionId, clientId, role: "USER" } });
-  const earlier = (await prisma.coethaChatMessage.findMany({ where: { clientId, chatId: question.chatId, createdAt: { lt: question.createdAt } }, orderBy: { createdAt: "desc" }, take: HISTORY, select: { role: true, text: true, attachmentName: true, attachments: true } })).reverse();
-  const built = await buildCoethaInput(asker, clientId);
-  const { toCategorize: _batch, recentPosted: _recent, ...books } = built.input;
-  void _batch; void _recent;
-  const records = await recordsSnapshot(asker, clientId);
-  const names = (m: { attachmentName: string | null; attachments: unknown }) => (Array.isArray(m.attachments) ? (m.attachments as { name: string }[]).map((a) => a.name) : m.attachmentName ? [m.attachmentName] : []);
-  const turns: CoethaChatTurn[] = [
-    ...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })),
-    { role: "user", text: documentsRead ? `${question.text}\n\nWhat you read from the attached documents (read page by page; each item is matched to the bank rows where possible):\n${documentsRead}` : question.text },
-  ];
-  // Quick (a worker with little time left): one round of tools, so Coetha can still prepare
-  // entries, save what Tabitha decided and clear checklist lines, then she answers.
-  // Documents attached to this question are already read: she isn't offered to read them again.
-  const attached = Array.isArray(question.attachments) ? (question.attachments as { documentId?: string }[]).map((a) => a.documentId).filter((x): x is string => !!x) : [];
-  const res = await callCoethaChat(books, turns, { ...(await chatTools(asker, clientId, records, undefined, { chat: question.chatId, alreadyRead: attached })), ...(opts.quick ? { maxRounds: 1 } : {}) });
-  const answered = await prisma.coethaChatMessage.create({ data: { clientId, chatId: question.chatId, role: "COETHA", text: res.text.slice(0, 20000), model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, requestId: res.requestId, inputHash: built.inputHash, createdAt: new Date(question.createdAt.getTime() + 1) } });
-  await audit(prisma, { actorId: asker.id, action: "coetha.chat", entityType: "CoethaChatMessage", entityId: answered.id, clientId, details: { questionId, background: true, searches: res.searches, waitingRows: records.counts.waitingTotal, model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens, inputHash: built.inputHash } });
-  return answered;
+  const { queueAnswer, runAnswerNow, kickAnswers } = await import("./coetha-answer");
+  const run = await queueAnswer({ ...question, authorId: question.authorId ?? asker.id }, { documentsRead });
+  if (process.env.VITEST) return runAnswerNow(run.id);
+  await kickAnswers();
+  return run;
 }
 
 /**

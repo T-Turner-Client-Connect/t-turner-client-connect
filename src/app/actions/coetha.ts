@@ -147,12 +147,8 @@ export async function askCoethaAction(clientId: string, _prev: ActionState, fd: 
     }
     const r = await askCoetha(actor, clientId, str(fd, "question"), { chat: str(fd, "chat") });
     revalidatePath(`/bookkeeping/${clientId}/coetha/ask`);
-    if (r.queued) {
-      const { kickBackgroundReading } = await import("@/lib/services/coetha-reading");
-      await kickBackgroundReading();
-      return "The AI service is busy for a moment. Your question is saved, and Coetha will answer it here shortly; you can keep working or leave this page. You don't need to send it again.";
-    }
-    return "Coetha answered. Nothing in the books was changed.";
+    // Coetha works in the background; the page shows her progress and her answer when it's saved.
+    return r.queued ? "Coetha is on it. You can keep working or leave this page; her answer will appear here." : "Coetha answered.";
   });
 }
 

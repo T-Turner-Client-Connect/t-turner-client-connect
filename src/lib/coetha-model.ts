@@ -346,7 +346,13 @@ How to answer:
 - Use only this client's data. If something isn't in the data, say so plainly and what would be needed.
 - Never invent transactions, balances, accounts or facts. If you estimate, say so and show how.
 - You post only through prepare_entries, under the rules below; you cannot reverse, reconcile, close, send or delete anything, and you can't contact the client; you approve entries only through approve_and_post on Tabitha's own words.
-- Preparing entries (prepare_entries tool, offered only when Tabitha herself is asking): when she gives an accounting decision ("#178 goes to 3100", "move the 14 card payments from 6140 to 2100"), PREPARE the entries yourself with prepare_entries instead of telling her to enter them. Use post_bank_row for each waiting row the decision covers (its W-reference, date and amount exactly as in the records) and journal_entry for reclassifications of entries already posted (search the journal entries first to get the original dates, accounts and amounts; date each correction in the month it belongs to — a correction of March payroll is dated in March — never in the current month just because it is open. Supported corrections are yours to post: give them basis "senior_accountant" with a reason naming the evidence (for example the ADP register for that pay date). If the month is closed, Client Connect reopens it under Tabitha's standing authorization, posts your entry in that month and closes it again; a month whose statements were approved or released, or whose tax return was filed, comes back to her card with the reason. Never invent transactions, force balances to agree, or change records without evidence). When the right account isn't in the chart of accounts (for example business licenses), don't send her to create it: include a new_account item in the same prepare_entries call (a code that fits the chart's numbering and isn't used, a plain name, the correct type) and use its code in the entries; it is created only when she approves it with them. Prefer an existing account when one fits. Prepare only what she decided; anything uncertain or not yet decided stays on hold and you ask her about it. Then tell her briefly what you prepared (and anything you couldn't, with why) and that it is on her Apply These Decisions card for her to tick and Approve & Post. Never say anything was posted.
+- DO THE WORK, THEN REPORT (when Tabitha asks you to do, complete, finish, process, post or catch up a client's bookkeeping, or to prepare statements). You are the firm's senior accountant working under her standing authorization. Act in this same answer with your tools; never answer with a plan, a list of what you "will" do, or a request for her to say "go ahead":
+  1. Post every waiting row you can support, with prepare_entries (post_bank_row items; put many rows in one call — a whole month at once), each with basis "routine" (a rule or how this vendor was posted before) or "senior_accountant" (your professional judgment, with the reason). Read stored documents first when they settle a row (find_files_on_file / read_files_on_file).
+  2. Isolate only the genuine exceptions — for example a loan payment that needs a principal/interest split without a schedule, a payee you can't identify, a possible owner/personal item with no evidence, a transfer you can't match. Leave each one unposted and keep going: one exception never stops the rest of the client's work.
+  3. Then prepare the month's financial statements (prepare_financial_statements) when its rows are posted (exceptions may remain; say they are open).
+  4. Then report the results: what was posted (count and total, by account), what was prepared, and each exception with its W-reference, amount, why it is held and exactly what would settle it. Put the decisions that need Tabitha last, short and numbered.
+  If a document can't be read, say which one and the actual reason (read_files_on_file reports it) and continue with everything else. If prepare_entries reports that the standing authorization is off (items go to her Apply These Decisions card instead of posting), say once that it is off in Owner's Office → Automation, and still prepare everything.
+- Preparing entries from a decision Tabitha states ("#178 goes to 3100", "move the 14 card payments from 6140 to 2100"): prepare them yourself with prepare_entries (basis tabitha_said with her exact words) instead of telling her to enter them. Use post_bank_row for each waiting row the decision covers (its W-reference, date and amount exactly as in the records) and journal_entry for reclassifications of entries already posted (search the journal entries first to get the original dates, accounts and amounts; date each correction in the month it belongs to — a correction of March payroll is dated in March — never in the current month just because it is open. Supported corrections are yours to post: give them basis "senior_accountant" with a reason naming the evidence (for example the ADP register for that pay date). If the month is closed, Client Connect reopens it under Tabitha's standing authorization, posts your entry in that month and closes it again; a month whose statements were approved or released, or whose tax return was filed, comes back to her card with the reason. Never invent transactions, force balances to agree, or change records without evidence). When the right account isn't in the chart of accounts (for example business licenses), don't send her to create it: include a new_account item in the same prepare_entries call (a code that fits the chart's numbering and isn't used, a plain name, the correct type) and use its code in the entries; it is created only when she approves it with them. Prefer an existing account when one fits. Report what was posted and what went to her Apply These Decisions card (prepare_entries tells you which). Never say anything was posted unless prepare_entries said it was.
 - Memory (remember and forget tools, offered only when Tabitha is asking): whenever she states a decision, a standing instruction or a hold, save it with remember in the same answer (one short self-contained sentence each, with check numbers, amounts, accounts and W-references), and tell her in one line what you saved. If she changes or releases one, forget the old note (by its id) and remember the new version. Don't save your own guesses or one-off questions.
 - When the tool is not offered (a staff member is asking), describe the correction (accounts, debit/credit, amount, date) and say Tabitha prepares and approves it.
 - Apply the business's tax classification rules (taxProfile.rules) to owner draws, distributions, guaranteed payments and payroll questions.
@@ -356,9 +362,13 @@ export type CoethaChatTurn = { role: "user" | "assistant"; text: string };
 export type CoethaChatResult = { text: string; inputTokens: number; outputTokens: number; requestId: string | null; model: string; searches: number };
 /** Read-only tools for one answer: their definitions and the function that runs them for ONE business. */
 export type CoethaChatTools = { defs: Anthropic.Beta.BetaTool[]; run: (name: string, input: unknown) => Promise<unknown>; records?: unknown; asker?: "owner" | "staff"; /** Fewer tool rounds (a background worker with a short time limit). */ maxRounds?: number };
-/** At most this many search rounds per answer, and no new round after this long (the page waits). */
-export const CHAT_MAX_SEARCH_ROUNDS = 3;
-const CHAT_SEARCH_BUDGET_MS = 35_000;
+/**
+ * At most this many tool rounds per answer. Answers run in the background (no page time limit), so
+ * Coetha can search, post a client's supported rows, prepare the statements and then report.
+ */
+export const CHAT_MAX_SEARCH_ROUNDS = 8;
+/** Room for one prepare_entries call with a whole month of rows, or a long written answer. */
+export const CHAT_MAX_TOKENS = 16000;
 
 /** An API failure as the plain-language error staff see. */
 function chatError(err: unknown, model: string): CoethaModelError {
@@ -382,24 +392,26 @@ function chatError(err: unknown, model: string): CoethaModelError {
 export type CoethaChatFile = { mediaType: string; base64: string } | { name: string; text: string };
 export const CHAT_FILE_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"] as const;
 
-/**
- * One chat reply. `books` is the de-identified data from buildCoethaInput for ONE client; `turns`
- * is the earlier conversation (oldest first) ending with the new question. Returns text only:
- * Coetha's only tools are read-only searches of the same business (tools.run is bound to it), so
- * a reply can't change anything. Tests replace global fetch.
- */
-export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], tools?: CoethaChatTools, files: CoethaChatFile[] = []): Promise<CoethaChatResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
-  if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
+/** The system blocks for one answer: instructions, the business's books and records (cached), who is asking. */
+export function chatSystem(books: unknown, records: unknown, asker?: "owner" | "staff"): Anthropic.Beta.BetaTextBlockParam[] {
+  // The instructions, books and records are the large, unchanging part of every request in an
+  // answer (and of the next questions for a few minutes): they're cached, so the repeat sends
+  // after each tool round are read from the cache instead of counting again.
+  const cache = { cache_control: { type: "ephemeral" as const } };
+  return [
+    { type: "text", text: COETHA_CHAT_SYSTEM },
+    { type: "text", text: `Books (JSON):\n${JSON.stringify(books)}`, ...(records === undefined ? cache : {}) },
+    ...(records !== undefined ? [{ type: "text" as const, text: `Records (JSON):\n${JSON.stringify(records)}`, ...cache }] : []),
+    ...(asker ? [{ type: "text" as const, text: asker === "owner" ? "The person asking is Tabitha, the owner. prepare_entries is available: carry out the work under her standing authorization." : "The person asking is a staff member, not Tabitha. You can't prepare entries; describe corrections for Tabitha." }] : []),
+  ];
+}
+
+/** The conversation as the API expects it (starting with a user turn), files attached to the newest question. */
+export function chatMessages(turns: CoethaChatTurn[], files: CoethaChatFile[] = []): Anthropic.Beta.BetaMessageParam[] {
   if (!turns.length || turns[turns.length - 1].role !== "user") throw new CoethaModelError("Ask Coetha a question first.", "BAD_REQUEST");
-  const model = coethaModel();
-  // Short time limit: the reply is shown while the staff member waits on the page.
-  const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 90_000 });
-  // The API expects the conversation to start with a user turn.
   const first = turns.findIndex((t) => t.role === "user");
   const messages: Anthropic.Beta.BetaMessageParam[] = turns.slice(first).map((t) => ({ role: t.role, content: t.text }));
   if (files.length) {
-    // The files go with the newest question, before its text.
     const blocks: Anthropic.Beta.BetaContentBlockParam[] = files.map((file) => ("text" in file
       ? { type: "text", text: `Attached file “${file.name}” (its text, read from the PDF; long numbers shortened to the last 4 digits):\n${file.text}` }
       : file.mediaType === "application/pdf"
@@ -408,82 +420,48 @@ export async function callCoethaChat(books: unknown, turns: CoethaChatTurn[], to
     const last = messages[messages.length - 1];
     last.content = [...blocks, { type: "text", text: String(last.content) }];
   }
-  // The instructions, books and records are the large, unchanging part of every request in an
-  // answer (and of the next questions for a few minutes): they're cached, so the repeat sends
-  // after each search are read from the cache instead of counting again against the AI service's
-  // per-minute limit.
-  const cache = { cache_control: { type: "ephemeral" as const } };
-  const system: Anthropic.Beta.BetaTextBlockParam[] = [
-    { type: "text", text: COETHA_CHAT_SYSTEM },
-    { type: "text", text: `Books (JSON):\n${JSON.stringify(books)}`, ...(tools?.records === undefined ? cache : {}) },
-    ...(tools?.records !== undefined ? [{ type: "text" as const, text: `Records (JSON):\n${JSON.stringify(tools.records)}`, ...cache }] : []),
-    ...(tools?.asker ? [{ type: "text" as const, text: tools.asker === "owner" ? "The person asking is Tabitha, the owner. prepare_entries is available for decisions she states." : "The person asking is a staff member, not Tabitha. You can't prepare entries; describe corrections for Tabitha." }] : []),
-  ];
-  const started = Date.now();
-  let inputTokens = 0, outputTokens = 0, searches = 0;
-  let msg: Anthropic.Beta.BetaMessage;
-  for (let round = 0; ; round++) {
-    // The last allowed round (or when time is short) can't search again: Coetha answers with what she has.
-    const mayUseTools = !!tools && round < (tools.maxRounds ?? CHAT_MAX_SEARCH_ROUNDS) && Date.now() - started < CHAT_SEARCH_BUDGET_MS;
-    try {
-      msg = await client.beta.messages.create({
-        model,
-        max_tokens: 4000,
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        output_config: { effort: "low" },
-        system,
-        messages,
-        ...(tools?.defs.length ? { tools: tools.defs, tool_choice: mayUseTools ? { type: "auto" as const } : { type: "none" as const } } : {}),
-      });
-    } catch (err) {
-      throw chatError(err, model);
-    }
-    inputTokens += msg.usage.input_tokens ?? 0;
-    outputTokens += msg.usage.output_tokens ?? 0;
-    const calls = msg.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
-    if (msg.stop_reason !== "tool_use" || !calls.length || !tools) break;
-    searches += calls.length;
-    messages.push({ role: "assistant", content: msg.content as Anthropic.Beta.BetaContentBlockParam[] });
-    const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-    for (const c of calls) {
-      let out: unknown;
-      try { out = await tools.run(c.name, c.input); } catch { out = { error: "That search couldn't be completed." }; }
-      results.push({ type: "tool_result", tool_use_id: c.id, content: JSON.stringify(out) });
-    }
-    messages.push({ role: "user", content: results });
-  }
-  const textOf = (m: Anthropic.Beta.BetaMessage) => m.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
-  // A reply with no written answer (it can happen right after her searches, when she may not search
-  // again): ask her once more, plainly, to write the answer from what she already has.
-  if (msg.stop_reason !== "refusal" && !textOf(msg)) {
-    const said = msg.content.filter((b) => b.type !== "tool_use") as Anthropic.Beta.BetaContentBlockParam[];
-    if (said.length) messages.push({ role: "assistant", content: said });
-    messages.push({ role: "user", content: "Please write your answer now, in plain text, from what you already have. Don't search again." });
-    try {
-      msg = await client.beta.messages.create({
-        model,
-        max_tokens: 4000,
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        output_config: { effort: "low" },
-        system,
-        messages,
-        ...(tools?.defs.length ? { tools: tools.defs, tool_choice: { type: "none" as const } } : {}),
-      });
-    } catch (err) {
-      throw chatError(err, model);
-    }
-    inputTokens += msg.usage.input_tokens ?? 0;
-    outputTokens += msg.usage.output_tokens ?? 0;
-  }
-  const requestId: string | null = (msg as { _request_id?: string | null })._request_id ?? msg.id ?? null;
-  if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to answer this question.", "REFUSAL");
-  let text = textOf(msg);
-  if (!text) throw new CoethaModelError("Coetha didn't return an answer. Try asking again.", "EMPTY");
-  if (msg.stop_reason === "max_tokens") text += "\n\n(Coetha's answer was cut off because it was long. Ask a narrower follow-up question for the rest.)";
-  return { text, inputTokens, outputTokens, requestId, model: msg.model || model, searches };
+  return messages;
 }
+
+/** One request to the API (built in Client Connect; sent from here or from the background function). */
+export function chatRequest(system: Anthropic.Beta.BetaTextBlockParam[], messages: Anthropic.Beta.BetaMessageParam[], defs: Anthropic.Beta.BetaTool[] | undefined, opts: { mayUseTools: boolean; owner?: boolean }) {
+  return {
+    model: coethaModel(),
+    max_tokens: CHAT_MAX_TOKENS,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default" as const,
+    // Tabitha's work requests (posting a month, preparing statements) get more care than a quick question.
+    output_config: { effort: opts.owner ? ("medium" as const) : ("low" as const) },
+    system,
+    messages,
+    ...(defs?.length ? { tools: defs, tool_choice: opts.mayUseTools ? { type: "auto" as const } : { type: "none" as const } } : {}),
+  };
+}
+export type ChatRequest = ReturnType<typeof chatRequest>;
+
+/** The outcome of one API call, as plain data (it can cross from the background function). */
+export type ChatCallOutcome =
+  | { ok: true; message: Anthropic.Beta.BetaMessage; ms: number }
+  | { ok: false; code: string; message: string; retryAfterMs: number | null; ms: number };
+
+/** Sends one request. Never throws: an error comes back as its code (RATE_LIMIT, OVERLOADED, TIMEOUT, NETWORK, …). */
+export async function sendChatRequest(params: ChatRequest, opts: { timeoutMs?: number } = {}): Promise<ChatCallOutcome> {
+  const started = Date.now();
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) return { ok: false, code: "NO_KEY", message: "Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", retryAfterMs: null, ms: 0 };
+  const client = new Anthropic({ apiKey, maxRetries: 0, timeout: opts.timeoutMs ?? 10 * 60_000 });
+  try {
+    const message = await client.beta.messages.create(params as Anthropic.Beta.MessageCreateParamsNonStreaming);
+    return { ok: true, message, ms: Date.now() - started };
+  } catch (err) {
+    const e = chatError(err, params.model);
+    const retry = err instanceof Anthropic.APIError ? Number(err.headers?.get?.("retry-after") ?? NaN) : NaN;
+    const overloaded = err instanceof Anthropic.APIError && (err.status === 529 || err.status === 500 || err.status === 502 || err.status === 503);
+    return { ok: false, code: overloaded ? "OVERLOADED" : e.code, message: e.message, retryAfterMs: Number.isFinite(retry) ? retry * 1000 : null, ms: Date.now() - started };
+  }
+}
+
+export const chatText = (m: Anthropic.Beta.BetaMessage) => m.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
 
 // --- Reading a statement's transactions when the layout isn't recognized -------------------------
 
