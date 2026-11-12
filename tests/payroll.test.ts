@@ -80,7 +80,7 @@ describe("payroll register import", () => {
     const runs = await prisma.payrollRun.findMany({ where: { clientId: s.biz.id }, orderBy: { checkDate: "asc" } });
     expect(runs.map((x) => [x.status, x.provider, x.origin])).toEqual([["DRAFT", "ADP_RUN", "IMPORT"], ["DRAFT", "ADP_RUN", "IMPORT"]]);
     const doc = await prisma.document.findUniqueOrThrow({ where: { id: r.documentId }, include: { file: true } });
-    expect(doc).toMatchObject({ clientId: s.biz.id, docType: "PAYROLL_REPORT", category: "BOOKKEEPING", visibility: "STAFF_ONLY" });
+    expect(doc).toMatchObject({ clientId: s.biz.id, docType: "PAYROLL_REPORT", category: "PAYROLL", visibility: "STAFF_ONLY" });
     expect(doc.file.mimeType).toBe("text/csv");
     const item = await prisma.bookkeepingChecklistItem.findFirstOrThrow({ where: { key: "PAYROLL_REPORTS", period: { clientId: s.biz.id, year: 2026, month: 10 } } });
     expect(item.status).toBe("DONE");

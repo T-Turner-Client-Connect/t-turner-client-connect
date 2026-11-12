@@ -70,7 +70,7 @@ export async function importPayrollAction(clientId: string, _prev: ActionState, 
     const parts = [`${r.created.length} pay run${r.created.length === 1 ? "" : "s"} created as drafts for review`];
     if (r.duplicates.length) parts.push(`${r.duplicates.length} already imported (skipped)`);
     if (r.unbalanced.length) parts.push(`${r.unbalanced.length} not imported because the totals don't tie out (${r.unbalanced.map((u) => `${u.checkDate}: off by ${usd(u.differenceCents)}`).join(", ")})`);
-    return `${parts.join("; ")}. The file is saved in the client's documents.`;
+    return `${parts.join("; ")}. The file is saved under this client's payroll reports below; use Share with client to release it.`;
   });
 }
 
@@ -155,5 +155,16 @@ export async function staffNotifyChannelAction(clientId: string, portalUserId: s
     await setNotifyChannel({ staff: actor }, clientId, portalUserId, str(fd, "channel"));
     refresh();
     return "Saved at the client's request.";
+  });
+}
+
+/** Release a payroll file to the client's Payroll page (or stop sharing it). */
+export async function sharePayrollReportAction(clientId: string, documentId: string, share: boolean, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { sharePayrollReport } = await import("@/lib/services/payroll");
+    await sharePayrollReport(actor, clientId, documentId, { share, notify: fd.get("notify") === "on" });
+    refresh();
+    return share ? "Shared. It's on the client's Payroll page now." : "No longer shared with the client.";
   });
 }

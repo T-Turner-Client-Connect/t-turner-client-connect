@@ -6,11 +6,13 @@ import { prisma } from "@/lib/prisma";
 import { ActionForm } from "@/components/action-form";
 import { Button, Card, Field, Notice, PageHeader } from "@/components/ui";
 import { payDateAction } from "@/app/actions/business-overview";
-import { payrollSetupAction, staffNotifyChannelAction } from "@/app/actions/payroll";
+import { payrollSetupAction, sharePayrollReportAction, staffNotifyChannelAction } from "@/app/actions/payroll";
 import { PAYROLL_FREQUENCIES } from "@/lib/services/bookkeeping-clients";
 import { PAYROLL_ACCESS } from "@/lib/services/bookkeeping-profile";
 import { canUseLedger } from "@/lib/services/ledger";
-import { payHistory, payrollSchedule } from "@/lib/services/payroll";
+import { payHistory, payrollReports, payrollSchedule } from "@/lib/services/payroll";
+import { downloadToken } from "@/lib/services/documents";
+import { fmtDate } from "@/lib/format";
 import { approverWhere, canManagePayrollApprovers, channelsFor } from "@/lib/services/payroll-approval";
 import { connectionStatus } from "@/lib/payroll/providers";
 import { NOTIFY_CHANNELS, PAYROLL_CONNECTIONS, PAYROLL_PROVIDER_LOGIN, PAYROLL_SYSTEMS, type PayrollSystem } from "@/lib/payroll/fields";
@@ -147,12 +149,42 @@ export default async function PayrollPage({ params }: { params: Promise<{ client
             <Notice tone="warn">Only Admins and the staff member assigned to this client can import payroll.</Notice>
           ) : (
             <>
-              <p className="mb-3 text-sm text-slate-700">Export the <strong>payroll register</strong> (ADP — PDF is fine) or <strong>payroll journal</strong> (Paychex) as PDF, CSV or Excel for the pay dates you need, then upload it here. A PDF is read by Coetha and checked against the register&apos;s own totals. You&apos;ll see totals per pay date before anything is created. Each new pay date becomes a draft pay run with a draft journal entry; re-importing the same file never doubles up.</p>
+              <p className="mb-3 text-sm text-slate-700">Export the <strong>payroll register</strong> (ADP — PDF is fine) or <strong>payroll journal</strong> (Paychex) as PDF, CSV or Excel for the pay dates you need, then upload it here. An ADP payroll summary PDF is read directly; other PDFs are read by Coetha. Every pay date is checked against the report&apos;s own totals. You&apos;ll see totals per pay date before anything is created. Each new pay date becomes a draft pay run with a draft journal entry; re-importing the same file never doubles up.</p>
               <PayrollImport clientId={clientId} defaultPreset={PRESET_FOR[p.payrollSystem ?? ""] ?? "OTHER"} bankAccounts={banks.map((b) => ({ id: b.id, label: `${b.code} ${b.name}` }))} />
             </>
           )}
         </Card>
       </section>
+
+      <Card title="Payroll reports for the client" className="mt-4">
+        {await (async () => {
+          const reports = await payrollReports(clientId);
+          if (!reports.length) return <p className="text-sm text-slate-700">No payroll files yet. Imported ADP reports appear here.</p>;
+          return (
+            <ul className="divide-y divide-navy-100 text-sm" data-testid="payroll-reports">
+              {reports.map((r) => (
+                <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <span>
+                    <a className="font-semibold text-navy-900 underline" href={`/api/documents/${downloadToken(r.id, { staffId: actor.id })}`} target="_blank" rel="noopener">{r.title}</a>
+                    <span className="ml-2 text-xs text-slate-600">
+                      {r.fromClient ? "Sent by the client" : r.shared ? `Shared with the client ${fmtDate(r.publishedAt ?? r.createdAt)}${r.clientOpenedAt ? ` · opened by the client ${fmtDate(r.clientOpenedAt)}` : " · not opened yet"}` : "Not shared with the client"}
+                      {r.scanStatus === "PENDING" ? " · virus scan pending (the client can open it once it's clean)" : ""}
+                    </span>
+                  </span>
+                  {ledgerOk && !r.fromClient && (r.shared ? (
+                    <ActionForm action={sharePayrollReportAction.bind(null, clientId, r.id, false)}><Button type="submit" variant="secondary" className="py-1 text-xs">Stop sharing</Button></ActionForm>
+                  ) : (
+                    <ActionForm action={sharePayrollReportAction.bind(null, clientId, r.id, true)} className="flex items-center gap-2">
+                      <label className="flex items-center gap-1 text-xs"><input type="checkbox" name="notify" /> Notify the client</label>
+                      <Button type="submit" className="py-1 text-xs">Share with client</Button>
+                    </ActionForm>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          );
+        })()}
+      </Card>
 
       <Card title="Pay history" className="mt-4">
         {!history.length ? (
