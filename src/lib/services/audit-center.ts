@@ -113,12 +113,36 @@ async function filedReturn(clientId: string, taxYear: number, kind: AuditKind, s
   return f?.id ?? null;
 }
 
+/** The open audit a new notice belongs to: same client, agency (federal, or the same state) and tax year. */
+async function openAuditFor(clientId: string, v: { kind: AuditKind; stateCode: string | null; taxYear: number }) {
+  return prisma.noticeCase.findFirst({ where: { clientId, auditKind: v.kind, stateCode: v.stateCode, taxYear: v.taxYear, auditStatus: { not: "CLOSED" } }, orderBy: { createdAt: "asc" } });
+}
+
+/**
+ * Another notice for an audit already open (same agency and tax year): it is added to that case as
+ * later correspondence instead of opening a duplicate. Coetha compares the notice reference when she
+ * reads it and moves it to its own audit if it is a separate examination (splitNoticeToNewAudit).
+ */
+async function addNoticeToAudit(caseId: string, docIds: string[], by: { portalUserId?: string; actorId?: string }) {
+  const c = await prisma.noticeCase.findUniqueOrThrow({ where: { id: caseId } });
+  await prisma.document.updateMany({ where: { id: { in: docIds } }, data: { noticeCaseId: caseId, title: `Additional notice — ${AUDIT_KINDS[c.auditKind as AuditKind]}${c.stateCode ? ` (${c.stateCode})` : ""} ${c.taxYear}` } });
+  await audit(prisma, { actorId: by.actorId ?? null, action: "audit.notice_added", entityType: "NoticeCase", entityId: caseId, clientId: c.clientId, details: { documentIds: docIds, portalUserId: by.portalUserId ?? null } });
+  await alertOffice(caseId, `notice:${docIds[0]}`, "Additional audit notice received", "Added to the open audit for the same agency and tax year (not a new case). Coetha checks whether it is part of this audit.", { urgent: true });
+}
+
 /** A client opens a Federal or State audit in their portal and uploads the notice. */
 export async function openAuditByClient(user: PortalActor, clientId: string, input: AuditOpenInput, files: Upload[]) {
   await requireClientAccess(user.id, clientId, "upload");
   if (!files.length) throw new ValidationError("Choose the audit notice to upload (a photo or PDF).");
   if (files.length > 10) throw new ValidationError("Upload up to 10 files at a time.");
   const v = validateOpen(input);
+  const existing = await openAuditFor(clientId, v);
+  if (existing) {
+    const ids = [];
+    for (const f of files) ids.push((await portalUploadDocument(user, { clientId, year: v.taxYear, docType: "AGENCY_LETTER", title: "Additional notice", bytes: f.bytes, originalName: f.originalName })).id);
+    await addNoticeToAudit(existing.id, ids, { portalUserId: user.id });
+    return Object.assign(existing, { addedTo: true as const });
+  }
   const kase = await prisma.noticeCase.create({
     data: {
       clientId, taxYear: v.taxYear, agency: v.kind === "FEDERAL" ? "IRS" : "STATE", agencyDetail: v.stateCode, auditKind: v.kind, stateCode: v.stateCode, auditStatus: "NOTICE_RECEIVED",
@@ -138,6 +162,13 @@ export async function openAuditByClient(user: PortalActor, clientId: string, inp
 export async function openAuditByStaff(actor: Actor, clientId: string, input: AuditOpenInput, files: Upload[]) {
   await assertAuditStaff(actor, clientId);
   const v = validateOpen(input);
+  const existing = files.length ? await openAuditFor(clientId, v) : null;
+  if (existing) {
+    const ids = [];
+    for (const f of files) ids.push((await staffUploadDocument(actor, { clientId, category: "TAXES", year: v.taxYear, docType: "AGENCY_LETTER", title: "Additional notice", visibility: "STAFF_ONLY", bytes: f.bytes, originalName: f.originalName })).id);
+    await addNoticeToAudit(existing.id, ids, { actorId: actor.id });
+    return Object.assign(existing, { addedTo: true as const });
+  }
   const kase = await prisma.noticeCase.create({
     data: {
       clientId, taxYear: v.taxYear, agency: v.kind === "FEDERAL" ? "IRS" : "STATE", agencyDetail: v.stateCode, auditKind: v.kind, stateCode: v.stateCode, auditStatus: "NOTICE_RECEIVED",
@@ -324,12 +355,86 @@ export async function refreshAuditStatus(caseId: string) {
   return next;
 }
 
+/** A notice that turned out to be a separate examination moves to its own audit (its file is moved, not copied). */
+export async function splitNoticeToNewAudit(actor: Actor | null, documentId: string, reason: string) {
+  const d = await prisma.document.findUnique({ where: { id: documentId }, include: { noticeCase: true } });
+  const from = d?.noticeCase;
+  if (!d || !from?.auditKind) throw new ValidationError("That notice isn't part of an audit.");
+  if (actor) await caseFor(actor, from.id);
+  const kase = await prisma.noticeCase.create({
+    data: { clientId: from.clientId, taxYear: from.taxYear, agency: from.agency, agencyDetail: from.agencyDetail, auditKind: from.auditKind, stateCode: from.stateCode, auditStatus: "NOTICE_RECEIVED", filingId: from.filingId, createdByStaffId: actor?.id ?? null },
+  });
+  await prisma.document.update({ where: { id: documentId }, data: { noticeCaseId: kase.id, title: `${AUDIT_KINDS[from.auditKind as AuditKind]} notice${from.stateCode ? ` (${from.stateCode})` : ""} — ${from.taxYear}` } });
+  await audit(prisma, { actorId: actor?.id ?? null, action: "audit.notice_split", entityType: "NoticeCase", entityId: kase.id, clientId: from.clientId, details: { documentId, fromCaseId: from.id, reason: reason.slice(0, 300) } });
+  await alertOffice(kase.id, "opened", `Separate ${AUDIT_KINDS[from.auditKind as AuditKind].toLowerCase()} for ${from.taxYear}`, `A notice first added to another audit is a separate examination: ${reason}`, { urgent: true });
+  return kase;
+}
+
+/** Later correspondence from the agency (its response, a follow-up letter), kept with the audit. */
+export async function addAgencyCorrespondence(actor: Actor, caseId: string, files: Upload[], note?: string) {
+  const c = await caseFor(actor, caseId);
+  if (!files.length) throw new ValidationError("Choose the agency's letter.");
+  for (const f of files.slice(0, 10)) {
+    const doc = await staffUploadDocument(actor, { clientId: c.clientId, category: "TAXES", year: c.taxYear ?? undefined, docType: "AGENCY_LETTER", title: `Agency correspondence — ${c.taxYear}`, visibility: "STAFF_ONLY", bytes: f.bytes, originalName: f.originalName });
+    await prisma.document.update({ where: { id: doc.id }, data: { noticeCaseId: caseId } });
+  }
+  await audit(prisma, { actorId: actor.id, action: "audit.agency_correspondence", entityType: "NoticeCase", entityId: caseId, clientId: c.clientId, details: { files: files.length, note: clip(note, 500) } });
+}
+
 /** Staff-set statuses after the package goes out. */
-export async function setAuditStatus(actor: Actor, caseId: string, status: string) {
+export async function setAuditStatus(actor: Actor, caseId: string, status: string, resolution?: string) {
   const c = await caseFor(actor, caseId);
   if (status !== "AWAITING_AGENCY" && status !== "CLOSED") throw new ValidationError("Choose Awaiting Agency Response or Audit Closed.");
-  await prisma.noticeCase.update({ where: { id: caseId }, data: { auditStatus: status, status: status === "CLOSED" ? "CLOSED" : "RESPONDED", updatedById: actor.id } });
-  await audit(prisma, { actorId: actor.id, action: "audit.status_changed", entityType: "NoticeCase", entityId: caseId, clientId: c.clientId, details: { from: c.auditStatus, to: status } });
+  const res = clip(resolution, 3000);
+  if (status === "CLOSED" && !res) throw new ValidationError("Record the final resolution (the agency's decision) to close the audit.");
+  await prisma.noticeCase.update({ where: { id: caseId }, data: { auditStatus: status, status: status === "CLOSED" ? "CLOSED" : "RESPONDED", updatedById: actor.id, ...(status === "CLOSED" ? { resolution: res, closedAt: new Date() } : {}) } });
+  await audit(prisma, { actorId: actor.id, action: "audit.status_changed", entityType: "NoticeCase", entityId: caseId, clientId: c.clientId, details: { from: c.auditStatus, to: status, resolution: res } });
+}
+
+const ACTIVITY: Record<string, string> = {
+  "audit.opened_by_client": "Client opened the audit and uploaded the notice",
+  "audit.opened_by_staff": "Audit opened by the office",
+  "audit.notice_added": "Additional notice added",
+  "audit.notice_split": "Notice moved to its own audit",
+  "audit.details_updated": "Notice details recorded",
+  "audit.item_added": "Item under examination added",
+  "audit.item_updated": "Item updated",
+  "audit.document_linked": "Supporting document matched to an item",
+  "audit.document_unlinked": "Document removed from an item",
+  "audit.document_requested": "Missing document requested from the client",
+  "audit.client_uploaded": "Client uploaded documents",
+  "audit.status_changed": "Status changed",
+  "audit.package_built": "Audit package built",
+  "audit.package_released": "Audit package released to the client",
+  "audit.package_viewed": "Client viewed the package",
+  "audit.package_downloaded": "Client downloaded the package",
+  "audit.submitted_by_client": "Client recorded the submission",
+  "audit.agency_correspondence": "Agency correspondence added",
+};
+
+/** The audit's complete history, newest first. */
+export async function auditActivity(caseId: string) {
+  const c = await prisma.noticeCase.findUnique({ where: { id: caseId }, select: { clientId: true, items: { select: { id: true, requests: { select: { id: true } } } } } });
+  if (!c) return [];
+  const ids = [caseId, ...c.items.map((i) => i.id), ...c.items.flatMap((i) => i.requests.map((r) => r.id))];
+  const rows = await prisma.auditLog.findMany({ where: { clientId: c.clientId, entityId: { in: ids }, action: { startsWith: "audit." } }, orderBy: { createdAt: "desc" }, take: 300, include: { actor: { select: { name: true } } } });
+  return rows.map((r) => ({ id: r.id, at: r.createdAt, what: ACTIVITY[r.action] ?? r.action, who: r.actor?.name ?? ((r.details as { portalUserId?: string } | null)?.portalUserId ? "Client" : (r.details as { by?: string } | null)?.by === "COETHA" ? "Coetha" : "Client Connect"), details: r.details }));
+}
+
+/** What still keeps the audit from being complete: missing documents, unread amounts, differences. */
+export async function openAuditItems(caseId: string) {
+  const v = await auditCaseView(caseId);
+  if (!v) return [];
+  const out: string[] = [];
+  if (!v.items.length) out.push("The items under examination haven't been identified.");
+  for (const i of v.items) {
+    for (const r of i.requests.filter((r) => r.status === "OPEN")) out.push(`${i.label}: waiting for the client — ${r.title}`);
+    for (const r of i.requests.filter((r) => r.status === "SUBMITTED")) out.push(`${i.label}: ${r.title} uploaded, not reviewed yet`);
+    if (i.check.state === "MISSING") out.push(`${i.label}: no supporting documents yet`);
+    if (i.check.state === "NOT_READ") out.push(`${i.label}: the amount reported on the return isn't recorded`);
+    if (i.check.state === "DIFFERENCE") out.push(`${i.label}: reported ${usd(i.reportedCents ?? 0)}, documents support ${usd(i.check.supportedCents ?? 0)} (difference ${usd(i.check.differenceCents ?? 0)})`);
+  }
+  return out;
 }
 
 // --- Views -------------------------------------------------------------------------------------------
@@ -364,7 +469,8 @@ export async function staffAuditCase(actor: Actor, caseId: string) {
   const v = (await auditCaseView(caseId))!;
   const files = await prisma.document.findMany({ where: { clientId: v.clientId, deletedAt: null, OR: [{ year: v.taxYear }, { noticeCaseId: caseId }] }, select: docSelect, orderBy: { createdAt: "desc" }, take: 300 });
   const filing = v.filingId ? await prisma.filingRecord.findUnique({ where: { id: v.filingId }, select: { returnType: true, jurisdiction: true, filingStatus: true } }) : null;
-  return { ...v, files, filing, canRelease: await isReportApprover(actor) };
+  const versions = await prisma.document.findMany({ where: { noticeCaseId: caseId, docType: "AUDIT_PACKAGE", deletedAt: null }, select: { id: true, version: true, createdAt: true, visibility: true, publishedAt: true, supersededAt: true }, orderBy: { createdAt: "desc" } });
+  return { ...v, files, filing, versions, open: await openAuditItems(caseId), activity: await auditActivity(caseId), canRelease: await isReportApprover(actor) };
 }
 
 /** Every audit across clients the person may work, soonest deadline first. */
@@ -520,6 +626,11 @@ export async function buildAuditPackage(actor: Actor, caseId: string) {
   pdf.setAuthor(BUSINESS.legalName);
   for (const p of await pdf.copyPages(await PDFDocument.load(cover), [...Array((await PDFDocument.load(cover)).getPageCount()).keys()])) pdf.addPage(p);
 
+  const open = await openAuditItems(caseId);
+  if (open.length) await textPages(pdf, "Not Fully Ready — Open Items", [
+    { text: "This package is not complete. The items below are still open; our office is working on them. Do not treat the amounts below as fully supported.", bold: true },
+    ...open.map((o) => ({ text: `• ${o}`, indent: 6 })),
+  ]);
   await textPages(pdf, "Audit Document Index", [
     { text: `Taxpayer: ${client.displayName} · Tax year ${c.taxYear} · ${c.auditKind === "FEDERAL" ? "Federal (IRS)" : `State (${c.stateCode})`}${c.noticeReference ? ` · Notice ${c.noticeReference}` : ""}` },
     ...exhibits.map((e, n) => ({ text: `Exhibit ${n + 1}: ${e.title} — ${e.item}` })),
@@ -587,16 +698,18 @@ export async function buildAuditPackage(actor: Actor, caseId: string) {
 }
 
 /** Tabitha releases the package: the client sees "Audit Package — Ready to Print". */
-export async function releaseAuditPackage(actor: Actor, caseId: string) {
+export async function releaseAuditPackage(actor: Actor, caseId: string, opts: { acknowledgeOpenItems?: boolean } = {}) {
   const c = await caseFor(actor, caseId);
   if (!(await isReportApprover(actor))) throw new ForbiddenError("Only Tabitha releases an audit package to the client.");
   if (!c.packageDocumentId) throw new ValidationError("Build the audit package first.");
+  const open = await openAuditItems(caseId);
+  if (open.length && !opts.acknowledgeOpenItems) throw new ValidationError(`The audit isn't fully ready (${open.length} open item${open.length === 1 ? "" : "s"}). Release only if you accept the package as marked "Not Fully Ready".`);
   const now = new Date();
   await prisma.$transaction([
     prisma.document.update({ where: { id: c.packageDocumentId }, data: { visibility: "PUBLISHED", publishedAt: now } }),
     prisma.noticeCase.update({ where: { id: caseId }, data: { releasedAt: now, releasedById: actor.id, auditStatus: "PACKAGE_READY" } }),
   ]);
-  await audit(prisma, { actorId: actor.id, action: "audit.package_released", entityType: "NoticeCase", entityId: caseId, clientId: c.clientId, details: { documentId: c.packageDocumentId } });
+  await audit(prisma, { actorId: actor.id, action: "audit.package_released", entityType: "NoticeCase", entityId: caseId, clientId: c.clientId, details: { documentId: c.packageDocumentId, openItems: open } });
   await notifyClientUsers(c.clientId, "AUDIT_PACKAGE_READY", c.packageDocumentId);
 }
 

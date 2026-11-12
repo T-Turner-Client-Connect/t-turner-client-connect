@@ -3418,6 +3418,11 @@ model NoticeCase {
   submittedAt       DateTime?
   submittedByPortalId String?
   submissionMethod  String?
+  /// Final outcome recorded when the audit is closed (agency's decision, amounts, follow-up).
+  resolution        String?
+  closedAt          DateTime?
+  /// Coetha's reading of the notice(s): what she found, per notice, and anything unclear she flagged.
+  coethaReading     Json?
   items             AuditItem[]
 
   @@index([clientId, taxYear])

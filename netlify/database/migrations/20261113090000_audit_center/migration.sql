@@ -13,6 +13,9 @@ ALTER TABLE "NoticeCase" ADD COLUMN "releasedById" TEXT;
 ALTER TABLE "NoticeCase" ADD COLUMN "submittedAt" TIMESTAMP(3);
 ALTER TABLE "NoticeCase" ADD COLUMN "submittedByPortalId" TEXT;
 ALTER TABLE "NoticeCase" ADD COLUMN "submissionMethod" TEXT;
+ALTER TABLE "NoticeCase" ADD COLUMN "resolution" TEXT;
+ALTER TABLE "NoticeCase" ADD COLUMN "closedAt" TIMESTAMP(3);
+ALTER TABLE "NoticeCase" ADD COLUMN "coethaReading" JSONB;
 CREATE INDEX "NoticeCase_auditStatus_idx" ON "NoticeCase"("auditStatus");
 
 CREATE TABLE "AuditItem" (

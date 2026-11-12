@@ -5,9 +5,9 @@ import { ActionForm } from "@/components/action-form";
 import { Badge, Button, Card, Field, PageHeader } from "@/components/ui";
 import { requireUser } from "@/lib/auth/session";
 import { downloadToken } from "@/lib/services/documents";
-import { fmtDate } from "@/lib/format";
+import { fmtDate, fmtDateTime } from "@/lib/format";
 import {
-  addAuditItemAction, auditDetailsAction, auditStatusAction, buildAuditPackageAction, linkAuditDocumentAction, releaseAuditPackageAction,
+  addAuditItemAction, agencyCorrespondenceAction, auditDetailsAction, splitNoticeAction, auditStatusAction, buildAuditPackageAction, linkAuditDocumentAction, releaseAuditPackageAction,
   requestAuditDocumentAction, staffAuditUploadAction, unlinkAuditDocumentAction, updateAuditItemAction,
 } from "@/app/actions/audit-center";
 import { AUDIT_KINDS, AUDIT_STATUS, staffAuditCase, type AuditKind, type AuditStatus } from "@/lib/services/audit-center";
@@ -34,6 +34,12 @@ export default async function AuditCasePage({ params }: { params: Promise<{ case
         title={`${a.client.displayName} — ${AUDIT_KINDS[a.auditKind as AuditKind]}${a.stateCode ? ` (${a.stateCode})` : ""}, tax year ${a.taxYear}`}
         subtitle={`${AUDIT_STATUS[status]} · ${a.totals.items} item${a.totals.items === 1 ? "" : "s"} · ${a.totals.received} documents received · ${a.totals.verified} verified · ${a.totals.missing} missing · ${a.totals.discrepancies} with a difference${a.responseDueOn ? ` · respond by ${fmtDate(a.responseDueOn)}` : " · deadline unknown"}`}
       />
+      {a.open.length > 0 && (
+        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900" data-testid="audit-open-items">
+          <p className="font-semibold">Not fully ready — {a.open.length} open item{a.open.length === 1 ? "" : "s"}</p>
+          <ul className="mt-1 list-disc pl-5">{a.open.map((o) => <li key={o}>{o}</li>)}</ul>
+        </div>
+      )}
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
           <Card title="Items under examination">
@@ -119,12 +125,27 @@ export default async function AuditCasePage({ params }: { params: Promise<{ case
             ) : <p className="text-sm text-slate-600">Not built yet.</p>}
             <div className="mt-3 flex flex-wrap gap-2">
               <ActionForm action={buildAuditPackageAction.bind(null, a.id)}><Button type="submit" variant="secondary">{a.package ? "Rebuild package" : "Build package"}</Button></ActionForm>
-              {a.canRelease && a.package && !a.releasedAt && <ActionForm action={releaseAuditPackageAction.bind(null, a.id)} confirm="Release the audit package to the client?"><Button type="submit">Release to client</Button></ActionForm>}
+              {a.canRelease && a.package && !a.releasedAt && (
+                <ActionForm action={releaseAuditPackageAction.bind(null, a.id)} confirm="Release the audit package to the client?" className="flex flex-wrap items-center gap-2">
+                  {a.open.length > 0 && <label className="flex items-center gap-1 text-xs"><input type="checkbox" name="acknowledgeOpenItems" /> Release marked “Not Fully Ready”</label>}
+                  <Button type="submit">Release to client</Button>
+                </ActionForm>
+              )}
             </div>
             {a.submittedAt && <p className="mt-2 text-sm"><Badge tone="green">Client submitted</Badge> {fmtDate(a.submittedAt)} by {a.submissionMethod}</p>}
-            <ActionForm action={auditStatusAction.bind(null, a.id)} className="mt-3 flex items-end gap-2">
+            {a.versions.length > 0 && (
+              <ul className="mt-3 space-y-1 text-xs" data-testid="audit-package-versions">
+                {a.versions.map((p) => <li key={p.id}><a className="underline" href={link(p.id)} target="_blank" rel="noreferrer">Version {p.version ?? 1}</a> · built {fmtDate(p.createdAt)}{p.publishedAt ? ` · released ${fmtDate(p.publishedAt)}` : ""}{p.supersededAt ? " · replaced" : " · current"}</li>)}
+              </ul>
+            )}
+            <ActionForm action={auditStatusAction.bind(null, a.id)} className="mt-3 space-y-2">
               <Field label="After submission"><select className="input" name="status" defaultValue={status === "CLOSED" ? "CLOSED" : "AWAITING_AGENCY"}><option value="AWAITING_AGENCY">Awaiting Agency Response</option><option value="CLOSED">Audit Closed</option></select></Field>
+              <Field label="Final resolution (required to close)"><textarea className="input" name="resolution" rows={2} defaultValue={a.resolution ?? ""} /></Field>
               <Button type="submit" variant="ghost">Set</Button>
+            </ActionForm>
+            <ActionForm action={agencyCorrespondenceAction.bind(null, a.id)} className="mt-3 flex flex-wrap items-end gap-2" resetOnSuccess>
+              <Field label="Agency response or later letter"><input className="input w-56" type="file" name="file" multiple required accept="application/pdf,image/*" /></Field>
+              <Button type="submit" variant="secondary">Add</Button>
             </ActionForm>
           </Card>
           <Card title="Notice details">
@@ -138,9 +159,27 @@ export default async function AuditCasePage({ params }: { params: Promise<{ case
             </ActionForm>
             <p className="mt-2 text-xs text-slate-600">Filed return: {a.filing ? `${a.filing.returnType} ${a.filing.jurisdiction} (${a.filing.filingStatus.toLowerCase()})` : "not found in Client Connect for this year"}</p>
           </Card>
-          <Card title="Notice and files">
-            <ul className="space-y-1 text-sm">{a.documents.map((d) => <li key={d.id}><a className="underline" href={link(d.id)} target="_blank" rel="noreferrer">{d.title}</a> <span className="text-xs text-slate-500">· {fmtDate(d.createdAt)}{d.uploadedByPortalId ? " · from client" : ""}</span></li>)}</ul>
+          <Card title="Notices, correspondence and files">
+            <ul className="space-y-1 text-sm">
+              {a.documents.map((d) => (
+                <li key={d.id}>
+                  <a className="underline" href={link(d.id)} target="_blank" rel="noreferrer">{d.title}</a> <span className="text-xs text-slate-500">· {fmtDate(d.createdAt)}{d.uploadedByPortalId ? " · from client" : ""}</span>
+                  {d.title.startsWith("Additional notice") && (
+                    <ActionForm action={splitNoticeAction.bind(null, a.id, d.id)} className="mt-1 flex items-center gap-1" confirm="Move this notice to its own audit?">
+                      <input className="input h-8 w-40 text-xs" name="reason" placeholder="Why it's separate" />
+                      <button type="submit" className="text-xs text-navy-700 underline">Separate audit</button>
+                    </ActionForm>
+                  )}
+                </li>
+              ))}
+            </ul>
             {a.clientMessage && <p className="mt-2 text-xs text-slate-600">Client: “{a.clientMessage}”</p>}
+            {a.resolution && <p className="mt-2 text-sm"><strong>Resolution:</strong> {a.resolution}</p>}
+          </Card>
+          <Card title="Audit history">
+            <ul className="max-h-96 space-y-1 overflow-y-auto text-xs" data-testid="audit-history">
+              {a.activity.map((e) => <li key={e.id}><span className="text-slate-500">{fmtDateTime(e.at)}</span> · {e.what} <span className="text-slate-500">({e.who})</span></li>)}
+            </ul>
           </Card>
         </div>
       </div>

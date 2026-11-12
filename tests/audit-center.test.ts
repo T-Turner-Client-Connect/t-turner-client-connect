@@ -7,7 +7,7 @@ import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-acco
 import { staffUploadDocument } from "@/lib/services/documents";
 import {
   addAuditItem, auditCaseView, auditDeadlineAlerts, buildAuditPackage, checkItem, linkAuditDocument, openAuditByClient, openAuditByStaff, portalAuditCase,
-  portalAuditPackage, portalAudits, recordAuditSubmission, releaseAuditPackage, requestAuditDocument, staffAuditCase, updateAuditDetails, updateAuditItem, uploadForAudit,
+  portalAuditPackage, portalAudits, recordAuditSubmission, releaseAuditPackage, requestAuditDocument, setAuditStatus, splitNoticeToNewAudit, staffAuditCase, updateAuditDetails, updateAuditItem, uploadForAudit,
 } from "@/lib/services/audit-center";
 
 // Fictional taxpayers, agencies and figures only.
@@ -35,8 +35,8 @@ async function world() {
   const drew = await makeUser("STAFF", "Drew Example");
   const c = await createClient(tabitha, { firstName: "Pat", lastName: "Fictional", clientType: "INDIVIDUAL", status: "ACTIVE", assignedToId: daria.id });
   const other = await createClient(tabitha, { firstName: "Other", lastName: "Taxpayer", clientType: "INDIVIDUAL", status: "ACTIVE" });
-  const login = async (clientId: string, email: string) => {
-    const { token } = await invitePortalUser(tabitha, clientId, { email, name: "Client", role: "OWNER" });
+  const login = async (clientId: string, email: string, role: "OWNER" | "AUTHORIZED_CONTACT" = "OWNER", permissions?: Record<string, boolean>) => {
+    const { token } = await invitePortalUser(tabitha, clientId, { email, name: "Client", role, permissions });
     const u = await acceptPortalInvite(token!, "Client-Pass-12345");
     return { id: u.id, name: u.name, email: u.email };
   };
@@ -46,7 +46,7 @@ async function world() {
   const filing = await prisma.filingRecord.create({ data: { clientId: c.id, taxYear: 2024, returnType: "1040", jurisdiction: "FEDERAL", filingStatus: "ACCEPTED" } });
   const ret = await staffUploadDocument(tabitha, { clientId: c.id, category: "TAXES", year: 2024, docType: "FEDERAL_RETURN", title: "2024 Form 1040 (filed)", visibility: "STAFF_ONLY", ...(await pdfOf("Form 1040 fictional return")) });
   await prisma.document.update({ where: { id: ret.id }, data: { filingId: filing.id, filingDocType: "RETURN" } });
-  return { tabitha, daria, drew, c, other, user, otherUser, filing };
+  return { tabitha, daria, drew, c, other, user, otherUser, filing, login };
 }
 
 describe("Tax Audit Preparation Center", () => {
@@ -176,5 +176,67 @@ describe("Tax Audit Preparation Center", () => {
     const titles = (await prisma.task.findMany({ where: { details: { contains: `[audit:${k.id}:deadline` } }, select: { title: true } })).map((t) => t.title);
     expect(titles.filter((t) => t.startsWith("Audit response due in")).length).toBe(4); // 14-day and 7-day, to Tabitha and Daria
     expect(titles.filter((t) => t.startsWith("Audit response deadline passed")).length).toBe(2);
+  });
+
+  it("another notice for the same agency and year joins the open audit (no duplicate case or request); a separate examination can be split off", async () => {
+    const w = await world();
+    const k = await openAuditByClient(w.user, w.c.id, { kind: "FEDERAL", taxYear: "2024" }, [await pdfOf("IRS Letter 566 fictional")]);
+    const item = await addAuditItem(w.daria, k.id, { label: "Schedule A — gifts to charity", reported: "100" });
+    const r1 = await requestAuditDocument(w.daria, item.id, { title: "Church receipt" });
+    const r2 = await requestAuditDocument(w.daria, item.id, { title: "Church receipt" });
+    expect(r2.id).toBe(r1.id);
+    const again = await openAuditByClient(w.user, w.c.id, { kind: "FEDERAL", taxYear: "2024" }, [await pdfOf("IRS follow-up letter fictional")]);
+    expect(again.id).toBe(k.id);
+    expect(await prisma.noticeCase.count({ where: { clientId: w.c.id, auditKind: "FEDERAL", taxYear: 2024 } })).toBe(1);
+    const extra = await prisma.document.findFirstOrThrow({ where: { noticeCaseId: k.id, title: { startsWith: "Additional notice" } } });
+    expect(await prisma.task.count({ where: { title: { startsWith: "Additional audit notice received" } } })).toBe(2);
+    // A different agency or year is its own audit: the state audit and the 2023 audit.
+    const st = await openAuditByClient(w.user, w.c.id, { kind: "STATE", stateCode: "AL", taxYear: "2024" }, [await pdfOf("AL notice")]);
+    const y23 = await openAuditByClient(w.user, w.c.id, { kind: "FEDERAL", taxYear: "2023" }, [await pdfOf("IRS 2023 notice")]);
+    expect(new Set([k.id, st.id, y23.id]).size).toBe(3);
+    // The follow-up turns out to be a separate examination: moved (not copied) to its own audit.
+    const docs = await prisma.document.count();
+    const sep = await splitNoticeToNewAudit(w.daria, extra.id, "Different notice number (fictional)");
+    expect(await prisma.document.count()).toBe(docs);
+    expect((await prisma.document.findUniqueOrThrow({ where: { id: extra.id } })).noticeCaseId).toBe(sep.id);
+    expect(await prisma.noticeCase.count({ where: { clientId: w.c.id, auditKind: "FEDERAL", taxYear: 2024 } })).toBe(2);
+  });
+
+  it("authorized users of the same account see the audit; a login without tax access doesn't", async () => {
+    const w = await world();
+    const k = await openAuditByClient(w.user, w.c.id, { kind: "FEDERAL", taxYear: "2024" }, [await pdfOf("notice")]);
+    const spouse = await w.login(w.c.id, "spouse@fictional.example", "AUTHORIZED_CONTACT", { canViewTax: true, canUpload: true });
+    const helper = await w.login(w.c.id, "helper@fictional.example", "AUTHORIZED_CONTACT", { canViewTax: false });
+    expect((await portalAuditCase(spouse, w.c.id, k.id)).id).toBe(k.id);
+    await expect(portalAuditCase(helper, w.c.id, k.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(portalAudits(helper, w.c.id)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("an incomplete audit is marked Not Fully Ready, can't be released without Tabitha accepting that, and closes only with a resolution", async () => {
+    const w = await world();
+    const k = await openAuditByClient(w.user, w.c.id, { kind: "FEDERAL", taxYear: "2024" }, [await pdfOf("notice")]);
+    const item = await addAuditItem(w.daria, k.id, { label: "Schedule C — supplies", schedule: "Schedule C", reported: "4000" });
+    await requestAuditDocument(w.daria, item.id, { title: "Supply receipts" });
+    const built = await buildAuditPackage(w.daria, k.id);
+    const doc = await prisma.document.findUniqueOrThrow({ where: { id: built.documentId }, include: { file: true } });
+    const { readDocumentBytes } = await import("@/lib/services/documents");
+    const { extractText, getDocumentProxy } = await import("unpdf");
+    const text = (await extractText(await getDocumentProxy(new Uint8Array((await readDocumentBytes(doc.file))!)), { mergePages: true })).text as string;
+    expect(text).toContain("Not Fully Ready");
+    expect(text).toContain("waiting for the client");
+    await expect(releaseAuditPackage(w.tabitha, k.id)).rejects.toThrow(/isn't fully ready/);
+    await releaseAuditPackage(w.tabitha, k.id, { acknowledgeOpenItems: true });
+    expect((await prisma.auditLog.findFirstOrThrow({ where: { action: "audit.package_released", entityId: k.id } })).details).toMatchObject({ openItems: expect.arrayContaining([expect.stringContaining("Supply receipts")]) });
+    // A revised package after release keeps the old version and needs a new release.
+    const r2 = await buildAuditPackage(w.daria, (await addAuditItem(w.daria, k.id, { label: "Schedule C — utilities", reported: "900" }), k.id));
+    expect(r2.documentId).not.toBe(built.documentId);
+    expect((await prisma.document.findUniqueOrThrow({ where: { id: built.documentId } })).supersededAt).not.toBeNull();
+    expect((await portalAuditCase(w.user, w.c.id, k.id)).packageReady).toBe(false);
+    await expect(setAuditStatus(w.daria, k.id, "CLOSED")).rejects.toThrow(/resolution/);
+    await setAuditStatus(w.daria, k.id, "CLOSED", "No change letter received (fictional).");
+    const v = (await staffAuditCase(w.daria, k.id));
+    expect([v.auditStatus, v.resolution]).toEqual(["CLOSED", "No change letter received (fictional)."]);
+    expect(v.versions.map((x) => x.version)).toEqual([2, 1]);
+    expect(v.activity.map((e) => e.what)).toEqual(expect.arrayContaining(["Client opened the audit and uploaded the notice", "Audit package built", "Audit package released to the client", "Missing document requested from the client"]));
   });
 });

@@ -6,7 +6,7 @@ import { requirePortalUser } from "@/lib/portal/session";
 import { requireUser } from "@/lib/auth/session";
 import { run, str, type ActionState } from "@/lib/action";
 import {
-  addAuditItem, buildAuditPackage, linkAuditDocument, openAuditByClient, openAuditByStaff, recordAuditSubmission, releaseAuditPackage,
+  addAgencyCorrespondence, addAuditItem, buildAuditPackage, splitNoticeToNewAudit, linkAuditDocument, openAuditByClient, openAuditByStaff, recordAuditSubmission, releaseAuditPackage,
   requestAuditDocument, setAuditStatus, staffUploadForAudit, unlinkAuditDocument, updateAuditDetails, updateAuditItem, uploadForAudit,
 } from "@/lib/services/audit-center";
 
@@ -22,7 +22,7 @@ export async function openAuditAction(clientId: string, _prev: ActionState, fd: 
   const r = await run(async () => {
     const k = await openAuditByClient(user, clientId, openInput(fd), await filesOf(fd));
     id = k.id;
-    return "Received — our office has your audit notice.";
+    return "addedTo" in k ? "Received — added to your open audit for the same tax year." : "Received — our office has your audit notice.";
   });
   if (id) { revalidatePath("/client", "layout"); redirect(`/client/audit/${id}?account=${clientId}`); }
   return r;
@@ -124,12 +124,25 @@ export async function buildAuditPackageAction(caseId: string, _prev: ActionState
   });
 }
 
-export async function releaseAuditPackageAction(caseId: string, _prev: ActionState, _fd: FormData): Promise<ActionState> {
+export async function releaseAuditPackageAction(caseId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
-  return run(async () => { await releaseAuditPackage(actor, caseId); refresh(caseId); return "Released. The client sees Audit Package — Ready to Print."; });
+  return run(async () => { await releaseAuditPackage(actor, caseId, { acknowledgeOpenItems: fd.get("acknowledgeOpenItems") === "on" }); refresh(caseId); return "Released. The client sees Audit Package — Ready to Print."; });
+}
+
+export async function splitNoticeAction(caseId: string, documentId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  let id = "";
+  const r = await run(async () => { id = (await splitNoticeToNewAudit(actor, documentId, str(fd, "reason") || "A separate examination")).id; return "Moved to its own audit."; });
+  if (id) { refresh(caseId); redirect(`/notices/${id}`); }
+  return r;
+}
+
+export async function agencyCorrespondenceAction(caseId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => { await addAgencyCorrespondence(actor, caseId, await filesOf(fd), str(fd, "note")); refresh(caseId); return "Added to the audit."; });
 }
 
 export async function auditStatusAction(caseId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const actor = await requireUser();
-  return run(async () => { await setAuditStatus(actor, caseId, str(fd, "status")); refresh(caseId); return "Status saved."; });
+  return run(async () => { await setAuditStatus(actor, caseId, str(fd, "status"), str(fd, "resolution")); refresh(caseId); return "Status saved."; });
 }
