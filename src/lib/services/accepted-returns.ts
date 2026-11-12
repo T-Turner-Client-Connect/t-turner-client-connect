@@ -281,8 +281,6 @@ export async function deliverAcceptedReturn(actor: Actor, input: DeliverInput): 
     const alreadyAccepted = filing?.filingStatus === "ACCEPTED";
     const returnFile = e.returnFile?.bytes.length ? e.returnFile : input.combinedReturn?.bytes.length ? input.combinedReturn : null;
     if (!returnFile) throw new ValidationError(`Choose the return PDF for the ${what} return (or one combined PDF).`);
-    // The return itself is read and matched to this client, year and form before anything is saved.
-    await (await import("./return-gate")).checkReturnUpload(actor, { clientId: input.clientId, taxYear: input.taxYear, jurisdiction, filingType: input.filingType, returnType }, returnFile);
     const ackFile = e.ackFile?.bytes.length ? e.ackFile : null;
     let acceptedAt: Date | null = null;
     let gate: Gate = { note: null, details: {} };

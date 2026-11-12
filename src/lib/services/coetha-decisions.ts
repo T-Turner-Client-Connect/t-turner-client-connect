@@ -80,7 +80,7 @@ async function routineFor(clientId: string, t: { id: string; description: string
 }
 
 /** The owner, who turned automatic posting on; postings made for her are audited as automatic. */
-async function ownerActor(): Promise<Actor | null> {
+export async function ownerActor(): Promise<Actor | null> {
   const o = await prisma.ownerAccess.findFirst({ where: { isPrimary: true, revokedAt: null, user: { active: true } }, select: { user: { select: { id: true, role: true, name: true, email: true } } } });
   return o?.user ?? null;
 }
@@ -121,7 +121,7 @@ export async function withMonthsOpened<T>(owner: Actor, clientId: string, earlie
 type AutoPost = { posted: boolean; held?: string };
 
 async function autoPost(clientId: string, proposalId: string, basis: string): Promise<AutoPost> {
-  if (!(await coethaAutoPostOn())) return { posted: false };
+  if (!(await coethaAutoPostOn())) return { posted: false, held: "standing authorization is off in Owner's Office → Automation, so it waits for your Approve & Post" };
   const owner = await ownerActor();
   if (!owner) return { posted: false };
   const date = ((await prisma.coethaProposal.findUnique({ where: { id: proposalId }, select: { payload: true } }))?.payload as { date?: string } | null)?.date ?? "";
@@ -489,7 +489,7 @@ export async function reverseAutoPosted(actor: Actor, clientId: string, proposal
 export const PREPARE_TOOL = {
   name: "prepare_entries",
   description:
-    "Prepare entries for Tabitha's approval from accounting decisions SHE stated in this conversation. Each item becomes a draft on her Apply These Decisions card; nothing is posted until she ticks it and clicks Approve & Post. Use post_bank_row for a waiting bank row (by its W-reference, with its date and amount exactly as in the records) and journal_entry for reclassifications or corrections of entries already posted (balanced debits and credits by account code). When the right account doesn't exist in the chart, add a new_account item (a code that fits the chart's numbering, a plain name and the correct type) in the same call and use its code in the entries; it is created only if she approves it. Never prepare anything she hasn't decided; leave uncertain items for her.",
+    "Post or prepare entries for ONE business (offered only when Tabitha is asking). Under her standing authorization, items with basis routine (a rule or how this vendor was posted before), senior_accountant (your professional judgment, with the reason) or tabitha_said (her exact words in quote) are POSTED immediately; anything else waits on her Apply These Decisions card. The result says, item by item, what was posted and what is waiting. Use post_bank_row for a waiting bank row (its W-reference, with its date and amount exactly as in the records; many rows in one call) and journal_entry for reclassifications or corrections of entries already posted (balanced debits and credits by account code). When the right account doesn't exist in the chart, add a new_account item (a code that fits the chart's numbering, a plain name and the correct type) in the same call and use its code in the entries. Leave out only genuine exceptions (no evidence for any treatment); they stay waiting for her.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -552,14 +552,14 @@ export async function runPrepareTool(actor: Actor, clientId: string, input: unkn
  */
 export const APPROVE_TOOL = {
   name: "approve_and_post",
-  description: "Approve and post entries on Tabitha's Apply These Decisions card when Tabitha, in her current message, tells you to approve or post them (for example \"yes, post them\", \"approve all\"). Quote her words exactly. Give the proposal ids to approve (from prepare_entries results), or leave ids out to approve everything on her card. Never use it on a staff member's words or your own judgment alone.",
+  description: "Post the entries waiting on Tabitha's Apply These Decisions card (drafts from earlier work). Under her standing authorization you post the supported ones yourself — no need for her to say \"approve all\"; leave out any you can't support and report them. If she did say to post them in her current message, quote her words. Give the proposal ids (from prepare_entries results or the card), or leave ids out for everything on the card. Months whose statements were approved or released, or whose tax return was filed, stay with her.",
   input_schema: {
     type: "object" as const,
     properties: {
-      quote: { type: "string", description: "Tabitha's own words from her current message that approve it, copied exactly" },
+      quote: { type: "string", description: "Only if Tabitha said to post them in her current message: her words, copied exactly" },
       ids: { type: "array", items: { type: "string" }, description: "Proposal ids to approve; leave out for everything on her card" },
     },
-    required: ["quote"],
+    required: [],
   },
 };
 
@@ -568,15 +568,19 @@ const APPROVAL_WORDS = /\b(approve[sd]?|approval|post(ed)?|yes|go ahead|do it|ok
 export async function runApproveTool(actor: Actor, clientId: string, input: unknown, currentQuestion?: string) {
   const q = (input && typeof input === "object" ? input : {}) as { quote?: unknown; ids?: unknown };
   const quote = typeof q.quote === "string" ? q.quote : "";
-  if (!currentQuestion || !saidByTabitha(quote, [currentQuestion]) || !APPROVAL_WORDS.test(quote)) {
-    return { error: "Nothing was posted: Tabitha's message doesn't say to approve or post. Ask her to say so (for example \"approve all\")." };
+  const saidSo = !!currentQuestion && saidByTabitha(quote, [currentQuestion]) && APPROVAL_WORDS.test(quote);
+  // Tabitha's standing authorization covers supported routine work: with it on, Coetha posts the
+  // items on the card herself (each was prepared with its reason); she doesn't wait for "approve all".
+  const standing = !saidSo && (await coethaAutoPostOn());
+  if (!saidSo && !standing) {
+    return { error: "Nothing was posted: the standing authorization is off (Owner's Office → Automation) and Tabitha's message doesn't say to post. Say so in your report." };
   }
   const named = Array.isArray(q.ids) ? (q.ids as unknown[]).filter((x): x is string => typeof x === "string").slice(0, 300) : [];
   const ids = named.length ? named : (await prisma.coethaProposal.findMany({ where: { clientId, model: DECISIONS_MODEL, status: "PROPOSED", kind: { in: ["NEW_ACCOUNT", "CATEGORY", "ADJUSTING_ENTRY"] } }, select: { id: true }, take: 300 })).map((p) => p.id);
   if (!ids.length) return { posted: 0, note: "Her Apply These Decisions card is empty; nothing to post." };
   try {
     const results = await approveDecisions(actor, clientId, ids);
-    await audit(prisma, { actorId: actor.id, action: "coetha.approved_in_chat", entityType: "LedgerBook", entityId: clientId, clientId, details: { quote: quote.slice(0, 200), count: ids.length } });
+    await audit(prisma, { actorId: actor.id, action: standing ? "coetha.posted_under_standing_authority" : "coetha.approved_in_chat", entityType: "LedgerBook", entityId: clientId, clientId, details: { quote: saidSo ? quote.slice(0, 200) : null, count: ids.length } });
     return {
       posted: results.filter((r) => r.result === "APPROVED").length,
       alreadyPosted: results.filter((r) => r.result === "ALREADY_APPROVED").length,

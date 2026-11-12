@@ -9,11 +9,6 @@ import { taxSeasonProgress } from "@/lib/services/tax-season";
 import { seasonSteps, type SeasonInput } from "@/lib/tax/season-steps";
 import { TaxesTab } from "@/components/client-tabs/taxes";
 import { DocumentsTab } from "@/components/client-tabs/documents";
-import { setReturnGate } from "@/lib/services/return-gate";
-
-// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
-beforeEach(() => setReturnGate(async () => "VERIFIED"));
-afterEach(() => setReturnGate(null));
 
 /** The staff Taxes tab in tax-season order (Step 1 → 2 → 3, then Filing history). Fictional client only. */
 const pdf = (tag: string) => new TextEncoder().encode(`%PDF-1.4\n% fictional ${tag}\n`);

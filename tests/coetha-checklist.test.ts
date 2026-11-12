@@ -110,7 +110,7 @@ describe("Coetha and the Monthly Progress checklist", () => {
   it("a question answered in the background (files attached) still has Coetha's tools: preparing entries, memory and the checklist", async () => {
     const s = await setup();
     const q = await prisma.coethaChatMessage.create({ data: { clientId: s.biz.id, role: "USER", text: "Book Cari's payroll to 3100 (fictional).", authorId: s.tabitha.id, status: "WAITING", jobIds: [] } });
-    await answerQuestion(s.tabitha, s.biz.id, q.id, "Fictional register: gross $1,000.00.", { quick: true });
+    await answerQuestion(s.tabitha, s.biz.id, q.id, "Fictional register: gross $1,000.00.");
     expect(sentTools[0]).toEqual(expect.arrayContaining(["prepare_entries", "monthly_checklist", "update_checklist", "search_bank_transactions"]));
   });
 });

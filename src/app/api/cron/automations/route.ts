@@ -11,7 +11,6 @@ import { runAccessReviewReminders } from "@/lib/services/access-review";
 import { generateCycles } from "@/lib/services/payroll-taxes";
 import { runPayrollReminders } from "@/lib/services/payroll-reminders";
 import { auditDeadlineAlerts } from "@/lib/services/audit-center";
-import { purgeExpiredHolds } from "@/lib/services/return-gate";
 
 // Called hourly by netlify/functions/automations-cron.mts with CRON_SECRET.
 export async function POST(req: Request) {
@@ -50,7 +49,5 @@ export async function POST(req: Request) {
   const payrollReminders = await runPayrollReminders().catch(() => ({ error: "failed" }));
   // Audit response deadlines 14 and 7 days out, and passed: one office task each (idempotent).
   const auditDeadlines = await auditDeadlineAlerts().catch(() => ({ error: "failed" }));
-  // Held (unverified) tax returns nobody reviewed within the hold period are removed.
-  const expiredReturnHolds = await purgeExpiredHolds().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders, auditDeadlines, expiredReturnHolds });
+  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders, auditDeadlines });
 }

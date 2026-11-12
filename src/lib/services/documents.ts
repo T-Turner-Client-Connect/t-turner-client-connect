@@ -206,8 +206,6 @@ export type StaffUploadInput = {
   duplicateChecked?: boolean;
   /** A larger size limit (Coetha's background reading only; files arrive in pieces). */
   maxBytes?: number;
-  /** For a completed return: which return it is (checked against what's printed in it). */
-  returnCheck?: { jurisdiction: string; filingType: "ORIGINAL" | "AMENDED"; returnType?: string | null };
 };
 
 /** Categories that belong to one business owner (Document.businessOwnerId) and open only for them (plus staff). */
@@ -235,17 +233,6 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
     if (input.category === "OWNER_PERSONAL" && !input.year) throw new ValidationError("Choose the tax year this document is for.");
   } else if (input.businessOwnerId) {
     throw new ValidationError("Only a K-1 (owner) or an owner's personal document is linked to an owner.");
-  }
-  // A completed tax return is read and matched to this client and year before it is stored.
-  if (input.category === "TAXES" && input.docType && RETURN_DOC_TYPES.includes(input.docType)) {
-    if (!input.year) throw new ValidationError("Enter the tax year of the return.");
-    const { checkReturnUpload } = await import("./return-gate");
-    const rc = input.returnCheck ?? {
-      jurisdiction: input.docType === "FEDERAL_RETURN" ? "FEDERAL" : input.docType === "STATE_RETURN" ? (client.state?.trim().toUpperCase() || "ANY") : "ANY",
-      filingType: input.docType === "AMENDED_RETURN" ? ("AMENDED" as const) : ("ORIGINAL" as const),
-      returnType: null,
-    };
-    await checkReturnUpload(actor, { clientId: input.clientId, taxYear: input.year, ...rc }, { bytes: input.bytes, originalName: input.originalName });
   }
   const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.duplicateChecked ? undefined : input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT", maxBytes: input.maxBytes });
   try {
