@@ -107,6 +107,7 @@ export async function uploadDocumentAction(fixedClientId: string | null, _prev: 
       visibility: (str(fd, "visibility") || "STAFF_ONLY") as DocumentVisibility,
       reportType: (str(fd, "reportType") || null) as ReportType | null,
       periodId: str(fd, "periodId") || null,
+      returnConfirmation: str(fd, "returnConfirmNote") || null,
       ...file,
     });
     refresh(clientId);

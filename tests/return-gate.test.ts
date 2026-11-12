@@ -178,3 +178,117 @@ describe("Tax return upload verification", () => {
     expect(await heldReturns(s.mary.id)).toEqual([]);
   });
 });
+
+describe("Real-world return layouts and the one-step confirmation", () => {
+  // A fillable return whose name is typed into form fields (not in the page text).
+  async function fillable(year: number, first: string, last: string) {
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const p = d.addPage([612, 792]);
+    let y = 760;
+    for (const l of [`Form 1040 U.S. Individual Income Tax Return ${year}`, `For the year Jan. 1-Dec. 31, ${year}, or other tax year beginning`, "Your first name and middle initial    Last name    Your social security number", "Filing Status"]) {
+      p.drawText(l, { x: 40, y, size: 10, font: f });
+      y -= 14;
+    }
+    const form = d.getForm();
+    const fn = form.createTextField("topmostSubform[0].Page1[0].f1_04[0]");
+    fn.setText(first);
+    fn.addToPage(p, { x: 40, y: 600, width: 150, height: 14 });
+    const ln = form.createTextField("topmostSubform[0].Page1[0].f1_05[0]");
+    ln.setText(last);
+    ln.addToPage(p, { x: 200, y: 600, width: 150, height: 14 });
+    return d.save();
+  }
+
+  it("reads a name typed into the return's form fields", async () => {
+    const s = await setup();
+    await upload(s.tabitha, s.mary.id, 2023, "FEDERAL_RETURN", await file(fillable(2023, "Mary", "Johnson")));
+    expect(await docs(s.mary.id)).toBe(1);
+  });
+
+  it("finds the form title and year further down the page (boilerplate printed first)", async () => {
+    const s = await setup();
+    const boiler = Array.from({ length: 30 }, (_, i) => `Department of the Treasury Internal Revenue Service OMB No. 1545-0074 IRS Use Only line ${i}`);
+    await upload(s.tabitha, s.mary.id, 2022, "FEDERAL_RETURN", await file(pdf([...boiler, "Form 1040 U.S. Individual Income Tax Return", "For the year Jan. 1-Dec. 31, 2022, or other tax year beginning", "Your first name and middle initial    Last name", "Mary    Johnson"])));
+    expect(await docs(s.mary.id)).toBe(1);
+  });
+
+  it("a return whose name can't be read is held (uncertain), never rejected as another taxpayer", async () => {
+    const s = await setup();
+    await expect(upload(s.daria, s.mary.id, 2024, "FEDERAL_RETURN", await file(pdf(["Form 1040 2024 U.S. Individual Income Tax Return", "For the year Jan. 1-Dec. 31, 2024", "Your first name and middle initial    Last name"])))).rejects.toThrow(/name couldn't be read.*Tabitha or an Admin can confirm/);
+    expect(await prisma.returnUploadHold.count({ where: { clientId: s.mary.id } })).toBe(1);
+  });
+
+  it("Tabitha or an Admin confirms an unreadable scan in the same upload; staff can't; a mismatch is still refused", async () => {
+    const s = await setup();
+    // Staff: the note is ignored and the scan is held.
+    await expect(staffUploadDocument(s.daria, { clientId: s.mary.id, category: "TAXES", docType: "FEDERAL_RETURN", year: 2023, visibility: "STAFF_ONLY", returnConfirmation: "Opened the PDF: Mary Johnson, 2023 Form 1040", ...(await file(SCAN, "scan.pdf")) })).rejects.toThrow(/Tabitha or an Admin can confirm/);
+    expect(await docs(s.mary.id)).toBe(0);
+    // Too short a note.
+    await expect(staffUploadDocument(s.tabitha, { clientId: s.mary.id, category: "TAXES", docType: "FEDERAL_RETURN", year: 2023, visibility: "STAFF_ONLY", returnConfirmation: "ok", ...(await file(SCAN, "scan.pdf")) })).rejects.toThrow(/Say how you confirmed/);
+    // Tabitha: saved at once, with a recorded verification and audit entry.
+    await staffUploadDocument(s.tabitha, { clientId: s.mary.id, category: "TAXES", docType: "FEDERAL_RETURN", year: 2023, visibility: "STAFF_ONLY", returnConfirmation: "Opened the PDF: Mary Johnson, 2023 Form 1040", ...(await file(SCAN, "scan.pdf")) });
+    expect(await docs(s.mary.id)).toBe(1);
+    expect(await prisma.returnVerification.count({ where: { clientId: s.mary.id, taxYear: 2023 } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "tax.return_upload_confirmed", clientId: s.mary.id } })).toBe(1);
+    // Finish & Send takes the same note.
+    await deliverAcceptedReturn(s.tabitha, { clientId: s.mary.id, taxYear: 2022, filingType: "ORIGINAL", filings: [{ jurisdiction: "FEDERAL", returnType: "1040", acceptedOn: "2023-03-01" }], combinedReturn: await file(new TextEncoder().encode("%PDF-1.4\n% another fictional scan 2022\n"), "2022.pdf"), verificationNote: "IRS e-file acknowledgment checked", owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON }, returnConfirmation: "Opened the PDF: Mary Johnson, 2022 Form 1040" });
+    expect(await prisma.returnVerification.count({ where: { clientId: s.mary.id, taxYear: 2022 } })).toBe(1);
+    // A positive mismatch can't be confirmed past.
+    await expect(staffUploadDocument(s.tabitha, { clientId: s.mary.id, category: "TAXES", docType: "FEDERAL_RETURN", year: 2024, visibility: "STAFF_ONLY", returnConfirmation: "Opened the PDF and checked it carefully", ...(await file(f1040(2024, "Sarah", "Williams"))) })).rejects.toThrow(/does not match the selected client/);
+    await expect(staffUploadDocument(s.tabitha, { clientId: s.mary.id, category: "TAXES", docType: "FEDERAL_RETURN", year: 2024, visibility: "STAFF_ONLY", returnConfirmation: "Opened the PDF and checked it carefully", ...(await file(f1040(2021, "Mary", "Johnson"))) })).rejects.toThrow(/tax year 2021, but you selected 2024/);
+  });
+});
+
+describe("Name layouts as TaxAct prints them (fictional people)", () => {
+  const head = (y: number) => [`Form 1040 U.S. Individual Income Tax Return ${y}`, `For the year Jan. 1-Dec. 31, ${y}, or other tax year beginning`];
+
+  it("a single filer whose name line is empty in the text: the spouse label below is never read as a name", async () => {
+    const s = await setup();
+    const blank = pdf([...head(2023), "Your first name and middle initial    Last name    Your social security number", "If joint return, spouse's first name and middle initial    Last name    Spouse's social security number", "Home address (number and street)", "Filing Status  [X] Single"]);
+    // Held for verification — not "does not match".
+    await expect(upload(s.daria, s.sarah.id, 2023, "FEDERAL_RETURN", await file(blank))).rejects.toThrow(/name couldn't be read/);
+    expect(await prisma.returnUploadHold.count({ where: { clientId: s.sarah.id } })).toBe(1);
+  });
+
+  it("names on the label's own line, in capitals, with a middle name, an initial or a suffix", async () => {
+    const s = await setup();
+    await upload(s.tabitha, s.sarah.id, 2022, "FEDERAL_RETURN", await file(pdf([...head(2022), "Your first name and middle initial SARAH Last name WILLIAMS Your social security number 000-00-0003", "Filing Status [X] Single"])));
+    await upload(s.tabitha, s.sarah.id, 2023, "FEDERAL_RETURN", await file(pdf([...head(2023), "Your first name and middle initial    Last name    Your social security number", "SARAH ANNE    WILLIAMS    000-00-0003"])));
+    await upload(s.tabitha, s.sarah.id, 2024, "FEDERAL_RETURN", await file(pdf([...head(2024), "Your first name and middle initial    Last name    Your social security number", "SARAH J    WILLIAMS JR    000-00-0003"])));
+    expect(await docs(s.sarah.id)).toBe(3);
+    // A clearly different taxpayer is still refused.
+    await expect(upload(s.tabitha, s.sarah.id, 2025, "FEDERAL_RETURN", await file(pdf([...head(2025), "Your first name and middle initial    Last name    Your social security number", "ROBERT T    MILLER    000-00-0009"])))).rejects.toThrow(/does not match the selected client/);
+    expect(await docs(s.sarah.id)).toBe(3);
+  });
+
+  it("joint return in capitals with the spouse on file; a different spouse is refused", async () => {
+    const s = await setup();
+    const joint = (spouse: string) => pdf([...head(2024), "Your first name and middle initial    Last name    Your social security number", "MARY E    JOHNSON    000-00-0001", "If joint return, spouse's first name and middle initial    Last name    Spouse's social security number", `${spouse}    JOHNSON    000-00-0002`, "Filing Status [X] Married filing jointly"]);
+    await upload(s.tabitha, s.mary.id, 2024, "FEDERAL_RETURN", await file(joint("ROBERT")));
+    expect(await docs(s.mary.id)).toBe(1);
+    // Same last name, different first name: held for a person to check, not saved.
+    await expect(upload(s.tabitha, s.mary.id, 2024, "FEDERAL_RETURN", await file(joint("DAVID")))).rejects.toThrow(/spouse's name on the return is close to/);
+    expect(await docs(s.mary.id)).toBe(1);
+  });
+
+  it("business: an unreadable name is held; a different EIN is refused", async () => {
+    const s = await setup();
+    await expect(upload(s.daria, s.acme.id, 2024, "FEDERAL_RETURN", await file(pdf(["Form 1065 U.S. Return of Partnership Income 2024", "For calendar year 2024 or tax year beginning"])))).rejects.toThrow(/business name couldn't be read/);
+    await expect(upload(s.tabitha, s.acme.id, 2024, "FEDERAL_RETURN", await file(biz("1065", "U.S. Return of Partnership Income", 2024, "Fictional Widgets LLC", "11-1111111")))).rejects.toThrow(/EIN on this return does not match/);
+    await upload(s.tabitha, s.acme.id, 2024, "FEDERAL_RETURN", await file(biz("1065", "U.S. Return of Partnership Income", 2024, "Fictional Widgets LLC", "12-3456789")));
+    expect(await docs(s.acme.id)).toBe(1);
+  });
+
+  it("every upload location accepts a correctly matched return: Documents, Finish & Send, bulk upload", async () => {
+    const s = await setup();
+    const ret = (y: number) => pdf([...head(y), "Your first name and middle initial    Last name    Your social security number", "SARAH    WILLIAMS    000-00-0003"]);
+    await upload(s.tabitha, s.sarah.id, 2022, "FEDERAL_RETURN", await file(ret(2022)));
+    const r = await deliver(s.tabitha, s.sarah.id, 2023, [{ jurisdiction: "FEDERAL", returnType: "1040" }], await file(ret(2023)));
+    expect(r.results[0].outcome).toBe("accepted");
+    const [a] = await bulkUploadReturns(s.tabitha, [await file(ret(2024), "williams-2024.pdf")]);
+    await prisma.filingRecord.create({ data: { clientId: s.sarah.id, taxYear: 2024, returnType: "1040", jurisdiction: "FEDERAL", filingStatus: "ACCEPTED" } });
+    await confirmIntake(s.tabitha, a.intakeId!, { clientId: s.sarah.id, taxYear: 2024, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
+    expect(await prisma.document.count({ where: { clientId: s.sarah.id, year: { in: [2022, 2023, 2024] }, category: "TAXES" } })).toBeGreaterThanOrEqual(3);
+  });
+});

@@ -1,4 +1,5 @@
 import { ActionForm } from "@/components/action-form";
+import { ReturnConfirmField } from "@/components/return-confirm-field";
 import { Button, Field } from "@/components/ui";
 import { uploadDocumentAction } from "@/app/actions/workspace";
 import { REPORT_LABELS, STAFF_CATEGORY_LABELS } from "@/lib/services/documents";
@@ -50,6 +51,7 @@ export function UploadDocumentForm({ clientId, clients, delivery }: { clientId?:
         </select>
       </Field>
       {clientId && delivery?.owner && <OwnerReturnInline ctx={delivery} />}
+      <ReturnConfirmField className="sm:col-span-2" />
       <fieldset className="space-y-1 text-sm sm:col-span-2">
         <legend className="mb-1 font-semibold text-navy-900">Who can see it</legend>
         <label className="flex items-center gap-2"><input type="radio" name="visibility" value="STAFF_ONLY" defaultChecked /> Staff-only draft</label>

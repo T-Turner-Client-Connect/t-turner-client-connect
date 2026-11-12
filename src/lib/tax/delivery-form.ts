@@ -49,6 +49,7 @@ export async function deliveryFrom(fd: FormData, clientId: string, combined: Del
     filings: await filingsFrom(fd),
     combinedReturn: combined,
     verificationNote: str(fd, "verificationNote"),
+    returnConfirmation: str(fd, "returnConfirmNote") || null,
     owner: ownerFrom(fd),
     relabelAck: fd.get("relabelAck") === "on",
     closeDraftSummary: fd.get("closeDraftSummary") === "on",

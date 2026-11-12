@@ -19,7 +19,15 @@ import { ValidationError } from "./clients";
  *               establishes a verified match. It is then accepted when uploaded again.
  */
 
-export type ReturnCheck = { clientId: string; taxYear: number; jurisdiction: string; filingType: "ORIGINAL" | "AMENDED"; returnType?: string | null };
+export type ReturnCheck = {
+  clientId: string; taxYear: number; jurisdiction: string; filingType: "ORIGINAL" | "AMENDED"; returnType?: string | null;
+  /**
+   * Tabitha or an Admin who opened the return and confirmed it is this client's return for this
+   * year: how they checked. Used only when the reader is UNCERTAIN (never for a rejection), and
+   * recorded as a verification, so the return is saved in the same upload instead of being held.
+   */
+  confirmation?: string | null;
+};
 
 /** Held files that nobody reviews are removed after this many days. */
 export const HOLD_DAYS = 7;
@@ -64,9 +72,30 @@ export async function expectedFor(c: ReturnCheck): Promise<Expected> {
   };
 }
 
+/**
+ * The values typed into a fillable PDF's form fields (a return printed with its fields still live).
+ * The page text alone doesn't include them, so names and years in fields would otherwise be missed.
+ */
+async function formFieldText(bytes: Uint8Array): Promise<string> {
+  try {
+    const { PDFDocument, PDFTextField } = await import("pdf-lib");
+    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+    return doc.getForm().getFields()
+      .map((f) => (f instanceof PDFTextField ? f.getText() ?? "" : ""))
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .join("\n");
+  } catch {
+    return "";
+  }
+}
+
 async function verdictFor(bytes: Uint8Array, c: ReturnCheck): Promise<Verdict> {
   const pages = await pdfToPages(bytes);
-  return checkIdentity(pages ? readReturn(pages) : null, await expectedFor(c));
+  const fields = await formFieldText(bytes);
+  // Field values go after the first page's printed text (the name and year search covers them).
+  const all = pages?.length && fields ? pages.map((p, i) => (i === 0 ? { ...p, text: `${p.text}\n${fields}` } : p)) : pages;
+  return checkIdentity(all ? readReturn(all) : null, await expectedFor(c));
 }
 
 /**
@@ -86,6 +115,17 @@ export async function checkReturnUpload(actor: Actor, c: ReturnCheck, file: { by
   }
   const v = await verdictFor(file.bytes, c);
   if (v.result === "VERIFIED") return { result: v.result, reviewed: false };
+  if (v.result === "UNCERTAIN" && c.confirmation?.trim() && canReviewHolds(actor)) {
+    const note = c.confirmation.trim();
+    if (note.length < 10) throw new ValidationError("Say how you confirmed the return (for example, “Opened the PDF: Jane Doe, 2023 Form 1040”).");
+    await prisma.returnVerification.upsert({
+      where: { clientId_taxYear_jurisdiction_filingType_sha256: { clientId: c.clientId, taxYear: c.taxYear, jurisdiction: c.jurisdiction, filingType: c.filingType, sha256: digest } },
+      create: { clientId: c.clientId, taxYear: c.taxYear, jurisdiction: c.jurisdiction, filingType: c.filingType, sha256: digest, verifiedById: actor.id, note: note.slice(0, 500) },
+      update: {},
+    });
+    await audit(prisma, { actorId: actor.id, action: "tax.return_upload_confirmed", entityType: "Client", entityId: c.clientId, clientId: c.clientId, details: { clientId: c.clientId, taxYear: c.taxYear, jurisdiction: c.jurisdiction, filingType: c.filingType, sha256: digest, codes: v.reasons.map((r) => r.code), note: note.slice(0, 500) } });
+    return { result: "VERIFIED" as const, reviewed: true };
+  }
   if (v.result === "REJECTED") {
     await audit(prisma, { actorId: actor.id, action: "tax.return_upload_rejected", entityType: "Client", entityId: c.clientId, clientId: c.clientId, details: { ...c, code: v.reason.code, sha256: digest } });
     throw new ValidationError(v.reason.message);
@@ -107,8 +147,12 @@ async function hold(actor: Actor, c: ReturnCheck, file: { bytes: Uint8Array; ori
     });
     await audit(prisma, { actorId: actor.id, action: "tax.return_upload_held", entityType: "ReturnUploadHold", entityId: h.id, clientId: c.clientId, details: { ...c, codes: reasons.map((r) => r.code) } });
   }
-  const first = reasons[0]?.message ?? MSG.NOT_VERIFIABLE;
-  throw Object.assign(new ValidationError(`${first} The file is held for verification (it isn't in the client's records). Tabitha or an Admin can verify it in this client's Taxes tab → Returns held for verification.`), {
+  const why = reasons.map((r) => r.message).join(" ") || MSG.NOT_VERIFIABLE;
+  const head = reasons.some((r) => r.code === "UNREADABLE") ? MSG.NOT_VERIFIABLE : "Not saved yet — the return couldn't be confirmed automatically.";
+  const next = canReviewHolds(actor)
+    ? "You can confirm it yourself: open the PDF, check the name and year, type how you checked under “I checked this return” and upload again — or verify it under Returns held for verification."
+    : "Tabitha or an Admin can confirm it (Taxes tab → Returns held for verification).";
+  throw Object.assign(new ValidationError(`${head} ${why === MSG.NOT_VERIFIABLE ? "" : why} ${next}`.replace(/\s+/g, " ").trim()), {
     next: { href: `/clients/${c.clientId}?tab=taxes&taxYear=${c.taxYear}#held-returns`, label: "Returns held for verification" },
   });
 }

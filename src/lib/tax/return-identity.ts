@@ -103,8 +103,12 @@ function yearFrom(page: string, family: ReturnFamily | null): number | null {
     const m = /calendar\s*year\s*(20\d\d)|tax\s*year\s*(?:ending|ended)?[^\n]{0,30}?(20\d\d)/i.exec(page);
     return m ? Number(m[1] ?? m[2]) : null;
   }
-  const cal = /for\s*(?:the\s*)?calendar\s*year\s*(20\d\d)|for\s*the\s*year\s*jan\.?\s*1\s*[-–—]\s*dec\.?\s*31,?\s*(20\d\d)/i.exec(head);
+  // The strongest signals, wherever the PDF's text order puts them on the page: "For the year
+  // Jan. 1–Dec. 31, 2023", "calendar year 2023", and the running header "Form 1040 (2023)".
+  const cal = /for\s*(?:the\s*)?calendar\s*year\s*(20\d\d)|for\s*the\s*year\s*jan\.?\s*1\s*[-–—]?\s*dec\.?\s*31,?\s*(20\d\d)/i.exec(page);
   if (cal) return Number(cal[1] ?? cal[2]);
+  const header = /form\s*(?:1040(?:[-—–\s]?(?:SR|X))?|1065|1120(?:[-—–\s]?S)?|1041|990(?:[-—–\s]?EZ)?|40|40NR|65|20C|20S|41)\s*\((20\d\d)\)/i.exec(page);
+  if (header) return Number(header[1]);
   // "Form 1040 2025", "2025 Form 40", "Form 1120-S (2025)" — skip "(Rev. …)" and catalog numbers.
   const cleaned = head.replace(/\(?rev\.?\s*[a-z]*\.?\s*20\d\d\)?/gi, " ").replace(/cat\.?\s*no\.?\s*\d+\w*/gi, " ");
   const m = /(?<![\d,$.\/-])(20\d\d)(?![\d,%])/.exec(cleaned);
@@ -113,20 +117,39 @@ function yearFrom(page: string, family: ReturnFamily | null): number | null {
 
 const NAME_TOKEN = String.raw`[A-Za-z][A-Za-z'’.\-]*`;
 
+// Words that belong to the form's printed labels, never to a person's name.
+const LABEL_WORDS = /\b(?:if|joint|return|spouse|spouse's|first|last|name|names|middle|initial|initials|your|social|security|number|ssn|filing|status|form|income|address|total|dependents?|home|wages|street|city|apt|state|zip|code|presidential|election|campaign|check|here|single|married|head|household|qualifying|surviving|foreign|country|province|county|department|treasury|internal|revenue|service|omb|irs|use|only|do|not|write|staple|space|tax|year|beginning|ending|see|instructions|page)\b/i;
+const SUFFIX = /^(?:jr|sr|ii|iii|iv|v)\.?$/i;
+
+/** A printed line that is just a person's name (first, optional middle names or initials, last, optional suffix). */
+function nameFromLine(line: string): Person | null {
+  const clean = line
+    .replace(/\b(?:\d{3}|XXX)[- ]?(?:\d{2}|XX)[- ]?\d{4}\b/gi, " ")
+    .replace(/[:|,]/g, " ")
+    .trim();
+  if (!clean || /\d/.test(clean) || LABEL_WORDS.test(clean)) return null;
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (!words.every((w) => new RegExp(`^${NAME_TOKEN}$`).test(w))) return null;
+  while (words.length > 2 && SUFFIX.test(words[words.length - 1])) words.pop();
+  // "MARY A JOHNSON", "Mary Ann Johnson", "MARY JOHNSON": 2 to 5 words, first and last real words.
+  if (words.length < 2 || words.length > 5) return null;
+  const first = words[0], last = words[words.length - 1];
+  if (first.replace(/\./g, "").length < 2 || last.replace(/\./g, "").length < 2) return null;
+  return { first, last };
+}
+
 function personAfter(text: string, label: RegExp): Person | null {
   const m = label.exec(text);
   if (!m) return null;
   const rest = text.slice(m.index + m[0].length);
-  // The name is on the label's own line or the line right below it; a later line is another field.
-  for (const line of rest.split("\n").slice(0, 2)) {
-    if (/filing|status|form\b|income|address|total|dependent|home|wages|street|city|apt/i.test(line)) continue;
-    const clean = line
-      .replace(/\b(?:\d{3}|XXX)-(?:\d{2}|XX)-\d{4}\b/gi, " ")
-      .replace(/last\s*name|first\s*name|middle\s*initial|social\s*security\s*number|spouse['’]?s?/gi, " ")
-      .replace(/[:|]/g, " ")
-      .trim();
-    const words = clean.split(/\s+/).filter((w) => new RegExp(`^${NAME_TOKEN}$`).test(w) && w.length > 1);
-    if (words.length >= 2) return { first: words[0], last: words[words.length - 1] };
+  const lines = rest.split("\n");
+  // The name is on the label's own line (after the rest of the label) or on one of the next two
+  // lines. A line that is another label (for example "If joint return, spouse's first name…")
+  // is never read as a name.
+  const own = lines[0].replace(/last\s*name|middle\s*initial|your\s*social\s*security\s*number|social\s*security\s*number/gi, " ");
+  for (const line of [own, ...lines.slice(1, 3)]) {
+    const p = nameFromLine(line);
+    if (p) return p;
   }
   return null;
 }
@@ -149,9 +172,11 @@ export function readReturn(pages: PageText[]): ReadReturn | null {
   const states = new Set<string>();
   let stateYear: number | null = null;
   for (const p of pages) {
-    const head = p.text.slice(0, 500);
+    // TaxAct and IRS PDFs don't always put the form title first in their text: look further down.
+    const head = p.text.slice(0, 2500);
     if (!federal) {
-      const f = FEDERAL.find((x) => x.re.test(head));
+      const hits = FEDERAL.map((x) => ({ x, i: p.text.search(x.re) })).filter((h) => h.i >= 0).sort((a, b) => a.i - b.i);
+      const f = hits[0]?.x;
       if (f) {
         federal = f.family;
         year = yearFrom(p.text, f.family);
@@ -202,13 +227,13 @@ function nameInText(text: string, p: Person): NameMatch {
 const LABEL: Record<ReturnFamily, string> = { "1040": "Form 1040", "1040-X": "Form 1040-X (amended)", "1065": "Form 1065", "1120-S": "Form 1120-S", "1120": "Form 1120", "1041": "Form 1041", "990": "Form 990" };
 
 export function checkIdentity(read: ReadReturn | null, exp: Expected): Verdict {
-  if (!read) return { result: "UNCERTAIN", read: null, reasons: [{ code: "UNREADABLE", message: MSG.NOT_VERIFIABLE }] };
+  if (!read) return { result: "UNCERTAIN", read: null, reasons: [{ code: "UNREADABLE", message: "This file has no readable text (a scan or a photo), so the name and year couldn't be read." }] };
   const uncertain: Finding[] = [];
   const notes: Finding[] = [];
   const reject = (code: string, message: string): Verdict => ({ result: "REJECTED", read, reason: { code, message } });
 
   // 1. The year printed on the return.
-  if (read.year == null) uncertain.push({ code: "YEAR_UNREADABLE", message: MSG.NOT_VERIFIABLE });
+  if (read.year == null) uncertain.push({ code: "YEAR_UNREADABLE", message: "The tax year couldn't be read from this file." });
   else if (read.year !== exp.taxYear) return reject("WRONG_YEAR", MSG.WRONG_YEAR(read.year, exp.taxYear));
 
   // 2. The form: federal family, state, original vs amended.
@@ -251,15 +276,31 @@ export function checkIdentity(read: ReadReturn | null, exp: Expected): Verdict {
     if (read.ein && onFile && read.ein === onFile) {
       if (!nameSame) uncertain.push({ code: "NAME_VARIATION", message: "The EIN matches, but the business name on the return differs from the name on file." });
     } else if (!nameSame) {
-      return printed || read.text ? reject("WRONG_BUSINESS", MSG.WRONG_BUSINESS) : { result: "UNCERTAIN", read, reasons: [{ code: "NAME_UNREADABLE", message: MSG.NOT_VERIFIABLE }] };
+      // Rejected only when a different business name is actually read; a name that couldn't be read is uncertain.
+      if (printed) return reject("WRONG_BUSINESS", MSG.WRONG_BUSINESS);
+      return { result: "UNCERTAIN", read, reasons: [...uncertain, { code: "NAME_UNREADABLE", message: "The business name couldn't be read from this file." }] };
     } else if (!onFile) uncertain.push({ code: "NO_EIN_ON_FILE", message: "There's no EIN on file for this client to compare with the return. Add the EIN to the client record, then upload again." });
     else if (!read.ein) uncertain.push({ code: "EIN_UNREADABLE", message: "The EIN on the return couldn't be read." });
   } else if (exp.taxpayer) {
     const people = [exp.taxpayer, ...(exp.aliases ?? [])];
     // The selected client may be listed second on a joint return.
-    const primary = read.taxpayer ? best(read.taxpayer, people) : nameInText(read.text, exp.taxpayer);
+    // A name read from the name line decides; if it doesn't match, the client's name printed
+    // elsewhere on the return still counts (the name line can be misread).
+    const inText = nameInText(read.text, exp.taxpayer);
+    // No name could be read at all (form fields not in the text, a partial scan): uncertain, never "wrong taxpayer".
+    if (!read.taxpayer && !read.spouse && inText !== "SAME") {
+      uncertain.push({ code: "NAME_UNREADABLE", message: "The taxpayer's name couldn't be read from this file." });
+      return { result: "UNCERTAIN", read, reasons: uncertain };
+    }
+    const primary: NameMatch = read.taxpayer ? best(read.taxpayer, people) : inText;
     const asSpouse = read.spouse ? best(read.spouse, people) : "DIFFERENT";
     const clientMatch: NameMatch = primary === "SAME" || asSpouse === "SAME" ? "SAME" : primary === "CLOSE" || asSpouse === "CLOSE" ? "CLOSE" : "DIFFERENT";
+    // Rejected only when the name read is clearly someone else and the client's name appears nowhere
+    // on the return; if the client's name is printed elsewhere, a person checks it instead.
+    if (clientMatch === "DIFFERENT" && inText === "SAME") {
+      uncertain.push({ code: "NAME_CONFLICT", message: "The name read from the name line differs from the client's, though the client's name appears elsewhere on the return." });
+      return { result: "UNCERTAIN", read, reasons: uncertain };
+    }
     if (clientMatch === "DIFFERENT") return reject("WRONG_TAXPAYER", MSG.WRONG_TAXPAYER);
     if (clientMatch === "CLOSE") uncertain.push({ code: "NAME_VARIATION", message: "The name on the return is close to, but not the same as, the client's name on file (a name change, nickname or initial?)." });
     // A joint return: the other person must be the spouse on file.

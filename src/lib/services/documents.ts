@@ -208,6 +208,8 @@ export type StaffUploadInput = {
   maxBytes?: number;
   /** For a completed return: which return it is (checked against what's printed in it). */
   returnCheck?: { jurisdiction: string; filingType: "ORIGINAL" | "AMENDED"; returnType?: string | null };
+  /** Tabitha or an Admin: how they confirmed a return the reader couldn't confirm (return-gate). */
+  returnConfirmation?: string | null;
 };
 
 /** Categories that belong to one business owner (Document.businessOwnerId) and open only for them (plus staff). */
@@ -245,7 +247,7 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
       filingType: input.docType === "AMENDED_RETURN" ? ("AMENDED" as const) : ("ORIGINAL" as const),
       returnType: null,
     };
-    await checkReturnUpload(actor, { clientId: input.clientId, taxYear: input.year, ...rc }, { bytes: input.bytes, originalName: input.originalName });
+    await checkReturnUpload(actor, { clientId: input.clientId, taxYear: input.year, ...rc, confirmation: input.returnConfirmation ?? null }, { bytes: input.bytes, originalName: input.originalName });
   }
   const stored = await storeDocumentFile(input.bytes, input.originalName, { staff: actor }, input.duplicateChecked ? undefined : input.clientId, { allowOffice: input.allowOffice && input.docType === "NONPROFIT_ITEM", allowSpreadsheet: input.allowSpreadsheet && input.docType === "PAYROLL_REPORT", maxBytes: input.maxBytes });
   try {

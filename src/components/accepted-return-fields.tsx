@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ReturnConfirmField } from "@/components/return-confirm-field";
 import { BUSINESS_RETURN, CLOSE_DRAFT_LABEL, DEFAULT_VERIFICATION, federalFormFor, PRESET_OVERRIDE_REASON, stateFormFor } from "@/lib/tax/accepted";
 
 const STATES = "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split(" ");
@@ -184,6 +185,8 @@ export function AcceptedReturnFields({
           {rows.map((r, i) => r.on && <label key={i} className="flex flex-wrap items-center gap-2"><span className="w-24">{r.code}</span><input className="input flex-1" type="file" name={`st.${i}.ack`} accept="application/pdf,image/png,image/jpeg" /></label>)}
         </div>
       </details>
+
+      <ReturnConfirmField />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block">
