@@ -117,7 +117,7 @@ describe("Ask Coetha's complete read-only view of the records", () => {
     // The complete records went with the question: all 121 waiting rows, not 80.
     const records = sent[0].system.find((b) => b.text.startsWith("Records (JSON)"))!.text;
     expect(JSON.parse(records.slice(records.indexOf("\n") + 1)).waitingRows).toHaveLength(121);
-    expect(sent[0].tools!.map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist", "add_bank_activity", "prepare_financial_statements"]);
+    expect(sent[0].tools!.map((t) => t.name)).toEqual(["search_bank_transactions", "search_journal_entries", "monthly_checklist", "update_checklist", "add_bank_activity", "prepare_financial_statements", "remove_verified_duplicates", "reconcile_accounts", "find_documents_on_file", "read_documents_on_file"]);
     // The search result came back to her, for this business only.
     const toolResult = JSON.stringify(sent[1].messages[sent[1].messages.length - 1]);
     expect(toolResult).toContain("WIRE IN FROM EXAMPLE PARTNER");
@@ -126,7 +126,7 @@ describe("Ask Coetha's complete read-only view of the records", () => {
 
     // A model that keeps asking to search is stopped: the last round can't search.
     sent = [];
-    script = Array.from({ length: 10 }, (_, i) => (req: Req) => (req.tool_choice?.type === "none" ? text("Answer from what I have.") : search("search_journal_entries", {}, `tu_${i}`)));
+    script = Array.from({ length: CHAT_MAX_SEARCH_ROUNDS + 2 }, (_, i) => (req: Req) => (req.tool_choice?.type === "none" ? text("Answer from what I have.") : search("search_journal_entries", {}, `tu_${i}`)));
     await askCoetha(s.daria, s.willow.id, "Search everything", { today: "2026-11-10" });
     expect(sent).toHaveLength(CHAT_MAX_SEARCH_ROUNDS + 1);
     expect(sent[sent.length - 1].tool_choice).toEqual({ type: "none" });

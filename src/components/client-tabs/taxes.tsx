@@ -19,13 +19,15 @@ import { AMENDMENT_LABELS, FILING_LABELS, filingStatusLabel, filingTitle, PREP_L
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { ClientProgressNote, TaxCenterStaff } from "./tax-center-staff";
 import { TaxPrepCases } from "./tax-prep-cases";
-import { HeldReturns } from "./held-returns";
 import { TaxSummaryStaff } from "./tax-summary-staff";
 import { summaryRequirement } from "@/lib/services/tax-summary";
 import { taxSeasonProgress, yearStrip } from "@/lib/services/tax-season";
 import type { ReactNode } from "react";
 
 const DOC_TYPE = { RETURN: "Return", OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Agency notice", CORRESPONDENCE: "Correspondence", FIRM_SUMMARY: "Our summary" } as const;
+
+/** The earliest tax year offered as a button on the Taxes tab. */
+const FIRST_CHOICE_YEAR = 2020;
 
 export type DeliverPrefill = { year?: number; state?: boolean; amended?: boolean };
 
@@ -69,7 +71,8 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
   const latestCase = Object.keys(ctx.prepForms ?? {}).map(Number).filter((y) => y <= thisYear).sort((a, b) => b - a)[0];
   const selectedYear = deliver?.year ?? taxYear ?? latestCase ?? thisYear - 1;
   const [season, strip] = await Promise.all([taxSeasonProgress(clientId, selectedYear), yearStrip(clientId, selectedYear)]);
-  const yearChoices = Array.from(new Set([thisYear, thisYear - 1, thisYear - 2, selectedYear, ...years])).sort((a, b) => b - a);
+  // Every year back to FIRST_CHOICE_YEAR (prior-year and amended returns, matching Retrieve Tax Filings), plus any year on file.
+  const yearChoices = Array.from(new Set([...Array.from({ length: Math.max(0, thisYear - FIRST_CHOICE_YEAR + 1) }, (_, i) => thisYear - i), selectedYear, ...years])).sort((a, b) => b - a);
 
   const steps = (
     <>
@@ -138,7 +141,6 @@ export async function TaxesTab({ clientId, user, deliver, taxYear }: { clientId:
         </ol>
       </header>
 
-      <HeldReturns clientId={clientId} user={user} />
       {season.allDone && season.doneLine ? (
         <details className="rounded-xl border border-emerald-200 bg-emerald-50 p-3" data-testid="season-done" open={!!deliver}>
           <summary className="cursor-pointer text-lg font-semibold text-emerald-900">✓ {season.doneLine}</summary>

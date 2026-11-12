@@ -16,11 +16,6 @@ async function accepted(actor: Actor, clientId: string, taxYear: number, returnT
 }
 import { createAndLinkBusiness, grantOwnerPortalAccess } from "@/lib/services/related-businesses";
 import { bulkUploadReturns, confirmIntake, discardIntake, emailMyCopy, fileReturn, filingLabel, releaseReturn, returnsQueue, submitReturnForRelease } from "@/lib/services/tax-returns";
-import { setReturnGate } from "@/lib/services/return-gate";
-
-// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
-beforeEach(() => setReturnGate(async () => "VERIFIED"));
-afterEach(() => setReturnGate(null));
 
 const pdf = (tag: string | number = Math.random()) => new TextEncoder().encode(`%PDF-1.4\n% fictional return ${tag}\n`);
 const sent: { to: string; text: string; html: string }[] = [];
