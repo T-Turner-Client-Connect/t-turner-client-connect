@@ -11,11 +11,6 @@ import {
   confirmPortalIdentity, linkSubmission, parseJotformId, parseQuestionnaireRef, questionnaireLink, questionnaireRef, requestFilingCopy, retrieveFilings, saveQuestionnaire, setTaxYearProgress, submissionAnswers, taxYearStatuses,
 } from "@/lib/services/tax-center";
 import { announcementsForClient, countdownsFor, saveAnnouncement, saveDeadline } from "@/lib/services/news";
-import { setReturnGate } from "@/lib/services/return-gate";
-
-// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
-beforeEach(() => setReturnGate(async () => "VERIFIED"));
-afterEach(() => setReturnGate(null));
 
 let seq = 0;
 const pdf = () => new TextEncoder().encode(`%PDF-1.4\n% fictional ${seq++}\n`);

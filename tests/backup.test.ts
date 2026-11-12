@@ -24,11 +24,6 @@ import { BACKUP_FAILED_TITLE, BACKUP_STALE_TITLE, checkBackupAlerts, recordResto
 import { runEncryptionBatch, startEncryptionJob } from "@/lib/services/file-encryption";
 import { estimateBackupStorage } from "@/lib/backup/estimate";
 import { ONLY_IN_CLIENT_CONNECT } from "@/lib/doc-security/inventory";
-import { setReturnGate } from "@/lib/services/return-gate";
-
-// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
-beforeEach(() => setReturnGate(async () => "VERIFIED"));
-afterEach(() => setReturnGate(null));
 
 let seq = 0;
 const pdf = (tag = "") => new TextEncoder().encode(`%PDF-1.4\n% fictional ${tag} ${seq++} ${Math.random()}\n`);

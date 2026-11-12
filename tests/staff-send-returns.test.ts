@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, afterEach } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { makeUser, prisma, resetDb } from "./db";
 import { ForbiddenError } from "@/lib/auth/actor";
 import { setStaffPermissions } from "@/lib/auth/permissions";
@@ -9,11 +9,6 @@ import { canSendReturns } from "@/lib/services/return-senders";
 import { authorizeDownload, downloadToken, portalDocuments } from "@/lib/services/documents";
 import { acceptPortalInvite, invitePortalUser } from "@/lib/services/portal-accounts";
 import { createFiling, setFilingStatusByStaff } from "@/lib/services/tax";
-import { setReturnGate } from "@/lib/services/return-gate";
-
-// Placeholder PDFs here carry no return text; the return upload gate itself is tested in return-gate.test.ts.
-beforeEach(() => setReturnGate(async () => "VERIFIED"));
-afterEach(() => setReturnGate(null));
 
 // Fictional clients and staff only.
 const pdf = (tag: string) => new TextEncoder().encode(`%PDF-1.4\n% fictional return ${tag}\n`);
