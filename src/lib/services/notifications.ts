@@ -17,6 +17,7 @@ const TEXT: Record<string, string> = {
   APPOINTMENT_REMINDER: "You have an upcoming appointment",
   NEW_DOCUMENT: "A new document is available",
   DOCUMENT_REQUEST: "We've requested a document from you",
+  AUDIT_PACKAGE_READY: "Your audit package is ready in your portal",
   SIGNATURE_REQUEST: "A document is ready for your signature",
   CONTRACT_ASSIGNED: "A form is ready for you to complete",
   ACCOUNT_UPDATE: "There's a new update on your account",

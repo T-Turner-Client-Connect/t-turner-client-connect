@@ -57,7 +57,7 @@ const LINKS = [
   { href: "/workflows", label: "Workflows", icon: GitBranch, also: [] },
   { href: "/documents", label: "Documents", icon: FolderLock, also: [] },
   { href: "/agreements", label: "Agreements", icon: FileSignature, also: [] },
-  { href: "/notices", label: "Audits & Notices", icon: MailWarning, also: [] },
+  { href: "/notices", label: "Audit Center", icon: MailWarning, also: [] },
   { href: "/taxes/returns", label: "Tax returns", icon: FileCheck2, also: ["/taxes/questionnaires"] },
   { href: "/taxes/8879", label: "8879 Signatures", icon: FileSignature, also: [] },
   { href: "/nonprofits", label: "Nonprofit filings", icon: HeartHandshake, also: [] },

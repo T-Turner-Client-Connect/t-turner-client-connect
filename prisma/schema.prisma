@@ -1275,6 +1275,7 @@ model Document {
   bookkeepingAccountId   String?
   // An audit or tax notice case this document belongs to.
   noticeCaseId           String?
+  auditItemLinks         AuditItemDocument[]
   noticeCase             NoticeCase?          @relation(fields: [noticeCaseId], references: [id], onDelete: SetNull)
   // Malware-scan attempts: when the file was last checked, how many tries,
   // and why the last try didn't finish (scanner missing, no answer, rejected).
@@ -1426,6 +1427,9 @@ model DocumentRequest {
   explainedByPortalId  String?
 
   documents Document[]
+  /// An audit item this request asks the client to support (Tax Audit Preparation Center).
+  auditItemId String?
+  auditItem   AuditItem? @relation(fields: [auditItemId], references: [id], onDelete: SetNull)
 
   @@unique([clientId, draftKey])
   @@unique([clientId, taxYear, ruleKey])
@@ -3391,9 +3395,83 @@ model NoticeCase {
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
   documents         Document[]
+  // --- Tax Audit Preparation Center (set when the case is an audit) ---
+  /// FEDERAL | STATE. Null = an ordinary notice, not an audit case.
+  auditKind         String?
+  /// Two-letter state for a state audit.
+  stateCode         String?
+  /// Correspondence, office, field... as stated on the notice.
+  auditType         String?
+  /// Notice or letter number, as printed.
+  noticeReference   String?
+  /// NOTICE_RECEIVED | COETHA_REVIEWING | WAITING_ON_DOCUMENTS | DOCUMENTS_UNDER_REVIEW | DISCREPANCY | READY_FOR_FINAL_REVIEW | PACKAGE_READY | SUBMITTED | AWAITING_AGENCY | CLOSED
+  auditStatus       String?
+  /// Where and how to respond, from the verified notice.
+  respondTo         String?
+  responseInstructions String?
+  /// The filed return under examination (FilingRecord).
+  filingId          String?
+  /// The current audit package PDF (Document) and its release to the client.
+  packageDocumentId String?
+  releasedAt        DateTime?
+  releasedById      String?
+  submittedAt       DateTime?
+  submittedByPortalId String?
+  submissionMethod  String?
+  /// Final outcome recorded when the audit is closed (agency's decision, amounts, follow-up).
+  resolution        String?
+  closedAt          DateTime?
+  /// Coetha's reading of the notice(s): what she found, per notice, and anything unclear she flagged.
+  coethaReading     Json?
+  items             AuditItem[]
 
   @@index([clientId, taxYear])
   @@index([status, responseDueOn])
+  @@index([auditStatus])
+}
+
+/// One tax-return item under examination in an audit (e.g. Schedule A charitable contributions).
+model AuditItem {
+  id            String              @id @default(cuid())
+  caseId        String
+  case          NoticeCase          @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  position      Int                 @default(0)
+  label         String
+  /// Return form/schedule (e.g. "Schedule A", "Schedule C", "Form 1040") and line, as filed.
+  schedule      String?
+  returnLine    String?
+  /// Amount reported on the filed return. Null = not read yet.
+  reportedCents Int?
+  /// What the agency asked for on this item, from the notice.
+  requested     String?
+  /// Factual explanation for the package (supported by the records).
+  explanation   String?
+  note          String?
+  createdById   String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  documents     AuditItemDocument[]
+  requests      DocumentRequest[]
+
+  @@index([caseId, position])
+}
+
+/// A document already in Client Connect supporting an audit item, with the amount it supports.
+/// Links only: the document itself is never copied.
+model AuditItemDocument {
+  id           String    @id @default(cuid())
+  itemId       String
+  item         AuditItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  documentId   String
+  document     Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  /// Amount this document supports for the item; null = supporting, amount not counted.
+  amountCents  Int?
+  note         String?
+  addedById    String?
+  addedBy      String    @default("STAFF")
+  createdAt    DateTime  @default(now())
+
+  @@unique([itemId, documentId])
 }
 
 /// Links a person's Personal client record to a business they own or run.

@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import clsx from "clsx";
-import { BadgeCheck, Bell, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileBadge, FileSearch, FileSignature, Folder, HeartHandshake, Home, IdCard, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, ReceiptText, Settings, ShieldCheck, SlidersHorizontal, Upload, Users, UsersRound, X } from "lucide-react";
+import { BadgeCheck, Bell, Scale, BookOpen, CalendarDays, ClipboardCheck, ClipboardList, CreditCard, FileBadge, FileSearch, FileSignature, Folder, HeartHandshake, Home, IdCard, Landmark, LogOut, Megaphone, Menu, MessageCircle, PenLine, ReceiptText, Settings, ShieldCheck, SlidersHorizontal, Upload, Users, UsersRound, X } from "lucide-react";
 
 const MAIN = [
   ["/client", "Home", Home],
@@ -13,6 +13,7 @@ const MAIN = [
   ["/client/tax-center/upload", "Upload Documents", Upload],
   ["/client/documents", "Document Vault", Folder],
   ["/client/identity", "Identity Documents", ShieldCheck],
+  ["/client/audit", "Audit", Scale],
   ["/client/messages", "Message Center", MessageCircle],
   ["/client/appointments", "Appointments", CalendarDays],
   ["/client/billing", "Billing & Payments", CreditCard],
