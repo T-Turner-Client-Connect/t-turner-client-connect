@@ -151,40 +151,58 @@ describe("Apply These Decisions: Coetha prepares the entries from Tabitha's deci
     expect(log.length).toBeGreaterThanOrEqual(5);
   });
 
-  it("closed months, posted rows, unbalanced entries and other businesses' accounts are refused before anything is prepared", async () => {
+  it("closed months: entries are prepared in their own month, and Approve & Post reopens and re-closes it; bad entries are refused", async () => {
     const s = await setup();
     const prepared = await prepareDecisions(s.tabitha, s.biz.id, [{ type: "post_bank_row", ref: "W3", date: "2026-09-08", amount: -102, accountCode: "6300" }], "chat");
     expect(prepared[0].ok).toBe(true);
     await closeBooksThrough(s.tabitha, s.biz.id, "2026-09-30");
     const r = await prepareDecisions(s.tabitha, s.biz.id, [
       { type: "post_bank_row", ref: "W1", date: "2026-09-02", amount: -18000, accountCode: "3100" },
-      { type: "journal_entry", date: "2026-09-15", memo: "Too late", lines: [{ accountCode: "3100", debit: 10 }, { accountCode: "6600", credit: 10 }] },
+      { type: "journal_entry", date: "2026-09-15", memo: "September correction", lines: [{ accountCode: "3100", debit: 10 }, { accountCode: "6600", credit: 10 }] },
       { type: "journal_entry", date: "2026-10-15", memo: "Unbalanced", lines: [{ accountCode: "3100", debit: 10 }, { accountCode: "6600", credit: 9 }] },
       { type: "journal_entry", date: "2026-10-15", memo: "Unknown account", lines: [{ accountCode: "8888", debit: 10 }, { accountCode: "6600", credit: 10 }] },
       { type: "post_bank_row", ref: "W99", date: "2026-09-02", amount: -1, accountCode: "6300" },
       { type: "post_bank_row", ref: "W2", accountCode: "6400" },
     ], "chat");
-    // A correction dated in the closed month it belongs to is prepared, marked, and never auto-posted.
-    expect(r.map((x) => x.ok)).toEqual([false, true, false, false, false, false]);
-    expect(r[1].message).toMatch(/closed month: the books are closed through 2026-09-30; reopen through 2026-09-14 or earlier/);
+    expect(r.map((x) => x.ok)).toEqual([true, true, false, false, false, false]);
+    expect(r[0].message).toMatch(/closed month: the books are closed through 2026-09-30/);
+    expect(r[1].message).toMatch(/closed month: the books are closed through 2026-09-30; Approve & Post reopens and re-closes it/);
     expect((await applyDecisionsView(s.tabitha, s.biz.id)).entries.find((e) => e.id === r[1].proposalId)).toMatchObject({ closedMonth: "2026-09-30" });
     expect(r[5].message).toMatch(/give the row's date and amount/);
-    expect(r[0].message).toMatch(/closed through 2026-09-30/);
     expect(r[2].message).toMatch(/must be equal/);
     expect(r[3].message).toMatch(/isn't in this business's chart/);
-    // A draft prepared before the month was closed is refused at Approve & Post and stays on the card.
-    const before = await counts();
-    const out = await approveDecisions(s.tabitha, s.biz.id, [prepared[0].proposalId!]);
-    expect(out[0]).toMatchObject({ result: "SKIPPED", message: expect.stringMatching(/closed through/) });
-    expect(await counts()).toEqual(before);
-    const closedFix = await approveDecisions(s.tabitha, s.biz.id, [r[1].proposalId!]);
-    expect(closedFix[0]).toMatchObject({ result: "SKIPPED", message: expect.stringMatching(/closed through/) });
-    // Tabitha reopens September: the correction posts in September.
-    await reopenBooks(s.tabitha, s.biz.id, { through: "2026-08-31", reason: "Fictional payroll correction" });
-    expect((await approveDecisions(s.tabitha, s.biz.id, [r[1].proposalId!]))[0]).toMatchObject({ result: "APPROVED" });
-    expect(await prisma.journalEntry.count({ where: { clientId: s.biz.id, memo: "Too late", date: new Date("2026-09-15T00:00:00Z") } })).toBe(1);
+    // One Approve & Post: the September entries post in September and the books are closed again through the same date.
+    const out = await approveDecisions(s.tabitha, s.biz.id, [prepared[0].proposalId!, r[1].proposalId!]);
+    expect(out.map((o) => o.result)).toEqual(["APPROVED", "APPROVED"]);
+    expect(await prisma.journalEntry.count({ where: { clientId: s.biz.id, memo: "September correction", date: new Date("2026-09-15T00:00:00Z") } })).toBe(1);
+    expect((await prisma.ledgerBook.findUniqueOrThrow({ where: { clientId: s.biz.id } })).lockedThrough?.toISOString().slice(0, 10)).toBe("2026-09-30");
+    expect(await prisma.auditLog.count({ where: { clientId: s.biz.id, action: "ledger.reopened" } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { clientId: s.biz.id, action: "ledger.closed_through" } })).toBe(2);
     // Another business's decisions can't be approved from this one.
     await expect(approveDecisions(s.tabitha, s.other.id, [prepared[0].proposalId!])).rejects.toThrow(/isn't a prepared decision for this business/);
+  });
+
+  it("standing authorization: Coetha posts supported corrections in their own closed month and re-closes it; finalized months come to Tabitha", async () => {
+    const s = await setup();
+    await setOwnerSwitch(s.tabitha, "coethaAutoPost", true);
+    await closeBooksThrough(s.tabitha, s.biz.id, "2026-09-30");
+    const r = await prepareDecisions(s.tabitha, s.biz.id, [
+      { type: "journal_entry", date: "2026-08-14", memo: "Move August payroll back to August", basis: "senior_accountant", reason: "Fictional payroll register for the 8/14 pay date", lines: [{ accountCode: "3100", debit: 25 }, { accountCode: "6600", credit: 25 }] },
+    ], "chat");
+    expect(r[0]).toMatchObject({ ok: true, posted: true });
+    expect(r[0].message).toMatch(/in its own month, reopened and closed again under your standing authorization/);
+    expect(await prisma.journalEntry.count({ where: { clientId: s.biz.id, date: new Date("2026-08-14T00:00:00Z"), memo: "Move August payroll back to August" } })).toBe(1);
+    expect((await prisma.ledgerBook.findUniqueOrThrow({ where: { clientId: s.biz.id } })).lockedThrough?.toISOString().slice(0, 10)).toBe("2026-09-30");
+    expect((await prisma.auditLog.findFirstOrThrow({ where: { clientId: s.biz.id, action: "ledger.reopened" } })).details).toMatchObject({ reason: expect.stringMatching(/standing authorization/) });
+
+    // The 2026 return was filed: a correction in a closed 2026 month waits for Tabitha with the reason.
+    await prisma.filingRecord.create({ data: { clientId: s.biz.id, taxYear: 2026, returnType: "1065", jurisdiction: "FEDERAL", filingStatus: "ACCEPTED" } });
+    const held = await prepareDecisions(s.tabitha, s.biz.id, [
+      { type: "journal_entry", date: "2026-07-14", memo: "July correction", basis: "senior_accountant", reason: "Fictional register", lines: [{ accountCode: "3100", debit: 5 }, { accountCode: "6600", credit: 5 }] },
+    ], "chat");
+    expect(held[0]).toMatchObject({ ok: true, posted: false });
+    expect(held[0].message).toMatch(/the 2026 1065 return was filed, so it waits for you/);
+    expect(await prisma.journalEntry.count({ where: { clientId: s.biz.id, memo: "July correction" } })).toBe(0);
   });
 
   it("a later Run Coetha never replaces Tabitha's decisions; her decision replaces other open drafts for the same row", async () => {

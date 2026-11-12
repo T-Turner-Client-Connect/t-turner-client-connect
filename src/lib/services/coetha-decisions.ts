@@ -4,7 +4,7 @@ import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import { isPrimaryOwner } from "@/lib/auth/permissions";
 import { ValidationError } from "./clients";
-import { addAccount, assertLedger, bookOf, cleanAccount, ymdOf } from "./ledger";
+import { addAccount, assertLedger, bookOf, cleanAccount, closeBooksThrough, reopenBooks, ymdOf } from "./ledger";
 import { assertCanApproveCoethaWork } from "@/lib/auth/permissions";
 import { approveCoethaProposal, decideCoethaProposals, scrub } from "./coetha";
 import { coethaAutoPostOn } from "./owner-switches";
@@ -17,7 +17,10 @@ import { coethaAutoPostOn } from "./owner-switches";
  *   CATEGORY and ADJUSTING_ENTRY proposals a Coetha run makes) in the existing approval list.
  *   Approving one goes through the existing path (approveCoethaProposal): Tabitha only, the
  *   bank row is posted once (never a new bank transaction), each entry posts once (sourceKey),
- *   closed months are refused, and everything is audited. Corrections are reversals.
+ *   and everything is audited. Corrections are reversals. An entry dated in a closed month is
+ *   posted in that month: Approve & Post (or Coetha, under Tabitha's standing authorization, for an
+ *   ordinary month) reopens it through the ledger's own audited step and closes it again; a month
+ *   whose statements were approved/released or whose tax return was filed always goes to Tabitha.
  * - Sources: (1) Ask Coetha, only when Tabitha herself is asking (prepare_entries tool, for
  *   decisions she stated), and (2) the document reader's "Routine" checks that are matched to a
  *   waiting bank row with a proposed account. Uncertain items are never prepared; they stay on
@@ -82,20 +85,63 @@ async function ownerActor(): Promise<Actor | null> {
   return o?.user ?? null;
 }
 
-async function autoPost(clientId: string, proposalId: string, basis: string): Promise<boolean> {
-  if (!(await coethaAutoPostOn())) return false;
-  const owner = await ownerActor();
-  if (!owner) return false;
+/**
+ * Why a closed month must go to Tabitha instead of being reopened under Coetha's standing
+ * authorization: its statements were approved or released, or that year's tax return was filed.
+ * Null for an ordinary (operational) closed month.
+ */
+export async function closedMonthEscalation(clientId: string, date: string): Promise<string | null> {
+  const y = Number(date.slice(0, 4)), m = Number(date.slice(5, 7));
+  const finalized = await prisma.document.findFirst({ where: { clientId, year: y, month: m, deletedAt: null, supersededAt: null, reportType: { in: ["PROFIT_AND_LOSS", "BALANCE_SHEET", "FINANCIAL_PACKET"] }, OR: [{ visibility: "PUBLISHED" }, { reviewStatus: "APPROVED" }] }, select: { visibility: true } });
+  if (finalized) return `that month's statements were ${finalized.visibility === "PUBLISHED" ? "released to the client" : "approved"}`;
+  const filed = await prisma.filingRecord.findFirst({ where: { clientId, taxYear: y, filingStatus: { in: ["SUBMITTED", "PENDING_ACKNOWLEDGMENT", "ACCEPTED"] } }, select: { returnType: true } });
+  if (filed) return `the ${y} ${filed.returnType} return was filed`;
+  return null;
+}
+
+/**
+ * Runs `fn` with the books opened from `earliest` on, then closes them again through the same date
+ * as before. Reopening and re-closing go through the ledger's own steps (owner only, audited with
+ * the reason), so the close history shows exactly what was opened, why, and for how long.
+ */
+export async function withMonthsOpened<T>(owner: Actor, clientId: string, earliest: string, reason: string, fn: () => Promise<T>): Promise<T> {
+  const book = await bookOf(clientId);
+  const locked = book.lockedThrough ? ymdOf(book.lockedThrough) : null;
+  if (!locked || earliest > locked) return fn();
+  const before = prevDay(earliest);
+  const opening = book.openingDate ? ymdOf(book.openingDate) : null;
+  await reopenBooks(owner, clientId, { through: opening && before < opening ? null : before, reason });
   try {
-    const r = await approveCoethaProposal(owner, clientId, proposalId, { note: `Posted automatically (${basis})` });
-    if (r.result !== "APPROVED") return false;
+    return await fn();
+  } finally {
+    await closeBooksThrough(owner, clientId, locked).catch(() => {});
+  }
+}
+
+type AutoPost = { posted: boolean; held?: string };
+
+async function autoPost(clientId: string, proposalId: string, basis: string): Promise<AutoPost> {
+  if (!(await coethaAutoPostOn())) return { posted: false };
+  const owner = await ownerActor();
+  if (!owner) return { posted: false };
+  const date = ((await prisma.coethaProposal.findUnique({ where: { id: proposalId }, select: { payload: true } }))?.payload as { date?: string } | null)?.date ?? "";
+  const book = await bookOf(clientId);
+  const locked = book.lockedThrough ? ymdOf(book.lockedThrough) : null;
+  if (locked && date && date <= locked) {
+    // Tabitha's standing authorization covers ordinary closed months; finalized ones come to her.
+    const why = await closedMonthEscalation(clientId, date);
+    if (why) return { posted: false, held: `the books are closed through ${locked} and ${why}, so it waits for you` };
+  }
+  try {
+    const r = await withMonthsOpened(owner, clientId, date || "9999-12-31", `Coetha's standing authorization: supported correction dated ${date}`, () => approveCoethaProposal(owner, clientId, proposalId, { note: `Posted automatically (${basis})` }));
+    if (r.result !== "APPROVED") return { posted: false };
     const p = await prisma.coethaProposal.findUniqueOrThrow({ where: { id: proposalId } });
-    await prisma.coethaProposal.update({ where: { id: proposalId }, data: { payload: { ...(p.payload as object), autoPosted: { basis, at: new Date().toISOString() } } } });
-    await audit(prisma, { actorId: owner.id, action: "coetha.auto_posted", entityType: "CoethaProposal", entityId: proposalId, clientId, details: { basis, journalEntryId: r.journalEntryId } });
-    return true;
+    await prisma.coethaProposal.update({ where: { id: proposalId }, data: { payload: { ...(p.payload as object), autoPosted: { basis, at: new Date().toISOString(), reopenedClosedMonth: !!locked && !!date && date <= locked } } } });
+    await audit(prisma, { actorId: owner.id, action: "coetha.auto_posted", entityType: "CoethaProposal", entityId: proposalId, clientId, details: { basis, journalEntryId: r.journalEntryId, date, reopenedClosedMonth: !!locked && !!date && date <= locked } });
+    return { posted: true };
   } catch {
-    // Anything the ledger refuses (closed month, already posted, ...) stays on the card for Tabitha.
-    return false;
+    // Anything the ledger refuses (already posted, ...) stays on the card for Tabitha.
+    return { posted: false };
   }
 }
 
@@ -125,7 +171,6 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
   const refs = items.some((i) => i.type === "post_bank_row" && i.ref) ? await waitingRefs(clientId) : new Map<string, string>();
   const locked = book.lockedThrough ? ymdOf(book.lockedThrough) : null;
   const opening = book.openingDate ? ymdOf(book.openingDate) : null;
-  const openDateProblem = (d: string) => (locked && d <= locked ? `the books are closed through ${locked}` : opening && d < opening ? `it's before the opening balances (${opening})` : null);
   // New accounts Coetha has proposed and Tabitha hasn't decided yet (this call's and earlier ones).
   type Acct = { id: string | null; code: string; name: string; type: string; pendingId?: string };
   const pending = new Map<string, Acct>();
@@ -184,8 +229,7 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       if ("error" in got) { fail(`${it.ref ?? "That row"}: ${got.error}.`); continue; }
       if (got.a.id && got.a.id === t.accountId) { fail(`${it.ref ?? "That row"}: choose an account other than the bank account itself.`); continue; }
       const date = ymdOf(t.date);
-      const closed = openDateProblem(date);
-      if (closed) { fail(`${it.ref ?? "That row"} (${date}) can't be posted: ${closed}. Use an adjusting entry in an open month instead.`); continue; }
+      if (opening && date < opening) { fail(`${it.ref ?? "That row"} (${date}) can't be posted: it's before the opening balances (${opening}).`); continue; }
       const same = await prisma.coethaProposal.findFirst({ where: { clientId, kind: "CATEGORY", bankTransactionId: t.id, status: "PROPOSED", model: DECISIONS_MODEL, approvedAccountId: null, payload: got.a.id ? { path: ["accountId"], equals: got.a.id } : { path: ["pendingAccountProposalId"], equals: got.a.pendingId! } } });
       if (same) { results.push({ index, ok: true, message: `${it.ref ?? ymdOf(t.date)} ${usd(t.amountCents)} → ${got.a.code} ${got.a.name} was already prepared.`, proposalId: same.id }); continue; }
       const p = await prisma.$transaction(async (tx) => {
@@ -203,8 +247,9 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       // Coetha's own professional judgment (Tabitha's instruction: she decides like a senior
       // accountant); it needs a written reason, and auto-posted entries stay listed and reversible.
       const basis = !got.a.id ? null : it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? "your decision" : it.basis === "routine" ? await routineFor(clientId, t, got.a.id) : it.basis === "senior_accountant" && clip(it.reason, 300) ? "Coetha's judgment" : null;
-      const posted = basis ? await autoPost(clientId, p.id, basis) : false;
-      results.push({ index, ok: true, message: posted ? `Posted automatically (${basis}): ${label}` : `On your Apply These Decisions card: ${label}`, proposalId: p.id, posted });
+      const ap = basis ? await autoPost(clientId, p.id, basis) : { posted: false };
+      const posted = ap.posted;
+      results.push({ index, ok: true, message: posted ? `Posted automatically (${basis}): ${label}` : `On your Apply These Decisions card${ap.held ? ` (${ap.held})` : locked && date <= locked ? ` (closed month: the books are closed through ${locked})` : ""}: ${label}`, proposalId: p.id, posted });
       continue;
     }
     if (it.type === "journal_entry") {
@@ -239,8 +284,9 @@ export async function prepareDecisions(actor: Actor, clientId: string, items: De
       const label = `${it.date} "${memo}" ${usd(dr)}: ${lines.map((l) => `${l.debitCents ? "Dr" : "Cr"} ${l.accountCode}`).join(", ")}`;
       // A correction posts by itself only when Tabitha said so in her own words.
       const jBasis = it.basis === "tabitha_said" && saidByTabitha(it.quote, said) ? "your decision" : it.basis === "senior_accountant" && clip(it.reason, 300) ? "Coetha's judgment" : null;
-      const posted = !inClosedMonth && lines.every((l) => l.accountId) && jBasis ? await autoPost(clientId, p.id, jBasis) : false;
-      results.push({ index, ok: true, message: posted ? `Posted automatically (${jBasis}): ${label}` : inClosedMonth ? `On your Apply These Decisions card (closed month: the books are closed through ${locked}; reopen through ${prevDay(it.date)} or earlier before approving): ${label}` : `On your Apply These Decisions card: ${label}`, proposalId: p.id, posted });
+      const ap = lines.every((l) => l.accountId) && jBasis ? await autoPost(clientId, p.id, jBasis) : { posted: false };
+      const posted = ap.posted;
+      results.push({ index, ok: true, message: posted ? `Posted automatically (${jBasis})${inClosedMonth ? ` in its own month, reopened and closed again under your standing authorization` : ""}: ${label}` : `On your Apply These Decisions card${ap.held ? ` (${ap.held})` : inClosedMonth ? ` (closed month: the books are closed through ${locked}; Approve & Post reopens and re-closes it)` : ""}: ${label}`, proposalId: p.id, posted });
       continue;
     }
     fail("Unknown kind of entry.");
@@ -403,7 +449,11 @@ export async function approveDecisions(actor: Actor, clientId: string, ids: stri
   const rest = await prisma.coethaProposal.findMany({ where: { id: { in: mine.filter((x) => x.kind !== "NEW_ACCOUNT").map((x) => x.id) } } });
   const ready = rest.filter((p) => !needsNewAccount(p));
   for (const p of rest.filter((x) => needsNewAccount(x))) results.push({ id: p.id, result: "SKIPPED", message: "It uses a new account that isn't approved yet: tick the new account with it." });
-  if (ready.length) results.push(...(await decideCoethaProposals(actor, clientId, "APPROVE", ready.map((p) => ({ id: p.id })))));
+  if (ready.length) {
+    // Entries dated in closed months: Approve & Post opens those months and closes them again itself.
+    const earliest = ready.map((p) => (p.payload as { date?: string }).date ?? "").filter(Boolean).sort()[0] ?? "9999-12-31";
+    results.push(...(await withMonthsOpened(actor, clientId, earliest, "Tabitha approved corrections dated in closed months (Approve & Post)", () => decideCoethaProposals(actor, clientId, "APPROVE", ready.map((p) => ({ id: p.id }))))));
+  }
   await audit(prisma, { actorId: actor.id, action: "coetha.decisions_approved", entityType: "LedgerBook", entityId: clientId, clientId, details: { chosen: chosen.length, posted: results.filter((r) => r.result === "APPROVED").length, skipped: results.filter((r) => r.result === "SKIPPED").length } });
   return results;
 }
