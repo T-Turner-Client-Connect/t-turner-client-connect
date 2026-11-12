@@ -81,7 +81,7 @@ export async function recordsSnapshot(actor: Actor, clientId: string) {
     import("./coetha-records").then((m) => m.judgmentGroups(clientId)),
     import("./coetha-records").then((m) => m.compareWithReference(actor, clientId)),
     import("./coetha-records").then((m) => m.familyPostingsToUndo(clientId)),
-    prisma.document.findMany({ where: { clientId, category: "BOOKKEEPING", deletedAt: null }, orderBy: [{ year: "asc" }, { month: "asc" }, { createdAt: "asc" }], take: 400, select: { title: true, docType: true, year: true, month: true, createdAt: true, bookkeepingAccount: { select: { ledgerAccountId: true, nickname: true } } } }),
+    prisma.document.findMany({ where: { clientId, category: "BOOKKEEPING", deletedAt: null }, orderBy: [{ year: "asc" }, { month: "asc" }, { createdAt: "asc" }], take: 400, select: { id: true, title: true, docType: true, year: true, month: true, createdAt: true, bookkeepingAccount: { select: { ledgerAccountId: true, nickname: true } } } }),
     import("./coetha-records").then((m) => m.routineSummary(clientId)),
   ]);
 
@@ -145,8 +145,9 @@ export async function recordsSnapshot(actor: Actor, clientId: string) {
         proposedAccount: f.proposedAccount, why: f.reason, evidenceNeeded: f.evidenceNeeded,
       })),
     readFromDocumentsAlreadyPosted: findings.filter((f) => f.bankTransactionId && !wRef.has(f.bankTransactionId)).length,
+    // Each document's id lets Coetha read it with read_documents_on_file (no upload needed).
     documentsOnFile: docs.map((d) => ({
-      title: scrub(d.title, 120), type: d.docType, period: d.year ? `${d.year}${d.month ? `-${String(d.month).padStart(2, "0")}` : ""}` : null,
+      id: d.id, title: scrub(d.title, 120), type: d.docType, period: d.year ? `${d.year}${d.month ? `-${String(d.month).padStart(2, "0")}` : ""}` : null,
       account: d.bookkeepingAccount?.ledgerAccountId ? label(d.bookkeepingAccount.ledgerAccountId) : d.bookkeepingAccount?.nickname ? scrub(d.bookkeepingAccount.nickname) : null,
       added: ymdOf(d.createdAt),
     })),
@@ -210,12 +211,12 @@ export async function searchJournalEntries(clientId: string, q: EntrySearch) {
   const offset = Math.max(0, Math.min(100_000, Math.floor(num(q.offset) ?? 0)));
   const [total, entries] = await Promise.all([
     prisma.journalEntry.count({ where }),
-    prisma.journalEntry.findMany({ where, orderBy: [{ date: "asc" }, { id: "asc" }], skip: offset, take: SEARCH_PAGE, select: { date: true, memo: true, source: true, reversalOfId: true, reversedBy: { select: { id: true } }, lines: { select: { debitCents: true, creditCents: true, account: { select: { code: true, name: true } } } } } }),
+    prisma.journalEntry.findMany({ where, orderBy: [{ date: "asc" }, { id: "asc" }], skip: offset, take: SEARCH_PAGE, select: { id: true, date: true, memo: true, source: true, reversalOfId: true, reversedBy: { select: { id: true } }, lines: { select: { debitCents: true, creditCents: true, account: { select: { code: true, name: true } } } } } }),
   ]);
   return {
     total, offset, returned: entries.length, ...(offset + entries.length < total ? { next: `Call again with offset ${offset + entries.length} for more.` } : {}),
     entries: entries.map((e) => ({
-      date: ymdOf(e.date), memo: scrub(e.memo), source: e.source, adjusting: e.source === "ADJUSTMENT", isReversal: !!e.reversalOfId, reversed: !!e.reversedBy,
+      entryId: e.id, date: ymdOf(e.date), memo: scrub(e.memo), source: e.source, adjusting: e.source === "ADJUSTMENT", isReversal: !!e.reversalOfId, reversed: !!e.reversedBy,
       lines: e.lines.map((l) => ({ account: `${l.account.code} ${scrub(l.account.name)}`, debit: usd(l.debitCents), credit: usd(l.creditCents) })),
     })),
   };

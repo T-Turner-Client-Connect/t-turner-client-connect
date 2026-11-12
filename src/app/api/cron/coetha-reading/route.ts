@@ -15,6 +15,9 @@ export async function POST(req: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   const r = await workOnce();
+  // Answers waiting with nothing working on them (the background function wasn't started): start it.
+  const { answersWaitingWithoutWorker, kickAnswers } = await import("@/lib/services/coetha-answer");
+  if (await answersWaitingWithoutWorker()) await kickAnswers();
   if (r.did) await heartbeat("coetha:reading", { did: r.did }).catch(() => {});
   return Response.json(r);
 }

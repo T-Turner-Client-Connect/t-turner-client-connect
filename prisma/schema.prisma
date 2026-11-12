@@ -6919,3 +6919,38 @@ model ClientNameAlias {
 
   @@index([clientId])
 }
+
+// One Coetha answer, worked as a saved, resumable run: Client Connect builds each request and runs
+// her tools (permissions, posting rules); the background function makes the AI call (no page time
+// limit). QUEUED → RUNNING → DONE | FAILED. phase: WAITING | GATHERING | THINKING | WORKING | WRITING | RETRYING.
+model CoethaAnswerRun {
+  id              String    @id @default(cuid())
+  questionId      String    @unique
+  clientId        String
+  chatId          String?
+  askerId         String
+  status          String    @default("QUEUED")
+  phase           String    @default("WAITING")
+  state           Json?
+  round           Int       @default(0)
+  calls           Int       @default(0)
+  attempts        Int       @default(0)
+  // The AI call handed out and not yet returned (a duplicate or late result is ignored).
+  callId          String?
+  leaseUntil      DateTime?
+  notBefore       DateTime?
+  error           String?
+  // [{ step, ms, ... }]: where the time went (no client data).
+  timings         Json      @default("[]")
+  inputTokens     Int       @default(0)
+  outputTokens    Int       @default(0)
+  cacheReadTokens Int       @default(0)
+  answerId        String?
+  queuedAt        DateTime  @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status, notBefore])
+  @@index([clientId, chatId])
+}
