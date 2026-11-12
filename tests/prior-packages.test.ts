@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { makeUser, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
@@ -10,7 +10,8 @@ import { importPriorMonths } from "@/lib/services/coetha-bookkeeping";
 import { bookkeepingChat, uploadPriorPackage } from "@/lib/services/bookkeeping-queue";
 
 // Fictional business and package only. Database effects are checked, not wording.
-beforeEach(resetDb);
+beforeEach(async () => { await resetDb(); process.env.ANTHROPIC_API_KEY = "sk-ant-test-fictional-key"; });
+afterEach(() => { delete process.env.ANTHROPIC_API_KEY; });
 
 async function pkg(name: string) {
   const d = await PDFDocument.create();
