@@ -328,7 +328,7 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
                             <span className="block text-slate-600">Created only when you approve it · tick it with the entries that use it · {e.source}</span>
                           </>
                         ) : (
-                          <><span className="font-semibold text-navy-900">{e.title}</span><span className="block text-slate-600">{e.bankRow ? "Waiting bank row" : "Journal entry (reclassification)"} · {e.source}{e.needs.length ? " · uses a new account: tick it too" : ""}{e.stale ? " · this row was already posted or excluded; it will be skipped" : ""}</span>{e.closedMonth && <span className="block font-semibold text-amber-800" data-testid="apply-closed-month">Closed month: the books are closed through {e.closedMonth}. Reopen this month (General Ledger → Reopen) before approving it.</span>}</>
+                          <><span className="font-semibold text-navy-900">{e.title}</span><span className="block text-slate-600">{e.bankRow ? "Waiting bank row" : "Journal entry (reclassification)"} · {e.source}{e.needs.length ? " · uses a new account: tick it too" : ""}{e.stale ? " · this row was already posted or excluded; it will be skipped" : ""}</span>{e.closedMonth && <span className="block font-semibold text-amber-800" data-testid="apply-closed-month">Closed month (books closed through {e.closedMonth}): Approve & Post reopens it, posts the entry in its own month and closes it again.</span>}</>
                         )}
                       </td>
                       <td className="pr-2">{e.lines.filter((l) => l.debitCents).map((l, i) => <span key={i} className="block">{l.account} {usd(l.debitCents)}</span>)}</td>
