@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { parseStatementLines, pdfLines, type StatementParse } from "@/lib/statement-pdf";
 import { readDocumentBytes } from "./documents";
-import { statementWindow } from "./bank-accounts";
+import { prepareReconciliation, statementWindow } from "./bank-accounts";
 import { STATEMENT_DOC_TYPES } from "./client-request-scope";
 import { ymdOf } from "./ledger";
 
@@ -70,7 +70,10 @@ export async function chooseStatement(clientId: string, registryId: string, year
   const w = statementWindow(year, month, r.statementDay);
   const docs = await prisma.document.findMany({
     where: {
-      clientId, deletedAt: null, docType: { in: STATEMENT_DOC_TYPES },
+      clientId, deletedAt: null,
+      // Filed as a statement, or a bookkeeping file sent in without a type (e.g. through Ask Coetha);
+      // the latter only counts below if it reads like a statement.
+      AND: [{ OR: [{ docType: { in: STATEMENT_DOC_TYPES } }, { docType: null, category: "BOOKKEEPING" }] }],
       OR: [
         { year, month },
         // Filed under the month it arrived in (the statement period is checked below).
@@ -107,11 +110,13 @@ export async function chooseStatement(clientId: string, registryId: string, year
     else continue; // filed elsewhere and no account number to prove it is this account's
     const parsed = parseStatementLines(lines, { liability });
     const end = parsed.summary.periodEnd;
+    const untyped = !d.docType;
+    if (untyped && (proof !== "NUMBER" || !end || parsed.summary.endingCents == null)) continue; // not shown to be a statement
     if (end ? end < shift(w.start, -5) || end > shift(w.end, 5) : !(d.year === year && d.month === month)) {
       if (d.bookkeepingAccountId === r.id || proof === "NUMBER") skipped.push({ title: d.title, why: end ? `it covers the period ending ${end}` : "its statement period couldn't be read" });
       continue;
     }
-    const pick = { id: d.id, title: d.title, exact: parsed.check.ok, accountProof: proof, parsed, doc: d, filedOk: d.bookkeepingAccountId === r.id && d.year === year && d.month === month, learned, bank: bankNameIn(lines), text: lines.slice(0, 60).join(" ").toLowerCase() };
+    const pick = { id: d.id, title: d.title, exact: parsed.check.ok, accountProof: proof, parsed, doc: d, filedOk: !untyped && d.bookkeepingAccountId === r.id && d.year === year && d.month === month, learned, bank: bankNameIn(lines), text: lines.slice(0, 60).join(" ").toLowerCase() };
     if (parsed.check.ok) { fallback = pick; break; }
     if (!fallback) fallback = pick;
   }
@@ -119,7 +124,8 @@ export async function chooseStatement(clientId: string, registryId: string, year
   const last4 = r.last4 ?? fallback.learned;
   // Only a statement read to the cent corrects the account's details: its number, and the bank name
   // when the one on file (e.g. "Chase") doesn't appear anywhere on the bank's own statement.
-  if (fallback.exact && fallback.learned) {
+  // (Read to the cent, or already filed under this very account.)
+  if (fallback.learned && (fallback.exact || fallback.doc.bookkeepingAccountId === r.id)) {
     const named = r.institution ? new RegExp(`\\b${r.institution.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`) : null;
     const wrongBank = !!fallback.bank && !!named && !named.test(fallback.text);
     const data = { last4: fallback.learned, ...(wrongBank ? { institution: fallback.bank! } : {}) };
@@ -127,8 +133,8 @@ export async function chooseStatement(clientId: string, registryId: string, year
     await audit(prisma, { actorId: null, action: "bookkeeping.account_details_corrected", entityType: "BookkeepingAccount", entityId: r.id, clientId, details: { before: { last4: r.last4, institution: r.institution }, after: data, documentId: fallback.doc.id, proof: "account number and bank name printed on the statement, read to the cent" } });
   }
   // A statement proven by its account number but filed under another account or month is re-filed.
-  if (!fallback.filedOk && fallback.accountProof === "NUMBER" && (!fallback.learned || fallback.exact)) {
-    await prisma.document.update({ where: { id: fallback.doc.id }, data: { bookkeepingAccountId: r.id, manualBankAccountId: null, year, month } });
+  if (!fallback.filedOk && fallback.accountProof === "NUMBER" && (!fallback.learned || fallback.exact || fallback.doc.bookkeepingAccountId === r.id)) {
+    await prisma.document.update({ where: { id: fallback.doc.id }, data: { bookkeepingAccountId: r.id, manualBankAccountId: null, year, month, ...(fallback.doc.docType ? {} : { docType: liability ? "CARD_STATEMENT" : "BANK_STATEMENT" }) } });
     await audit(prisma, { actorId: null, action: "bookkeeping.statement_refiled", entityType: "Document", entityId: fallback.doc.id, clientId, details: { from: { bookkeepingAccountId: fallback.doc.bookkeepingAccountId, year: fallback.doc.year, month: fallback.doc.month }, to: { bookkeepingAccountId: r.id, year, month }, proof: `account number ending ${last4} printed on the statement` } });
   }
   const { doc: _doc, filedOk: _f, learned: _l, bank: _b, text: _t, ...chosen } = fallback;
@@ -151,6 +157,9 @@ export async function linkStatementsOnFile(opts: { budgetMs?: number; today?: st
   const months = [1, 2].map((back) => { const d = new Date(Date.UTC(ty, tm - 1 - back, 1)); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1 }; });
   const accounts = await prisma.bookkeepingAccount.findMany({ where: { active: true, parentAccountId: null, client: { bookkeepingProfile: { active: true } } }, select: { id: true, clientId: true, last4: true } });
   const linked: { clientId: string; accountId: string; month: string; documentId: string }[] = [];
+  // Why accounts were left alone (counts only; no client data in the logs).
+  const skipped: Record<string, number> = {};
+  const skip = (why: string) => { skipped[why] = (skipped[why] ?? 0) + 1; };
   let more = false;
   for (const a of accounts) {
     for (const { y, m } of months) {
@@ -162,14 +171,19 @@ export async function linkStatementsOnFile(opts: { budgetMs?: number; today?: st
         const bytes = cur?.file ? await readDocumentBytes(cur.file).catch(() => null) : null;
         needs = !(bytes && (await pdfLines(bytes).catch(() => null))?.length);
       }
-      if (!needs) continue;
-      const { chosen } = await chooseStatement(a.clientId, a.id, y, m);
-      if (!chosen?.exact || chosen.accountProof !== "NUMBER" || !rec || rec.statementDocumentId === chosen.id) continue;
-      await prisma.accountReconciliation.update({ where: { id: rec.id }, data: { statementDocumentId: chosen.id, statementStatus: "RECEIVED" } });
-      await audit(prisma, { actorId: null, action: "bookkeeping.statement_linked", entityType: "AccountReconciliation", entityId: rec.id, clientId: a.clientId, details: { month: `${y}-${String(m).padStart(2, "0")}`, from: rec.statementDocumentId, to: chosen.id, reconciliationStatus: rec.status } });
+      if (!needs) { skip("alreadyLinked"); continue; }
+      const { chosen, skipped: passed } = await chooseStatement(a.clientId, a.id, y, m);
+      if (!chosen) { skip(passed.length ? "noUsableStatement" : "noStatementOnFile"); continue; }
+      if (chosen.accountProof !== "NUMBER") { skip("noAccountNumberOnStatement"); continue; }
+      if (rec?.statementDocumentId === chosen.id) { skip("alreadyLinked"); continue; }
+      // No reconciliation for the month yet: prepared now with this statement (nothing is posted or approved).
+      const target = rec ?? (await prepareReconciliation(a.clientId, a.id, y, m, { statementDocumentId: chosen.id }));
+      if (!target) { skip("accountDoesNotReconcile"); continue; }
+      if (target.statementDocumentId !== chosen.id) await prisma.accountReconciliation.update({ where: { id: target.id }, data: { statementDocumentId: chosen.id, statementStatus: "RECEIVED" } });
+      await audit(prisma, { actorId: null, action: "bookkeeping.statement_linked", entityType: "AccountReconciliation", entityId: target.id, clientId: a.clientId, details: { month: `${y}-${String(m).padStart(2, "0")}`, from: rec?.statementDocumentId ?? null, to: chosen.id, readToTheCent: chosen.exact, reconciliationStatus: target.status } });
       linked.push({ clientId: a.clientId, accountId: a.id, month: `${y}-${String(m).padStart(2, "0")}`, documentId: chosen.id });
     }
     if (more) break;
   }
-  return { linked, more };
+  return { linked, skipped, more };
 }
