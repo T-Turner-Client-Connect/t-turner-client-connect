@@ -54,6 +54,11 @@ describe("ID documents from Jotform questionnaires go into Identity Documents", 
     expect(classifyIdQuestion("Dependent's Social Security card")).toEqual({ type: "SOCIAL_SECURITY_CARD", role: "DEPENDENT" });
     expect(classifyIdQuestion("Passport (if you have one)")).toEqual({ type: "PASSPORT", role: "CLIENT" });
     expect(classifyIdQuestion("W-2 forms")).toBeNull();
+    // The 2025 questionnaire's dependents section: plural uploads aren't one person's; numbered dependents keep their number.
+    expect(classifyIdQuestion("Upload Social Security Card(s)")).toBeNull();
+    expect(classifyIdQuestion("Social Security Card")).toEqual({ type: "SOCIAL_SECURITY_CARD", role: "CLIENT" });
+    expect(classifyIdQuestion("Dependent (1) Birth Certificate only")).toEqual({ type: "BIRTH_CERTIFICATE", role: "DEPENDENT", index: 1 });
+    expect(classifyIdQuestion("Dependent (3)Birth Certificate only")).toEqual({ type: "BIRTH_CERTIFICATE", role: "DEPENDENT", index: 3 });
     expect(spouseNameFrom([{ q: "Spouse full name", a: "Jordan  Example" }, { q: "Spouse employer name", a: "Acme" }])).toBe("Jordan Example");
   });
 

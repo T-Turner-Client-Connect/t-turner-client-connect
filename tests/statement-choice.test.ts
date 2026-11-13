@@ -8,6 +8,7 @@ import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { askCoetha } from "@/lib/services/coetha-chat";
 import { registerAccount } from "@/lib/services/bank-accounts";
 import { staffUploadStatement } from "@/lib/services/client-requests";
+import { staffUploadDocument } from "@/lib/services/documents";
 import { accountNumbersIn, chooseStatement, linkStatementsOnFile } from "@/lib/services/statement-choice";
 import { accountSynced } from "@/lib/services/monthly-workflow";
 
@@ -135,6 +136,45 @@ describe("The hourly step links the readable statement to an already-approved mo
     expect((await accountSynced(w.biz.id, chk, 2026, 10, "2026-11-13")).state).toBe("DONE");
     // The next hour finds nothing left to do.
     expect((await linkStatementsOnFile({ today: "2026-11-13" })).linked).toHaveLength(0);
+  });
+});
+
+describe("The hourly step in the cases that left Parrish unlinked", () => {
+  it("a readable statement whose layout can't be read to the cent is still linked by its account number, with the number and bank name recorded", async () => {
+    const w = await world();
+    // Same statement, but its printed totals don't add up for our reader.
+    const odd = october("4542").map((l) => (l.startsWith("Ending Balance") ? "Ending Balance -$60.00" : l));
+    await prisma.document.update({ where: { id: w.good.id }, data: { deletedAt: new Date() } });
+    const d = await staffUploadStatement(w.tabitha, w.biz.id, { accountId: w.chk.id, month: "2026-10", bytes: await pdf(odd), originalName: "odd.pdf" });
+    const r = await linkStatementsOnFile({ today: "2026-11-13" });
+    expect(r.linked.map((x) => x.documentId)).toContain(d.id);
+    expect(await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id, year: 2026, month: 10 } })).toMatchObject({ statementDocumentId: d.id });
+    expect(await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: w.chk.id } })).toMatchObject({ last4: "4542", institution: "Prairie Example Farm Bank" });
+  });
+
+  it("a statement sent in through Ask Coetha (no document type) is recognized, re-filed as a bank statement and linked; a month with no reconciliation gets one prepared, never approved", async () => {
+    const w = await world();
+    await prisma.document.update({ where: { id: w.good.id }, data: { deletedAt: new Date() } });
+    const sent = await staffUploadDocument(w.tabitha, { clientId: w.biz.id, category: "BOOKKEEPING", title: "Sent to Coetha — farm-bank-oct.pdf", visibility: "STAFF_ONLY", bytes: await pdf(october("4542")), originalName: "farm-bank-oct.pdf", notify: false });
+    // A non-statement Coetha upload (a tax form) is never taken for a statement.
+    await staffUploadDocument(w.tabitha, { clientId: w.biz.id, category: "BOOKKEEPING", title: "Sent to Coetha — form.pdf", visibility: "STAFF_ONLY", bytes: await pdf(["Form W-8BEN-E", "Certificate of Status", "Account number 4542"]), originalName: "form.pdf", notify: false });
+    expect(await prisma.accountReconciliation.count({ where: { bookkeepingAccountId: w.chk.id } })).toBe(0);
+    const r = await linkStatementsOnFile({ today: "2026-11-13" });
+    expect(r.linked.map((x) => x.documentId)).toEqual([sent.id]);
+    expect(await prisma.document.findUniqueOrThrow({ where: { id: sent.id } })).toMatchObject({ docType: "BANK_STATEMENT", bookkeepingAccountId: w.chk.id, year: 2026, month: 10 });
+    const rec = await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id, year: 2026, month: 10 } });
+    expect(rec.statementDocumentId).toBe(sent.id);
+    expect(rec.status).not.toBe("APPROVED");
+    expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id } })).toBe(0);
+  });
+
+  it("reports why an account was left alone, without client data", async () => {
+    const w = await world();
+    await prisma.document.update({ where: { id: w.good.id }, data: { deletedAt: new Date() } });
+    const r = await linkStatementsOnFile({ today: "2026-11-13" });
+    expect(r.linked).toHaveLength(0);
+    expect(r.skipped.noUsableStatement).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(r.skipped)).not.toMatch(/Willow|cm[a-z0-9]{10}/);
   });
 });
 
