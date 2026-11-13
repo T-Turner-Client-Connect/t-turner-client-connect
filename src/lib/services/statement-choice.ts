@@ -134,3 +134,42 @@ export async function chooseStatement(clientId: string, registryId: string, year
   const { doc: _doc, filedOk: _f, learned: _l, bank: _b, text: _t, ...chosen } = fallback;
   return { chosen, skipped };
 }
+
+/**
+ * Hourly (with the statement drafts): for every active bookkeeping client's bank and card accounts,
+ * the last two closed months get their statement linked when it isn't yet — the account has no
+ * number on file, or the month's reconciliation has no statement attached, or the one attached has
+ * no readable text. The readable statement proven by its account number is linked (and the account's
+ * number and real bank name recorded, the file re-filed). Accounting entries are never changed; an
+ * approved reconciliation only gets the right statement attached. Everything is in the audit log.
+ */
+export async function linkStatementsOnFile(opts: { budgetMs?: number; today?: string } = {}) {
+  const started = Date.now();
+  const budget = opts.budgetMs ?? 8000;
+  const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  const [ty, tm] = today.split("-").map(Number);
+  const months = [1, 2].map((back) => { const d = new Date(Date.UTC(ty, tm - 1 - back, 1)); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1 }; });
+  const accounts = await prisma.bookkeepingAccount.findMany({ where: { active: true, parentAccountId: null, client: { bookkeepingProfile: { active: true } } }, select: { id: true, clientId: true, last4: true } });
+  const linked: { clientId: string; accountId: string; month: string; documentId: string }[] = [];
+  let more = false;
+  for (const a of accounts) {
+    for (const { y, m } of months) {
+      if (Date.now() - started > budget) { more = true; break; }
+      const rec = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: a.id, year: y, month: m } } });
+      let needs = !a.last4 || !rec?.statementDocumentId;
+      if (!needs && rec?.statementDocumentId) {
+        const cur = await prisma.document.findFirst({ where: { id: rec.statementDocumentId, deletedAt: null }, include: { file: true } });
+        const bytes = cur?.file ? await readDocumentBytes(cur.file).catch(() => null) : null;
+        needs = !(bytes && (await pdfLines(bytes).catch(() => null))?.length);
+      }
+      if (!needs) continue;
+      const { chosen } = await chooseStatement(a.clientId, a.id, y, m);
+      if (!chosen?.exact || chosen.accountProof !== "NUMBER" || !rec || rec.statementDocumentId === chosen.id) continue;
+      await prisma.accountReconciliation.update({ where: { id: rec.id }, data: { statementDocumentId: chosen.id, statementStatus: "RECEIVED" } });
+      await audit(prisma, { actorId: null, action: "bookkeeping.statement_linked", entityType: "AccountReconciliation", entityId: rec.id, clientId: a.clientId, details: { month: `${y}-${String(m).padStart(2, "0")}`, from: rec.statementDocumentId, to: chosen.id, reconciliationStatus: rec.status } });
+      linked.push({ clientId: a.clientId, accountId: a.id, month: `${y}-${String(m).padStart(2, "0")}`, documentId: chosen.id });
+    }
+    if (more) break;
+  }
+  return { linked, more };
+}

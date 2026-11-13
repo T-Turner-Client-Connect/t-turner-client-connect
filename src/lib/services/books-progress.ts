@@ -199,7 +199,7 @@ export async function loadBooksFacts(clientId: string, month: string, opts: { to
         a.registryId ? prisma.document.count({ where: officeStatementWhere(clientId, a.registryId, { start: toDate(w.start), end: toDate(w.end) }) }) : Promise.resolve(0),
       ]);
       // …or an approved reconciliation shows the books agree with the bank's statement for the month.
-      covered &&= today > ymdOf(r.to) && (imported > 0 || feed > 0 || approvedRec > 0);
+      covered &&= today > ymdOf(r.to) && (imported > 0 || feed > 0 || approvedRec > 0 || bankRec > 0);
       reconciled &&= approvedRec > 0 || bankRec > 0;
       statementFiled &&= statement > 0;
     }

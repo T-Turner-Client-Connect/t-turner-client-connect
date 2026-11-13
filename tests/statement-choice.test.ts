@@ -8,7 +8,8 @@ import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { askCoetha } from "@/lib/services/coetha-chat";
 import { registerAccount } from "@/lib/services/bank-accounts";
 import { staffUploadStatement } from "@/lib/services/client-requests";
-import { accountNumbersIn, chooseStatement } from "@/lib/services/statement-choice";
+import { accountNumbersIn, chooseStatement, linkStatementsOnFile } from "@/lib/services/statement-choice";
+import { accountSynced } from "@/lib/services/monthly-workflow";
 
 // Fictional business, bank and statements only. Database effects are checked, not wording.
 beforeEach(resetDb);
@@ -108,6 +109,32 @@ describe("The statement Coetha uses for an account and month", () => {
     expect(c.chosen).toBeNull();
     expect(c.skipped).toHaveLength(1);
     expect((await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: w.chk.id } })).last4).toBeNull();
+  });
+});
+
+describe("The hourly step links the readable statement to an already-approved month (Parrish's case)", () => {
+  it("replaces the unreadable scan on the approved reconciliation, records the number and bank name, never touches entries, and the month reads as synchronized", async () => {
+    const w = await world();
+    const t = await prisma.bankTransaction.create({ data: { clientId: w.biz.id, accountId: w.gl, date: new Date("2026-10-02T00:00:00Z"), amountCents: 200000, description: "Mobile Deposit", fingerprint: "p-1", source: "CSV" } });
+    const inc = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, type: "INCOME" }, orderBy: { code: "asc" } });
+    await categorizeBankTransaction(w.tabitha, w.biz.id, t.id, { accountId: inc.id });
+    const rec = await prisma.accountReconciliation.create({ data: { clientId: w.biz.id, bookkeepingAccountId: w.chk.id, year: 2026, month: 10, status: "APPROVED", approvedAt: new Date(), approvedById: w.tabitha.id, beginningBalanceCents: 50000, endingBalanceCents: -5865, differenceCents: 0, statementDocumentId: w.scan.id, statementStatus: "RECEIVED" } });
+    const entries = await prisma.journalEntry.count({ where: { clientId: w.biz.id } });
+    const chk = await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: w.chk.id } });
+    // Before: no import file, no feed: not synchronized.
+    await prisma.accountReconciliation.update({ where: { id: rec.id }, data: { status: "READY", approvedAt: null, approvedById: null } });
+    expect((await accountSynced(w.biz.id, chk, 2026, 10, "2026-11-13")).state).toBe("MISSING");
+    await prisma.accountReconciliation.update({ where: { id: rec.id }, data: { status: "APPROVED", approvedAt: new Date(), approvedById: w.tabitha.id } });
+
+    const r = await linkStatementsOnFile({ today: "2026-11-13" });
+    expect(r.linked).toEqual([expect.objectContaining({ accountId: w.chk.id, month: "2026-10", documentId: w.good.id })]);
+    expect(await prisma.accountReconciliation.findUniqueOrThrow({ where: { id: rec.id } })).toMatchObject({ status: "APPROVED", statementDocumentId: w.good.id, endingBalanceCents: -5865 });
+    expect(await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: w.chk.id } })).toMatchObject({ last4: "4542", institution: "Prairie Example Farm Bank" });
+    expect(await prisma.journalEntry.count({ where: { clientId: w.biz.id } })).toBe(entries);
+    expect(await prisma.auditLog.count({ where: { action: "bookkeeping.statement_linked", entityId: rec.id } })).toBe(1);
+    expect((await accountSynced(w.biz.id, chk, 2026, 10, "2026-11-13")).state).toBe("DONE");
+    // The next hour finds nothing left to do.
+    expect((await linkStatementsOnFile({ today: "2026-11-13" })).linked).toHaveLength(0);
   });
 });
 
