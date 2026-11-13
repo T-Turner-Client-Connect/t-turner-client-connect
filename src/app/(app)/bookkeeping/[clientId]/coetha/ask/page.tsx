@@ -146,7 +146,7 @@ export default async function AskCoethaPage({ params, searchParams }: { params: 
                 <div className="mt-1 grid gap-2 sm:grid-cols-[1fr_auto]">
                   <textarea id="coetha-question" name="question" maxLength={MAX_QUESTION} rows={2} className="w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-base text-navy-900 focus:border-gold-500 focus:outline-none focus:ring-2 focus:ring-gold-300" placeholder="Ask a question, or upload files and Coetha will read them" data-testid="coetha-chat-input" />
                   <div className="flex flex-col gap-2 sm:w-48">
-                    <CoethaUploadButton clientId={clientId} accounts={statementAccounts} defaultMonth={lastMonth} payroll={runsPayroll} />
+                    <CoethaUploadButton key={clientId} clientId={clientId} clientName={biz} accounts={statementAccounts} defaultMonth={lastMonth} payroll={runsPayroll} />
                     <button type="submit" className="group inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-gold-300 to-gold-500 px-5 py-2 text-sm font-semibold text-navy-950 shadow hover:to-gold-600 disabled:opacity-70" data-testid="coetha-chat-send">
                       <Sparkles className="size-4" aria-hidden />
                       <span className="group-disabled:hidden">Ask Coetha</span>

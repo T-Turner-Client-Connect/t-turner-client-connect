@@ -14,7 +14,10 @@ export async function POST(req: Request) {
     await heartbeat("cron:refused", { route: "statements", secretSet: !!secret }).catch(() => {});
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const r = await runAutomaticStatements({ budgetMs: 18_000 });
+  // First: each month's readable statement, proven by its account number, linked to its account.
+  const { linkStatementsOnFile } = await import("@/lib/services/statement-choice");
+  const links = await linkStatementsOnFile({ budgetMs: 6_000 }).catch(() => ({ linked: [], more: false }));
+  const r = await runAutomaticStatements({ budgetMs: 12_000 });
   await heartbeat("statements:auto", { built: "built" in r ? r.built.length : 0, failed: "failed" in r ? r.failed?.length ?? 0 : 0 }).catch(() => {});
-  return Response.json({ built: r.built.length, failed: "failed" in r ? r.failed : [], more: "more" in r ? r.more : false });
+  return Response.json({ linked: links.linked.length, built: r.built.length, failed: "failed" in r ? r.failed : [], more: "more" in r ? r.more : false });
 }
