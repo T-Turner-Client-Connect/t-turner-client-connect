@@ -41,8 +41,9 @@ export function accountNumbersIn(lines: string[]): Set<string> {
   const out = new Set<string>();
   const text = lines.slice(0, 400).join("\n");
   const patterns = [
-    /[x*•●X]{2,}[\s-]*(\d{4})\b/g, // ****4542, XXXX-4542
-    /\bending(?:\s+in)?\s*[:#]?\s*(\d{4})\b/gi, // ending in 4542
+    /(?<![A-Za-z])[x*•●X…]{1,16}[\s-]?(\d{4})(?![\d.,])/g, // ****4542, XXXX-4542, x4542, …4542 (not "Box 1234")
+    /\bending(?:\s+(?:in|with))?\s*[:#-]?\s*(\d{4})\b/gi, // ending in / ending with 4542
+    /\blast\s*(?:4|four)(?:\s*digits)?(?:\s*of\s*(?:the\s*)?account)?\s*[:#-]?\s*(\d{4})\b/gi, // Last 4: 4542
     /\b(?:account|acct)\.?\s*(?:number|no\.?|#)?\s*[:#]?\s*([\d][\d\s-]{2,24}\d)\b/gi, // Account Number: 1234 5678 4542
   ];
   for (const re of patterns) {
@@ -174,7 +175,10 @@ export async function linkStatementsOnFile(opts: { budgetMs?: number; today?: st
       if (!needs) { skip("alreadyLinked"); continue; }
       const { chosen, skipped: passed } = await chooseStatement(a.clientId, a.id, y, m);
       if (!chosen) { skip(passed.length ? "noUsableStatement" : "noStatementOnFile"); continue; }
-      if (chosen.accountProof !== "NUMBER") { skip("noAccountNumberOnStatement"); continue; }
+      // Proven by the account number printed on it, or (an account with no number on file) a complete,
+      // readable statement our office already filed under this account.
+      const complete = !!chosen.parsed?.summary.periodEnd && chosen.parsed.summary.endingCents != null;
+      if (chosen.accountProof !== "NUMBER" && !(chosen.accountProof === "FILED_UNDER" && !a.last4 && complete)) { skip("noAccountNumberOnStatement"); continue; }
       if (rec?.statementDocumentId === chosen.id) { skip("alreadyLinked"); continue; }
       // No reconciliation for the month yet: prepared now with this statement (nothing is posted or approved).
       const target = rec ?? (await prepareReconciliation(a.clientId, a.id, y, m, { statementDocumentId: chosen.id }));
