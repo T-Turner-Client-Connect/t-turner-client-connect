@@ -84,7 +84,8 @@ async function office() {
   await prisma.client.update({ where: { id: client.id }, data: { state: "AL" } });
   return { tabitha, client };
 }
-const owner = { form8879Confirmed: true, overrideReason: "Prepared and e-filed in TaxAct before Client Connect summary approvals" };
+// Filed now (the 2025 return in this season), so the Form 8879 rules apply.
+const owner = { form8879Confirmed: true, overrideReason: "Prepared and e-filed in TaxAct before Client Connect summary approvals", filingNow: true };
 const tab = async (clientId: string, user: Actor) => walk(await TaxesTab({ clientId, user, taxYear: 2025 }));
 
 describe("The Taxes tab opens at the next step", () => {
