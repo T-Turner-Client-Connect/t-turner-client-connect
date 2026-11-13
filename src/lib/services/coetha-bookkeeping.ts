@@ -181,6 +181,7 @@ export async function runBookkeepingTool(actor: Actor, clientId: string, name: s
   const i = (input && typeof input === "object" ? input : {}) as { month?: string; dryRun?: boolean };
   try {
     if (name === DUPLICATES_TOOL.name) return await removeVerifiedDuplicates(actor, clientId, { month: String(i.month ?? ""), dryRun: !!i.dryRun });
+    if (name === "import_prior_months") return await importPriorMonths(actor, clientId, (input ?? {}) as { documentId?: string; months?: PriorMonth[]; packageEndingCash?: number | null });
     if (name === "reverse_entries") return await reverseEntries(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: { entryId?: string; reason?: string }[] }).items) : []);
     return await reconcileAccounts(actor, clientId, { month: String(i.month ?? "") });
   } catch (err) {
@@ -230,4 +231,109 @@ export const REVERSE_TOOL = {
   name: "reverse_entries",
   description: "Reverse journal entries you have verified are wrong (posted twice, posted to the wrong account, posted from a duplicate bank row), under Tabitha's standing authorization. Give each entry's entryId (from search_journal_entries) and the reason with its evidence. Each reversal is dated in the entry's own month; both entries stay on the books with an audit trail, and the bank rows go back to review so they can be posted correctly. Months whose statements were approved or released, or whose tax return was filed, are left for Tabitha. Verify against the ledger and the original transactions first.",
   input_schema: { type: "object" as const, properties: { items: { type: "array", items: { type: "object", properties: { entryId: { type: "string" }, reason: { type: "string" } }, required: ["entryId", "reason"] } } }, required: ["items"] },
+};
+
+// --- Months that are only in a financial package the office already prepared ------------------
+
+type PriorLine = { accountCode?: string; amount?: number; label?: string; kind?: "draw" | "contribution" };
+type PriorMonth = { month?: string; lines?: PriorLine[] };
+
+const shown = (cents: number) => (Math.abs(cents) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * Enters the months a financial package on file covers (the office's own Jan–Sep package, for
+ * example) as one summary entry per month, so the books hold the whole year without asking for
+ * every bank statement again. Coetha reads the package (any layout) and maps each line to the
+ * chart; Client Connect checks her work before anything is posted:
+ *  - every amount must be printed in the package itself (nothing invented);
+ *  - a month that already has bank postings or an earlier package import is never entered again;
+ *  - each month is posted once (its key), dated at month end, against the client's bank account;
+ *  - the package's ending cash, when given, is compared with the books and any difference reported
+ *    as it is — never plugged.
+ */
+export async function importPriorMonths(actor: Actor, clientId: string, input: { documentId?: string; months?: PriorMonth[]; packageEndingCash?: number | null }) {
+  const { coethaAutoPostOn } = await import("./owner-switches");
+  const { ownerActor, withMonthsOpened } = await import("./coetha-decisions");
+  const { assertLedgerWrite, postJournalEntryTx } = await import("./ledger");
+  await assertLedgerWrite(actor, clientId);
+  const owner = (await coethaAutoPostOn()) ? await ownerActor() : null;
+  if (!owner) return { error: "The standing authorization is off (Owner's Office → Automation), so the package months weren't entered." };
+  const doc = input.documentId ? await prisma.document.findFirst({ where: { id: input.documentId, clientId, deletedAt: null }, include: { file: true } }) : null;
+  if (!doc?.file) return { error: "That package isn't on file for this business." };
+  const bytes = await readDocumentBytes(doc.file);
+  const text = ((bytes ? await pdfLines(bytes) : null) ?? []).join("\n");
+  if (!text.trim()) return { error: "The package has no readable text, so its amounts can't be checked." };
+  const inText = (cents: number) => cents === 0 || text.includes(shown(cents));
+  const bankReg = await prisma.bookkeepingAccount.findFirst({ where: { clientId, parentAccountId: null, active: true, accountType: { in: ["CHECKING", "SAVINGS"] }, ledgerAccountId: { not: null } }, orderBy: { createdAt: "asc" } });
+  const bank = bankReg?.ledgerAccountId ? await prisma.ledgerAccount.findUnique({ where: { id: bankReg.ledgerAccountId } }) : await prisma.ledgerAccount.findFirst({ where: { clientId, subtype: "BANK" }, orderBy: { code: "asc" } });
+  if (!bank) return { error: "This business has no bank account in its chart to enter the months against." };
+  const chart = await prisma.ledgerAccount.findMany({ where: { clientId } });
+  const byCode = new Map(chart.map((a) => [a.code, a]));
+  const results: { month: string; ok: boolean; message: string }[] = [];
+  for (const pm of (input.months ?? []).slice(0, 12)) {
+    const month = String(pm.month ?? "");
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) { results.push({ month, ok: false, message: "Month must be YYYY-MM." }); continue; }
+    const [y, m] = month.split("-").map(Number);
+    const start = new Date(Date.UTC(y, m - 1, 1)), end = new Date(Date.UTC(y, m, 0));
+    const endYmd = end.toISOString().slice(0, 10);
+    // Never enter a month the books already hold (bank rows posted, or an earlier package import).
+    const already = await prisma.journalEntry.count({ where: { clientId, date: { gte: start, lte: end }, OR: [{ source: "BANK" }, { sourceKey: { startsWith: "prior-package:" } }], reversedBy: null } });
+    if (already) { results.push({ month, ok: false, message: "Already in the books (bank postings or an earlier import); not entered again." }); continue; }
+    const lines: { accountId: string; debit?: string; credit?: string; description?: string }[] = [];
+    let net = 0;
+    const problems: string[] = [];
+    for (const l of pm.lines ?? []) {
+      const a = byCode.get(String(l.accountCode ?? ""));
+      const c = Math.round(Number(l.amount ?? NaN) * 100);
+      if (!a) { problems.push(`account ${l.accountCode} isn't in the chart`); continue; }
+      if (!Number.isFinite(c) || c === 0) continue;
+      if (!inText(c)) { problems.push(`${shown(c)} (${l.label ?? a.name}) isn't printed in the package`); continue; }
+      const v = (Math.abs(c) / 100).toFixed(2);
+      const desc = (l.label ?? a.name).slice(0, 120);
+      const isIn = a.type === "INCOME" || (a.type === "EQUITY" && l.kind === "contribution") || (a.type === "LIABILITY");
+      // Cash basis: money in credits income/equity and debits the bank; money out the reverse.
+      const signed = c < 0 ? !isIn : isIn;
+      if (signed) { lines.push({ accountId: a.id, credit: v, description: desc }); net += Math.abs(c); }
+      else { lines.push({ accountId: a.id, debit: v, description: desc }); net -= Math.abs(c); }
+    }
+    if (problems.length) { results.push({ month, ok: false, message: `Not entered: ${problems.slice(0, 4).join("; ")}.` }); continue; }
+    if (!lines.length) { results.push({ month, ok: false, message: "No amounts for this month." }); continue; }
+    if (net !== 0) lines.push({ accountId: bank.id, ...(net > 0 ? { debit: (net / 100).toFixed(2) } : { credit: (-net / 100).toFixed(2) }), description: "Net cash for the month, per the package" });
+    try {
+      await withMonthsOpened(owner, clientId, endYmd, `Coetha's standing authorization: ${month} entered from the financial package on file`, () =>
+        prisma.$transaction((tx) => postJournalEntryTx(tx, owner, clientId, { date: endYmd, memo: `${month} summary from the financial package on file (${doc.title})`.slice(0, 300), lines, sourceKey: `prior-package:${month}`, reason: `Entered from ${doc.title} (document ${doc.id}) under standing authorization` })));
+      await audit(prisma, { actorId: owner.id, action: "coetha.prior_month_imported", entityType: "Document", entityId: doc.id, clientId, details: { month, lines: lines.length, netCashCents: net, requestedById: actor.id } });
+      results.push({ month, ok: true, message: `Entered: ${lines.length} lines, net cash ${usd(net)}.` });
+    } catch (err) {
+      results.push({ month, ok: false, message: err instanceof Error ? err.message : "Couldn't be entered." });
+    }
+  }
+  // Compare with the package's own ending cash: report any difference, never plug it.
+  let cashCheck: string | null = null;
+  if (input.packageEndingCash != null && Number.isFinite(Number(input.packageEndingCash))) {
+    const last = (input.months ?? []).map((x) => String(x.month ?? "")).filter((x) => /^\d{4}-\d{2}$/.test(x)).sort().pop();
+    if (last) {
+      const [y, m] = last.split("-").map(Number);
+      const asOf = new Date(Date.UTC(y, m, 0));
+      const agg = await prisma.journalLine.aggregate({ where: { accountId: bank.id, entry: { clientId, date: { lte: asOf } } }, _sum: { debitCents: true, creditCents: true } });
+      const books = (agg._sum.debitCents ?? 0) - (agg._sum.creditCents ?? 0);
+      const pkg = Math.round(Number(input.packageEndingCash) * 100);
+      cashCheck = books === pkg ? `Cash agrees with the package at ${usd(pkg)} as of ${last}.` : `Cash in the books ${usd(books)} vs the package's ${usd(pkg)} as of ${last}: a difference of ${usd(books - pkg)} — reported as an exception, not adjusted.`;
+    }
+  }
+  return { results, cashCheck };
+}
+
+export const PRIOR_MONTHS_TOOL = {
+  name: "import_prior_months",
+  description: "Enter months that exist only in a financial package already on file (the office's prepared Jan–Sep statements, for example) — one summary entry per month, by account, against the bank account, under Tabitha's standing authorization. Read the package first (read_files_on_file), map each P&L line to the chart (use prepare_entries with new_account items first if an account is missing), then send every month with its lines (amount = the figure printed for that month; owner draws kind \"draw\", owner contributions kind \"contribution\"). Every amount must be printed in the package; months already in the books are skipped automatically; the package's ending cash is compared and any difference reported, never plugged.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      documentId: { type: "string", description: "The package's document id (find_files_on_file)" },
+      months: { type: "array", items: { type: "object", properties: { month: { type: "string", description: "YYYY-MM" }, lines: { type: "array", items: { type: "object", properties: { accountCode: { type: "string" }, amount: { type: "number" }, label: { type: "string" }, kind: { type: "string", enum: ["draw", "contribution"] } }, required: ["accountCode", "amount"] } } }, required: ["month", "lines"] } },
+      packageEndingCash: { type: "number", description: "The package Balance Sheet's ending cash, to compare (optional)" },
+    },
+    required: ["documentId", "months"],
+  },
 };
