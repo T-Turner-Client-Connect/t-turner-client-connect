@@ -2,12 +2,11 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { ForbiddenError, type Actor } from "@/lib/auth/actor";
-import { parseStatementLines, pdfLines } from "@/lib/statement-pdf";
+import { pdfLines } from "@/lib/statement-pdf";
 import { ValidationError } from "./clients";
 import { excludeBankTransaction, usd, ymdOf } from "./ledger";
 import { readDocumentBytes } from "./documents";
-import { approveReconciliation, prepareReconciliation, statementWindow } from "./bank-accounts";
-import { STATEMENT_DOC_TYPES } from "./client-request-scope";
+import { approveReconciliation, enterStatementBalances, prepareReconciliation, statementWindow } from "./bank-accounts";
 
 /**
  * Coetha's bookkeeping tools for a whole assignment ("complete Parrish's September books"):
@@ -30,16 +29,27 @@ const monthOf = (raw: unknown) => {
   return { year: Number(m[1]), month: Number(m[2]) };
 };
 
-/** The newest statement PDF on file for a registered account and month, read and checked to the cent. */
+/**
+ * The statement for a registered account and month (statement-choice.ts: unreadable files and
+ * statements for another account number are skipped), read and checked to the cent.
+ */
 async function statementRows(clientId: string, registryId: string, year: number, month: number, liability: boolean) {
-  const doc = await prisma.document.findFirst({ where: { clientId, deletedAt: null, bookkeepingAccountId: registryId, docType: { in: STATEMENT_DOC_TYPES }, year, month }, orderBy: { createdAt: "desc" }, include: { file: true } });
-  if (!doc?.file) return { ok: false as const, why: "no statement on file for this month" };
-  const bytes = await readDocumentBytes(doc.file);
-  const lines = bytes ? await pdfLines(bytes) : null;
-  if (!lines?.length) return { ok: false as const, why: `the statement “${doc.title}” has no readable text` };
-  const parsed = parseStatementLines(lines, { liability });
-  if (!parsed.check.ok) return { ok: false as const, why: `the statement “${doc.title}” couldn't be read to the cent (${parsed.check.problems[0] ?? "it doesn't reconcile"})` };
-  return { ok: true as const, title: doc.title, rows: parsed.transactions, periodStart: parsed.summary.periodStart, periodEnd: parsed.summary.periodEnd };
+  const { chooseStatement } = await import("./statement-choice");
+  const { chosen, skipped } = await chooseStatement(clientId, registryId, year, month);
+  const passed = skipped.length ? ` (passed over: ${skipped.slice(0, 3).map((x) => `“${x.title}” — ${x.why}`).join("; ")})` : "";
+  if (!chosen) return { ok: false as const, why: `no readable statement for this account and month is on file${passed}` };
+  let rows = chosen.parsed?.transactions ?? [];
+  let summary = chosen.parsed?.summary ?? null;
+  if (!chosen.exact) {
+    const doc = await prisma.document.findFirst({ where: { id: chosen.id, clientId }, include: { file: true } });
+    const bytes = doc?.file ? await readDocumentBytes(doc.file) : null;
+    const lines = bytes ? await pdfLines(bytes) : null;
+    const { extractStatement } = await import("./statement-import");
+    const x = lines?.length ? await extractStatement(null, clientId, chosen.id, lines, liability) : null;
+    if (!x?.check.ok) return { ok: false as const, why: `the statement “${chosen.title}” couldn't be read to the cent (${x?.check.problems[0] ?? "it doesn't reconcile"})${passed}` };
+    rows = x.txns; summary = x.summary;
+  }
+  return { ok: true as const, title: chosen.title, documentId: chosen.id, skipped, rows, periodStart: summary?.periodStart ?? null, periodEnd: summary?.periodEnd ?? null };
 }
 
 type Dup = { txnId: string; date: string; amount: string; description: string; account: string; statementCount: number; booksCount: number };
@@ -50,6 +60,7 @@ export async function removeVerifiedDuplicates(actor: Actor, clientId: string, i
   const accounts = await prisma.bookkeepingAccount.findMany({ where: { clientId, parentAccountId: null, ledgerAccountId: { not: null }, active: true } });
   const removed: Dup[] = [];
   const unverified: { account: string; why: string }[] = [];
+  const statementsUsed: { account: string; statement: string; passedOver: { title: string; why: string }[] }[] = [];
   for (const a of accounts) {
     const label = `${a.institution}${a.nickname ? ` ${a.nickname}` : ""}${a.last4 ? ` ••${a.last4}` : ""}`;
     const liability = ["CREDIT_CARD", "LINE_OF_CREDIT", "LOAN"].includes(a.accountType);
@@ -65,6 +76,7 @@ export async function removeVerifiedDuplicates(actor: Actor, clientId: string, i
       if ([...groups.values()].some((n) => n > 1)) unverified.push({ account: label, why: `${st.why}, so repeated rows can't be confirmed as duplicates` });
       continue;
     }
+    statementsUsed.push({ account: label, statement: st.title, passedOver: st.skipped });
     const onStatement = new Map<string, number>();
     for (const t of st.rows) onStatement.set(`${t.date}|${t.amountCents}`, (onStatement.get(`${t.date}|${t.amountCents}`) ?? 0) + 1);
     const inBooks = new Map<string, typeof rows>();
@@ -78,40 +90,59 @@ export async function removeVerifiedDuplicates(actor: Actor, clientId: string, i
       if (allowed == null || list.length <= allowed) continue;
       // Keep the posted rows and the earliest imports; the extra unreviewed ones are the duplicates.
       const keep = [...list].sort((x, y) => (x.status === "POSTED" ? -1 : 0) - (y.status === "POSTED" ? -1 : 0));
-      const extras = keep.slice(allowed).filter((r) => r.status === "UNREVIEWED");
+      const extras = keep.slice(allowed);
       for (const r of extras) {
         const d: Dup = { txnId: r.id, date: ymdOf(r.date), amount: usd(r.amountCents), description: r.description.slice(0, 60), account: label, statementCount: allowed, booksCount: list.length };
+        const reason = `Duplicate import: the ${st.title} shows ${d.amount} on ${d.date} ${allowed} time${allowed === 1 ? "" : "s"}; the books had it ${list.length} times`.slice(0, 200);
+        if (r.status === "POSTED") {
+          // A duplicate that was already posted: its entry is reversed (both stay on the books), then the row is excluded.
+          const linked = r.journalEntryId ? await prisma.bankTransaction.count({ where: { clientId, journalEntryId: r.journalEntryId } }) : 0;
+          if (!r.journalEntryId || linked !== 1) { unverified.push({ account: label, why: `the duplicate ${d.amount} on ${d.date} is posted in an entry shared with other rows, so it was left for review` }); continue; }
+          if (!input.dryRun) {
+            const rev = await reverseEntries(actor, clientId, [{ entryId: r.journalEntryId, reason }]);
+            const res = rev.results[0];
+            if (!res?.ok) { unverified.push({ account: label, why: `the posted duplicate ${d.amount} on ${d.date} wasn't reversed: ${res?.message ?? "unknown"}` }); continue; }
+          }
+        } else if (r.status !== "UNREVIEWED") continue;
         if (!input.dryRun) {
-          await excludeBankTransaction(actor, clientId, r.id, `Duplicate import: the ${st.title} shows ${d.amount} on ${d.date} ${allowed} time${allowed === 1 ? "" : "s"}; the books had it ${list.length} times`);
-          await audit(prisma, { actorId: actor.id, action: "coetha.duplicate_excluded", entityType: "BankTransaction", entityId: r.id, clientId, details: { date: d.date, amountCents: r.amountCents, statement: st.title, statementCount: allowed, booksCount: list.length } });
+          await excludeBankTransaction(actor, clientId, r.id, reason);
+          await audit(prisma, { actorId: actor.id, action: "coetha.duplicate_excluded", entityType: "BankTransaction", entityId: r.id, clientId, details: { date: d.date, amountCents: r.amountCents, statement: st.title, statementDocumentId: st.documentId, statementCount: allowed, booksCount: list.length, wasPosted: r.status === "POSTED" } });
         }
         removed.push(d);
       }
     }
   }
-  return { month: input.month, removed, unverified, dryRun: !!input.dryRun };
+  return { month: input.month, removed, unverified, dryRun: !!input.dryRun, statementsUsed };
 }
 
 /** Reads the month's statements on file into the books and prepares each account's reconciliation. Never forces a balance. */
 export async function reconcileAccounts(actor: Actor, clientId: string, input: { month: string }) {
   const { year, month } = monthOf(input.month);
   const accounts = await prisma.bookkeepingAccount.findMany({ where: { clientId, parentAccountId: null, active: true } });
-  const { readStatementTransactions, statementReadMessage, statementOnFile } = await import("./statement-import");
+  const { readStatementTransactions, statementReadMessage } = await import("./statement-import");
+  const { chooseStatement } = await import("./statement-choice");
   const out = [];
   for (const a of accounts) {
     const label = `${a.institution}${a.nickname ? ` ${a.nickname}` : ""}${a.last4 ? ` ••${a.last4}` : ""}`;
-    const doc = await statementOnFile(clientId, a.id, year, month);
-    let statement = "No statement on file for this month: this account stays pending; everything else continues.";
+    const { chosen: doc, skipped } = await chooseStatement(clientId, a.id, year, month);
+    let statement = "No readable statement for this account is on file for this month: this account stays pending; everything else continues.";
     let verified = false;
     if (doc) {
       try {
         const read = await readStatementTransactions(actor, clientId, doc.id);
-        statement = statementReadMessage(read);
+        statement = `${doc.title}: ${statementReadMessage(read)}`;
         // Verified: the statement on file was read to the cent (beginning + every transaction = ending).
         verified = read.ok;
+        // The bank's own statement is the authority for the month's balances.
+        if (read.ok) {
+          const ex = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: a.id, year, month } } });
+          if (ex?.status !== "APPROVED" && (ex?.beginningBalanceCents !== read.beginningCents || ex?.endingBalanceCents !== read.endingCents)) {
+            await enterStatementBalances(actor, clientId, a.id, year, month, { beginning: (read.beginningCents / 100).toFixed(2), ending: (read.endingCents / 100).toFixed(2) });
+          }
+        }
       } catch (err) { statement = err instanceof Error ? err.message : "The statement couldn't be read."; }
     }
-    let rec = await prepareReconciliation(clientId, a.id, year, month, { preparedById: actor.id });
+    let rec = await prepareReconciliation(clientId, a.id, year, month, { preparedById: actor.id, statementDocumentId: doc?.id ?? null });
     if (!rec) continue;
     let completed: string | null = null;
     // Under Tabitha's standing authorization Coetha completes a reconciliation ONLY when the balances
@@ -129,7 +160,7 @@ export async function reconcileAccounts(actor: Actor, clientId: string, input: {
         } catch (err) { completed = `Not marked reconciled: ${err instanceof Error ? err.message : "the books don't agree with the statement yet"}`; }
       } else completed = "Balanced against the statement, but the standing authorization is off (Owner's Office → Automation), so it waits for Tabitha's approval.";
     }
-    out.push({ account: label, statement, statementVerified: verified, completed, status: rec.status, beginning: rec.beginningBalanceCents != null ? usd(rec.beginningBalanceCents) : null, ending: rec.endingBalanceCents != null ? usd(rec.endingBalanceCents) : null, difference: rec.differenceCents != null ? usd(rec.differenceCents) : null, unmatched: rec.unmatchedCount, exceptions: rec.exceptions });
+    out.push({ account: label, statement, statementPassedOver: skipped, statementVerified: verified, completed, status: rec.status, beginning: rec.beginningBalanceCents != null ? usd(rec.beginningBalanceCents) : null, ending: rec.endingBalanceCents != null ? usd(rec.endingBalanceCents) : null, difference: rec.differenceCents != null ? usd(rec.differenceCents) : null, unmatched: rec.unmatchedCount, exceptions: rec.exceptions });
   }
   return { month: input.month, accounts: out, note: "Differences are reported as they are; nothing was forced to balance. An account is marked reconciled only when its statement on file, read to the cent, agrees with the books." };
 }
