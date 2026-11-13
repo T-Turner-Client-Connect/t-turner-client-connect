@@ -190,7 +190,7 @@ describe("joint return and the owner filing gate", () => {
     expect((await summaryRequirement(federal)).approved).toBeNull();
     expect((await approveSummary(login, client.id, r.summaryId!, { role: "SPOUSE", signerName: "Casey Example", agreed: true })).complete).toBe(true);
     expect((await summaryRequirement(federal)).approved?.id).toBe(r.summaryId);
-    await setFilingStatusByStaff(tabitha, federal.id, { status: "SUBMITTED", submission: { form8879Confirmed: true } });
+    await setFilingStatusByStaff(tabitha, federal.id, { status: "SUBMITTED", submission: { filingNow: true, form8879Confirmed: true } });
   });
 });
 
@@ -199,9 +199,10 @@ describe("Form 8879 after approval", () => {
     const { tabitha, daria, client, summaryId } = await approvedJordan();
     const federal = await createFiling(tabitha, { clientId: client.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
     const st = async () => form8879Status(await prisma.taxReturnSummary.findUniqueOrThrow({ where: { id: summaryId } })).status;
-    expect(await st()).toBe("WAITING");
+    // A 2025 return was filed before the 2026 e-file authorization rules: nothing is "waiting to send".
+    expect(await st()).toBe("NONE");
     expect(await signed8879OnFile(federal)).toBe(false);
-    await expect(setFilingStatusByStaff(tabitha, federal.id, { status: "SUBMITTED", submission: { form8879Confirmed: false } })).rejects.toThrow(/8879/);
+    await expect(setFilingStatusByStaff(tabitha, federal.id, { status: "SUBMITTED", submission: { filingNow: true, form8879Confirmed: false } })).rejects.toThrow(/8879/);
     await mark8879Sent(daria, summaryId);
     expect(await st()).toBe("SENT");
     const notes = await prisma.notification.count();
@@ -219,7 +220,7 @@ describe("Form 8879 after approval", () => {
     expect(form8879VaultTitle(2026)).toBe("Form 8879 — Tax Year 2026 (signed)");
     expect(form8879Progress(2026, new Date("2027-03-01T18:00:00Z"))).toBe("8879 signed for Tax Year 2026 on Mar 1, 2027");
     expect(await signed8879OnFile(federal)).toBe(true);
-    await setFilingStatusByStaff(tabitha, federal.id, { status: "SUBMITTED", submission: { form8879Confirmed: false } });
+    await setFilingStatusByStaff(tabitha, federal.id, { status: "SUBMITTED", submission: { filingNow: true, form8879Confirmed: false } });
     expect((await prisma.filingRecord.findUniqueOrThrow({ where: { id: federal.id } })).filingStatus).toBe("SUBMITTED");
   });
 
@@ -314,16 +315,17 @@ describe("8879 Signature Page tracker", () => {
     const rows = await summaryTracker(a.tabitha, 2025);
     expect(rows.map((r) => [r.clientName, r.summary.code, r.form8879.code, r.needsAction])).toEqual([
       ["Marcus Fairbanks", "HELD", "NONE", true],
-      ["Jordan Sample", "APPROVED", "WAITING", true],
       ["Riley Example", "SENT", "NONE", false],
+      // 2025 was filed before the 2026 e-file authorization rules: no new 8879 is asked for.
+      ["Jordan Sample", "APPROVED", "NONE", false],
     ]);
-    const j = rows[1];
+    const j = rows[2];
     expect(j.taxYear).toBe(2025);
     expect(j.clientHref).toBe(`/clients/${a.client.id}?tab=taxes#auto-summary-2025`);
-    expect(j.statusHref).toBe(j.clientHref); // waiting → the client's summary and 8879 panel
+    expect(j.statusHref).toBeNull(); // nothing to do for a 2025 return already filed
     expect(j.recordsHref).toBe(`/clients/${a.client.id}?tab=documents#docs-TAXES-2025`);
     expect((await summaryTracker(a.tabitha, 2025, "HELD")).map((r) => r.clientName)).toEqual(["Marcus Fairbanks"]);
-    expect((await summaryTracker(a.tabitha, 2025, "8879_WAITING")).map((r) => r.clientName)).toEqual(["Jordan Sample"]);
+    expect((await summaryTracker(a.tabitha, 2025, "8879_WAITING")).map((r) => r.clientName)).toEqual([]);
     expect(await summaryTracker(a.tabitha, 2024)).toEqual([]);
 
     // Signed → the status opens the PDF through the secure staff link.

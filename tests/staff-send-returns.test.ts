@@ -29,7 +29,7 @@ describe("Authorized staff send tax returns to the client's vault", () => {
   async function acceptedReturns(s: Awaited<ReturnType<typeof setup>>) {
     for (const [returnType, jurisdiction] of [["1040", "FEDERAL"], ["40", "AL"]]) {
       const f = await createFiling(s.preparer, { clientId: s.client.id, taxYear: 2025, returnType, jurisdiction, filingType: "ORIGINAL" });
-      await setFilingStatusByStaff(s.preparer, f.id, { status: "SUBMITTED", submission: { form8879Confirmed: true, overrideReason: "Filed in TaxAct before summaries were used (fictional)" } });
+      await setFilingStatusByStaff(s.preparer, f.id, { status: "SUBMITTED", submission: { filingNow: true, form8879Confirmed: true, overrideReason: "Filed in TaxAct before summaries were used (fictional)" } });
       await setFilingStatusByStaff(s.preparer, f.id, { status: "ACCEPTED", verificationNote: "Ack (fictional)" });
     }
     const fed = await fileReturn(s.preparer, { clientId: s.client.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes: pdf("fed"), originalName: "1040.pdf" });
@@ -132,7 +132,7 @@ describe("Authorized staff send tax returns to the client's vault", () => {
   it("nothing goes to the client until the filing is accepted, and Form 8879 must be confirmed to record it as submitted", async () => {
     const s = await setup();
     const f = await createFiling(s.preparer, { clientId: s.client.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
-    await expect(setFilingStatusByStaff(s.preparer, f.id, { status: "SUBMITTED", submission: { form8879Confirmed: false, overrideReason: "Filed in TaxAct (fictional)" } })).rejects.toThrow(/8879/);
+    await expect(setFilingStatusByStaff(s.preparer, f.id, { status: "SUBMITTED", submission: { filingNow: true, form8879Confirmed: false, overrideReason: "Filed in TaxAct (fictional)" } })).rejects.toThrow(/8879/);
     // A return can't even be filed for delivery until its acceptance is recorded.
     await expect(fileReturn(s.preparer, { clientId: s.client.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL", bytes: pdf("early"), originalName: "1040.pdf" })).rejects.toThrow(/hasn't been accepted yet/);
     expect(await prisma.document.count({ where: { clientId: s.client.id, filingDocType: "RETURN" } })).toBe(0);

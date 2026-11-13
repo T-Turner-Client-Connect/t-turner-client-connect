@@ -367,6 +367,16 @@ export async function summaryRequirement(filing: { clientId: string; taxYear: nu
 }
 
 /**
+ * Form 8879 and client summary approval apply from tax year 2026 on. A 2022–2025 original return was
+ * filed before these rules: recording it needs no new 8879 or approval, and none is requested — unless
+ * it's actually being filed now (a late return), which follows the rules for that filing. Amended
+ * returns always do (they're filed now). Signed authorizations already on file are kept as they are.
+ */
+export const EFILE_AUTH_FIRST_YEAR = 2026;
+export const HISTORICAL_FILING_NOTE = "Filed before 2026: no new Form 8879 or summary approval requested.";
+export const isHistoricalFiling = (f: { taxYear: number; filingType: string }, filingNow?: boolean) => f.taxYear < EFILE_AUTH_FIRST_YEAR && f.filingType === "ORIGINAL" && !filingNow;
+
+/**
  * Recording a return as submitted is Tabitha's alone. She confirms Form
  * 8879 / the state authorization is signed and kept, and an approved
  * summary must be on file — unless she records why she's filing without one.
@@ -374,11 +384,12 @@ export async function summaryRequirement(filing: { clientId: string; taxYear: nu
 export async function assertOwnerMaySubmit(
   actor: Actor,
   filing: { clientId: string; taxYear: number; returnType: string; jurisdiction: string; filingType: string; method: string },
-  input: { form8879Confirmed: boolean; overrideReason?: string | null },
+  input: { form8879Confirmed: boolean; overrideReason?: string | null; filingNow?: boolean },
 ) {
   const { canSendReturns } = await import("./return-senders");
   if (!(await canSendReturns(actor, filing.clientId))) throw new ForbiddenError("Only Tabitha, an Admin, the assigned preparer or staff with Tax → All clients can record a return as submitted.");
   if (filing.filingType === "EXTENSION") return { summaryId: null, override: null };
+  if (isHistoricalFiling(filing, input.filingNow)) return { summaryId: null, override: HISTORICAL_FILING_NOTE, historical: true as const };
   // A signed 8879 on file that matches the approved summary satisfies this; the checkbox is the fallback.
   if (filing.method === "ELECTRONIC" && !input.form8879Confirmed && !(await (await import("./auto-tax-summary")).signed8879OnFile(filing))) {
     throw new ValidationError("Confirm the signed IRS Form 8879 (or the state e-file authorization) is on file. The client's summary approval does not replace it.");

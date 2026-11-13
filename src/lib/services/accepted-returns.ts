@@ -58,7 +58,7 @@ export type AcceptedFilingInput = {
   returnFile?: FileIn | null;
   ackFile?: FileIn | null;
 };
-export type OwnerConfirmation = { form8879Confirmed: boolean; overrideReason?: string | null };
+export type OwnerConfirmation = { form8879Confirmed: boolean; overrideReason?: string | null; /** A pre-2026 original return being filed now (late): the e-file authorization rules apply. */ filingNow?: boolean };
 export type DeliverInput = {
   clientId: string;
   taxYear: number;
@@ -136,7 +136,7 @@ async function ownerGate(actor: Actor, f: { clientId: string; taxYear: number; r
   if (!(await summaryRequirement(f)).required) return { note: null, details: {} };
   const g = await assertOwnerMaySubmit(actor, f, owner ?? { form8879Confirmed: false });
   return {
-    note: g.summaryId ? "Owner filing: client-approved summary on file; Form 8879/state authorization confirmed." : `Owner filing WITHOUT an approved summary: ${g.override}`,
+    note: "historical" in g && g.historical ? g.override : g.summaryId ? "Owner filing: client-approved summary on file; Form 8879/state authorization confirmed." : `Owner filing WITHOUT an approved summary: ${g.override}`,
     details: { approvedSummaryId: g.summaryId, overrideReason: g.override, form8879Confirmed: !!owner?.form8879Confirmed },
   };
 }

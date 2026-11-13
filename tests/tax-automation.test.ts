@@ -43,16 +43,16 @@ describe("tax workspace", () => {
     const il = await createFiling(staff, { clientId: avery.id, taxYear: 2025, returnType: "1040", jurisdiction: "IL", filingType: "ORIGINAL" });
     await setPrepStatus(staff, fed.id, "READY_TO_FILE");
     await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED" })).rejects.toThrow(/acknowledgment/);
-    // Recording an individual return as filed: Tabitha, an Admin or the assigned preparer, with the signed
+    // A 2025 return being filed now (not a historical record): Recording an individual return as filed: Tabitha, an Admin or the assigned preparer, with the signed
     // Form 8879 confirmed and an approved summary (or a stated reason). This Admin is stopped by the 8879 check.
-    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center" })).rejects.toThrow(/8879/);
+    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center", submission: { form8879Confirmed: false, filingNow: true } })).rejects.toThrow(/8879/);
     const unassigned = await makeUser("STAFF", "Unassigned Staff");
     await expect(setFilingStatusByStaff(unassigned, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true, overrideReason: "Filed in TaxAct (fictional)" } })).rejects.toThrow(/assigned preparer|staff member assigned to this client/);
     await prisma.ownerAccess.create({ data: { userId: staff.id, isPrimary: true } });
-    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: false } })).rejects.toThrow(/8879/);
-    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true } })).rejects.toThrow(/no client-approved/);
+    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: false, filingNow: true } })).rejects.toThrow(/8879/);
+    await expect(setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack", submission: { form8879Confirmed: true, filingNow: true } })).rejects.toThrow(/no client-approved/);
     await setFilingStatusByStaff(staff, fed.id, { status: "ACCEPTED", verificationNote: "Checked IRS ack in TaxAct E-file Center", submission: { form8879Confirmed: true, overrideReason: "Prior-year return filed before Client Connect" } });
-    expect((await prisma.filingStatusEvent.findFirstOrThrow({ where: { filingId: fed.id, field: "FILING" } })).verificationNote).toMatch(/WITHOUT an approved summary: Prior-year/);
+    expect((await prisma.filingStatusEvent.findFirstOrThrow({ where: { filingId: fed.id, field: "FILING" } })).verificationNote).toMatch(/Filed before 2026: no new Form 8879 or summary approval requested/);
     const [f, s] = await Promise.all([prisma.filingRecord.findUniqueOrThrow({ where: { id: fed.id } }), prisma.filingRecord.findUniqueOrThrow({ where: { id: il.id } })]);
     expect(f.filingStatus).toBe("ACCEPTED");
     expect(f.prepStatus).toBe("READY_TO_FILE");

@@ -143,7 +143,7 @@ export async function setFilingStatusByStaff(
     filingReference?: string | null;
     rejectionCodes?: string | null;
     // Owner filing: Form 8879 confirmed; reason when filing without an approved summary.
-    submission?: { form8879Confirmed: boolean; overrideReason?: string | null };
+    submission?: { form8879Confirmed: boolean; overrideReason?: string | null; filingNow?: boolean };
   },
 ) {
   const f = await prisma.filingRecord.findUniqueOrThrow({ where: { id: filingId } });
@@ -170,7 +170,7 @@ export async function setFilingStatusByStaff(
     const { summaryRequirement, assertOwnerMaySubmit } = await import("./tax-summary");
     if ((await summaryRequirement(f)).required) {
       const g = await assertOwnerMaySubmit(actor, f, input.submission ?? { form8879Confirmed: false });
-      gateNote = g.summaryId ? "Owner filing: client-approved summary on file; Form 8879/state authorization confirmed." : `Owner filing WITHOUT an approved summary: ${g.override}`;
+      gateNote = "historical" in g && g.historical ? g.override : g.summaryId ? "Owner filing: client-approved summary on file; Form 8879/state authorization confirmed." : `Owner filing WITHOUT an approved summary: ${g.override}`;
       gateDetails = { approvedSummaryId: g.summaryId, overrideReason: g.override, form8879Confirmed: !!input.submission?.form8879Confirmed };
     }
   }
