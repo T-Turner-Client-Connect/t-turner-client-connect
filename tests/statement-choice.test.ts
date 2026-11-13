@@ -77,6 +77,12 @@ describe("The statement Coetha uses for an account and month", () => {
     expect([...accountNumbersIn(["Account Number: 1234 5678 4542"])]).toEqual(["4542"]);
     expect([...accountNumbersIn(["Checking ending in 4542"])]).toEqual(["4542"]);
     expect([...accountNumbersIn(["****4542 statement"])]).toEqual(["4542"]);
+    expect([...accountNumbersIn(["Business Checking ending with 4542"])]).toEqual(["4542"]);
+    expect([...accountNumbersIn(["Last 4 digits of account: 4542"])]).toEqual(["4542"]);
+    expect([...accountNumbersIn(["Checking x4542"])]).toEqual(["4542"]);
+    expect([...accountNumbersIn(["Checking …4542"])]).toEqual(["4542"]);
+    // Not account numbers: a box number, an amount after an asterisk.
+    expect([...accountNumbersIn(["PO Box 1234", "Fee *1234.56"])]).toEqual([]);
   });
 
   it("an account registered as Chase with no number: skips the unreadable scan, uses the readable statement, records its account number and real bank name, and re-files it (nothing deleted)", async () => {
@@ -175,6 +181,20 @@ describe("The hourly step in the cases that left Parrish unlinked", () => {
     expect(r.linked).toHaveLength(0);
     expect(r.skipped.noUsableStatement).toBeGreaterThanOrEqual(1);
     expect(JSON.stringify(r.skipped)).not.toMatch(/Willow|cm[a-z0-9]{10}/);
+  });
+});
+
+describe("An account with no number on file and a statement whose number can't be read", () => {
+  it("links the complete, readable statement our office filed under the account (no number learned), and still skips an unreadable scan", async () => {
+    const w = await world();
+    // The statement prints no recognizable account number.
+    const noNumber = october("4542").map((l) => (l.startsWith("ACCOUNT #") ? "BUSINESS ACCOUNT" : l));
+    await prisma.document.update({ where: { id: w.good.id }, data: { deletedAt: new Date() } });
+    const d = await staffUploadStatement(w.tabitha, w.biz.id, { accountId: w.chk.id, month: "2026-10", bytes: await pdf(noNumber), originalName: "no-number.pdf" });
+    const r = await linkStatementsOnFile({ today: "2026-11-13" });
+    expect(r.linked.map((x) => x.documentId)).toEqual([d.id]);
+    expect(await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id, year: 2026, month: 10 } })).toMatchObject({ statementDocumentId: d.id });
+    expect((await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: w.chk.id } })).last4).toBeNull();
   });
 });
 
