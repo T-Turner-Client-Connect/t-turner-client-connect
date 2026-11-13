@@ -177,8 +177,14 @@ export async function linkStatementsOnFile(opts: { budgetMs?: number; today?: st
       if (!chosen) { skip(passed.length ? "noUsableStatement" : "noStatementOnFile"); continue; }
       // Proven by the account number printed on it, or (an account with no number on file) a complete,
       // readable statement our office already filed under this account.
-      const complete = !!chosen.parsed?.summary.periodEnd && chosen.parsed.summary.endingCents != null;
-      if (chosen.accountProof !== "NUMBER" && !(chosen.accountProof === "FILED_UNDER" && !a.last4 && complete)) { skip("noAccountNumberOnStatement"); continue; }
+      // A readable statement our office filed under this account and month counts for an account with
+      // no number on file (there's nothing to check it against); its layout needn't be recognized.
+      if (chosen.accountProof !== "NUMBER" && !(chosen.accountProof === "FILED_UNDER" && !a.last4)) {
+        // Which case, for the log (no client data): the account has a number the statement doesn't show.
+        skip(a.last4 ? "noAccountNumberOnStatement:accountHasNumber" : "noAccountNumberOnStatement");
+        continue;
+      }
+      if (!chosen.exact) skip(chosen.parsed?.summary.periodEnd ? "linkedNotReadToTheCent" : "linkedLayoutNotRecognized");
       if (rec?.statementDocumentId === chosen.id) { skip("alreadyLinked"); continue; }
       // No reconciliation for the month yet: prepared now with this statement (nothing is posted or approved).
       const target = rec ?? (await prepareReconciliation(a.clientId, a.id, y, m, { statementDocumentId: chosen.id }));

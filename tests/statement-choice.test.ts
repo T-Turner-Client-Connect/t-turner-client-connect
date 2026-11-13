@@ -188,13 +188,15 @@ describe("An account with no number on file and a statement whose number can't b
   it("links the complete, readable statement our office filed under the account (no number learned), and still skips an unreadable scan", async () => {
     const w = await world();
     // The statement prints no recognizable account number.
-    const noNumber = october("4542").map((l) => (l.startsWith("ACCOUNT #") ? "BUSINESS ACCOUNT" : l));
+    // …and a layout our reader doesn't recognize (no period line).
+    const noNumber = october("4542").map((l) => (l.startsWith("ACCOUNT #") ? "BUSINESS ACCOUNT" : l)).filter((l) => !l.startsWith("October 1, 2026 through"));
     await prisma.document.update({ where: { id: w.good.id }, data: { deletedAt: new Date() } });
     const d = await staffUploadStatement(w.tabitha, w.biz.id, { accountId: w.chk.id, month: "2026-10", bytes: await pdf(noNumber), originalName: "no-number.pdf" });
     const r = await linkStatementsOnFile({ today: "2026-11-13" });
     expect(r.linked.map((x) => x.documentId)).toEqual([d.id]);
     expect(await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id, year: 2026, month: 10 } })).toMatchObject({ statementDocumentId: d.id });
     expect((await prisma.bookkeepingAccount.findUniqueOrThrow({ where: { id: w.chk.id } })).last4).toBeNull();
+    expect(r.skipped.linkedLayoutNotRecognized).toBe(1);
   });
 });
 
