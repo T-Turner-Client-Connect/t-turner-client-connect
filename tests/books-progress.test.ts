@@ -266,6 +266,20 @@ describe("Monthly Bookkeeping Progress Tracker: stages from real records", () =>
   });
 });
 
+describe("An account with no bank feed and no import file", () => {
+  it("is up to date once the month's reconciliation against the statement is approved (rows entered from the statement itself)", async () => {
+    const p = await people();
+    const b = await business(p, "Statement Only Pretend Agency LLC", "statement-owner@fictional.example");
+    await openWorkPeriod(p.daria, b.biz.id, 2026, 10);
+    // Rows entered without an import file or a feed, then categorized.
+    const t = await prisma.bankTransaction.create({ data: { clientId: b.biz.id, accountId: b.checking, date: new Date("2026-10-15T00:00:00Z"), amountCents: 12500, description: "Deposit (fictional)", fingerprint: "stmt-only-1", source: "CSV" } });
+    await categorizeBankTransaction(p.daria, b.biz.id, t.id, { accountId: b.income });
+    expect(stagesOf(await computeBooksProgress(b.biz.id, MONTH)).TRANSACTIONS).toBe("IN_PROGRESS");
+    await prisma.accountReconciliation.create({ data: { clientId: b.biz.id, bookkeepingAccountId: b.registry.id, year: 2026, month: 10, status: "APPROVED", beginningBalanceCents: 0, endingBalanceCents: 12500, differenceCents: 0, approvedAt: new Date(), approvedById: p.daria.id } });
+    expect(stagesOf(await computeBooksProgress(b.biz.id, MONTH)).TRANSACTIONS).toBe("COMPLETE");
+  });
+});
+
 describe("Plaid parity: the client experience is identical however transactions arrive", () => {
   it("a CSV-imported month and a bank-feed month show the same stages, wording, indicators, links and document locations", async () => {
     const p = await people();

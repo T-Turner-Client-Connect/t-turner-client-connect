@@ -52,6 +52,12 @@ export async function accountSynced(clientId: string, a: { id: string; ledgerAcc
   // Not connected: an imported statement or uploaded statement covering the month.
   const imp = await prisma.bankImport.findFirst({ where: { clientId, accountId: a.ledgerAccountId, lastDate: { gte: toDate(ymdOf(new Date(toDate(end).getTime() - 3 * 86_400_000))) } }, select: { id: true } });
   if (imp) return { state: "DONE", detail: "Statement imported" };
+  // Or the month is reconciled against the bank's statement (rows entered from the statement itself).
+  const [approved, ledgerRec] = await Promise.all([
+    prisma.accountReconciliation.count({ where: { clientId, bookkeepingAccountId: a.id, year: y, month: m, status: "APPROVED" } }),
+    prisma.bankReconciliation.count({ where: { clientId, accountId: a.ledgerAccountId, statementDate: { gte: toDate(`${y}-${pad(m)}-01`), lte: toDate(ymdOf(new Date(toDate(end).getTime() + 5 * 86_400_000))) } } }),
+  ]);
+  if (approved || ledgerRec) return { state: "DONE", detail: "Reconciled to the statement" };
   return { state: "MISSING", detail: "No feed or statement for the month" };
 }
 

@@ -6,6 +6,7 @@ import { bookkeepingStatus, OVERALL, type Overall } from "@/lib/services/bookkee
 import { bookkeepingQueueStatus } from "@/lib/services/bookkeeping-queue";
 import { assignBookkeepingAction } from "@/app/actions/bookkeeping-queue";
 import { ActionForm } from "@/components/action-form";
+import { PriorPackagesUpload } from "@/components/prior-packages-upload";
 import { todayCentral } from "@/lib/services/ledger";
 
 export const metadata = { title: "Office Files" };
@@ -43,6 +44,7 @@ export default async function OfficeFilesPage() {
           <button type="submit" className="rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white" data-testid="assign-all">Assign to Coetha</button>
           <span className="text-xs text-slate-600">Months already assigned or done aren&apos;t queued again.</span>
         </ActionForm>
+        <PriorPackagesUpload />
         <div className="mb-4 flex flex-wrap gap-2">
           {counts.map(([o, n]) => <span key={o} className={clsx("rounded-full px-3 py-1 text-sm font-semibold", TONE[o])}>{o}: {n}</span>)}
         </div>

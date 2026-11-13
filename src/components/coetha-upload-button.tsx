@@ -23,7 +23,7 @@ async function post(fd: FormData) {
  */
 const PAYROLL = "__payroll__";
 
-export function CoethaUploadButton({ clientId, accounts = [], defaultMonth = "", payroll = false }: { clientId: string; accounts?: StatementAccount[]; defaultMonth?: string; /** The business runs payroll: offer "Payroll report". */ payroll?: boolean }) {
+export function CoethaUploadButton({ clientId, clientName, accounts = [], defaultMonth = "", payroll = false }: { clientId: string; /** Shown on the button: the files go into this client's records only. */ clientName?: string; accounts?: StatementAccount[]; defaultMonth?: string; /** The business runs payroll: offer "Payroll report". */ payroll?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<Item[]>([]);
   // "What are these files?": other documents (Coetha reads them), or one account's statement for a month.
@@ -42,7 +42,13 @@ export function CoethaUploadButton({ clientId, accounts = [], defaultMonth = "",
     return () => form.removeEventListener("reset", clear);
   }, []);
 
+  // Each upload is tied to the client it was picked for; leaving the page stops the rest of a batch
+  // (the page is keyed by client, so another client's page starts with an empty list).
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+
   const upload = async (it: Item) => {
+    if (!alive.current) return;
     patch(it.key, { state: "uploading", pct: 0, error: undefined });
     try {
       if (it.file.size > MAX_MB * 1024 * 1024) throw new Error(`Files can be up to ${MAX_MB} MB each. Split a larger scan into two files.`);
@@ -98,7 +104,7 @@ export function CoethaUploadButton({ clientId, accounts = [], defaultMonth = "",
       )}
       <label className="inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-navy-900 bg-white px-4 py-2 text-sm font-semibold text-navy-900 shadow-sm hover:bg-ivory-100 focus-within:ring-2 focus-within:ring-gold-300" data-testid="coetha-chat-upload">
         <Paperclip className="size-4 text-gold-600" aria-hidden />
-        Upload Files
+        {clientName ? <>Upload to {clientName}</> : "Upload Files"}
         <input ref={input} type="file" multiple accept={ACCEPT} disabled={!!kind && !/^\d{4}-\d{2}$/.test(month)} className="sr-only" data-testid="coetha-chat-file" aria-label="Upload files for Coetha" onChange={(e) => add(Array.from(e.target.files ?? []))} />
       </label>
       {/* What goes with the question: the reading jobs of the saved files. */}
