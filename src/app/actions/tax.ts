@@ -81,7 +81,7 @@ export async function filingStatusAction(clientId: string, filingId: string, _pr
       verificationNote: str(fd, "verificationNote"),
       filingReference: str(fd, "filingReference"),
       rejectionCodes: str(fd, "rejectionCodes"),
-      submission: { form8879Confirmed: fd.get("form8879") === "on", overrideReason: str(fd, "overrideReason") || null },
+      submission: { form8879Confirmed: fd.get("form8879") === "on", overrideReason: str(fd, "overrideReason") || null, filingNow: fd.get("filingNow") === "on" },
     });
     if (returnCopy) {
       const { fileReturnForFiling } = await import("@/lib/services/accepted-returns");

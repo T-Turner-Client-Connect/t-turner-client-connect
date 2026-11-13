@@ -88,6 +88,9 @@ export function AcceptedReturnFields({
   const key = `${year}:${filingType}`;
   const anyGated = (fed.on && !BUSINESS_RETURN.test(fedForm)) || (individual && rows.some((r) => r.on));
   const needsReason = ctx.owner && anyGated && !ctx.approvedKeys.includes(key);
+  // 2022–2025 original returns were filed before the 8879 rules (unless one is being filed late now).
+  const historical = year < 2026 && filingType === "ORIGINAL";
+  const [filingNow, setFilingNow] = useState(false);
   const hasDraft = ctx.draftKeys.includes(key);
   const set = (i: number, patch: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
@@ -203,8 +206,14 @@ export function AcceptedReturnFields({
 
       {ctx.owner ? (
         <div className="rounded-lg border border-gold-500/50 bg-gold-50 p-3 text-sm" data-testid="owner-confirmation">
-          <label className="flex items-start gap-2"><input type="checkbox" name="form8879" className="mt-1 accent-navy-900" /> Signed Form 8879 (and any state e-file authorization) is on file.</label>
-          {needsReason && (
+          {historical && (
+            <div data-testid="historical-filing">
+              <p>This {year} return was filed before 2026: no new Form 8879 or summary approval is needed, and none is requested. Signed authorizations already on file stay as they are.</p>
+              <label className="mt-1 flex items-start gap-2"><input type="checkbox" name="filingNow" checked={filingNow} onChange={(e) => setFilingNow(e.target.checked)} className="mt-1 accent-navy-900" /> This {year} return is being filed now (a late return): the e-file authorization rules apply.</label>
+            </div>
+          )}
+          {(!historical || filingNow) && <label className="flex items-start gap-2"><input type="checkbox" name="form8879" className="mt-1 accent-navy-900" /> Signed Form 8879 (and any state e-file authorization) is on file.</label>}
+          {needsReason && (!historical || filingNow) && (
             <div className="mt-2">
               <label className="block">
                 <span className={label}>No client-approved {year} summary — why?</span>

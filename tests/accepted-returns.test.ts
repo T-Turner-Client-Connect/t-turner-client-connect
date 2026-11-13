@@ -92,12 +92,12 @@ describe("Deliver an already-accepted return in one step", () => {
     const { tabitha, rosalind, rosalindLogin } = await setup();
     await approvedSummary(tabitha, rosalind.id);
     // Form 8879 must be confirmed; nothing is saved when it isn't (atomic).
-    await expect(deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: false } }))).rejects.toThrow(/Form 8879/);
+    await expect(deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: false, filingNow: true } }))).rejects.toThrow(/Form 8879/);
     expect(await prisma.filingRecord.count()).toBe(0);
     expect(await prisma.document.count()).toBe(0);
 
     const ack = { bytes: pdf("irs-ack"), originalName: "IRS ack.pdf" };
-    const input = fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true }, sendToClient: true });
+    const input = fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true }, sendToClient: true });
     input.filings[0].ackFile = ack;
     const r = await deliverAcceptedReturn(tabitha, input);
     expect(r.results.map((x) => [x.jurisdiction, x.outcome, x.sent])).toEqual([["FEDERAL", "accepted", true], ["AL", "accepted", true]]);
@@ -134,8 +134,8 @@ describe("Deliver an already-accepted return in one step", () => {
 
   it("owner without an approved summary: the preset reason is stored as the override reason, exactly as today", async () => {
     const { tabitha, rosalind } = await setup();
-    await expect(deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true } }))).rejects.toThrow(/no client-approved 2025 tax summary/);
-    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON } }));
+    await expect(deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true } }))).rejects.toThrow(/no client-approved 2025 tax summary/);
+    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON } }));
     const fed = await prisma.filingRecord.findFirstOrThrow({ where: { clientId: rosalind.id, jurisdiction: "FEDERAL" } });
     const [submitted] = await filingEvents(fed.id);
     expect(submitted.verificationNote).toContain(`Owner filing WITHOUT an approved summary: ${PRESET_OVERRIDE_REASON}`);
@@ -147,7 +147,7 @@ describe("Deliver an already-accepted return in one step", () => {
 
   it("separate PDFs per jurisdiction also work", async () => {
     const { tabitha, rosalind } = await setup();
-    const input = fedAndAl({ clientId: rosalind.id, combinedReturn: null, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON } });
+    const input = fedAndAl({ clientId: rosalind.id, combinedReturn: null, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON } });
     await expect(deliverAcceptedReturn(tabitha, input)).rejects.toThrow(/Choose the return PDF for the 2025 federal 1040/);
     input.filings[0].returnFile = { bytes: pdf("fed-only"), originalName: "1040.pdf" };
     input.filings[1].returnFile = { bytes: pdf("al-only"), originalName: "al40.pdf" };
@@ -158,7 +158,7 @@ describe("Deliver an already-accepted return in one step", () => {
 
   it("staff path: everything saved as “Ready for Tabitha to confirm acceptance”, never marked submitted; Tabitha confirms in one click", async () => {
     const { tabitha, daria, otherAdmin, rosalind, rosalindLogin } = await setup();
-    const r = await deliverAcceptedReturn(daria, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, overrideReason: "trying to skip the owner" } }));
+    const r = await deliverAcceptedReturn(daria, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: "trying to skip the owner" } }));
     expect(r.owner).toBe(false);
     expect(r.results.every((x) => x.outcome === "awaiting_owner")).toBe(true);
     const filings = await prisma.filingRecord.findMany({ where: { clientId: rosalind.id } });
@@ -179,7 +179,7 @@ describe("Deliver an already-accepted return in one step", () => {
     void otherAdmin;
     const fed = filings.find((f) => f.jurisdiction === "FEDERAL")!;
     await expect(confirmAcceptance(daria, fed.id, { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON })).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(confirmAcceptance(tabitha, fed.id, { form8879Confirmed: false })).rejects.toThrow(/Form 8879/);
+    await expect(confirmAcceptance(tabitha, fed.id, { form8879Confirmed: false, filingNow: true })).rejects.toThrow(/Form 8879/);
     const res = await confirmAcceptances(tabitha, filings.map((f) => f.id), { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON });
     expect(res.done).toHaveLength(2);
     const after = await prisma.filingRecord.findUniqueOrThrow({ where: { id: fed.id } });
@@ -205,7 +205,7 @@ describe("Deliver an already-accepted return in one step", () => {
     const { tabitha, daria, rosalind, other } = await setup();
     const ack = { bytes: pdf("ack-rerun"), originalName: "ack.pdf" };
     const make = () => {
-      const i = fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON } });
+      const i = fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON } });
       i.filings[0].ackFile = ack;
       return i;
     };
@@ -257,7 +257,7 @@ describe("Deliver an already-accepted return in one step", () => {
     const bytes = pdf("the-return-misfiled");
     const misfiled = await staffUploadDocument(daria, { clientId: rosalind.id, category: "TAXES", year: 2025, visibility: "STAFF_ONLY", bytes, originalName: "return.pdf", notify: false });
     await attachFilingDocument(daria, f.id, misfiled.id, "OFFICIAL_ACK");
-    const input = fedAndAl({ clientId: rosalind.id, filings: [fedAndAl().filings[0]], combinedReturn: { bytes, originalName: "return.pdf" }, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON } });
+    const input = fedAndAl({ clientId: rosalind.id, filings: [fedAndAl().filings[0]], combinedReturn: { bytes, originalName: "return.pdf" }, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON } });
     await expect(deliverAcceptedReturn(tabitha, input)).rejects.toThrow(/already saved on the 2025 federal 1040 filing as its acknowledgment.*Use this file as the return copy/);
     const r = await deliverAcceptedReturn(tabitha, { ...input, relabelAck: true });
     expect(r.results[0].documentId).toBe(misfiled.id);
@@ -304,7 +304,7 @@ describe("Deliver an already-accepted return in one step", () => {
       filingType: "ORIGINAL",
       filings: [{ jurisdiction: "FEDERAL", returnType: "1040", acceptedOn: "2026-03-02", submissionId: "BULK-1" }, { jurisdiction: "AL", returnType: "40", acceptedOn: "2026-03-03" }],
       verificationNote: "Accepted per TaxAct E-file Center",
-      owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON },
+      owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON },
     });
     expect(ra.results.map((x) => [x.jurisdiction, x.outcome])).toEqual([["FEDERAL", "accepted"], ["AL", "accepted"]]);
     expect((await prisma.returnIntake.findUniqueOrThrow({ where: { id: a } })).status).toBe("FILED");
@@ -349,7 +349,7 @@ describe("Deliver an already-accepted return in one step", () => {
 
   it("client isolation: one client's delivery never reaches another client's portal or queue", async () => {
     const { tabitha, daria, rosalind, other, theoLogin } = await setup();
-    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON }, sendToClient: true }));
+    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON }, sendToClient: true }));
     await deliverAcceptedReturn(daria, fedAndAl({ clientId: rosalind.id, taxYear: 2024, filings: [{ jurisdiction: "FEDERAL", returnType: "1040", acceptedOn: "2025-04-01" }], combinedReturn: { bytes: pdf("2024"), originalName: "2024.pdf" } }));
     expect((await loadPortalTaxes(other.id)).filings).toHaveLength(0);
     expect((await retrieveFilings(theoLogin, other.id, 2025)).total).toBe(0);
@@ -357,13 +357,13 @@ describe("Deliver an already-accepted return in one step", () => {
     expect(await pendingAcceptances(other.id)).toHaveLength(0);
     expect(await pendingAcceptances(rosalind.id)).toHaveLength(1);
     // The same PDF for a different client is that client's own file (dedupe is per client).
-    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: other.id, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON } }));
+    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: other.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON } }));
     expect(await prisma.document.count({ where: { clientId: other.id, filingDocType: "RETURN", visibility: "PUBLISHED" } })).toBe(0);
   });
 
   it("client sees nothing until published; publishing a filing never publishes an unreleased return", async () => {
     const { tabitha, rosalind, rosalindLogin } = await setup();
-    const r = await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON } }));
+    const r = await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON } }));
     expect((await retrieveFilings(rosalindLogin, rosalind.id, 2025)).total).toBe(0);
     expect((await loadPortalTaxes(rosalind.id)).filings.flatMap((f) => f.documents)).toHaveLength(0);
     await publishFilingUpdate(tabitha, r.results[0].filingId, "portal_only");
@@ -374,7 +374,7 @@ describe("Deliver an already-accepted return in one step", () => {
   it("owner-direct: one action records acceptance and delivers; the client sees it only after the malware scan passes, with no automatic message", async () => {
     const { tabitha, rosalind, rosalindLogin } = await setup();
     scanner = "down";
-    const r = await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON }, sendToClient: true, notifyClient: true }));
+    const r = await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON }, sendToClient: true, notifyClient: true }));
     expect(r.results.every((x) => x.outcome === "accepted" && x.sent)).toBe(true);
     const docs = await prisma.document.findMany({ where: { filingDocType: "RETURN" } });
     expect(docs.every((d) => d.reviewStatus === "APPROVED" && d.visibility === "PUBLISHED" && d.scanStatus === "PENDING")).toBe(true);
@@ -390,7 +390,7 @@ describe("Deliver an already-accepted return in one step", () => {
 
   it("owner-direct notify is opt-in and email only", async () => {
     const { tabitha, rosalind } = await setup();
-    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON }, sendToClient: true, notifyClient: true }));
+    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON }, sendToClient: true, notifyClient: true }));
     const n = await prisma.notification.findMany();
     expect(n.length).toBeGreaterThan(0);
     expect(n.every((x) => x.channel === "EMAIL")).toBe(true);
@@ -412,7 +412,7 @@ describe("Deliver an already-accepted return in one step", () => {
     const { tabitha, daria, rosalind, other } = await setup();
     const draft = await createSummary(daria, { clientId: rosalind.id, taxYear: 2025, filingStatus: "SINGLE", taxpayerName: "Rosalind Pembrook", dependents: [], wagesCents: 0, otherIncomeCents: 0, totalIncomeCents: 0, agiCents: 0, deductionType: "STANDARD", deductionCents: 0, taxableIncomeCents: 0, federalResultCents: 0, stateResults: [] });
     expect((await deliveryContext(rosalind.id, tabitha)).draftKeys).toEqual(["2025:ORIGINAL"]);
-    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON }, closeDraftSummary: true }));
+    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: rosalind.id, owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON }, closeDraftSummary: true }));
     const closed = await prisma.taxReturnSummary.findUniqueOrThrow({ where: { id: draft.id } });
     expect([closed.status, closed.invalidatedReason]).toEqual(["WITHDRAWN", DRAFT_SUMMARY_REASON]);
     expect(await prisma.auditLog.count({ where: { action: "tax.summary_withdrawn", entityId: draft.id } })).toBe(1);
@@ -421,7 +421,7 @@ describe("Deliver an already-accepted return in one step", () => {
     const sent = await createSummary(daria, { clientId: other.id, taxYear: 2025, filingStatus: "SINGLE", taxpayerName: "Theo Quillfeather", dependents: [], wagesCents: 0, otherIncomeCents: 0, totalIncomeCents: 0, agiCents: 0, deductionType: "STANDARD", deductionCents: 0, taxableIncomeCents: 0, federalResultCents: 0, stateResults: [] });
     await prisma.taxReturnSummary.update({ where: { id: sent.id }, data: { status: "SENT", sentAt: new Date() } });
     expect(await unsentDraftSummaries(other.id, 2025, "ORIGINAL")).toEqual([]);
-    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: other.id, filings: [fedAndAl().filings[0]], owner: { form8879Confirmed: true, overrideReason: PRESET_OVERRIDE_REASON }, closeDraftSummary: true }));
+    await deliverAcceptedReturn(tabitha, fedAndAl({ clientId: other.id, filings: [fedAndAl().filings[0]], owner: { form8879Confirmed: true, filingNow: true, overrideReason: PRESET_OVERRIDE_REASON }, closeDraftSummary: true }));
     expect((await prisma.taxReturnSummary.findUniqueOrThrow({ where: { id: sent.id } })).status).toBe("SENT");
     // An approved one is never touched either.
     const approved = await approvedSummary(tabitha, rosalind.id, 2024);

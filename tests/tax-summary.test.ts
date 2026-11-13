@@ -178,7 +178,7 @@ describe("Tax Return Summary — reconciliation, approval and owner filing", () 
     await sendSummary(daria, s.id);
 
     const federal = await createFiling(daria, { clientId: client.id, taxYear: 2025, returnType: "1040", jurisdiction: "FEDERAL", filingType: "ORIGINAL" });
-    const submit = (actor: typeof tabitha, extra: Record<string, unknown> = { form8879Confirmed: true }) => setFilingStatusByStaff(actor, federal.id, { status: "SUBMITTED", submission: extra as never });
+    const submit = (actor: typeof tabitha, extra: Record<string, unknown> = { form8879Confirmed: true, filingNow: true }) => setFilingStatusByStaff(actor, federal.id, { status: "SUBMITTED", submission: extra as never });
 
     // Correction request → on hold; filing is refused without an approved summary.
     await requestSummaryChanges(marcus, client.id, s.id, "", [{ itemId: (await prisma.taxSummaryItem.findFirstOrThrow({ where: { summaryId: s.id } })).id, note: "Wages should be 51,000" }]);
@@ -214,7 +214,7 @@ describe("Tax Return Summary — reconciliation, approval and owner filing", () 
     // Owner-only filing, even with an approved summary.
     await expect(submit(daria)).rejects.toBeInstanceOf(ForbiddenError);
     void otherAdmin; // Admins and the assigned preparer may also record it (tests/staff-send-returns.test.ts).
-    await expect(submit(tabitha, { form8879Confirmed: false })).rejects.toThrow(/8879/);
+    await expect(submit(tabitha, { form8879Confirmed: false, filingNow: true })).rejects.toThrow(/8879/);
     await submit(tabitha);
     const ev = await prisma.filingStatusEvent.findFirstOrThrow({ where: { filingId: federal.id, field: "FILING" } });
     expect(ev.verificationNote).toMatch(/client-approved summary on file/);
