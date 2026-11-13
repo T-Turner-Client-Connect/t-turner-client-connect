@@ -84,7 +84,7 @@ describe("Coetha's bookkeeping tools change the books, verified against the stat
     await prisma.bankTransaction.create({ data: { clientId: w.biz.id, accountId: w.gl, date: new Date("2026-10-03T00:00:00Z"), amountCents: -8456, description: "POS OFFICEDEPOT", fingerprint: "dup-x", source: "PLAID" } });
     const r = await removeVerifiedDuplicates(w.tabitha, w.biz.id, { month: "2026-10" });
     expect(r.removed).toHaveLength(0);
-    expect(r.unverified[0].why).toMatch(/no statement on file/);
+    expect(r.unverified[0].why).toMatch(/no readable statement/);
     expect(await prisma.bankTransaction.count({ where: { clientId: w.biz.id, status: "EXCLUDED" } })).toBe(0);
   });
 

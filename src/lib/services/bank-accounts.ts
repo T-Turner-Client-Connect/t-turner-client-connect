@@ -359,7 +359,7 @@ const median = (xs: number[]) => {
  * balance (or the registered opening balance), and the ending balance from the statement.
  * An APPROVED record is never changed. Exceptions are flagged for a person.
  */
-export async function prepareReconciliation(clientId: string, registryId: string, year: number, month: number, opts: { today?: string; preparedById?: string | null } = {}) {
+export async function prepareReconciliation(clientId: string, registryId: string, year: number, month: number, opts: { today?: string; preparedById?: string | null; statementDocumentId?: string | null } = {}) {
   const r = await prisma.bookkeepingAccount.findFirst({ where: { id: registryId, clientId } });
   if (!r || r.parentAccountId || !reconciles(r.accountType)) return null;
   const existing = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: r.id, year, month } } });
@@ -382,7 +382,8 @@ export async function prepareReconciliation(clientId: string, registryId: string
   const ending = existing?.endingBalanceCents ?? (liabFits ? liab!.lastStatementBalanceCents : null);
   // The statement on file for this account and month (uploaded, retrieved, or sent against a request).
   const [y0, m0] = w.end.split("-").map(Number);
-  const statement = await prisma.document.findFirst({
+  // The statement chosen for this account (readable, its own account number) when the caller knows it.
+  const statement = opts.statementDocumentId ? { id: opts.statementDocumentId } : await prisma.document.findFirst({
     where: { clientId, deletedAt: null, bookkeepingAccountId: r.id, docType: { in: ["BANK_STATEMENT", "CARD_STATEMENT"] }, OR: [{ periodEnd: { gte: toDate(w.start), lte: new Date(toDate(w.end).getTime() + 5 * 86_400_000) } }, { year: y0, month: m0 }] },
     orderBy: { createdAt: "desc" },
     select: { id: true },

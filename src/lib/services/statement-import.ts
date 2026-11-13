@@ -30,6 +30,40 @@ export type StatementReadResult =
   | { ok: true; read: number; added: number; duplicates: number; beginningCents: number; endingCents: number; via: "PDF" | "COETHA"; periodStart: string | null }
   | { ok: false; read: number; problems: string[] };
 
+/**
+ * The transactions printed on a statement, read inside Client Connect; only when the layout isn't
+ * recognized (and Coetha may work on this client) are the scrubbed transaction lines sent to Coetha.
+ * Nothing is imported here. check.ok means beginning + every transaction = ending, to the cent.
+ */
+export async function extractStatement(actorId: string | null, clientId: string, documentId: string, lines: string[], liability: boolean) {
+  const parsed = parseStatementLines(lines, { liability });
+  let txns: StatementTxn[] = parsed.transactions;
+  let check = parsed.check;
+  let via: "PDF" | "COETHA" = "PDF";
+  const summary = { ...parsed.summary };
+  if (!check.ok && (await coethaOn()) && coethaKeyPresent() && !(await coethaOptOutView(clientId))) {
+    const first = lines.findIndex((l) => /deposit|withdrawal|debit|credit|check|purchase|payment|fee/i.test(l) && !/balance/i.test(l));
+    const body = lines.slice(Math.max(0, first)).map((l) => scrub(l, 300)).filter(Boolean).slice(0, 1500);
+    const period = parsed.summary.periodStart && parsed.summary.periodEnd ? `${parsed.summary.periodStart} to ${parsed.summary.periodEnd}` : null;
+    try {
+      const res = await callStatementReader(body, period);
+      const fromModel = res.output.transactions
+        .filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.date) && Number.isFinite(t.amount) && t.amount !== 0)
+        .map((t) => ({ date: t.date, description: t.description.slice(0, 200) || "Transaction", amountCents: Math.round(t.amount * 100), section: t.section }));
+      const s2 = { ...parsed.summary };
+      // Balances read from the PDF itself win; the model's are used only when the PDF's weren't found.
+      if (s2.beginningCents == null && res.output.beginningBalance != null) s2.beginningCents = Math.round(res.output.beginningBalance * 100);
+      if (s2.endingCents == null && res.output.endingBalance != null) s2.endingCents = Math.round(res.output.endingBalance * 100);
+      const c = checkStatement({ ...s2, totals: {} }, fromModel, {}, { liability });
+      await audit(prisma, { actorId, action: "bookkeeping.statement_read_coetha", entityType: "Document", entityId: documentId, clientId, details: { model: res.model, read: fromModel.length, ok: c.ok, inputTokens: res.inputTokens, outputTokens: res.outputTokens } });
+      if (c.ok) { txns = fromModel; check = c; via = "COETHA"; summary.beginningCents = s2.beginningCents; summary.endingCents = s2.endingCents; }
+    } catch (err) {
+      if (!(err instanceof CoethaModelError)) throw err;
+    }
+  }
+  return { txns, check, via, summary };
+}
+
 export async function readStatementTransactions(actor: Actor, clientId: string, documentId: string): Promise<StatementReadResult> {
   await assertLedger(actor, clientId, "banking", "edit");
   const doc = await prisma.document.findFirst({
@@ -50,43 +84,30 @@ export async function readStatementTransactions(actor: Actor, clientId: string, 
   if (!bytes) throw new ValidationError("The statement file couldn't be opened.");
   const lines = await pdfLines(bytes);
   if (!lines?.length) throw new ValidationError("No text could be read from this PDF. If it's a scanned image, ask the bank for the electronic statement or import a CSV.");
-
-  const parsed = parseStatementLines(lines, { liability });
-  let txns: StatementTxn[] = parsed.transactions;
-  let check = parsed.check;
-  let via: "PDF" | "COETHA" = "PDF";
-
-  // Layout not recognized: Coetha lists the transactions (only if she's allowed to work on this client).
-  if (!check.ok && (await coethaOn()) && coethaKeyPresent() && !(await coethaOptOutView(clientId))) {
-    const first = lines.findIndex((l) => /deposit|withdrawal|debit|credit|check|purchase|payment|fee/i.test(l) && !/balance/i.test(l));
-    const body = lines.slice(Math.max(0, first)).map((l) => scrub(l, 300)).filter(Boolean).slice(0, 1500);
-    const period = parsed.summary.periodStart && parsed.summary.periodEnd ? `${parsed.summary.periodStart} to ${parsed.summary.periodEnd}` : null;
-    try {
-      const res = await callStatementReader(body, period);
-      const fromModel = res.output.transactions
-        .filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.date) && Number.isFinite(t.amount) && t.amount !== 0)
-        .map((t) => ({ date: t.date, description: t.description.slice(0, 200) || "Transaction", amountCents: Math.round(t.amount * 100), section: t.section }));
-      const summary = { ...parsed.summary };
-      // Balances read from the PDF itself win; the model's are used only when the PDF's weren't found.
-      if (summary.beginningCents == null && res.output.beginningBalance != null) summary.beginningCents = Math.round(res.output.beginningBalance * 100);
-      if (summary.endingCents == null && res.output.endingBalance != null) summary.endingCents = Math.round(res.output.endingBalance * 100);
-      const c = checkStatement({ ...summary, totals: {} }, fromModel, {}, { liability });
-      await audit(prisma, { actorId: actor.id, action: "bookkeeping.statement_read_coetha", entityType: "Document", entityId: doc.id, clientId, details: { model: res.model, read: fromModel.length, ok: c.ok, inputTokens: res.inputTokens, outputTokens: res.outputTokens } });
-      if (c.ok) { txns = fromModel; check = c; via = "COETHA"; parsed.summary.beginningCents = summary.beginningCents; parsed.summary.endingCents = summary.endingCents; }
-    } catch (err) {
-      if (!(err instanceof CoethaModelError)) throw err;
-    }
-  }
+  const { txns, check, via, summary } = await extractStatement(actor.id, clientId, doc.id, lines, liability);
+  const parsed = { summary };
 
   if (!check.ok) {
     await audit(prisma, { actorId: actor.id, action: "bookkeeping.statement_read_failed", entityType: "Document", entityId: doc.id, clientId, details: { read: txns.length, problems: check.problems.slice(0, 5) } });
     return { ok: false, read: txns.length, problems: check.problems };
   }
 
+  // Only what the books don't already have: a statement line whose date and amount are already in
+  // this account's rows (as often as the statement shows them, from a bank feed or CSV worded
+  // differently) is not added again. Excluded rows don't count as present.
+  const dates = txns.map((t) => t.date).sort();
+  const have = new Map<string, number>();
+  if (dates.length) {
+    const existing = await prisma.bankTransaction.findMany({ where: { clientId, accountId: ledger.id, status: { not: "EXCLUDED" }, date: { gte: new Date(`${dates[0]}T00:00:00Z`), lte: new Date(`${dates[dates.length - 1]}T00:00:00Z`) } }, select: { date: true, amountCents: true } });
+    for (const e of existing) { const k = `${e.date.toISOString().slice(0, 10)}|${e.amountCents}`; have.set(k, (have.get(k) ?? 0) + 1); }
+  }
+  const missing = txns.filter((t) => { const k = `${t.date}|${t.amountCents}`; const n = have.get(k) ?? 0; if (n > 0) { have.set(k, n - 1); return false; } return true; });
+  const alreadyIn = txns.length - missing.length;
   // Plain CSV for the importer (negative amounts stay as numbers; descriptions quoted).
   const q = (v: string) => `"${v.replace(/"/g, '""')}"`;
-  const csv = ["Date,Description,Amount", ...txns.map((t) => `${t.date.slice(5, 7)}/${t.date.slice(8, 10)}/${t.date.slice(0, 4)},${q(t.description)},${(t.amountCents / 100).toFixed(2)}`)].join("\n");
-  const imp = await importBankCsv(actor, clientId, ledger.id, { fileName: `${doc.title} (read from PDF)`.slice(0, 200), text: csv });
+  const csv = ["Date,Description,Amount", ...missing.map((t) => `${t.date.slice(5, 7)}/${t.date.slice(8, 10)}/${t.date.slice(0, 4)},${q(t.description)},${(t.amountCents / 100).toFixed(2)}`)].join("\n");
+  const imp = missing.length ? await importBankCsv(actor, clientId, ledger.id, { fileName: `${doc.title} (read from PDF)`.slice(0, 200), text: csv }) : { id: null, added: 0, duplicates: 0 };
+  imp.duplicates += alreadyIn;
 
   // The statement's balances fill in this month's reconciliation (unless staff already entered them).
   const registry = doc.bookkeepingAccount ?? (await prisma.bookkeepingAccount.findFirst({ where: { clientId, ledgerAccountId: ledger.id, parentAccountId: null } }));
@@ -113,7 +134,10 @@ export function statementReadMessage(r: StatementReadResult): string {
 
 /** The newest statement PDF on file for a registered account and month (for the "Read transactions" button). */
 export async function statementOnFile(clientId: string, bookkeepingAccountId: string, year: number, month: number) {
-  return prisma.document.findFirst({ where: { clientId, deletedAt: null, bookkeepingAccountId, docType: { in: STATEMENT_DOC_TYPES }, year, month }, orderBy: { createdAt: "desc" }, select: { id: true, title: true } });
+  // Unreadable files and statements for another account number are skipped (statement-choice.ts).
+  const { chooseStatement } = await import("./statement-choice");
+  const { chosen } = await chooseStatement(clientId, bookkeepingAccountId, year, month);
+  return chosen ? { id: chosen.id, title: chosen.title } : null;
 }
 
 /**
