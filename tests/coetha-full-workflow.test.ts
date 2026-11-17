@@ -123,6 +123,11 @@ describe("Coetha does the whole job from a screenshot already on file — no new
     const r = await reconcileAccounts(w.tabitha, w.biz.id, { month: "2026-10" });
     expect(r.accounts[0]).toMatchObject({ statementVerified: true });
     expect(await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id, year: 2026, month: 10 } })).toMatchObject({ status: "APPROVED", differenceCents: 0, statementDocumentId: doc.id });
+    // Asked again, the reconciled month is reported as done and left exactly as it is.
+    const before = await prisma.bankTransaction.count({ where: { clientId: w.biz.id } });
+    const again = await reconcileAccounts(w.tabitha, w.biz.id, { month: "2026-10" });
+    expect(again.accounts[0].completed).toMatch(/Already reconciled/);
+    expect(await prisma.bankTransaction.count({ where: { clientId: w.biz.id } })).toBe(before);
   });
 
   it("another business's statement filed under this client is moved to that client only when its name and account number are printed on it", async () => {

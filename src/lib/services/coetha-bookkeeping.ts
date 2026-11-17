@@ -135,6 +135,12 @@ export async function reconcileAccounts(actor: Actor, clientId: string, input: {
   const out = [];
   for (const a of accounts) {
     const label = `${a.institution}${a.nickname ? ` ${a.nickname}` : ""}${a.last4 ? ` ••${a.last4}` : ""}`;
+    // A month already reconciled stays exactly as it is: nothing is read, imported or re-prepared.
+    const done = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: a.id, year, month } } });
+    if (done?.status === "APPROVED") {
+      out.push({ account: label, statement: "Already reconciled: left as is.", statementPassedOver: [], statementVerified: true, completed: `Already reconciled${done.approvedAt ? ` on ${done.approvedAt.toISOString().slice(0, 10)}` : ""}; not redone.`, status: done.status, beginning: done.beginningBalanceCents != null ? usd(done.beginningBalanceCents) : null, ending: done.endingBalanceCents != null ? usd(done.endingBalanceCents) : null, difference: done.differenceCents != null ? usd(done.differenceCents) : null, unmatched: done.unmatchedCount, exceptions: done.exceptions });
+      continue;
+    }
     const { chosen, skipped } = await chooseStatement(clientId, a.id, year, month);
     let doc: { id: string; title: string } | null = chosen;
     let statement = "No readable statement for this account is on file for this month: this account stays pending; everything else continues.";
@@ -193,7 +199,7 @@ export const DUPLICATES_TOOL = {
 
 export const RECONCILE_TOOL = {
   name: "reconcile_accounts",
-  description: "For one month: read every bank and card statement already on file into the books (rows already imported are skipped), fill in the statement balances and prepare each account's reconciliation. Returns each account's status, balances, difference and exceptions. Never forces a difference to zero and never approves; report any difference as an exception.",
+  description: "For one month: accounts already reconciled for that month are reported as done and left untouched (never redone). For the rest: read every bank and card statement already on file into the books (rows already imported are skipped), fill in the statement balances and prepare each account's reconciliation. Returns each account's status, balances, difference and exceptions. Never forces a difference to zero and never approves; report any difference as an exception.",
   input_schema: { type: "object" as const, properties: { month: { type: "string", description: "YYYY-MM" } }, required: ["month"] },
 };
 
