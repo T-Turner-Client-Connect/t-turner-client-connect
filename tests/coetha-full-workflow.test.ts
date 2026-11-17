@@ -107,7 +107,7 @@ describe("Coetha does the whole job from a screenshot already on file — no new
   it("a picture attached directly to a question reaches her as the image itself", async () => {
     const w = await world();
     const shot = screenshot("fictional credit card statement screenshot");
-    await askCoetha(w.tabitha, w.biz.id, "What's on this card statement?", { files: [{ bytes: shot, originalName: "card.png" }] });
+    await askCoetha(w.tabitha, w.biz.id, "What's on this card statement?", { files: [{ bytes: shot, originalName: "card.png", mimeType: "image/png" }] });
     const blocks = requests[0].messages.flatMap((m) => (Array.isArray(m.content) ? (m.content as Block[]) : [])).filter((b) => b.type === "image");
     expect(blocks.map((b) => b.source!.data)).toContain(Buffer.from(shot).toString("base64"));
   });
