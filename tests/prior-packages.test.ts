@@ -21,6 +21,7 @@ async function pkg(name: string) {
     "Financial Statements", `Prepared for: ${name}`, "Cash Basis • January 1 – February 28, 2026",
     "Profit & Loss — Jan Feb YTD", "Commission Income $1,000.00 $2,000.00 $3,000.00", "Rent $400.00 $400.00 $800.00",
     "Owner's Draw $300.00 $500.00 $800.00", "Balance Sheet — Business Checking $1,400.00",
+    "Leasehold Improvements — office remodel paid personally by the owner (3/15/2026) $18,500.00",
   ];
   let y = 580;
   for (const r of rows) { p.drawText(r, { x: 30, y, size: 10, font: f }); y -= 16; }
@@ -121,6 +122,21 @@ describe("Months that exist only in a financial package already prepared", () =>
     // Before the opening balances, nothing else may be dated (an ordinary entry is still refused).
     const { postJournalEntry } = await import("@/lib/services/ledger");
     await expect(postJournalEntry(w.tabitha, w.biz.id, { date: "2026-03-31", memo: "Not allowed", lines: [{ accountId: w.gl, debit: "10.00" }, { accountId: inc.id, credit: "10.00" }] })).rejects.toThrow(/before the opening balances/);
+  });
+
+  it("a business purchase the owner paid personally (no bank activity) goes in before the opening balances as an asset and owner contribution; cash is untouched", async () => {
+    const w = await world();
+    await postOpeningBalances(w.tabitha, w.biz.id, { date: "2026-10-01", balances: [{ accountId: w.gl, amount: "1400.00" }] });
+    const up = await uploadPriorPackage(w.tabitha, { bytes: await pkg("Juniper Example Agency LLC"), originalName: "juniper.pdf" });
+    const docId = (up as { documentId: string }).documentId;
+    const r = await importPriorMonths(w.tabitha, w.biz.id, { documentId: docId, months: [{ month: "2026-03", lines: [{ accountCode: "1500", amount: 18500, label: "Office remodel" }, { accountCode: "3000", amount: 18500, kind: "contribution" as const, label: "Paid personally by the owner" }] }] });
+    expect(res(r).results[0]).toMatchObject({ ok: true });
+    const equip = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, code: "1500" } });
+    const a = await prisma.journalLine.aggregate({ where: { accountId: equip.id }, _sum: { debitCents: true, creditCents: true } });
+    expect((a._sum.debitCents ?? 0) - (a._sum.creditCents ?? 0)).toBe(1850000);
+    expect(await bankBalance(w.gl)).toBe(140000);
+    // A bank line is never dated before the opening balances.
+    expect(await prisma.journalLine.count({ where: { accountId: w.gl, entry: { date: { lt: new Date("2026-10-01T00:00:00Z") } } } })).toBe(0);
   });
 
   it("a month that already has bank postings is never entered from the package", async () => {
