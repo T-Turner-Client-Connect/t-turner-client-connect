@@ -208,7 +208,7 @@ export async function runBookkeepingTool(actor: Actor, clientId: string, name: s
   try {
     if (name === DUPLICATES_TOOL.name) return await removeVerifiedDuplicates(actor, clientId, { month: String(i.month ?? ""), dryRun: !!i.dryRun });
     if (name === "import_prior_months") return await importPriorMonths(actor, clientId, (input ?? {}) as { documentId?: string; months?: PriorMonth[]; packageEndingCash?: number | null });
-    if (name === "move_document_to_client") return await moveDocumentToClient(actor, clientId, (input ?? {}) as { documentId?: string; reason?: string });
+    if (name === "move_document_to_client") return await moveDocumentToClient(actor, clientId, (input ?? {}) as { documentId?: string; reason?: string; hold?: boolean });
     if (name === "import_statement_transactions") return await importStatementTransactions(actor, clientId, (input ?? {}) as Parameters<typeof importStatementTransactions>[2]);
     if (name === "correct_accounts") return await correctAccounts(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: AccountFix[] }).items) : []);
     if (name === "reverse_entries") return await reverseEntries(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: { entryId?: string; reason?: string }[] }).items) : []);
@@ -555,47 +555,23 @@ export const IMPORT_STATEMENT_TOOL = {
  * reconciliation link are cleared here (nothing in either client's books changes), and what was read
  * from it for this client is removed. Tabitha (the owner) only; recorded in both clients' audit logs.
  */
-export async function moveDocumentToClient(actor: Actor, clientId: string, input: { documentId?: string; reason?: string }) {
-  const { isPrimaryOwner } = await import("@/lib/auth/permissions");
-  if (!(await isPrimaryOwner(actor.id))) throw new ForbiddenError("Only Tabitha can have Coetha move a document to another client.");
+export async function moveDocumentToClient(actor: Actor, clientId: string, input: { documentId?: string; reason?: string; hold?: boolean }) {
+  const doc = input.documentId ? await prisma.document.findFirst({ where: { id: input.documentId, clientId, deletedAt: null }, select: { id: true } }) : null;
+  if (!doc) return { error: "That document isn't on file for this client." };
+  const own = await import("./document-ownership");
+  const r = await own.checkAndCorrect(actor, doc.id, "Coetha (standing authorization, Ask Coetha)");
+  if (r.verdict === "MOVE" || r.verdict === "HOLD") return { ok: true, message: r.message };
+  // Coetha read it herself (a picture or scan) and found it isn't this client's, but can't prove whose: held, never guessed.
   const reason = String(input.reason ?? "").trim();
-  if (reason.length < 10) return { error: "Give the reason (for example: the statement shows another business's name and account)." };
-  const doc = input.documentId ? await prisma.document.findFirst({ where: { id: input.documentId, clientId, deletedAt: null }, include: { file: true } }) : null;
-  if (!doc?.file) return { error: "That document isn't on file for this business." };
-  const bytes = await readDocumentBytes(doc.file);
-  const lines = bytes ? await pdfLines(bytes).catch(() => null) : null;
-  const text = (lines ?? []).slice(0, 120).join(" ").toLowerCase();
-  if (!text.trim()) return { error: "Its text can't be read here, so who it belongs to can't be proven automatically; Tabitha moves it from the client's Documents page." };
-  // Names compared without punctuation or company suffixes ("LLC", "Inc"), on both sides.
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\b(llc|inc|co|corp|the)\b/g, " ").replace(/\s+/g, " ").trim();
-  const flat = ` ${norm(text)} `;
-  const here = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { businessName: true, displayName: true } });
-  const named = (c: { businessName: string | null; displayName: string }) => [c.businessName, c.displayName].filter((n): n is string => !!n && norm(n).length >= 6).some((n) => flat.includes(` ${norm(n)} `));
-  if (named(here)) return { error: "This client's own name is printed on it, so it isn't moved." };
-  const { accountNumbersIn } = await import("./statement-choice");
-  const numbers = accountNumbersIn(lines ?? []);
-  const candidates = await prisma.client.findMany({ where: { id: { not: clientId }, archivedAt: null }, select: { id: true, businessName: true, displayName: true } });
-  const matches = [];
-  for (const c of candidates) {
-    if (!named(c)) continue;
-    const accts = await prisma.bookkeepingAccount.findMany({ where: { clientId: c.id, parentAccountId: null }, select: { id: true, last4: true } });
-    const acct = accts.find((x) => x.last4 && numbers.has(x.last4));
-    if (acct) matches.push({ client: c, accountId: acct.id });
+  if (input.hold && reason.length >= 10 && r.verdict !== "OWNS" && r.verdict !== "EXCLUDED") {
+    const h = await own.holdForOwnershipReview(actor, doc.id, reason, [], "Coetha (standing authorization, Ask Coetha)");
+    return { ok: true, message: h.message };
   }
-  if (matches.length !== 1) return { error: matches.length ? "More than one client matches; it isn't moved. Tabitha moves it." : "No other client's name and account number are both printed on it, so it isn't moved." };
-  const { client: to, accountId } = matches[0];
-  await prisma.$transaction(async (tx) => {
-    await tx.accountReconciliation.updateMany({ where: { clientId, statementDocumentId: doc.id }, data: { statementDocumentId: null, statementStatus: "MISSING" } });
-    const job = await tx.coethaDocJob.findUnique({ where: { documentId: doc.id } });
-    if (job) { await tx.coethaDocFinding.deleteMany({ where: { jobId: job.id } }); await tx.coethaDocJob.delete({ where: { id: job.id } }); }
-    await tx.document.update({ where: { id: doc.id }, data: { clientId: to.id, bookkeepingAccountId: accountId, manualBankAccountId: null, periodId: null } });
-  });
-  for (const c of [clientId, to.id]) await audit(prisma, { actorId: actor.id, action: "coetha.document_moved", entityType: "Document", entityId: doc.id, clientId: c, details: { from: clientId, to: to.id, reason: reason.slice(0, 300), proof: "the other client's name and account number printed on it" } });
-  return { ok: true, message: `Moved “${doc.title}” to ${to.businessName || to.displayName} (its name and account number are printed on it). This client's reconciliation link to it was cleared; nothing in either client's books changed.` };
+  return { error: r.verdict === "OWNS" ? "This client's own name or identifiers are printed on it, so it stays." : `Not moved: ${r.message}` };
 }
 
 export const MOVE_DOCUMENT_TOOL = {
   name: "move_document_to_client",
-  description: "Move a statement or document filed under this client that belongs to another client (another business's name and account number are printed on it). It is moved only when the document itself proves it: the other client's name and one of that client's registered account numbers are on it, and this client's name isn't. Nothing in either client's books changes. Use it as soon as you find a misfiled document; don't ask Tabitha to move it.",
-  input_schema: { type: "object" as const, properties: { documentId: { type: "string" }, reason: { type: "string" } }, required: ["documentId", "reason"] },
+  description: "Any document filed under this client (tax return, statement, payroll report, upload…) that belongs to another client. It is moved automatically when the document itself proves it: the other client's name AND that client's SSN, EIN or registered account number on file are printed on it, and nothing on it identifies this client. It arrives staff-only at the correct client (releasing it stays with Tabitha), the wrong client loses access at once, the original file is kept, a duplicate is never created, and both clients' audit logs record it. When ownership can't be proven it is held staff-only for Tabitha's review. If you read a picture or scan yourself and it clearly isn't this client's but you can't prove whose, pass hold: true with the reason. Use it as soon as you find a misfiled document; don't ask Tabitha.",
+  input_schema: { type: "object" as const, properties: { documentId: { type: "string" }, reason: { type: "string" }, hold: { type: "boolean" } }, required: ["documentId", "reason"] },
 };

@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth/session";
 import { dateOrNull, run, str, type ActionState } from "@/lib/action";
 import { ValidationError } from "@/lib/services/clients";
 import { approveReconciliation, decideSharedCard, enterStatementBalances, monitorConnectionAccount, registerAccount, updateRegistryAccount } from "@/lib/services/bank-accounts";
-import { closeClientRequest, discardDraftRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, staffUploadForRequest, staffUploadStatement } from "@/lib/services/client-requests";
+import { answerRequestYourself, closeClientRequest, discardDraftRequest, requestHistoricalRecords, requestYearEndDocuments, sendClientRequest, staffUploadForRequest, staffUploadStatement } from "@/lib/services/client-requests";
 
 import { markMonthsCompletePrior, runWorkflowMonitor } from "@/lib/services/monthly-workflow";
 import { readAfterUpload, readStatementTransactions, statementReadMessage } from "@/lib/services/statement-import";
@@ -240,5 +240,15 @@ export async function postOpeningFromStatementAction(clientId: string, ledgerAcc
     revalidatePath(`/bookkeeping/${clientId}/banking/reconciliation`);
     revalidatePath(`/bookkeeping/${clientId}/books`);
     return `${r.corrected ? "Opening corrected with an adjusting entry (the original stays in the history): " : "Opening balance "}$${(r.cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })} ${r.corrected ? "recorded on the bank account" : "posted"} on ${r.date}.`;
+  });
+}
+
+export async function answerRequestYourselfAction(clientId: string, requestId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const r = await answerRequestYourself(actor, clientId, requestId, str(fd, "answer"));
+    refresh(clientId);
+    revalidatePath("/owner/coetha-review");
+    return r.handed ? "Saved. Coetha is recording it now; nothing was sent to the client." : "Saved. Nothing was sent to the client; Coetha will use it the next time she works on this client.";
   });
 }

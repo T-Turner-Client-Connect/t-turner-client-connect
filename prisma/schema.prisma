@@ -1290,9 +1290,18 @@ model Document {
   manualBankAccountId    String?
   manualBankAccount      ManualBankAccount?   @relation(fields: [manualBankAccountId], references: [id], onDelete: SetNull)
 
+  // Ownership check (document-ownership.ts): when this document was last checked against the
+  // client it is filed under, and the staff-only review hold placed when another client's
+  // identifiers are on it but whose it is can't be proven: { reason, candidates, visibilityBefore, heldAt }.
+  ownershipCheckedAt     DateTime?
+  ownershipHold          Json?
+  // A staff upload marked "publish": staff-only until its ownership check clears it, then published.
+  publishAfterCheck      Boolean              @default(false)
+
   @@index([clientId, category, year, month])
   @@index([visibility])
   @@index([manualBankAccountId])
+  @@index([ownershipCheckedAt])
 }
 
 model DocumentAccessLog {
@@ -1425,6 +1434,11 @@ model DocumentRequest {
   clientExplanation    String?
   explainedAt          DateTime?
   explainedByPortalId  String?
+  // Tabitha's own answer to Coetha's question, typed on the request card (no client contact).
+  // Unlike a client's explanation, it is the office's decision: Coetha records it under her standing authority.
+  officeAnswer         String?
+  officeAnsweredAt     DateTime?
+  officeAnsweredById   String?
 
   documents Document[]
   /// An audit item this request asks the client to support (Tax Audit Preparation Center).

@@ -83,21 +83,21 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       </PreviewDisabled>
     ) : null;
   type Req = { id: string; title: string; instructions: string | null; reason: string | null; dueAt: Date | null; status: string; askClient: boolean; clientExplanation: string | null; docType: string | null; periodStart: Date | null; periodEnd: Date | null; bookkeepingAccount: { institution: string; nickname: string | null; last4: string | null; accountType: string } | null };
-  // Ask Client: a supporting request is answered with the file, or with a written explanation.
+  // Every question is answered right here: upload the file, or type the answer (or both).
   const explain = (r: Req) =>
     current.canUpload ? (
       <PreviewDisabled readOnly={v.readOnly}>
-      <details className="mt-2" open={!!r.clientExplanation}>
-        <summary className="cursor-pointer text-xs font-semibold text-navy-700">{r.clientExplanation ? "Your explanation (you can update it)" : "No document? Explain instead"}</summary>
-        <ActionForm action={v.act(portalExplainAction, current.clientId, r.id)} className="mt-2 space-y-2">
-          <textarea name="explanation" className="input w-full" rows={3} maxLength={4000} required defaultValue={r.clientExplanation ?? ""} aria-label={`Explanation for ${r.title}`} />
-          <Button type="submit" variant="secondary">Send explanation</Button>
-        </ActionForm>
-      </details>
+      <ActionForm action={v.act(portalExplainAction, current.clientId, r.id)} className="mt-2 space-y-2">
+        <label className="block text-xs font-semibold text-navy-700">
+          {r.clientExplanation ? "Your answer (you can update it)" : "Or type your answer"}
+          <textarea name="explanation" className="input mt-1 w-full" rows={2} maxLength={4000} required defaultValue={r.clientExplanation ?? ""} placeholder="For example: Check #163 was rent for the shop." aria-label={`Answer for ${r.title}`} />
+        </label>
+        <Button type="submit" variant="secondary">Send answer</Button>
+      </ActionForm>
       </PreviewDisabled>
     ) : null;
   const requestItem = (r: Req, periodId: string | null, period?: { year: number; month: number }) => (
-    <li key={r.id} className="py-2 text-sm" data-testid="client-request">
+    <li key={r.id} id={`request-${r.id}`} className="scroll-mt-24 py-2 text-sm target:rounded-lg target:bg-gold-50 target:px-2" data-testid="client-request">
       <p className="flex flex-wrap items-center gap-2">
         <strong>{r.title}</strong>
         {r.status === "OPEN" ? <Badge tone="amber">Needed{r.dueAt ? ` by ${fmtDate(r.dueAt)}` : ""}</Badge> : r.status === "SUBMITTED" ? <Badge tone="gold">Received — thank you</Badge> : <Badge tone="green">Accepted</Badge>}
@@ -105,9 +105,12 @@ export default async function PortalBookkeeping({ searchParams }: { searchParams
       {(r.bookkeepingAccount || r.periodStart) && <p className="text-xs text-slate-600">{r.bookkeepingAccount ? `Account: ${registryLabel(r.bookkeepingAccount)}` : ""}{r.bookkeepingAccount && r.periodStart ? " · " : ""}{r.periodStart ? `Period: ${rangeText(r)}` : ""}</p>}
       {r.reason && <p className="text-slate-600">{r.reason}</p>}
       {r.instructions && <p className="text-slate-600">{r.instructions}</p>}
-      {r.askClient && (r.status === "OPEN" || r.status === "SUBMITTED")
-        ? <>{linkedUpload(r.id, `Upload for ${r.title}`)}{explain(r)}</>
-        : r.status === "OPEN" && (r.docType ? linkedUpload(r.id, `Upload for ${r.title}`) : upload(r.id, periodId, `Upload for ${r.title}`, period?.year, period?.month))}
+      {(r.status === "OPEN" || r.status === "SUBMITTED") && (
+        <>
+          {r.askClient || r.docType ? linkedUpload(r.id, `Upload for ${r.title}`) : upload(r.id, periodId, `Upload for ${r.title}`, period?.year, period?.month)}
+          {explain(r)}
+        </>
+      )}
     </li>
   );
 

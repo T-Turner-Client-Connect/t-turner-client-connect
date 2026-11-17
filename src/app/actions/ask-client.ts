@@ -54,6 +54,6 @@ export async function portalExplainAction(clientId: string, requestId: string, _
   return run(async () => {
     await portalExplainRequest(user, clientId, requestId, str(fd, "explanation"));
     revalidatePath("/client", "layout");
-    return "Thank you. Your explanation was sent securely to our office.";
+    return "Thank you. Your answer was sent securely to our office.";
   });
 }

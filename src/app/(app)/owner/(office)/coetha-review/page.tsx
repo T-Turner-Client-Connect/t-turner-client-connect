@@ -2,7 +2,11 @@ import Link from "next/link";
 import clsx from "clsx";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
-import { AlertTriangle, ClipboardList, Inbox, Landmark, Scale, Sparkles } from "lucide-react";
+import { AlertTriangle, ClipboardList, FileWarning, Inbox, Landmark, Scale, Sparkles } from "lucide-react";
+import { ActionForm } from "@/components/action-form";
+import { decideHeldDocumentAction } from "@/app/actions/doc-security";
+import { heldDocuments } from "@/lib/services/document-ownership";
+import { CATEGORY_LABELS } from "@/lib/services/documents";
 import { requireOffice } from "@/lib/auth/owner";
 import { prisma } from "@/lib/prisma";
 import { card, h2, RecommendationCard } from "@/components/bk/parts";
@@ -36,6 +40,12 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
     prisma.accountReconciliation.groupBy({ by: ["clientId"], where: { clientId: { in: ids }, status: "EXCEPTION" }, _count: true }),
     canApproveCoethaWork(actor),
   ]);
+  const [heldDocs, refiled] = access.isOwner ? await Promise.all([
+    heldDocuments(),
+    prisma.auditLog.findMany({ where: { action: "document.moved_to_owner" }, orderBy: { createdAt: "desc" }, take: 40, select: { entityId: true, createdAt: true, clientId: true, details: true } }),
+  ]) : [[], []];
+  const moves = [...new Map(refiled.map((a) => [a.entityId, a])).values()].slice(0, 20);
+  const moveNames = new Map((await prisma.client.findMany({ where: { id: { in: moves.flatMap((m) => { const d = m.details as { from?: string; to?: string }; return [d.from ?? "", d.to ?? ""]; }) } }, select: { id: true, displayName: true, businessName: true } })).map((c) => [c.id, c.businessName || c.displayName]));
   const [held, autoSend, optedOut] = await Promise.all([
     prisma.documentRequest.findMany({ where: { clientId: { in: ids }, status: "DRAFT", routing: "REVIEW" }, orderBy: { createdAt: "desc" }, take: 50, include: { bookkeepingAccount: true } }),
     coethaAutoSendOn(),
@@ -102,6 +112,43 @@ export default async function CoethaReview({ searchParams }: { searchParams: Pro
           </ul>
         )}
       </section>
+
+      {access.isOwner && (
+        <section className={clsx(card, "p-4 sm:p-5")} data-testid="review-documents">
+          <h2 className={h2}><FileWarning className="size-5 text-gold-600" aria-hidden /> Documents Coetha refiled or held <span className="rounded-full bg-navy-900 px-2.5 py-0.5 font-sans text-xs font-semibold text-gold-300">{heldDocs.length}</span></h2>
+          <p className="mt-1 text-xs text-slate-600">Every upload is checked against the client it was filed under. A document that clearly belongs to another client (that client&apos;s name and SSN, EIN or account number printed on it) is moved there automatically, staff-only. One whose owner can&apos;t be proven is held here, hidden from the client it was filed under.</p>
+          {!heldDocs.length ? <p className="mt-2 text-sm text-slate-600">Nothing held.</p> : (
+            <ul className="mt-2 space-y-3">
+              {heldDocs.map((d) => (
+                <li key={d.id} className="rounded-xl border border-amber-200 bg-amber-50/60 p-3">
+                  <p className="text-sm font-semibold text-navy-900">{d.title} <span className="font-normal text-slate-600">· filed under {d.client.businessName || d.client.displayName} · {CATEGORY_LABELS[d.category]}{d.year ? ` · ${d.year}` : ""}</span></p>
+                  <p className="mt-1 text-sm text-navy-900">{d.hold.reason}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {d.hold.candidates.map((c) => (
+                      <ActionForm key={c.id} action={decideHeldDocumentAction.bind(null, d.id, c.id)} confirm={`Move “${d.title}” to ${c.label}? It stays staff-only there.`}>
+                        <button type="submit" className="inline-flex min-h-9 items-center rounded-lg bg-navy-900 px-3 py-1.5 text-sm font-semibold text-white hover:bg-navy-800">Move to {c.label}</button>
+                      </ActionForm>
+                    ))}
+                    <ActionForm action={decideHeldDocumentAction.bind(null, d.id, null)}>
+                      <button type="submit" className="inline-flex min-h-9 items-center rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-sm font-semibold text-navy-900 hover:bg-ivory-50">Keep with {d.client.businessName || d.client.displayName}</button>
+                    </ActionForm>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          {moves.length > 0 && (
+            <details className="mt-3 border-t border-ivory-200 pt-3">
+              <summary className="cursor-pointer text-sm font-semibold text-navy-900">Recently refiled by Coetha ({moves.length})</summary>
+              <ul className="mt-2 space-y-1 text-sm text-slate-700">
+                {moves.map((m) => { const d = m.details as { from?: string; to?: string; title?: string; proof?: string[]; duplicateOf?: string | null }; return (
+                  <li key={m.entityId}>“{d.title}”: {moveNames.get(d.from ?? "") ?? "a client"} → {moveNames.get(d.to ?? "") ?? "a client"}{d.duplicateOf ? " (already there; misfiled copy removed)" : ""} · {(d.proof ?? []).join(", ")} · {m.createdAt.toISOString().slice(0, 10)}</li>
+                ); })}
+              </ul>
+            </details>
+          )}
+        </section>
+      )}
 
       <section id="review-findings" className={clsx(card, "scroll-mt-4 p-4 sm:p-5")} data-testid="review-findings">
         <h2 className={h2}><Scale className="size-5 text-gold-600" aria-hidden /> Findings awaiting you {focus && <span className="font-sans text-sm font-normal text-navy-800">— {nameOf.get(focus)} · <Link className="underline" href="/owner/coetha-review">all clients</Link></span>}</h2>

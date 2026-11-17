@@ -4,7 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import type { Actor } from "@/lib/auth/actor";
 import type { PortalActor } from "@/lib/portal/session";
-import { requireClientAccess } from "@/lib/portal/access";
+import { requestVisibleWhere, requireClientAccess } from "@/lib/portal/access";
+import { clientFacingRequestWhere } from "./client-request-scope";
 import { BK_PORTAL_COETHA_V1, type LetterBlock, type LetterTemplate } from "@/lib/client-letters/templates";
 import { ValidationError } from "./clients";
 import { assertCanSendClientRequests } from "./bk-permissions";
@@ -12,6 +13,7 @@ import { createClientRequest, discardDraftRequest, rangeText, sendClientRequest 
 import { clientRolloutAuthorized } from "./owner-switches";
 import { isYmd, toDate } from "./ledger";
 import { registryLabel } from "./bank-accounts";
+import { appUrl } from "@/lib/integrations";
 
 /**
  * Ask Client: the supporting documents and explanations only the client can give.
@@ -146,7 +148,7 @@ export function askLetterTemplate(items: { title: string; reason: string | null;
     { lead: "What we need", bullets },
     {
       lead: "How to respond.",
-      text: "Sign in to TTurner Client Connect, your secure client portal, and open Bookkeeping & requests. For each item you can upload the document, or write a short explanation if you don't have a document or if the answer is simply information. Everything you send goes directly and securely to our office, so there is no need to call, text or email it.",
+      text: `Sign in to TTurner Client Connect, your secure client portal (${appUrl()}/client), and open Bookkeeping & requests. For each item you can upload the document, or write a short explanation if you don't have a document or if the answer is simply information. Everything you send goes directly and securely to our office, so there is no need to call, text or email it.`,
     },
     { text: "If you have any questions about an item, send us a message in Client Connect or call our office. We appreciate your help." },
   ];
@@ -204,11 +206,27 @@ export async function portalExplainRequest(user: PortalActor, clientId: string, 
   const access = await requireClientAccess(user.id, clientId);
   const explanation = text.trim().slice(0, MAX_EXPLANATION);
   if (explanation.length < 2) throw new ValidationError("Write your explanation first.");
-  const r = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, kind: "SUPPORTING", askClient: true } });
+  // Any question sent to this client can be answered in writing, by a login that may see it.
+  const r = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, AND: [clientFacingRequestWhere(access.canViewBookkeeping), requestVisibleWhere(user.id)] } });
   if (!r || (r.status !== "OPEN" && r.status !== "SUBMITTED")) throw new ValidationError("That request is closed.");
   if (r.periodId && !access.canViewBookkeeping) throw new ValidationError("Your access to this account doesn't include that.");
   await prisma.documentRequest.update({ where: { id: r.id }, data: { clientExplanation: explanation, explainedAt: new Date(), explainedByPortalId: user.id, status: "SUBMITTED" } });
   await audit(prisma, { actorId: null, action: "request.client_explained", entityType: "DocumentRequest", entityId: r.id, clientId, details: { portalUserId: user.id, length: explanation.length, replaced: !!r.clientExplanation } });
+  await handAnswerToCoetha(clientId, r.title, explanation);
+}
+
+/**
+ * The office receives a client's answer at once: Coetha takes it up in the background (as the
+ * owner's standing authorization) and records what it supports. A client's words are evidence:
+ * she records what they support and says what still isn't. Never throws.
+ */
+async function handAnswerToCoetha(clientId: string, title: string, answer: string) {
+  try {
+    const [{ ownerActor }, { askCoetha }] = await Promise.all([import("./coetha-decisions"), import("./coetha-chat")]);
+    const owner = await ownerActor();
+    if (!owner) return;
+    await askCoetha(owner, clientId, `The client answered "${title}" in the portal: ${answer}\n\nUnder your standing authorization, record what this answer supports (the entry, its category or account; business items the owner paid personally go to Owner's Capital). If it doesn't support an entry, say exactly what is still missing. One or two lines.`);
+  } catch { /* Coetha off, no key, or the client prefers no Coetha: the answer is saved for the office. */ }
 }
 
 /**
@@ -236,12 +254,13 @@ export async function queueClientResponseReading(documentId: string) {
 /** For Coetha's records: what clients answered on supporting requests (evidence only). */
 export async function clientResponsesForCoetha(clientId: string) {
   const rows = await prisma.documentRequest.findMany({
-    where: { clientId, askClient: true, status: { in: ["SUBMITTED", "ACCEPTED"] } },
+    where: { clientId, OR: [{ askClient: true, status: { in: ["SUBMITTED", "ACCEPTED"] } }, { officeAnswer: { not: null } }] },
     orderBy: { updatedAt: "desc" },
     take: 40,
-    select: { id: true, title: true, reason: true, clientExplanation: true, explainedAt: true, documents: { where: { deletedAt: null }, select: { title: true } } },
+    select: { id: true, title: true, reason: true, clientExplanation: true, explainedAt: true, officeAnswer: true, officeAnsweredAt: true, documents: { where: { deletedAt: null }, select: { title: true } } },
   });
-  return rows.map((r) => ({ request: r.title, whyAsked: r.reason, clientExplanation: r.clientExplanation, explainedOn: r.explainedAt?.toISOString().slice(0, 10) ?? null, filesUploaded: r.documents.map((d) => d.title) }));
+  // Tabitha's own answer is the office's decision (record it); a client's explanation is evidence only.
+  return rows.map((r) => ({ request: r.title, whyAsked: r.reason, clientExplanation: r.clientExplanation, explainedOn: r.explainedAt?.toISOString().slice(0, 10) ?? null, tabithasAnswer: r.officeAnswer, answeredOn: r.officeAnsweredAt?.toISOString().slice(0, 10) ?? null, filesUploaded: r.documents.map((d) => d.title) }));
 }
 
 // --- Coetha's tool (offered to Tabitha and staff who can send this business requests) ------------
