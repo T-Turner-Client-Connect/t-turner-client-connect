@@ -55,7 +55,10 @@ export async function verifyAccount(actor: Actor | null, accountId: string) {
     where: { clientId: a.clientId, deletedAt: null, bookkeepingAccountId: a.id, OR: [{ docType: { in: STATEMENT_TYPES } }, { category: "BOOKKEEPING" }] },
     orderBy: { createdAt: "desc" }, take: 6, include: { file: true },
   });
-  const { accountNumbersIn, bankNameIn } = await import("./statement-choice");
+  const { accountNumbersIn, accountDigitsIn, endingMatches, bankNameIn } = await import("./statement-choice");
+  const { bankingReference, onList } = await import("./bank-reference");
+  const ref = await bankingReference(a.clientId);
+  const listed = onList(ref, a);
   const names = await namesOf(a.clientId);
   const inst = norm(a.institution);
   let status = "NOT_CHECKED";
@@ -69,7 +72,7 @@ export async function verifyAccount(actor: Actor | null, accountId: string) {
     const numbers = accountNumbersIn(lines);
     const printedBank = bankNameIn(lines);
     const bankOk = inst.length >= 3 && flat.includes(` ${inst} `);
-    const numberOk = !a.last4 || numbers.has(a.last4);
+    const numberOk = !a.last4 || numbers.has(a.last4) || endingMatches(a.last4, accountDigitsIn(lines));
     const ownOk = names.own.some((n) => flat.includes(` ${n} `));
     const personOnly = !ownOk && names.business && names.owners.some((n) => flat.includes(` ${n} `));
     if (bankOk && numberOk && ownOk && a.last4) { status = "VERIFIED"; note = `“${d.title}” prints ${a.institution}, ••${a.last4} and the business's name.`; break; }
@@ -79,6 +82,12 @@ export async function verifyAccount(actor: Actor | null, accountId: string) {
     else if (!ownOk) problems.push(`“${d.title}” doesn't show this client's name.`);
   }
   if (status !== "VERIFIED" && problems.length) { status = "IN_QUESTION"; note = problems.slice(0, 3).join(" "); }
+  // Tabitha's banking list never verifies an account by itself: only a statement showing the business,
+  // the bank and the ending does. It is noted, so what still needs a statement is plain to see; an
+  // account it doesn't list is flagged in the note without blocking anything.
+  if (status === "NOT_CHECKED" && listed) note = "Matches the banking list; waiting for a statement on file to confirm it is the business's.";
+  else if (status === "VERIFIED" && ref.length && !listed) note = `${note} Not on the banking list yet.`;
+  else if (status === "NOT_CHECKED" && ref.length && !listed) note = "Not on the banking list for this client, and no statement on file shows it yet.";
   const changed = status !== a.ownershipStatus || note !== a.ownershipNote;
   await prisma.bookkeepingAccount.update({ where: { id: a.id }, data: { ownershipStatus: status, ownershipNote: note.slice(0, 500), ownershipCheckedAt: new Date() } });
   if (changed) await audit(prisma, { actorId: actor?.id ?? null, action: "banking.account_ownership_checked", entityType: "BookkeepingAccount", entityId: a.id, clientId: a.clientId, details: { account: labelOf(a), from: a.ownershipStatus, to: status, note: note.slice(0, 300) } });
@@ -131,10 +140,10 @@ export async function checkAllAccounts(opts: { budgetMs: number; actor?: Actor |
 /** Every bookkeeping client's registered accounts, for Owner's Office → Account verification. */
 export async function accountVerificationReport() {
   const clients = await prisma.client.findMany({
-    where: { archivedAt: null, bookkeepingAccounts: { some: { active: true } } },
+    where: { archivedAt: null, OR: [{ bookkeepingAccounts: { some: { active: true } } }, { bookkeepingProfile: { isNot: null } }] },
     orderBy: { displayName: "asc" },
     select: {
-      id: true, displayName: true, businessName: true,
+      id: true, displayName: true, businessName: true, bookkeepingProfile: { select: { bankingReference: true } },
       bookkeepingAccounts: {
         where: { active: true, parentAccountId: null },
         orderBy: { createdAt: "asc" },
@@ -142,7 +151,7 @@ export async function accountVerificationReport() {
       },
     },
   });
-  return clients.map((c) => ({ id: c.id, name: c.businessName || c.displayName, accounts: c.bookkeepingAccounts }));
+  return clients.map((c) => ({ id: c.id, name: c.businessName || c.displayName, accounts: c.bookkeepingAccounts, reference: (Array.isArray(c.bookkeepingProfile?.bankingReference) ? c.bookkeepingProfile!.bankingReference : []) as { institution: string; ending: string; note: string }[] }));
 }
 
 export const VERIFY_ACCOUNTS_TOOL = {
@@ -152,6 +161,9 @@ export const VERIFY_ACCOUNTS_TOOL = {
 };
 
 export async function runVerifyAccountsTool(actor: Actor, clientId: string, input: { hold?: { accountId: string; reason: string }[] }) {
+  // Tabitha's banking list first: confirmed errors (wrong bank for an ending, a missing ending, an
+  // unregistered account) are corrected before anything is checked.
+  const applied = await (await import("./bank-reference")).applyBankingReference(actor, clientId);
   const held: string[] = [];
   for (const h of input.hold ?? []) {
     try { await holdAccount(actor, clientId, h.accountId, h.reason); held.push(h.accountId); } catch (e) { return { error: e instanceof Error ? e.message : "Couldn't hold that account." }; }
@@ -162,5 +174,5 @@ export async function runVerifyAccountsTool(actor: Actor, clientId: string, inpu
     const r = held.includes(a.id) ? { status: "IN_QUESTION", note: "Held by Coetha with the reason given." } : await verifyAccount(actor, a.id);
     out.push({ accountId: a.id, account: labelOf(a), type: a.accountType, glCode: a.ledgerAccount?.code ?? null, status: r.status, why: r.note });
   }
-  return { accounts: out, note: "IN_QUESTION accounts: their activity isn't posted or reconciled until resolved. Fix a wrong bank or number with correct_accounts, then run this again; Tabitha decides an account whose statements are in a person's name." };
+  return { correctedFromBankingList: applied.corrected, accounts: out, note: "IN_QUESTION accounts: their activity isn't posted or reconciled until resolved. Fix a wrong bank or number with correct_accounts, then run this again; Tabitha decides an account whose statements are in a person's name." };
 }

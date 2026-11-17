@@ -55,6 +55,36 @@ export function accountNumbersIn(lines: string[]): Set<string> {
   return out;
 }
 
+/**
+ * Every account number printed on a statement, as its digits (masked or partial numbers keep the
+ * digits shown). For matching endings shorter or longer than four digits ("181", "170-02").
+ */
+export function accountDigitsIn(lines: string[]): Set<string> {
+  const out = new Set<string>();
+  const text = lines.slice(0, 400).join("\n");
+  const patterns = [
+    /(?<![A-Za-z])[x*•●X…]{1,16}[\s-]?(\d{2,6}(?:-\d{2})?)(?![\d.,])/g,
+    /\bending(?:\s+(?:in|with))?\s*[:#-]?\s*(\d[\d-]{1,7})\b/gi,
+    /\blast\s*(?:4|four)(?:\s*digits)?(?:\s*of\s*(?:the\s*)?account)?\s*[:#-]?\s*(\d{4})\b/gi,
+    /\b(?:account|acct)\.?\s*(?:number|no\.?|#)?\s*[:#]?\s*([\d][\d\s-]{1,24}\d)\b/gi,
+  ];
+  for (const re of patterns) for (const m of text.matchAll(re)) {
+    const digits = m[1].replace(/\D/g, "");
+    if (digits.length >= 2) out.add(digits);
+  }
+  return out;
+}
+
+/** Whether an account ending (2 to 6 digits, as the bank prints it) appears among a statement's account numbers. */
+export function endingMatches(ending: string | null | undefined, digits: Set<string>) {
+  const e = (ending ?? "").replace(/\D/g, "");
+  if (e.length < 2) return false;
+  for (const d of digits) {
+    if (e.length >= 3 ? d.endsWith(e) || (e.length > 4 && e.endsWith(d) && d.length >= 4) : d === e) return true;
+  }
+  return false;
+}
+
 /** The bank's name as printed at the top of its statement, when there is one. */
 export function bankNameIn(lines: string[]): string | null {
   for (const l of lines.slice(0, 25)) {
@@ -101,7 +131,7 @@ export async function chooseStatement(clientId: string, registryId: string, year
     const numbers = accountNumbersIn(lines);
     let proof: ChosenStatement["accountProof"];
     let learned: string | null = null;
-    if (r.last4 && numbers.has(r.last4)) proof = "NUMBER";
+    if (r.last4 && (numbers.has(r.last4) || endingMatches(r.last4, accountDigitsIn(lines)))) proof = "NUMBER";
     else if (r.last4 && numbers.size) { if (d.bookkeepingAccountId === r.id) skipped.push({ title: d.title, why: `its account number ends in ${[...numbers].join(" / ")}, not ${r.last4}` }); continue; }
     else if (!r.last4 && numbers.size === 1 && !takenLast4.has([...numbers][0]) && (d.bookkeepingAccountId === r.id || onlyAccount)) {
       // The account was registered without its number: the statement's own account number is used and recorded.

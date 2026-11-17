@@ -5,7 +5,7 @@ import { ActionForm } from "@/components/action-form";
 import { PageHeader } from "@/components/ui";
 import { requireOffice } from "@/lib/auth/owner";
 import { accountVerificationReport, OWNERSHIP_LABEL } from "@/lib/services/account-ownership";
-import { checkAllAccountsAction, decideAccountAction } from "@/app/actions/account-ownership";
+import { checkAllAccountsAction, decideAccountAction, uploadBankingListAction } from "@/app/actions/account-ownership";
 import { fmtDateTime } from "@/lib/format";
 
 export const metadata = { title: "Account verification" };
@@ -31,10 +31,18 @@ export default async function AccountVerificationPage() {
         <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold text-slate-700">{count("NOT_CHECKED")} not verified yet</span>
         <ActionForm action={checkAllAccountsAction}><button type="submit" className="rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-800">Check all accounts now</button></ActionForm>
       </div>
+      <ActionForm action={uploadBankingListAction} className="mb-5 flex flex-wrap items-center gap-2 rounded-2xl border border-ivory-200 bg-white p-4 text-sm shadow-sm">
+        <span className="font-semibold text-navy-900">Client banking list (PDF):</span>
+        <input type="file" name="file" accept="application/pdf" required className="input max-w-xs" aria-label="Client banking list" />
+        <button type="submit" className="rounded-lg border border-navy-900 px-4 py-2 font-semibold text-navy-900 hover:bg-ivory-50">Load and apply</button>
+        <span className="w-full text-xs text-slate-600">Coetha reads it, matches each row to a bookkeeping client, corrects what it proves wrong (a wrong bank for an ending, a missing ending, an account not set up), and checks every account against it and the statements on file. The list never verifies an account by itself — only a statement showing the business, the bank and the ending does. Load it again whenever it changes.</span>
+      </ActionForm>
       <ul className="space-y-4" data-testid="account-verification">
         {clients.map((c) => (
           <li key={c.id} className="rounded-2xl border border-ivory-200 bg-white p-4 shadow-sm">
             <h2 className="flex items-center gap-2 font-serif text-lg font-bold text-navy-900"><Landmark className="size-5 text-gold-600" aria-hidden /> {c.name}</h2>
+            {c.reference.length > 0 && <p className="mt-1 text-xs text-slate-600">Banking list: {c.reference.map((e) => `${e.institution || "bank not given"}${e.ending ? ` ••${e.ending}` : ""}${e.note ? ` (${e.note})` : ""}`).join("; ")}</p>}
+            {c.accounts.length === 0 && <p className="mt-1 text-sm text-slate-600">No accounts registered yet.</p>}
             <ul className="mt-2 divide-y divide-ivory-200">
               {c.accounts.map((a) => (
                 <li key={a.id} className="py-2 text-sm">

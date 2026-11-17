@@ -25,3 +25,19 @@ export async function decideAccountAction(accountId: string, decision: "VERIFIED
     return r.note ?? "Saved.";
   });
 }
+
+export async function uploadBankingListAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const f = fd.get("file");
+    if (!(f instanceof File) || !f.size) throw new ValidationError("Choose the banking list PDF.");
+    if (f.size > 5_000_000) throw new ValidationError("That file is too large.");
+    const { importBankingList } = await import("@/lib/services/bank-reference");
+    const r = await importBankingList(actor, new Uint8Array(await f.arrayBuffer()));
+    revalidatePath("/owner/account-verification");
+    const fixed = r.applied.reduce((n, a) => n + a.corrected.length, 0);
+    const flagged = r.applied.reduce((n, a) => n + a.inQuestion.length + a.flagged.length, 0);
+    const verified = r.applied.reduce((n, a) => n + a.verified, 0);
+    return `Read the list for ${r.matched} client${r.matched === 1 ? "" : "s"}: ${fixed} account${fixed === 1 ? "" : "s"} corrected or added; ${verified} verified from statements; ${flagged} flagged.${r.unmatched.length ? ` Not matched to a bookkeeping client: ${r.unmatched.join("; ")}.` : ""}`;
+  });
+}
