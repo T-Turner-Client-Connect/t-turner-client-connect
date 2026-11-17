@@ -119,7 +119,9 @@ export async function ReconciliationPanel({ user, clientId, month, pagePath }: {
                     <div><dt className="text-xs text-slate-600">Statement</dt><dd>{STMT[rec.statementStatus] ?? rec.statementStatus}</dd></div>
                   </dl>
                 )}
-                {rec && rec.exceptions.length > 0 && <ul className="mt-2 space-y-0.5 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-900">{rec.exceptions.map((e, i) => <li key={i}>{e}</li>)}</ul>}
+                {/* Errors that block the month, apart from unusual-activity notices (worth a look, never an error). */}
+                {rec && rec.exceptions.some((e) => !e.startsWith("Unusual activity")) && <ul className="mt-2 space-y-0.5 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-900">{rec.exceptions.filter((e) => !e.startsWith("Unusual activity")).map((e, i) => <li key={i}>{e}</li>)}</ul>}
+                {rec && rec.exceptions.some((e) => e.startsWith("Unusual activity")) && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900"><strong>For review, not an error:</strong> {rec.exceptions.filter((e) => e.startsWith("Unusual activity")).join(" ")}</p>}
                 <div className="mt-2 flex flex-wrap items-end gap-2">
                   {manage && rec && rec.status !== "APPROVED" && rec.status !== "NOT_DUE" && (
                     <ActionForm action={statementBalancesAction.bind(null, clientId, a.id, y, m)} className="flex flex-wrap items-end gap-2" showSuccess={false}>

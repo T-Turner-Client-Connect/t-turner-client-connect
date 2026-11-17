@@ -408,9 +408,12 @@ export async function prepareReconciliation(clientId: string, registryId: string
   if (flagged) exceptions.push(`${flagged} transaction${flagged === 1 ? "" : "s"} flagged as possible duplicates or changed by the bank.`);
   const typical = median(rows.map((x) => Math.abs(x.amountCents)));
   const unusual = rows.filter((x) => Math.abs(x.amountCents) >= 100_000 && Math.abs(x.amountCents) >= typical * 5);
+  // Whose account this is must be settled before its month can be reconciled.
+  if (r.ownershipStatus === "IN_QUESTION") exceptions.unshift(`Ownership in question: ${r.ownershipNote ?? "the statements don't prove this is the business's account"}. Not reconciled until that is resolved.`);
   if (unusual.length) exceptions.push(`Unusual activity: ${unusual.slice(0, 3).map((x) => `${usd(x.amountCents)} “${x.description.slice(0, 40)}”`).join(", ")}${unusual.length > 3 ? "…" : ""}.`);
   let status: string;
   if (today <= w.end) status = "NOT_DUE";
+  else if (r.ownershipStatus === "IN_QUESTION") status = "EXCEPTION";
   else if (ending == null || beginning == null) status = "AWAITING_DATA";
   else if (math.differenceCents !== 0 || gap) status = "EXCEPTION";
   else if (unmatched > 0 || flagged > 0) status = "IN_PROGRESS";

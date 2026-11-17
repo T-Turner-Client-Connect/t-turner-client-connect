@@ -89,6 +89,8 @@ export function officeTabs(access: OfficeAccess): { href: OfficeHref; label: str
     { href: "/owner/automation", label: "Coetha & bank feeds", show: access.isOwner },
     // Office Files: Tabitha's private records across clients (Bookkeeping Clients Status). Owner only, not grantable.
     { href: "/owner/office-files", label: "Office Files", show: access.isOwner },
+    // Account verification: every client's actual bank and card accounts, proved from their statements. Owner only.
+    { href: "/owner/account-verification", label: "Account verification", show: access.isOwner },
     // Quarterly access reviews and staff offboarding: Tabitha's alone (not grantable).
     { href: "/owner/access-review", label: "Access review", show: access.isOwner },
     // Client Letters: Tabitha prepares, reviews and sends approved letters (owner only, not grantable).

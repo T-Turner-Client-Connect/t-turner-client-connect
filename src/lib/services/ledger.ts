@@ -494,6 +494,7 @@ export async function importBankCsv(actor: Actor, clientId: string, accountId: s
   await assertLedgerWrite(actor, clientId, "banking");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!account || !isFeedSubtype(account.subtype)) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
+  await (await import("./account-ownership")).assertOwnershipResolved(account.id);
   if (input.text.length > 5_000_000) throw new ValidationError("That file is too large. Import one statement at a time.");
   const { rows, problems, hasBalance } = parseBankCsv(input.text);
   if (!rows.length) throw new ValidationError(`No transactions could be read. ${problems.slice(0, 3).join("; ")}`);
@@ -622,6 +623,7 @@ export async function categorizeBankTransactionTx(tx: Tx, actor: Actor, clientId
     const t = await tx.bankTransaction.findFirst({ where: { id: txnId, clientId }, include: { account: true } });
     if (!t) throw new ValidationError("Bank transaction not found.");
     if (t.status !== "UNREVIEWED") throw new ValidationError(t.status === "POSTED" ? "That transaction is already posted." : "That transaction was excluded. Include it again first.");
+    await (await import("./account-ownership")).assertOwnershipResolved(t.accountId);
     const cat = await tx.ledgerAccount.findFirst({ where: { id: input.accountId, clientId, active: true } });
     if (!cat) throw new ValidationError("Choose one of this client's active accounts.");
     if (cat.id === t.accountId) throw new ValidationError("Choose a category other than the bank account itself.");
@@ -703,6 +705,7 @@ export async function reconcileAccount(actor: Actor, clientId: string, accountId
   if (!isYmd(input.statementDate)) throw new ValidationError("Enter the statement's ending date.");
   const account = await prisma.ledgerAccount.findFirst({ where: { id: accountId, clientId } });
   if (!account || !isFeedSubtype(account.subtype)) throw new ValidationError("Choose one of this client's bank or credit card accounts.");
+  await (await import("./account-ownership")).assertOwnershipResolved(account.id);
   const statementCents = parseCents(input.statementBalance, "statement ending balance");
   const ledgerCents = await accountBalance(clientId, accountId, input.statementDate, "CASH");
   const unreviewed = await prisma.bankTransaction.count({ where: { clientId, accountId, status: "UNREVIEWED", date: { lte: toDate(input.statementDate) } } });
@@ -882,8 +885,12 @@ export async function ledgerFlags(actor: Actor, clientId: string, today = todayC
   const parked = (suspense._sum.debitCents ?? 0) - (suspense._sum.creditCents ?? 0);
   if (parked) flags.push({ kind: "SUSPENSE", severity: "MEDIUM", message: `${usd(parked)} is in Ask My Accountant and needs a proper category.` });
   // Bank rows that look like owner draws but were posted to an expense account.
-  const posted = await prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED", amountCents: { lt: 0 } }, select: { description: true, journalEntry: { select: { lines: { select: { account: { select: { type: true, subtype: true } } } } } } } });
-  const drawLike = posted.filter((t) => DRAW_WORDS.test(normDesc(t.description)) && t.journalEntry?.lines.some((l) => l.account.type === "EXPENSE" && l.account.subtype !== "SUSPENSE")).length;
+  // Judged on the current effective ledger: a posting that was reversed, or moved out of the expense
+  // account by a later correcting entry, is corrected, not an open error (see stillExpensed).
+  const posted = await prisma.bankTransaction.findMany({ where: { clientId, status: "POSTED", amountCents: { lt: 0 } }, orderBy: { date: "asc" }, select: { id: true, date: true, amountCents: true, description: true, journalEntry: { select: { id: true, reversedBy: { select: { id: true } }, lines: { select: { accountId: true, debitCents: true, account: { select: { type: true, subtype: true } } } } } } } });
+  const expensed = (t: (typeof posted)[number]) => (t.journalEntry && !t.journalEntry.reversedBy ? t.journalEntry.lines.find((l) => l.account.type === "EXPENSE" && l.account.subtype !== "SUSPENSE" && l.debitCents > 0)?.accountId : undefined);
+  const corrections = await correctionsOutOfExpense(clientId);
+  const drawLike = stillExpensed(posted.filter((t) => DRAW_WORDS.test(normDesc(t.description))), expensed, corrections).length;
   // Processor payouts (Stripe, Square, PayPal) posted straight to income: invoice payments already recorded
   // that income, so the payout belongs to Payments in Transit. Counting both would double the income.
   const payouts = await prisma.bankTransaction.count({ where: { clientId, status: "POSTED", amountCents: { gt: 0 }, description: { contains: "STRIPE", mode: "insensitive" }, journalEntry: { lines: { some: { account: { type: "INCOME" } } } } } });
@@ -897,10 +904,61 @@ export async function ledgerFlags(actor: Actor, clientId: string, today = todayC
   // A payment from the bank to a card / LOC / loan posted to an expense would double-count the
   // charges already on the card (or book principal as expense).
   const cardWords = /\b(PAYMENT|PMT|AUTOPAY|EPAY|CARD PMT|LOAN PMT)\b/;
-  const payAsExpense = posted.filter((t) => cardWords.test(normDesc(t.description)) && /\b(CARD|CREDIT|AMEX|VISA|MASTERCARD|DISCOVER|LOAN|LINE OF CREDIT|LOC)\b/.test(normDesc(t.description)) && t.journalEntry?.lines.some((l) => l.account.type === "EXPENSE" && l.account.subtype !== "SUSPENSE")).length;
+  const payAsExpense = stillExpensed(posted.filter((t) => cardWords.test(normDesc(t.description)) && /\b(CARD|CREDIT|AMEX|VISA|MASTERCARD|DISCOVER|LOAN|LINE OF CREDIT|LOC)\b/.test(normDesc(t.description))), expensed, corrections).length;
   if (payAsExpense) flags.push({ kind: "CARD_PAYMENT_AS_EXPENSE", severity: "HIGH", message: `${payAsExpense} card or loan payment${payAsExpense === 1 ? " was" : "s were"} posted as an expense. A payment to a card, line of credit or loan is a transfer to the liability account; the charges were already expensed on the card.` });
   if (drawLike) flags.push({ kind: "POSSIBLE_DRAW", severity: "MEDIUM", message: `${drawLike} withdrawal${drawLike === 1 ? "" : "s"} that look like owner draws or personal transfers were posted as expenses. Owner draws belong in equity unless Tabitha approved an exception.` });
   return flags;
+}
+
+/**
+ * Amounts later moved OUT of each expense account to a non-expense account (equity, a card or loan,
+ * an asset) by a correcting journal entry that hasn't itself been reversed. Bank-row postings and
+ * reversals don't count. Per expense account: the amounts, oldest first.
+ */
+async function correctionsOutOfExpense(clientId: string) {
+  const lines = await prisma.journalLine.findMany({
+    where: { creditCents: { gt: 0 }, account: { type: "EXPENSE" }, entry: { clientId, reversedBy: { is: null }, reversalOfId: null, bankTransactions: { none: {} } } },
+    orderBy: { entry: { date: "asc" } },
+    select: { accountId: true, creditCents: true, entry: { select: { lines: { select: { debitCents: true, account: { select: { type: true } } } } } } },
+  });
+  const out = new Map<string, number[]>();
+  for (const l of lines) {
+    if (!l.entry.lines.some((x) => x.debitCents > 0 && x.account.type !== "EXPENSE")) continue; // an expense-to-expense reclass doesn't resolve these warnings
+    out.set(l.accountId, [...(out.get(l.accountId) ?? []), l.creditCents]);
+  }
+  return out;
+}
+
+/**
+ * The rows still sitting in an expense account after corrections. A correction covers a row when it
+ * moved that exact amount out of the same account, or (for one lump-sum correction) when what it
+ * moved out covers the rows oldest first. An account netting to zero on its own resolves nothing:
+ * only a correcting entry out of that account does.
+ */
+function stillExpensed<T extends { amountCents: number }>(rows: T[], expensedIn: (r: T) => string | undefined, corrections: Map<string, number[]>) {
+  const left = new Map([...corrections].map(([k, v]) => [k, [...v]]));
+  const open: T[] = [];
+  const pending: { r: T; acct: string; cents: number }[] = [];
+  for (const r of rows) {
+    const acct = expensedIn(r);
+    if (!acct) continue; // not in an expense now (reversed, or posted elsewhere)
+    const cents = Math.abs(r.amountCents);
+    const pool = left.get(acct) ?? [];
+    const exact = pool.indexOf(cents);
+    if (exact >= 0) { pool.splice(exact, 1); continue; }
+    pending.push({ r, acct, cents });
+  }
+  for (const p of pending) {
+    const pool = left.get(p.acct) ?? [];
+    let need = p.cents;
+    while (need > 0 && pool.length) {
+      const take = Math.min(need, pool[0]);
+      need -= take; pool[0] -= take;
+      if (pool[0] === 0) pool.shift();
+    }
+    if (need > 0) open.push(p.r);
+  }
+  return open;
 }
 
 /** Everything the ledger page shows for one client. */

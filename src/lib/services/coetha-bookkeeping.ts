@@ -208,6 +208,7 @@ export async function runBookkeepingTool(actor: Actor, clientId: string, name: s
   try {
     if (name === DUPLICATES_TOOL.name) return await removeVerifiedDuplicates(actor, clientId, { month: String(i.month ?? ""), dryRun: !!i.dryRun });
     if (name === "import_prior_months") return await importPriorMonths(actor, clientId, (input ?? {}) as { documentId?: string; months?: PriorMonth[]; packageEndingCash?: number | null });
+    if (name === "verify_accounts") return await (await import("./account-ownership")).runVerifyAccountsTool(actor, clientId, (input ?? {}) as { hold?: { accountId: string; reason: string }[] });
     if (name === "move_document_to_client") return await moveDocumentToClient(actor, clientId, (input ?? {}) as { documentId?: string; reason?: string; hold?: boolean });
     if (name === "import_statement_transactions") return await importStatementTransactions(actor, clientId, (input ?? {}) as Parameters<typeof importStatementTransactions>[2]);
     if (name === "correct_accounts") return await correctAccounts(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: AccountFix[] }).items) : []);
@@ -409,7 +410,7 @@ export const PRIOR_MONTHS_TOOL = {
 
 // --- Correcting account details (wrong bank names, numbers, accounts the business doesn't have) ---
 
-type AccountFix = { code?: string; name?: string; institution?: string; nickname?: string; last4?: string; active?: boolean; reason?: string; add?: { accountType?: string; institution?: string; last4?: string; nickname?: string } };
+type AccountFix = { code?: string; name?: string; institution?: string; nickname?: string; last4?: string; active?: boolean; reason?: string; add?: { accountType?: string; institution?: string; last4?: string; nickname?: string; documentId?: string } };
 
 /**
  * Corrects how an account is described when it was set up wrong (e.g. registered as "Chase" when the
@@ -435,8 +436,15 @@ export async function correctAccounts(actor: Actor, clientId: string, items: Acc
         const type = String(it.add.accountType ?? "").toUpperCase();
         const a = await registerAccount(actor, clientId, { institution: String(it.add.institution ?? ""), accountType: type, last4: it.add.last4 ? String(it.add.last4) : undefined, nickname: it.add.nickname ? String(it.add.nickname) : undefined, gl: "NEW" });
         const gl = a.ledgerAccountId ? await prisma.ledgerAccount.findUnique({ where: { id: a.ledgerAccountId } }) : null;
-        await audit(prisma, { actorId: actor.id, action: "coetha.account_added", entityType: "BookkeepingAccount", entityId: a.id, clientId, details: { reason: reason.slice(0, 300), institution: a.institution, last4: a.last4, type } });
-        results.push({ code: gl?.code ?? "new", ok: true, message: `Added: ${a.institution}${a.last4 ? ` ••${a.last4}` : ""} (${type.toLowerCase().replace("_", " ")})${gl ? `, chart account ${gl.code} ${gl.name}` : ""}.` });
+        await audit(prisma, { actorId: actor.id, action: "coetha.account_added", entityType: "BookkeepingAccount", entityId: a.id, clientId, details: { reason: reason.slice(0, 300), institution: a.institution, last4: a.last4, type, documentId: it.add.documentId ?? null } });
+        // Whose account it is comes from the statement itself (this bank, these last 4, the business's
+        // own name). Until a statement proves that, the new account's activity waits: in question.
+        const doc = it.add.documentId ? await prisma.document.findFirst({ where: { id: String(it.add.documentId), clientId, deletedAt: null } }) : null;
+        if (doc) await prisma.document.update({ where: { id: doc.id }, data: { bookkeepingAccountId: a.id } });
+        const own = await import("./account-ownership");
+        const v = await own.verifyAccount(actor, a.id);
+        if (v.status !== "VERIFIED") await own.holdAccount(actor, clientId, a.id, v.status === "IN_QUESTION" ? v.note : "Added from statements, but no statement on file yet proves it is the business's own account (its bank, last 4 and business name).");
+        results.push({ code: gl?.code ?? "new", ok: true, message: `Added: ${a.institution}${a.last4 ? ` ••${a.last4}` : ""} (${type.toLowerCase().replace("_", " ")})${gl ? `, chart account ${gl.code} ${gl.name}` : ""}. ${v.status === "VERIFIED" ? "Verified from its statement." : "Ownership in question: its activity waits until a statement proves it is the business's, or Tabitha decides."}` });
       } catch (err) {
         results.push({ code: "new", ok: false, message: err instanceof Error ? err.message : "Couldn't be added." });
       }
@@ -473,8 +481,10 @@ export async function correctAccounts(actor: Actor, clientId: string, items: Acc
       }
       await updateAccount(actor, clientId, acct.id, { ...(name ? { name } : {}), ...(institution !== undefined ? { institution } : {}), ...(last4 !== undefined ? { last4: last4 ?? "" } : {}), ...(it.active !== undefined ? { active: it.active } : {}) });
       const after = await prisma.ledgerAccount.findUniqueOrThrow({ where: { id: acct.id } });
+      // Re-checked against its statements after any correction.
+      const check = reg ? await (await import("./account-ownership")).verifyAccount(actor, reg.id) : null;
       await audit(prisma, { actorId: actor.id, action: "coetha.account_corrected", entityType: "LedgerAccount", entityId: acct.id, clientId, details: { code, reason: reason.slice(0, 300), before, after: { name: after.name, institution: after.institution, last4: after.last4, active: after.active } } });
-      results.push({ code, ok: true, message: `Corrected: ${after.name}${after.institution ? ` (${after.institution}${after.last4 ? ` ••${after.last4}` : ""})` : ""}${after.active ? "" : " — deactivated"}. No entries changed.` });
+      results.push({ code, ok: true, message: `Corrected: ${after.name}${after.institution ? ` (${after.institution}${after.last4 ? ` ••${after.last4}` : ""})` : ""}${after.active ? "" : " — deactivated"}. No entries changed.${check ? ` Ownership: ${check.status === "VERIFIED" ? "verified from its statement" : check.status === "IN_QUESTION" ? `in question — ${check.note}` : "no readable statement yet"}.` : ""}` });
     } catch (err) {
       results.push({ code, ok: false, message: err instanceof Error ? err.message : "Couldn't be corrected." });
     }
@@ -484,8 +494,8 @@ export async function correctAccounts(actor: Actor, clientId: string, items: Acc
 
 export const CORRECT_ACCOUNTS_TOOL = {
   name: "correct_accounts",
-  description: "Correct how this business's accounts are described when they were set up wrong — for example a checking or card account registered as \"Chase\" when the statements show Farm Bureau Bank. By chart code: set the account's name, and for bank or card accounts the bank name (institution), nickname and last 4 digits; deactivate (active false) an account the business doesn't have, once its balance is zero (move any balance first with prepare_entries); or add the business's real bank or card account when the books don't have it (an item with 'add': accountType CHECKING, SAVINGS, CREDIT_CARD, LINE_OF_CREDIT or LOAN, institution, last4 — no code needed). Give each item a reason naming the evidence (the statements, the bank's name and account number on them). No entries or balances change. Use it whenever the books' account names or banks don't match the client's real accounts; don't ask Tabitha to fix them by hand.",
-  input_schema: { type: "object" as const, properties: { items: { type: "array", items: { type: "object", properties: { code: { type: "string" }, name: { type: "string" }, institution: { type: "string" }, nickname: { type: "string" }, last4: { type: "string" }, active: { type: "boolean" }, reason: { type: "string" }, add: { type: "object", properties: { accountType: { type: "string" }, institution: { type: "string" }, last4: { type: "string" }, nickname: { type: "string" } } } }, required: ["reason"] } } }, required: ["items"] },
+  description: "Correct how this business's accounts are described when they were set up wrong — for example a checking or card account registered as \"Chase\" when the statements show Farm Bureau Bank. By chart code: set the account's name, and for bank or card accounts the bank name (institution), nickname and last 4 digits; deactivate (active false) an account the business doesn't have, once its balance is zero (move any balance first with prepare_entries); or add the business's real bank or card account when the books don't have it (an item with 'add': accountType CHECKING, SAVINGS, CREDIT_CARD, LINE_OF_CREDIT or LOAN, institution, last4, and the documentId of the statement that shows it — no code needed). A new account stays 'in question' (its activity isn't posted or reconciled) until a statement on file prints its bank, its last 4 and the business's own name; a statement in the owner's personal name doesn't prove it is the business's. Never name a bank the statements don't show, and never take a bank from a chart number. Give each item a reason naming the evidence (the statements, the bank's name and account number on them). No entries or balances change. Use it whenever the books' account names or banks don't match the client's real accounts; don't ask Tabitha to fix them by hand.",
+  input_schema: { type: "object" as const, properties: { items: { type: "array", items: { type: "object", properties: { code: { type: "string" }, name: { type: "string" }, institution: { type: "string" }, nickname: { type: "string" }, last4: { type: "string" }, active: { type: "boolean" }, reason: { type: "string" }, add: { type: "object", properties: { accountType: { type: "string" }, institution: { type: "string" }, last4: { type: "string" }, nickname: { type: "string" }, documentId: { type: "string" } } } }, required: ["reason"] } } }, required: ["items"] },
 };
 
 // --- Entering a statement Coetha read herself (a screenshot, photo or scan) ---------------------
