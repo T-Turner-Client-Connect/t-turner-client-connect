@@ -17,7 +17,9 @@ export async function POST(req: Request) {
   // First: each month's readable statement, proven by its account number, linked to its account.
   const { linkStatementsOnFile } = await import("@/lib/services/statement-choice");
   const links = await linkStatementsOnFile({ budgetMs: 6_000 }).catch((err) => ({ linked: [], skipped: { error: 1, [`error:${err instanceof Error ? err.name : "unknown"}`]: 1 } as Record<string, number>, more: false }));
-  const r = await runAutomaticStatements({ budgetMs: 12_000 });
+  // Whose account each registered bank and card account is, from its statements (once a day per account).
+  const owned = await (await import("@/lib/services/account-ownership")).checkAllAccounts({ budgetMs: 4_000 }).catch(() => ({ checked: 0, inQuestion: 0, more: false }));
+  const r = await runAutomaticStatements({ budgetMs: 10_000 });
   await heartbeat("statements:auto", { built: "built" in r ? r.built.length : 0, failed: "failed" in r ? r.failed?.length ?? 0 : 0 }).catch(() => {});
-  return Response.json({ linked: links.linked.length, linkSkipped: links.skipped, built: r.built.length, failed: "failed" in r ? r.failed : [], more: "more" in r ? r.more : false });
+  return Response.json({ accountsChecked: owned.checked, accountsInQuestion: owned.inQuestion, linked: links.linked.length, linkSkipped: links.skipped, built: r.built.length, failed: "failed" in r ? r.failed : [], more: "more" in r ? r.more : false });
 }

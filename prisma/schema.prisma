@@ -3217,6 +3217,12 @@ model BookkeepingAccount {
   parentAccount       BookkeepingAccount?     @relation("SharedCards", fields: [parentAccountId], references: [id], onDelete: SetNull)
   subCards            BookkeepingAccount[]    @relation("SharedCards")
   cardholderLabel     String?
+  // Whose account this is (account-ownership.ts): NOT_CHECKED | VERIFIED (a statement on file prints
+  // this bank, these last 4 and the business's own name) | IN_QUESTION (posting, importing and
+  // reconciling its activity are refused until it is resolved). Never set from a chart-of-accounts number.
+  ownershipStatus     String                  @default("NOT_CHECKED")
+  ownershipNote       String?
+  ownershipCheckedAt  DateTime?
   requests            DocumentRequest[]
   reconciliations     AccountReconciliation[]
 
