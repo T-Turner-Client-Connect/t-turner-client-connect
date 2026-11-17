@@ -261,9 +261,10 @@ async function post(tx: Tx, actor: Actor, clientId: string, input: PostInput) {
   const accounts = await tx.ledgerAccount.findMany({ where: { id: { in: ids }, clientId } });
   if (accounts.length !== ids.length) throw new ValidationError("Every line must use one of this client's own accounts.");
   if (accounts.some((a) => !a.active) && input.source !== "REVERSAL") throw new ValidationError("One of those accounts is inactive.");
-  // Before the opening balances, only income, expense and owner-equity history may be recorded (a mid-year
-  // conversion's prior months): never cash, other assets or liabilities, which the opening balances already state.
-  if (input.beforeOpening && book.openingDate && input.date < ymdOf(book.openingDate) && accounts.some((a) => !["INCOME", "EXPENSE", "EQUITY"].includes(a.type))) throw new ValidationError("Before the opening balances, only income, expense and equity can be recorded.");
+  // Before the opening balances (a mid-year conversion's prior months), anything except cash accounts may be
+  // recorded — income, expenses, equity and non-cash items such as an improvement the owner paid personally.
+  // Bank, card and other feed accounts stay out: the opening balances already state their balances.
+  if (input.beforeOpening && book.openingDate && input.date < ymdOf(book.openingDate) && accounts.some((a) => FEED_SUBTYPES.includes(a.subtype ?? ""))) throw new ValidationError("Before the opening balances, bank and card accounts can't be posted (their balances are in the opening balances).");
   if (input.sourceKey && (await tx.journalEntry.count({ where: { clientId, sourceKey: input.sourceKey } }))) throw new ValidationError("That has already been posted, so it wasn't posted again.");
   const entry = await tx.journalEntry.create({
     data: { clientId, date: toDate(input.date), memo, source: input.source, sourceKey: input.sourceKey ?? null, basis: input.basis ?? "BOTH", reason: input.reason ?? null, reversalOfId: input.reversalOfId ?? null, createdById: actor.id, lines: { create: lines } },

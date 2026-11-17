@@ -310,7 +310,28 @@ export async function importPriorMonths(actor: Actor, clientId: string, input: {
     if (!lines.length) { results.push({ month, ok: false, message: "No amounts for this month." }); continue; }
     const beforeOpening = !!openingYmd && endYmd < openingYmd;
     if (beforeOpening && !obe) { results.push({ month, ok: false, message: "This month is before the opening balances and the chart has no Opening Balance Equity account; add one first." }); continue; }
-    if (beforeOpening && lines.some((l) => !["INCOME", "EXPENSE", "EQUITY"].includes(chart.find((a) => a.id === l.accountId)?.type ?? ""))) { results.push({ month, ok: false, message: "Before the opening balances only income, expense and owner-equity lines can be entered; this month has an asset or liability line." }); continue; }
+    if (beforeOpening) {
+      // Cash accounts are already stated by the opening balances; a non-cash item already in the opening
+      // balances (e.g. equipment entered there) isn't entered twice. Everything else is entered.
+      const { FEED_SUBTYPES } = await import("./ledger");
+      const opening = await prisma.journalLine.findMany({ where: { entry: { clientId, sourceKey: "opening" } }, select: { accountId: true } });
+      const inOpening = new Set(opening.map((o) => o.accountId));
+      const skippedLines: string[] = [];
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const a = chart.find((x) => x.id === lines[i].accountId);
+        if (!a) continue;
+        const cashAcct = FEED_SUBTYPES.includes(a.subtype ?? "");
+        const already = (a.type === "ASSET" || a.type === "LIABILITY") && inOpening.has(a.id);
+        if (cashAcct || already) {
+          skippedLines.push(`${lines[i].description ?? a.name} (${cashAcct ? "a bank or card balance, already in the opening balances" : "already in the opening balances"})`);
+          const d = Math.round(Number(lines[i].debit ?? 0) * 100), c = Math.round(Number(lines[i].credit ?? 0) * 100);
+          net += d - c; // removing a debit raises what the offset must carry, and vice versa
+          lines.splice(i, 1);
+        }
+      }
+      if (skippedLines.length) results.push({ month, ok: true, message: `Not entered again: ${skippedLines.join("; ")}.` });
+      if (!lines.length) continue;
+    }
     if (net !== 0) {
       const offset = beforeOpening ? obe! : bank;
       lines.push({ accountId: offset.id, ...(net > 0 ? { debit: (net / 100).toFixed(2) } : { credit: (-net / 100).toFixed(2) }), description: beforeOpening ? "Before the opening balances: the cash is already in the opening balance (Opening Balance Equity)" : "Net cash for the month, per the package" });
