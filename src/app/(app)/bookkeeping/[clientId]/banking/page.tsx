@@ -184,7 +184,7 @@ export default async function BankingPage({ params }: { params: Promise<{ client
             <label className="text-sm">Institution<input className="input mt-1" name="institution" required placeholder="e.g. Pretend National Bank" /></label>
             <label className="text-sm">Nickname<input className="input mt-1" name="nickname" placeholder="e.g. Operating" /></label>
             <label className="text-sm">Type<select className="input mt-1" name="accountType" defaultValue="CHECKING">{Object.entries(REGISTRY_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></label>
-            <label className="text-sm">Last 4 digits<input className="input mt-1" name="last4" inputMode="numeric" maxLength={4} pattern="\d{4}" placeholder="1234" /></label>
+            <label className="text-sm">Account ending<input className="input mt-1" name="last4" inputMode="numeric" maxLength={7} pattern="[0-9-]{2,7}" placeholder="1234" /></label>
             <label className="text-sm">Opening balance<input className="input mt-1" name="openingBalance" inputMode="decimal" placeholder="0.00" /></label>
             <label className="text-sm">Effective date<input className="input mt-1" type="date" name="openingBalanceDate" /></label>
             <label className="text-sm">Statement closing day<input className="input mt-1" name="statementDay" inputMode="numeric" placeholder="Month end" /></label>

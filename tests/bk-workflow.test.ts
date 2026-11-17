@@ -328,7 +328,7 @@ describe("twelve credit cards", () => {
     // Never a full number or a credential.
     await expect(registerAccount(w.daria, w.biz.id, { institution: "Pretend Card Co", accountType: "CREDIT_CARD", nickname: "4111 1111 1111 1111" })).rejects.toThrow(/full account or card numbers/);
     await expect(registerAccount(w.daria, w.biz.id, { institution: "Pretend Card Co", accountType: "CREDIT_CARD", nickname: "password is hunter2" })).rejects.toThrow(/passwords/);
-    await expect(registerAccount(w.daria, w.biz.id, { institution: "Pretend Card Co", accountType: "CREDIT_CARD", last4: "41111" })).rejects.toThrow(/last 4/);
+    await expect(registerAccount(w.daria, w.biz.id, { institution: "Pretend Card Co", accountType: "CREDIT_CARD", last4: "4111111" })).rejects.toThrow(/2 to 6 digits/);
   });
 });
 

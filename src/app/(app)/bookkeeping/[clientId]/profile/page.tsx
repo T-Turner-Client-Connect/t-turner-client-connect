@@ -237,7 +237,7 @@ function AccountForm({ clientId, account }: { clientId: string; account: { id: s
     <ActionForm action={saveAccountAction.bind(null, clientId, account?.id ?? null)} className="mt-2 grid gap-3 sm:grid-cols-4" resetOnSuccess={!account}>
       <Field label="Bank or card company"><input className="input" name="institution" defaultValue={account?.institution ?? ""} /></Field>
       <Field label="Account type"><select className="input" name="accountType" defaultValue={account?.accountType ?? ""}><option value="">Choose…</option>{Object.entries(ACCOUNT_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
-      <Field label="Last 4 digits"><input className="input" name="last4" inputMode="numeric" maxLength={4} autoComplete="off" defaultValue={account?.last4 ?? ""} /></Field>
+      <Field label="Account ending (as the bank prints it)"><input className="input" name="last4" inputMode="numeric" maxLength={7} pattern="[0-9-]{2,7}" autoComplete="off" defaultValue={account?.last4 ?? ""} /></Field>
       <Field label="Nickname (optional)"><input className="input" name="nickname" defaultValue={account?.nickname ?? ""} /></Field>
       <Field label="Official sign-in page" hint="https:// address from the bank's website" className="sm:col-span-2"><input className="input" type="url" name="loginUrl" placeholder="https://" defaultValue={account?.loginUrl ?? ""} /></Field>
       <Field label="Access status"><select className="input" name="accessStatus" defaultValue={account?.accessStatus ?? "NOT_REQUESTED"}>{Object.entries(ACCESS_STATUSES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></Field>

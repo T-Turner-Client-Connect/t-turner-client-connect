@@ -80,7 +80,7 @@ describe("assignment, business profile and EIN", () => {
 
   it("bank and card accounts never take credentials", async () => {
     const { daria, shop } = await setup();
-    await expect(saveAccount(daria, shop.id, null, { institution: "Fictional Bank", accountType: "CHECKING", last4: "12345" })).rejects.toThrow(/last 4/);
+    await expect(saveAccount(daria, shop.id, null, { institution: "Fictional Bank", accountType: "CHECKING", last4: "1234567" })).rejects.toThrow(/2 to 6 digits/);
     await expect(saveAccount(daria, shop.id, null, { institution: "Fictional Bank", accountType: "CHECKING", loginUrl: "http://bank.example/login" })).rejects.toThrow(/https/);
     await expect(saveAccount(daria, shop.id, null, { institution: "Fictional Bank", accountType: "CHECKING", loginUrl: "https://user:pw@bank.example/login" })).rejects.toThrow(/without usernames/);
     await expect(saveAccount(daria, shop.id, null, { institution: "Fictional Bank", accountType: "CHECKING", accessNote: "password is Summer2026" })).rejects.toThrow(/Don't save passwords/);

@@ -44,7 +44,7 @@ describe("setup, access and chart of accounts", () => {
     const savings = await addAccount(daria, harbor.id, { code: "1010", name: "Business Savings", type: "ASSET", subtype: "BANK", institution: "Example Bank", last4: "0042" });
     await expect(addAccount(daria, harbor.id, { code: "1010", name: "Dup", type: "ASSET" })).rejects.toThrow(/already exists/);
     await expect(addAccount(daria, harbor.id, { code: "1020", name: "Bad", type: "INCOME", subtype: "BANK" })).rejects.toThrow(/doesn't match/);
-    await expect(addAccount(daria, harbor.id, { code: "1030", name: "Bad", type: "ASSET", last4: "123456789" })).rejects.toThrow(/last four/);
+    await expect(addAccount(daria, harbor.id, { code: "1030", name: "Bad", type: "ASSET", last4: "123456789" })).rejects.toThrow(/2 to 6 digits/);
     await postJournalEntry(daria, harbor.id, { date: "2026-01-05", memo: "Move to savings", lines: [{ accountId: savings.id, debit: "100" }, { accountId: await acct(harbor.id, "1000"), credit: "100" }] });
     await expect(updateAccount(daria, harbor.id, savings.id, { type: "EXPENSE", subtype: null })).rejects.toThrow(/type can't change/);
     await updateAccount(daria, harbor.id, savings.id, { name: "Reserve Savings" });
