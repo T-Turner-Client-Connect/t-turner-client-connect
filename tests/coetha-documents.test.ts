@@ -133,13 +133,14 @@ describe("Coetha finds and reads accounting documents already stored in Client C
     expect(await prisma.auditLog.count({ where: { action: "coetha.document_read" } })).toBe(4);
   });
 
-  it("a scan is read in the background and answered in the same chat; a file that can't be read says why", async () => {
+  it("a scan is given to Coetha as the file itself to read (no new upload, no waiting); a file that can't be read says why", async () => {
     const s = await setup();
     const r = await runReadFilesTool(s.daria, s.willow.id, { documentIds: [s.scan.id, s.ret.id, "missing-id"], question: "What do these receipts show?" }, { chat: "c_fictional" });
-    expect(r.documents.map((d) => d.status)).toEqual(["reading in the background (a scan or picture)", "not allowed", "not found"]);
-    expect(r.note).toMatch(/background/);
-    const waiting = await prisma.coethaChatMessage.findFirstOrThrow({ where: { clientId: s.willow.id, status: "WAITING" } });
-    expect(waiting).toMatchObject({ chatId: "c_fictional", text: "What do these receipts show?" });
+    expect(r.documents.map((d) => d.status)).toEqual(["attached: the file itself is included with this result — read it yourself", "not allowed", "not found"]);
+    const att = (r as { __attachments?: { mediaType: string; base64: string }[] }).__attachments ?? [];
+    expect(att).toHaveLength(1);
+    expect(att[0].mediaType).toBe("application/pdf");
+    expect(await prisma.coethaChatMessage.count({ where: { clientId: s.willow.id, status: "WAITING" } })).toBe(0);
   });
 
   it("client isolation and staff permissions hold: no other business's file, no reading for staff without this business's books", async () => {

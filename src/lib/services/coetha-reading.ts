@@ -295,7 +295,7 @@ export async function findFilesOnFile(actor: Actor, clientId: string, input: unk
 export const READ_FILES_TOOL = {
   name: "read_documents_on_file",
   description:
-    "Read the contents of documents already stored for this business (ids from find_documents_on_file or documentsOnFile). A PDF with text (most bank, card and payroll statements) is returned right away as its text, with long numbers cut to the last 4 digits. A scan or picture is read in the background: your answer about it is then written automatically in this chat. Read-only; nothing in the books changes.",
+    "Read the contents of documents already stored for this business (ids from find_documents_on_file or documentsOnFile). A PDF with text (most bank, card and payroll statements) is returned as its text, with long numbers cut to the last 4 digits. A picture (screenshot, photo) or scanned PDF is returned as the file itself for you to look at — read the statement, transactions, dates, amounts and balances from it yourself; only very large scans are read in the background. Use it to re-read any file already on file (never ask for it to be uploaded again). Read-only; nothing in the books changes.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -326,6 +326,14 @@ export async function runReadFilesTool(actor: Actor, clientId: string, input: un
   const docs = await prisma.document.findMany({ where: { id: { in: ids }, clientId, deletedAt: null }, select: { id: true, title: true, category: true, file: { select: { originalName: true, mimeType: true } } } });
   const out: { id: string; title: string; text?: string; truncated?: boolean; status: string; problem?: string }[] = [];
   const background: { id: string; name: string }[] = [];
+  // The files themselves (pictures and scanned PDFs), sent with the result for Coetha to look at.
+  const attachments: { mediaType: string; base64: string }[] = [];
+  const attach = (file: { bytes: Uint8Array; type: string }) => {
+    const limit = file.type === "application/pdf" ? 20_000_000 : 3_700_000;
+    if (file.bytes.length > limit || attachments.length >= 5) return false;
+    attachments.push({ mediaType: file.type, base64: Buffer.from(file.bytes).toString("base64") });
+    return true;
+  };
   let room = INLINE_LIMIT;
   for (const id of ids) {
     const d = docs.find((x) => x.id === id);
@@ -334,6 +342,17 @@ export async function runReadFilesTool(actor: Actor, clientId: string, input: un
     if (!categories.includes(d.category)) { out.push({ id, title, status: "not allowed", problem: d.category === "PAYROLL" ? "Payroll files open only for someone allowed to do this business's payroll work." : "That document isn't an accounting record Coetha may read." }); continue; }
     if (!d.file || !TYPES.includes(d.file.mimeType as FileType)) { out.push({ id, title, status: "unsupported", problem: "It isn't a PDF or a picture, so it can't be read." }); continue; }
     try {
+      // A picture: the image itself goes to Coetha (plus whatever the scanner noted), never only the scanner's counts.
+      if (d.file.mimeType.startsWith("image/")) {
+        const file = await documentBytes(id);
+        if (!file) { out.push({ id, title, status: "waiting", problem: "It's still being virus-scanned; try again in a minute." }); continue; }
+        if (attach(file)) {
+          const job = await prisma.coethaDocJob.findUnique({ where: { documentId: id } });
+          await audit(prisma, { actorId: actor.id, action: "coetha.document_read", entityType: "Document", entityId: id, clientId, details: { kind: "IMAGE_ATTACHED" } });
+          out.push({ id, title, status: "attached: the picture itself is included with this result — read it yourself", ...(job?.status === "DONE" ? { text: `Scanner notes (built for checks; may miss anything else): ${await documentsText([job])}` } : {}) });
+          continue;
+        }
+      }
       let job = await prisma.coethaDocJob.findUnique({ where: { documentId: id } });
       if (!job || (job.status !== "DONE" && !job.kind)) {
         // Work out now whether it's a text PDF; if so, its text is kept and returned at once.
@@ -355,15 +374,21 @@ export async function runReadFilesTool(actor: Actor, clientId: string, input: un
         const text = job.text.slice(0, Math.max(0, room));
         room -= text.length;
         out.push({ id, title, status: "read", text, truncated: text.length < job.text.length });
-      } else if (job.status === "DONE") {
-        out.push({ id, title, status: "read", text: await documentsText([job]) });
-      } else if (job.status === "FAILED") {
-        out.push({ id, title, status: "couldn't be read", problem: job.error ?? "The reader couldn't read it." });
-      } else if (opts.alreadyRead?.includes(id)) {
-        out.push({ id, title, status: "being read for this question" });
+      } else if (job.status === "DONE" || job.status === "FAILED" || !opts.alreadyRead?.includes(id)) {
+        // A scanned PDF (or a picture too large to attach above): the file itself when it fits, with the scanner's notes.
+        const file = await documentBytes(id).catch(() => null);
+        if (file && attach(file)) {
+          out.push({ id, title, status: "attached: the file itself is included with this result — read it yourself", ...(job.status === "DONE" ? { text: `Scanner notes (built for checks; may miss anything else): ${await documentsText([job])}` } : {}) });
+        } else if (job.status === "DONE") {
+          out.push({ id, title, status: "read", text: await documentsText([job]) });
+        } else if (job.status === "FAILED") {
+          out.push({ id, title, status: "couldn't be read", problem: job.error ?? "The reader couldn't read it." });
+        } else {
+          background.push({ id: job.id, name: job.name });
+          out.push({ id, title, status: "reading in the background (a large scan)" });
+        }
       } else {
-        background.push({ id: job.id, name: job.name });
-        out.push({ id, title, status: "reading in the background (a scan or picture)" });
+        out.push({ id, title, status: "being read for this question" });
       }
     } catch (err) {
       out.push({ id, title, status: "couldn't be read", problem: err instanceof ValidationError ? err.message : "The file couldn't be opened from storage." });
@@ -374,7 +399,7 @@ export async function runReadFilesTool(actor: Actor, clientId: string, input: un
     await askAboutDocuments(actor, clientId, question, background.map((b) => b.id), opts.chat ?? null);
     await kickBackgroundReading();
   }
-  return { documents: out, ...(background.length ? { note: "Scans are being read in the background; the answer about them will appear in this chat when they are read." } : {}) };
+  return { documents: out, ...(background.length ? { note: "Scans are being read in the background; the answer about them will appear in this chat when they are read." } : {}), ...(attachments.length ? { __attachments: attachments } : {}) };
 }
 
 /**
@@ -742,7 +767,7 @@ export async function answerReadyQuestions(limit = 5, _quick = true, clientId?: 
       await prisma.coethaChatMessage.update({ where: { id: m.id }, data: { status: "FAILED" } });
       continue;
     }
-    const run = await queueAnswer(m, { documentsRead: ids.length ? await documentsText(jobs) : "" });
+    const run = await queueAnswer(m, { documentsRead: ids.length ? await documentsText(jobs) : "", documentIds: jobs.map((j) => j.documentId) });
     if (process.env.VITEST) await runAnswerNow(run.id);
     n++;
   }
@@ -763,7 +788,8 @@ const money = (c: number | null) => (c == null ? "" : ` $${(c / 100).toFixed(2)}
  */
 export async function documentsText(jobs: { id: string; name: string; status: string; kind: string | null; pages: number; error: string | null; text: string | null }[]) {
   const out: string[] = [
-    "HOW TO ANSWER: Every check is already saved and shown on the page in five groups (with check details, bank match, proposed account, why, and evidence needed), and staff can download it as a spreadsheet. Do NOT list every check. Write a short summary (under 300 words): the totals per group, then the few decisions Tabitha must make (owner/personal items, checks needing documentation, unmatched checks), naming the check number and amount for each. Propose; never say anything was posted or approved.",
+    "HOW TO ANSWER: The files themselves are attached when they could be: read each one yourself first. Recognize what it is — a bank or credit card statement (or a screenshot of one), a receipt, an invoice, a payroll report, checks — and answer from what it actually shows: account and institution, statement period, each transaction's date, description and amount, and the beginning and ending (or current) balances. Never answer only from the scanner's counts below. If a file is genuinely unreadable, say exactly what is missing (which part is cut off, blurred or absent — dates, amounts, balances, account number, pages) and what would settle it.",
+    "When there are checks: every check is already saved on the page in groups (with bank match, proposed account and evidence needed) and in the spreadsheet — don't list every check; give the totals per group and the few decisions Tabitha must make, naming check number and amount. Propose; never say anything was posted or approved unless a tool says so.",
   ];
   let room = 120_000;
   for (const j of jobs) {

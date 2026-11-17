@@ -33,6 +33,10 @@ beforeEach(async () => {
     const req = JSON.parse(String(init?.body ?? "")) as Req;
     if (String(JSON.stringify(req.system)).includes("You read scanned pages")) {
       if (failReads > 0) { failReads--; return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "overloaded" } }), { status: 529, headers: { "content-type": "application/json" } }); }
+      if ((req.messages[0].content as { type: string }[]).some((b) => b.type === "image")) {
+        // A screenshot: the check scanner finds no checks, only "one other item".
+        return reply({ content: [{ type: "text", text: JSON.stringify({ items: [{ page: 1, kind: "OTHER", checkNumber: null, date: null, payee: null, amount: null, memo: null, details: "statement screenshot" }] }) }], stop_reason: "end_turn" });
+      }
       const doc = (req.messages[0].content as { type: string; source?: { data: string } }[]).find((b) => b.type === "document");
       const pdf = await PDFDocument.load(Buffer.from(doc!.source!.data, "base64"));
       const pages = pdf.getPages().map((p) => Math.round(p.getWidth()) - 600);
@@ -128,9 +132,33 @@ describe("Coetha reads documents in the background", () => {
     expect(v.messages.map((m) => m.role)).toEqual(["USER", "COETHA"]);
     expect(v.messages[0].status).toBe("ANSWERED");
     expect(JSON.stringify(chatCalls[0].messages)).toContain("#1043 2026-10-05 Fictional Payee 3 $580.85");
-    expect(JSON.stringify(chatCalls[0].messages)).toContain("Do NOT list every check");
+    expect(JSON.stringify(chatCalls[0].messages)).toContain("don't list every check");
     expect(JSON.stringify(chatCalls[0].messages)).not.toContain("0000123456789");
     expect(await books()).toEqual(before);
+  });
+
+  it("bank and credit card screenshots sent through Upload Files reach Coetha as the images themselves, not only the check scanner's \"0 checks, 1 other\"", async () => {
+    const s = await setup();
+    // Two fictional screenshots (distinct files: a bank statement and a card statement).
+    const bank = Uint8Array.from(Buffer.concat([Buffer.from(PNG), Buffer.from("fictional bank statement screenshot")]));
+    const card = Uint8Array.from(Buffer.concat([Buffer.from(PNG), Buffer.from("fictional credit card statement screenshot")]));
+    const a = await upload(s.daria, s.willow.id, bank, "bank-oct.png");
+    const b = await upload(s.daria, s.willow.id, card, "card-oct.png");
+    await askAboutDocuments(s.daria, s.willow.id, "What are the October transactions and balances on these?", [a.jobId, b.jobId]);
+    await workReading(60_000);
+    expect(chatCalls).toHaveLength(1);
+    const content = (chatCalls[0].messages.at(-1)!.content as { type: string; text?: string; source?: { media_type: string; data: string } }[]);
+    const images = content.filter((c) => c.type === "image");
+    // Both original images are attached, byte for byte.
+    expect(images.map((i) => i.source!.data).sort()).toEqual([Buffer.from(bank).toString("base64"), Buffer.from(card).toString("base64")].sort());
+    expect(images.every((i) => i.source!.media_type === "image/png")).toBe(true);
+    // She is told to read them herself (statements, dates, amounts, balances) and what to say if unreadable.
+    const text = content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+    expect(text).toMatch(/files themselves are attached/i);
+    expect(text).toMatch(/bank or credit card statement/);
+    expect(text).toMatch(/beginning and ending \(or current\) balances/);
+    expect(text).toMatch(/genuinely unreadable, say exactly what is missing/);
+    expect(text).toMatch(/0 checks found/);
   });
 
   it("an interrupted worker's pages are read again from the saved place, never twice", async () => {
