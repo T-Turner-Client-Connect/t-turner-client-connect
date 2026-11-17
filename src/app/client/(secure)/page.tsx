@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Notice } from "@/components/ui";
 import { PortalHomeView } from "@/components/portal/home-view";
@@ -14,6 +15,9 @@ export const metadata = { title: "Client portal" };
 
 export default async function PortalHome({ searchParams }: { searchParams: Promise<{ account?: string; year?: string; month?: string }> }) {
   const sp = await searchParams;
+  // Arrived from a question link before signing in: go back to that exact question.
+  const next = (await cookies()).get("cc_next")?.value;
+  if (next && /^\/client\/go\/request\/[A-Za-z0-9_-]+$/.test(next)) redirect(next);
   const v = await portalViewer("home", sp.account);
   const { user, accounts, current, linkFor, readOnly } = v;
   if (!current) return <Notice title="No accounts yet">Your login isn&apos;t connected to an account right now. Please contact our office.</Notice>;

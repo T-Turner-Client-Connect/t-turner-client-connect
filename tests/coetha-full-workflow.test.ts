@@ -136,10 +136,13 @@ describe("Coetha does the whole job from a screenshot already on file — no new
     const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica); const p = d.addPage([612, 300]);
     ["Prairie Example Farm Bank", "CEDAR EXAMPLE SHOP LLC (FICTIONAL)", "ACCOUNT # XXXXXX4542", "September 1, 2026 through September 30, 2026"].forEach((t, i) => p.drawText(t, { x: 30, y: 260 - i * 16, size: 10, font: f }));
     const misfiled = await staffUploadDocument(w.tabitha, { clientId: w.biz.id, category: "BOOKKEEPING", title: "Bank statement — September", visibility: "STAFF_ONLY", bytes: await d.save(), originalName: "sept.pdf", notify: false });
+    // New uploads are corrected as they are saved; this one stands for a statement filed before that check existed.
+    expect(misfiled.clientId).toBe(w.other.id);
+    await prisma.document.update({ where: { id: misfiled.id }, data: { clientId: w.biz.id, ownershipCheckedAt: null } });
     const r = await moveDocumentToClient(w.tabitha, w.biz.id, { documentId: misfiled.id, reason: "Another business's name and account ••4542 are on this statement." });
     expect(r).toMatchObject({ ok: true });
     expect(await prisma.document.findUniqueOrThrow({ where: { id: misfiled.id } })).toMatchObject({ clientId: w.other.id });
-    expect(await prisma.auditLog.count({ where: { action: "coetha.document_moved", entityId: misfiled.id } })).toBe(2);
+    expect(await prisma.auditLog.count({ where: { action: "document.moved_to_owner", entityId: misfiled.id } })).toBe(4);
     // A document that names this client (or proves nothing) is never moved.
     const mine = await staffUploadDocument(w.tabitha, { clientId: w.biz.id, category: "BOOKKEEPING", title: "mine", visibility: "STAFF_ONLY", bytes: screenshot("mine"), originalName: "mine.png", notify: false });
     expect(await moveDocumentToClient(w.tabitha, w.biz.id, { documentId: mine.id, reason: "testing a document with no text at all" })).toMatchObject({ error: expect.any(String) });

@@ -44,7 +44,7 @@ export function clientSmsAllowedNow(now = new Date()) {
   return t >= CLIENT_SMS_QUIET.start && t < CLIENT_SMS_QUIET.end;
 }
 
-export function notificationText(kind: string) {
+export function notificationText(kind: string, link = `${appUrl()}/client`) {
   const line = TEXT[kind] ?? "There's something new in your client portal";
   if (kind === "NEW_MESSAGE") {
     return {
@@ -59,8 +59,8 @@ export function notificationText(kind: string) {
     heading: line,
     line: `${line} in your T. Turner & Associates client portal.`,
     subject: `${line} — T. Turner & Associates`,
-    body: `${line} in your T. Turner & Associates client portal.\n\nSign in securely to view it: ${appUrl()}/client\n\nFor your privacy, we never include account details or tax documents in emails or texts.`,
-    sms: `T. Turner & Associates: ${line} in your client portal. Sign in: ${appUrl()}/client Reply STOP to opt out, HELP for help.`,
+    body: `${line} in your T. Turner & Associates client portal.\n\nSign in securely to view it: ${link}\n\nFor your privacy, we never include account details or tax documents in emails or texts.`,
+    sms: `T. Turner & Associates: ${line} in your client portal. Sign in: ${link} Reply STOP to opt out, HELP for help.`,
   };
 }
 
@@ -102,7 +102,10 @@ export async function dispatchPendingNotifications(portalUserId?: string) {
     // Claim the row first so concurrent dispatchers can't double-send.
     const claimed = await prisma.notification.updateMany({ where: { id: n.id, status: "PENDING", sentAt: null }, data: { sentAt: new Date() } });
     if (claimed.count !== 1) continue;
-    const text = notificationText(n.kind);
+    // A question or document request opens that exact item in the portal (after sign-in).
+    const reqId = n.kind === "DOCUMENT_REQUEST" ? /request:([A-Za-z0-9_-]+)/.exec(n.idempotencyKey ?? "")?.[1] : undefined;
+    const link = reqId ? `${appUrl()}/client/go/request/${reqId}` : `${appUrl()}/client`;
+    const text = notificationText(n.kind, link);
     let result: { ok: boolean; detail: string; sid?: string };
     // Essential account notices: never stopped by marketing choices, only by a bounce/complaint/
     // do-not-contact (email) or the STOP block / missing service consent (texts). Re-checked now.
@@ -112,7 +115,7 @@ export async function dispatchPendingNotifications(portalUserId?: string) {
       continue;
     }
     if (n.channel === "EMAIL") {
-      const ok = await sendTransactionalEmail(n.portalUser.email, text.subject, text.body, brandedNoticeHtml(text.heading, text.line, "Sign in to your portal", `${appUrl()}/client`));
+      const ok = await sendTransactionalEmail(n.portalUser.email, text.subject, text.body, brandedNoticeHtml(text.heading, text.line, reqId ? "Open the question" : "Sign in to your portal", link));
       result = ok ? { ok, detail: "Accepted by email provider" } : { ok, detail: "Email provider not set up or rejected the message" };
     } else {
       const r = await sendSms(n.portalUser.phoneNormalized!, text.sms);

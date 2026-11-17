@@ -30,18 +30,18 @@ export function cents(s: string): number {
 }
 
 /** Text lines of each page, rebuilt from the PDF's positioned text (items on one baseline form one line). */
-export async function pdfLines(bytes: Uint8Array): Promise<string[] | null> {
-  const pages = await pdfPageLines(bytes);
+export async function pdfLines(bytes: Uint8Array, opts: { maxPages?: number } = {}): Promise<string[] | null> {
+  const pages = await pdfPageLines(bytes, opts);
   return pages ? pages.flat() : null;
 }
 
 /** The same text lines, kept page by page. */
-export async function pdfPageLines(bytes: Uint8Array): Promise<string[][] | null> {
+export async function pdfPageLines(bytes: Uint8Array, opts: { maxPages?: number } = {}): Promise<string[][] | null> {
   try {
     const { getDocumentProxy } = await import("unpdf");
     const pdf = await getDocumentProxy(new Uint8Array(bytes));
     const pages: string[][] = [];
-    for (let p = 1; p <= pdf.numPages; p++) {
+    for (let p = 1; p <= Math.min(pdf.numPages, opts.maxPages ?? pdf.numPages); p++) {
       const out: string[] = [];
       const page = await pdf.getPage(p);
       const tc = await page.getTextContent();

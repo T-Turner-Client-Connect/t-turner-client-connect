@@ -124,3 +124,15 @@ export async function keyEscrowAction(_prev: ActionState, fd: FormData): Promise
     return "Key escrow confirmation recorded.";
   });
 }
+
+// Coetha Accounting Review → Documents Coetha refiled or held --------------------------------------
+
+export async function decideHeldDocumentAction(documentId: string, moveTo: string | null, _prev: ActionState): Promise<ActionState> {
+  const actor = await requireUser();
+  return run(async () => {
+    const { decideHeldDocument } = await import("@/lib/services/document-ownership");
+    const r = await decideHeldDocument(actor, documentId, { moveTo });
+    revalidatePath("/owner/coetha-review");
+    return r.message;
+  });
+}

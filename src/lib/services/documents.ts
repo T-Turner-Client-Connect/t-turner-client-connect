@@ -246,8 +246,10 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
           title: input.title?.trim().slice(0, 200) || file.title,
           year: input.year ?? null,
           month: input.month ?? null,
-          visibility: input.visibility,
-          publishedAt: published ? new Date() : null,
+          // Marked "publish": it stays staff-only until Coetha's ownership check (just below) clears it.
+          visibility: "STAFF_ONLY",
+          publishAfterCheck: published,
+          publishedAt: null,
           reportType: input.reportType ?? null,
           periodId: input.periodId ?? null,
           docType: input.docType ?? null,
@@ -265,9 +267,13 @@ export async function staffUploadDocument(actor: Actor, input: StaffUploadInput)
       await audit(tx, { actorId: actor.id, action: "document.uploaded", entityType: "Document", entityId: doc.id, clientId: input.clientId, details: { category: input.category, visibility: input.visibility, ...(doc.businessOwnerId ? { businessOwnerId: doc.businessOwnerId } : {}) } });
       return doc;
     });
+    // Coetha checks whose document it is before any client can see it (a moment, never a blocker):
+    // clearly another client's → refiled there, staff-only; uncertain → held for review; otherwise released as chosen.
+    await (await import("./document-ownership")).checkUploadNow(actor, doc.id);
+    const now = await prisma.document.findUniqueOrThrow({ where: { id: doc.id } });
     // Clients are told only once the file has passed the malware scan.
-    if (doc.visibility === "PUBLISHED" && doc.scanStatus === "CLEAN" && input.notify !== false) await notifyClientUsers(doc.clientId, "NEW_DOCUMENT", doc.id, doc.category);
-    return doc;
+    if (now.visibility === "PUBLISHED" && now.scanStatus === "CLEAN" && input.notify !== false) await notifyClientUsers(now.clientId, "NEW_DOCUMENT", now.id, now.category);
+    return now;
   } catch (err) {
     await storage.remove(stored.storageKey).catch(() => {});
     throw err;
@@ -305,6 +311,12 @@ export async function setVisibility(actor: Actor, documentId: string, visibility
   if (visibility === "PUBLISHED") {
     const blocked = await publishBlocker(actor, doc);
     if (blocked) throw blocked;
+    // Not yet checked (an older document): Coetha checks whose it is before it can be published.
+    if (!doc.ownershipCheckedAt) {
+      const own = await import("./document-ownership");
+      const r = await own.checkAndCorrect(actor, doc.id, "Coetha (standing authorization, checked before publishing)");
+      if (r.verdict === "MOVE" || r.verdict === "HOLD") throw new ValidationError(`Not published. ${r.message}`);
+    }
   }
   await prisma.$transaction([
     prisma.document.update({ where: { id: documentId }, data: { visibility, publishedAt: visibility === "PUBLISHED" ? doc.publishedAt ?? new Date() : null } }),
@@ -409,6 +421,7 @@ export async function portalUploadDocument(
     await queueStaffAlert({ documentId: saved.id });
     // An answer to an Ask Client request goes straight to Coetha's reading queue (no staff re-upload).
     if (input.requestId) await (await import("./ask-client")).queueClientResponseReading(saved.id);
+    await (await import("./document-ownership")).checkUploadNow(null, saved.id);
     return saved;
   } catch (err) {
     await storage.remove(stored.storageKey).catch(() => {});

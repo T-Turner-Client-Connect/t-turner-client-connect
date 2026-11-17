@@ -380,3 +380,26 @@ export async function staffUploadStatement(actor: Actor, clientId: string, input
   await audit(prisma, { actorId: actor.id, action: "bookkeeping.statement_uploaded", entityType: "Document", entityId: doc.id, clientId, details: { account: registryLabel(acct), month: input.month } });
   return doc;
 }
+
+/**
+ * Tabitha answers Coetha's question herself, right on the request card. Nothing goes to the client:
+ * the request closes as answered by the office, and Coetha records the answer under her standing
+ * authorization (in the background, so the page never waits).
+ */
+export async function answerRequestYourself(actor: Actor, clientId: string, requestId: string, answer: string) {
+  const { assertCanApproveCoethaWork } = await import("@/lib/auth/permissions");
+  await assertCanApproveCoethaWork(actor);
+  const text = answer.trim();
+  if (text.length < 2) throw new ValidationError("Type your answer.");
+  const r = await prisma.documentRequest.findFirst({ where: { id: requestId, clientId, status: { in: ["DRAFT", "OPEN", "SUBMITTED"] } } });
+  if (!r) throw new ValidationError("That question is already closed.");
+  await prisma.documentRequest.update({ where: { id: r.id }, data: { officeAnswer: text.slice(0, 2000), officeAnsweredAt: new Date(), officeAnsweredById: actor.id, status: r.status === "DRAFT" ? "CANCELLED" : "ACCEPTED" } });
+  await audit(prisma, { actorId: actor.id, action: "request.answered_by_office", entityType: "DocumentRequest", entityId: r.id, clientId, details: { answer: text.slice(0, 500), sentToClient: r.status !== "DRAFT" } });
+  let handed = false;
+  try {
+    const { askCoetha } = await import("./coetha-chat");
+    await askCoetha(actor, clientId, `I answered your question "${r.title}": ${text}\n\nRecord it now under your standing authorization (the entry, its category or account, and anything that depended on it), then tell me in one or two lines what you did. If the answer still leaves something unsupported, say exactly what.`);
+    handed = true;
+  } catch { /* Coetha off or not available for this client: the answer is saved and she sees it next time. */ }
+  return { handed };
+}

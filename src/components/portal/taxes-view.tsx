@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { loadPortalTaxes } from "@/lib/portal/tax-view";
 import { Badge, Card, EmptyState } from "@/components/ui";
 import { AMENDMENT_LABELS, federalFirst, filingStatusLabel, portalJurisdictionLabel } from "@/lib/tax/normalize";
@@ -15,13 +16,19 @@ const PREP_PLAIN = {
 } as const;
 const DOC_LABEL: Record<string, string> = { RETURN: "Your accepted return", OFFICIAL_ACK: "Official acknowledgment", AGENCY_NOTICE: "Notice from the agency", CORRESPONDENCE: "Correspondence" };
 
-export function PortalTaxesView({ data, linkFor }: { data: Data; linkFor: (id: string) => string }) {
+export function PortalTaxesView({ data, linkFor, answer }: { data: Data; linkFor: (id: string) => string; answer?: (r: Data["requests"][number]) => ReactNode }) {
   if (!data.years.length && !data.requests.length) return <EmptyState title="No tax filings yet">Your return progress and filing updates will appear here, by tax year.</EmptyState>;
   return (
     <div className="space-y-6">
       {data.requests.length > 0 && (
         <Card title="Information we need from you">
-          <ul className="space-y-1 text-sm">{data.requests.map((r) => <li key={r.id}><strong>{r.title}</strong>{r.dueAt && ` — by ${fmtDate(r.dueAt)}`}</li>)}</ul>
+          <ul className="divide-y divide-ivory-200 text-sm">{data.requests.map((r) => (
+            <li key={r.id} id={`request-${r.id}`} className="scroll-mt-24 py-2 target:rounded-lg target:bg-gold-50 target:px-2">
+              <strong>{r.title}</strong>{r.dueAt && ` — by ${fmtDate(r.dueAt)}`}{r.status === "SUBMITTED" && <Badge tone="gold">Received — thank you</Badge>}
+              {r.reason && <p className="text-slate-600">{r.reason}</p>}
+              {answer?.(r)}
+            </li>
+          ))}</ul>
         </Card>
       )}
       {data.years.map((year) => {
