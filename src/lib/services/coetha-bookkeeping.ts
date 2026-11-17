@@ -455,8 +455,8 @@ export async function correctAccounts(actor: Actor, clientId: string, items: Acc
     if (reason.length < 10) { results.push({ code, ok: false, message: "Give the reason and evidence (for example: the statements on file are from Farm Bureau Bank, account ending 4542)." }); continue; }
     try {
       const reg = await prisma.bookkeepingAccount.findFirst({ where: { clientId, ledgerAccountId: acct.id, parentAccountId: null } });
-      const last4 = it.last4 !== undefined ? (String(it.last4).trim() || null) : undefined;
-      if (last4 && !/^\d{4}$/.test(last4)) throw new ValidationError("Last 4 must be exactly four digits.");
+      const last4 = it.last4 !== undefined ? (String(it.last4).replace(/[\s-]/g, "") || null) : undefined;
+      if (last4 && !/^\d{2,6}$/.test(last4)) throw new ValidationError("The account ending must be 2 to 6 digits, as the bank prints it.");
       const institution = it.institution !== undefined ? String(it.institution).trim().slice(0, 120) : undefined;
       if (institution !== undefined && !institution) throw new ValidationError("The bank name can't be blank.");
       const nickname = it.nickname !== undefined ? String(it.nickname).trim().slice(0, 80) || null : undefined;

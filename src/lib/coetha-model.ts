@@ -352,7 +352,7 @@ How to answer:
   2. Isolate only the genuine exceptions — for example a loan payment that needs a principal/interest split without a schedule, a payee you can't identify, a possible owner/personal item with no evidence, a transfer you can't match. Leave each one unposted and keep going: one exception never stops the rest of the client's work.
   0a. Business expenses or purchases the owner paid in cash or from a personal account (a receipt, invoice, package line or the client's explanation shows it): they are the business's and are never rejected for having no bank row. Record them with prepare_entries (journal_entry: debit the expense or asset — equipment, improvements — and credit Owner's Capital / Contributions), basis "senior_accountant", naming the evidence. Only ask for evidence when you can't tell whether it was for the business.
   0c. A statement on file that isn't in the books yet (a screenshot, photo or scan as well as a PDF): read it yourself with read_documents_on_file and enter it with import_statement_transactions (it must add up to the cent), then post the rows. Never ask for a file on file to be uploaded again.
-  0e. Accounts are the client's ACTUAL accounts at their ACTUAL banks. Never take a bank from a chart number (1000, 2100 and the like are only places in the books) and never assume a bank such as Chase. Run verify_accounts before posting or reconciling: an account is the business's only when a statement on file prints its bank, its last 4 and the business's own name. Statements in the owner's or another person's name may be personal: put that account in question (verify_accounts hold) and don't post or reconcile its activity. Correct a wrong bank or number with correct_accounts. Never delete or reverse entries just because an account is in question; they wait.
+  0e. Accounts are the client's ACTUAL accounts at their ACTUAL banks. Never take a bank from a chart number (1000, 2100 and the like are only places in the books) and never assume a bank such as Chase. Run verify_accounts before posting or reconciling: an account is the business's only when a statement on file prints its bank, its last 4 and the business's own name. Statements in the owner's or another person's name may be personal: put that account in question (verify_accounts hold) and don't post or reconcile its activity. Correct a wrong bank or number with correct_accounts. verify_accounts also applies Tabitha's banking list first (it corrects a wrong bank for a listed ending, fills in a missing ending, adds a listed account that isn't set up, and never adds one twice); the list never verifies an account by itself — a statement showing the business, the bank and the ending does. Never delete or reverse entries just because an account is in question; they wait, and other accounts' work continues.
   0d. A document filed under this client that belongs to another client (any section: taxes, bookkeeping, payroll, uploads): run move_document_to_client on it and leave it out of this client's work. It moves when the other client's name and SSN/EIN/account number prove it, and is held staff-only when ownership can't be proven. Never guess, and never mention another client's information in this client's work.
   0b. When an account in the books doesn't match the client's real accounts (wrong bank name such as "Chase" when the statements are from another bank, wrong or missing last 4 digits, a card or account the business doesn't have), fix it yourself with correct_accounts, naming the evidence, before posting the month. Never leave it for Tabitha to fix by hand.
   1a. Months that exist only in a financial package on file (the office's earlier prepared statements): enter them with import_prior_months — never a month already in the books; non-cash items the owner paid personally (an improvement, equipment) go in with their owner contribution; report any cash difference, never plug it.
@@ -682,4 +682,49 @@ export async function callFindingsReviewer(input: unknown, opts: { timeoutMs?: n
   if (msg.stop_reason === "max_tokens") throw new CoethaModelError("The review was too long for one step.", "MAX_TOKENS");
   if (!msg.parsed_output) throw new CoethaModelError("The review wasn't returned in the expected format.", "PARSE");
   return { output: msg.parsed_output, inputTokens: msg.usage.input_tokens ?? 0, outputTokens: msg.usage.output_tokens ?? 0 };
+}
+
+// --- Tabitha's client banking list --------------------------------------------------------------
+
+export const BankingListOutput = z.object({
+  rows: z.array(z.object({
+    owner: z.string().describe("the person's name as printed (empty if none)"),
+    business: z.string().describe("the business name as printed (empty if none)"),
+    accounts: z.array(z.object({
+      institution: z.string().describe("the bank or card company exactly as printed; empty when the list says the bank isn't on file or not specified"),
+      kind: z.enum(["CHECKING", "SAVINGS", "CREDIT_CARD", "LINE_OF_CREDIT", "LOAN", "UNKNOWN"]),
+      ending: z.string().describe("the account ending exactly as printed (digits and dashes only); empty if none"),
+      note: z.string().describe("anything else printed for this account, e.g. 'closed', 'ADP', 'primary'; empty if nothing"),
+    })),
+  })),
+});
+export type BankingListOutputT = z.infer<typeof BankingListOutput>;
+
+const BANKING_LIST_SYSTEM = `You read a bookkeeping firm's client banking list: one row per client with the client's name and business, their bank(s) and the account endings. Return every row. For each account give the bank exactly as printed, its kind (checking, savings, credit card, line of credit, loan, or unknown), its ending exactly as printed, and any note (closed, ADP, primary...). When one row lists several banks or accounts, return each account separately and pair each ending with its own bank. Never invent a bank or an ending; leave a field empty when the list doesn't give it.`;
+
+export async function callBankingListReader(lines: string[], opts: { timeoutMs?: number } = {}): Promise<{ output: BankingListOutputT; model: string }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new CoethaModelError("Coetha needs an Anthropic API key — add ANTHROPIC_API_KEY in Netlify.", "NO_KEY");
+  const model = PAYROLL_READER_MODEL();
+  const client = new Anthropic({ apiKey, maxRetries: 0, timeout: opts.timeoutMs ?? 24_000 });
+  let msg;
+  try {
+    msg = await client.beta.messages.parse({
+      model,
+      max_tokens: 16000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low", format: betaZodOutputFormat(BankingListOutput) },
+      system: BANKING_LIST_SYSTEM,
+      messages: [{ role: "user", content: `Client banking list text:\n${lines.join("\n")}` }],
+    });
+  } catch (err) {
+    if (err instanceof Anthropic.APIConnectionTimeoutError) throw new CoethaModelError("Reading it took too long.", "TIMEOUT");
+    if (err instanceof Anthropic.RateLimitError || (err instanceof Anthropic.APIError && (err.status === 429 || err.status === 529))) throw new CoethaModelError("The AI service is busy right now.", "RATE_LIMIT");
+    if (err instanceof Anthropic.APIError) throw new CoethaModelError(`Anthropic's API returned an error${err.status ? ` (${err.status})` : ""}.`, "API");
+    throw new CoethaModelError("The banking list couldn't be read.", "PARSE");
+  }
+  if (msg.stop_reason === "refusal") throw new CoethaModelError("Claude declined to read this list.", "REFUSAL");
+  if (!msg.parsed_output) throw new CoethaModelError("The banking list wasn't returned in the expected format.", "PARSE");
+  return { output: msg.parsed_output, model: msg.model || model };
 }

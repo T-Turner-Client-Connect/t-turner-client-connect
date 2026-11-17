@@ -198,8 +198,8 @@ export function cleanAccount(input: AccountInput) {
   if (!(input.type in ACCOUNT_TYPES)) throw new ValidationError("Choose the account type.");
   const subtype = input.subtype || null;
   if (subtype && SUBTYPES[subtype]?.type !== input.type) throw new ValidationError("That account kind doesn't match the account type.");
-  const last4 = input.last4?.trim() || null;
-  if (last4 && !/^\d{4}$/.test(last4)) throw new ValidationError("Enter only the last four digits of the account number.");
+  const last4 = input.last4?.replace(/[\s-]/g, "") || null;
+  if (last4 && !/^\d{2,6}$/.test(last4)) throw new ValidationError("Enter only the account's ending as the bank prints it (2 to 6 digits).");
   return { code, name, type: input.type, subtype, description: input.description?.trim().slice(0, 300) || null, institution: input.institution?.trim().slice(0, 80) || null, last4 };
 }
 

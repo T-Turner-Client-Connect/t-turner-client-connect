@@ -132,8 +132,8 @@ export async function registerAccount(actor: Actor, clientId: string, input: Reg
   const type = input.accountType as RegistryType;
   const institution = clean(input.institution, 120);
   if (!institution) throw new ValidationError("Enter the bank or card company.");
-  const last4 = input.last4?.trim() || null;
-  if (last4 && !/^\d{4}$/.test(last4)) throw new ValidationError("Enter only the last 4 digits.");
+  const last4 = input.last4?.replace(/[\s-]/g, "") || null;
+  if (last4 && !/^\d{2,6}$/.test(last4)) throw new ValidationError("Enter only the account's ending as the bank prints it (2 to 6 digits).");
   const nickname = clean(input.nickname, 80);
   const cardholderLabel = clean(input.cardholderLabel, 80);
   checkText(institution, nickname, cardholderLabel);
@@ -167,8 +167,8 @@ export async function updateRegistryAccount(actor: Actor, clientId: string, id: 
   const nickname = input.nickname !== undefined ? clean(input.nickname, 80) : a.nickname;
   const cardholderLabel = input.cardholderLabel !== undefined ? clean(input.cardholderLabel, 80) : a.cardholderLabel;
   checkText(nickname, cardholderLabel);
-  const last4 = input.last4 !== undefined ? input.last4?.trim() || null : a.last4;
-  if (last4 && !/^\d{4}$/.test(last4)) throw new ValidationError("Enter only the last 4 digits.");
+  const last4 = input.last4 !== undefined ? input.last4?.replace(/[\s-]/g, "") || null : a.last4;
+  if (last4 && !/^\d{2,6}$/.test(last4)) throw new ValidationError("Enter only the account's ending as the bank prints it (2 to 6 digits).");
   const opening = input.openingBalance !== undefined ? (input.openingBalance?.trim() ? parseCents(input.openingBalance, "opening balance") : null) : a.openingBalanceCents;
   let ledgerAccountId = a.ledgerAccountId;
   if (input.gl !== undefined && !a.parentAccountId) ledgerAccountId = input.gl === "NONE" ? null : await assignGl(clientId, a.accountType as RegistryType, input.gl, `${nickname || a.institution}${last4 ? ` ••${last4}` : ""}`, a.institution, last4, a.id);

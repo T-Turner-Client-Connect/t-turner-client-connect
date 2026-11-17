@@ -3096,6 +3096,10 @@ model IdentityDocument {
 // A client on the monthly/quarterly bookkeeping service.
 model BookkeepingProfile {
   clientId              String    @id
+  // Tabitha's banking list for this client (bank-reference.ts): [{ institution, kind, ending, note }].
+  // A reference checked together with the statements on file; never full account numbers.
+  bankingReference      Json?
+  bankingReferenceAt    DateTime?
   client                Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   active                Boolean   @default(true)
   // MONTHLY | QUARTERLY

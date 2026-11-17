@@ -156,8 +156,8 @@ export type AccountInput = { institution: string; accountType: string; last4?: s
 function checkAccount(input: AccountInput) {
   if (!input.institution?.trim()) throw new ValidationError("Enter the bank or card company.");
   if (!(input.accountType in ACCOUNT_TYPES)) throw new ValidationError("Choose the account type.");
-  const last4 = input.last4?.trim() || null;
-  if (last4 && !/^\d{4}$/.test(last4)) throw new ValidationError("Enter only the last 4 digits of the account number.");
+  const last4 = input.last4?.replace(/[\s-]/g, "") || null;
+  if (last4 && !/^\d{2,6}$/.test(last4)) throw new ValidationError("Enter only the account's ending as the bank prints it (2 to 6 digits).");
   let loginUrl: string | null = null;
   if (input.loginUrl?.trim()) {
     let u: URL;

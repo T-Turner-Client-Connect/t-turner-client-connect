@@ -374,7 +374,7 @@ export default async function BooksPage({ params, searchParams }: { params: Prom
             <Field label="Type"><select className="input" name="type">{Object.entries(ACCOUNT_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
             <Field label="Kind (optional)"><select className="input" name="subtype" defaultValue=""><option value="">—</option>{Object.entries(SUBTYPES).map(([k, v]) => <option key={k} value={k}>{v.label} ({ACCOUNT_TYPES[v.type]})</option>)}</select></Field>
             <Field label="Bank (bank/card accounts)"><input className="input" name="institution" /></Field>
-            <Field label="Last 4 digits only"><input className="input" name="last4" inputMode="numeric" maxLength={4} /></Field>
+            <Field label="Account ending only (2–6 digits)"><input className="input" name="last4" inputMode="numeric" maxLength={7} pattern="[0-9-]{2,7}" /></Field>
             <Button type="submit" variant="secondary">Add account</Button>
           </ActionForm>
         </Card>
