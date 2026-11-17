@@ -39,8 +39,8 @@ export default async function OfficeFilesPage() {
         <p className="mb-3 text-sm text-slate-600">Every bookkeeping client through {through}, read live from the books, uploads, reconciliations and Coetha&apos;s work. Missing items are only what isn&apos;t already in Client Connect. Click a client to open their workspace.</p>
         <ActionForm action={assignBookkeepingAction.bind(null, null)} className="mb-4 flex flex-wrap items-end gap-2 rounded-xl border border-gold-500/40 bg-gold-50 p-3" confirm="Assign these months to Coetha for every active bookkeeping client? She posts supported work under your standing authorization, holds exceptions, reconciles from the statements on file and prepares draft statements. Nothing is released to clients.">
           <p className="w-full text-sm font-semibold text-navy-900">Assign bookkeeping to Coetha — every client, month by month, in the background</p>
-          <label className="text-xs">From<input className="input w-32" name="from" type="month" defaultValue={lastMonth} required /></label>
-          <label className="text-xs">Through<input className="input w-32" name="to" type="month" defaultValue={lastMonth} required /></label>
+          <label className="text-xs">From<input className="input w-44" name="from" type="month" defaultValue={lastMonth} required /></label>
+          <label className="text-xs">Through<input className="input w-44" name="to" type="month" defaultValue={lastMonth} required /></label>
           <button type="submit" className="rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white" data-testid="assign-all">Assign to Coetha</button>
           <span className="text-xs text-slate-600">Months already assigned or done aren&apos;t queued again.</span>
         </ActionForm>

@@ -230,12 +230,12 @@ export async function updateAccount(actor: Actor, clientId: string, accountId: s
 // --- Posting ----------------------------------------------------------------------------------
 
 export type LineInput = { accountId: string; debit?: string | number; credit?: string | number; description?: string };
-type PostInput = { date: string; memo: string; lines: LineInput[]; source: string; sourceKey?: string | null; basis?: "BOTH" | "CASH_ONLY" | "ACCRUAL_ONLY"; reason?: string | null; reversalOfId?: string | null };
+type PostInput = { date: string; memo: string; lines: LineInput[]; source: string; sourceKey?: string | null; basis?: "BOTH" | "CASH_ONLY" | "ACCRUAL_ONLY"; reason?: string | null; reversalOfId?: string | null; beforeOpening?: boolean };
 
-function assertOpenDate(book: { openingDate: Date | null; lockedThrough: Date | null }, date: string, what = "post") {
+function assertOpenDate(book: { openingDate: Date | null; lockedThrough: Date | null }, date: string, what = "post", beforeOpening = false) {
   if (!isYmd(date)) throw new ValidationError("Enter a valid date.");
   if (book.lockedThrough && date <= ymdOf(book.lockedThrough)) throw new ValidationError(`The books are closed through ${ymdOf(book.lockedThrough)} (approved statements), so nothing can be ${what === "post" ? "posted" : "reversed"} on or before that date. Reopen the month first (General Ledger → Reopen) to post a correction in it.`);
-  if (book.openingDate && date < ymdOf(book.openingDate)) throw new ValidationError(`Entries can't be dated before the opening balances (${ymdOf(book.openingDate)}).`);
+  if (book.openingDate && date < ymdOf(book.openingDate) && !beforeOpening) throw new ValidationError(`Entries can't be dated before the opening balances (${ymdOf(book.openingDate)}).`);
 }
 
 /** The one place entries are written. Validates balance, accounts, dates and duplicates inside the caller's transaction. */
@@ -246,7 +246,7 @@ async function post(tx: Tx, actor: Actor, clientId: string, input: PostInput) {
   const book = await bookOf(clientId, tx);
   // Saves for one client's books run one at a time.
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"ledger:" + clientId}))`;
-  assertOpenDate(book, input.date);
+  assertOpenDate(book, input.date, "post", !!input.beforeOpening);
   const memo = input.memo.trim().slice(0, 300);
   if (!memo) throw new ValidationError("Describe the entry.");
   const lines = input.lines
@@ -261,6 +261,9 @@ async function post(tx: Tx, actor: Actor, clientId: string, input: PostInput) {
   const accounts = await tx.ledgerAccount.findMany({ where: { id: { in: ids }, clientId } });
   if (accounts.length !== ids.length) throw new ValidationError("Every line must use one of this client's own accounts.");
   if (accounts.some((a) => !a.active) && input.source !== "REVERSAL") throw new ValidationError("One of those accounts is inactive.");
+  // Before the opening balances, only income, expense and owner-equity history may be recorded (a mid-year
+  // conversion's prior months): never cash, other assets or liabilities, which the opening balances already state.
+  if (input.beforeOpening && book.openingDate && input.date < ymdOf(book.openingDate) && accounts.some((a) => !["INCOME", "EXPENSE", "EQUITY"].includes(a.type))) throw new ValidationError("Before the opening balances, only income, expense and equity can be recorded.");
   if (input.sourceKey && (await tx.journalEntry.count({ where: { clientId, sourceKey: input.sourceKey } }))) throw new ValidationError("That has already been posted, so it wasn't posted again.");
   const entry = await tx.journalEntry.create({
     data: { clientId, date: toDate(input.date), memo, source: input.source, sourceKey: input.sourceKey ?? null, basis: input.basis ?? "BOTH", reason: input.reason ?? null, reversalOfId: input.reversalOfId ?? null, createdById: actor.id, lines: { create: lines } },
@@ -281,10 +284,10 @@ export async function postJournalEntry(actor: Actor, clientId: string, input: { 
  * postJournalEntry inside the caller's transaction. `sourceKey` makes the posting
  * once-only (a second post with the same key is refused). The caller checks access.
  */
-export async function postJournalEntryTx(tx: Tx, actor: Actor, clientId: string, input: { date: string; memo: string; lines: LineInput[]; adjusting?: boolean; basis?: "BOTH" | "CASH_ONLY" | "ACCRUAL_ONLY"; sourceKey?: string; reason?: string }) {
+export async function postJournalEntryTx(tx: Tx, actor: Actor, clientId: string, input: { date: string; memo: string; lines: LineInput[]; adjusting?: boolean; basis?: "BOTH" | "CASH_ONLY" | "ACCRUAL_ONLY"; sourceKey?: string; reason?: string; beforeOpening?: boolean }) {
   const basis = input.basis ?? "BOTH";
   if (!["BOTH", "CASH_ONLY", "ACCRUAL_ONLY"].includes(basis)) throw new ValidationError("Choose which statements this entry belongs to.");
-  return post(tx, actor, clientId, { date: input.date, memo: input.memo, lines: input.lines, source: input.adjusting ? "ADJUSTMENT" : "MANUAL", basis, sourceKey: input.sourceKey ?? null, reason: input.reason ?? null });
+  return post(tx, actor, clientId, { date: input.date, memo: input.memo, lines: input.lines, source: input.adjusting ? "ADJUSTMENT" : "MANUAL", basis, sourceKey: input.sourceKey ?? null, reason: input.reason ?? null, beforeOpening: input.beforeOpening });
 }
 
 /**
