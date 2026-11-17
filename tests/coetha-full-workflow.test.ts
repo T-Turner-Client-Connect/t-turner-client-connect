@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUser, managed, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
-import { postOpeningBalances, setupLedger } from "@/lib/services/ledger";
+import { categorizeBankTransaction, postOpeningBalances, setupLedger } from "@/lib/services/ledger";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 import { registerAccount } from "@/lib/services/bank-accounts";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { staffUploadDocument } from "@/lib/services/documents";
 import { askCoetha } from "@/lib/services/coetha-chat";
-import { importStatementTransactions } from "@/lib/services/coetha-bookkeeping";
+import { importStatementTransactions, moveDocumentToClient, reconcileAccounts } from "@/lib/services/coetha-bookkeeping";
 
 // Fictional businesses, banks, screenshots and transactions only. A local stand-in for Anthropic's API
 // plays Coetha's tool calls in order and records every request, so the test sees exactly what she received.
@@ -110,5 +111,33 @@ describe("Coetha does the whole job from a screenshot already on file — no new
     await askCoetha(w.tabitha, w.biz.id, "What's on this card statement?", { files: [{ bytes: shot, originalName: "card.png", mimeType: "image/png" }] });
     const blocks = requests[0].messages.flatMap((m) => (Array.isArray(m.content) ? (m.content as Block[]) : [])).filter((b) => b.type === "image");
     expect(blocks.map((b) => b.source!.data)).toContain(Buffer.from(shot).toString("base64"));
+  });
+
+  it("a month entered from a screenshot (to the cent) is reconciled once its rows are posted, even though no PDF text can be read", async () => {
+    const w = await world();
+    const doc = await staffUploadDocument(w.tabitha, { clientId: w.biz.id, category: "BOOKKEEPING", title: "oct.png", visibility: "STAFF_ONLY", bytes: screenshot("oct-rec"), originalName: "oct.png", notify: false });
+    await importStatementTransactions(w.tabitha, w.biz.id, { documentId: doc.id, accountCode: w.gl.code, month: "2026-10", beginningBalance: 500, endingBalance: 915.44, transactions: october });
+    const acct = (type: string) => prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, type }, orderBy: { code: "asc" } });
+    const [inc, exp] = [await acct("INCOME"), await acct("EXPENSE")];
+    for (const t of await prisma.bankTransaction.findMany({ where: { clientId: w.biz.id } })) await categorizeBankTransaction(w.tabitha, w.biz.id, t.id, { accountId: t.amountCents > 0 ? inc.id : exp.id });
+    const r = await reconcileAccounts(w.tabitha, w.biz.id, { month: "2026-10" });
+    expect(r.accounts[0]).toMatchObject({ statementVerified: true });
+    expect(await prisma.accountReconciliation.findFirstOrThrow({ where: { bookkeepingAccountId: w.chk.id, year: 2026, month: 10 } })).toMatchObject({ status: "APPROVED", differenceCents: 0, statementDocumentId: doc.id });
+  });
+
+  it("another business's statement filed under this client is moved to that client only when its name and account number are printed on it", async () => {
+    const w = await world();
+    await registerAccount(w.tabitha, w.other.id, { institution: "Prairie Example Farm Bank", accountType: "CHECKING", last4: "4542", gl: "NEW" });
+    const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica); const p = d.addPage([612, 300]);
+    ["Prairie Example Farm Bank", "CEDAR EXAMPLE SHOP LLC (FICTIONAL)", "ACCOUNT # XXXXXX4542", "September 1, 2026 through September 30, 2026"].forEach((t, i) => p.drawText(t, { x: 30, y: 260 - i * 16, size: 10, font: f }));
+    const misfiled = await staffUploadDocument(w.tabitha, { clientId: w.biz.id, category: "BOOKKEEPING", title: "Bank statement — September", visibility: "STAFF_ONLY", bytes: await d.save(), originalName: "sept.pdf", notify: false });
+    const r = await moveDocumentToClient(w.tabitha, w.biz.id, { documentId: misfiled.id, reason: "Another business's name and account ••4542 are on this statement." });
+    expect(r).toMatchObject({ ok: true });
+    expect(await prisma.document.findUniqueOrThrow({ where: { id: misfiled.id } })).toMatchObject({ clientId: w.other.id });
+    expect(await prisma.auditLog.count({ where: { action: "coetha.document_moved", entityId: misfiled.id } })).toBe(2);
+    // A document that names this client (or proves nothing) is never moved.
+    const mine = await staffUploadDocument(w.tabitha, { clientId: w.biz.id, category: "BOOKKEEPING", title: "mine", visibility: "STAFF_ONLY", bytes: screenshot("mine"), originalName: "mine.png", notify: false });
+    expect(await moveDocumentToClient(w.tabitha, w.biz.id, { documentId: mine.id, reason: "testing a document with no text at all" })).toMatchObject({ error: expect.any(String) });
+    expect(await prisma.document.findUniqueOrThrow({ where: { id: mine.id } })).toMatchObject({ clientId: w.biz.id });
   });
 });

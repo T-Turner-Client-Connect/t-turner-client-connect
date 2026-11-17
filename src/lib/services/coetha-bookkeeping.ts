@@ -115,6 +115,17 @@ export async function removeVerifiedDuplicates(actor: Actor, clientId: string, i
   return { month: input.month, removed, unverified, dryRun: !!input.dryRun, statementsUsed };
 }
 
+/** The statement Coetha entered for this account and month (verified to the cent when entered), if any. */
+async function enteredStatement(clientId: string, registryId: string, year: number, month: number) {
+  const rec = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: registryId, year, month } } });
+  if (!rec?.statementDocumentId) return null;
+  const ym = `${year}-${String(month).padStart(2, "0")}`;
+  const logs = await prisma.auditLog.findMany({ where: { clientId, action: "coetha.statement_entered", entityId: rec.statementDocumentId }, select: { details: true } });
+  if (!logs.some((l) => (l.details as { month?: string } | null)?.month === ym)) return null;
+  const d = await prisma.document.findFirst({ where: { id: rec.statementDocumentId, clientId, deletedAt: null, bookkeepingAccountId: registryId }, select: { id: true, title: true } });
+  return d;
+}
+
 /** Reads the month's statements on file into the books and prepares each account's reconciliation. Never forces a balance. */
 export async function reconcileAccounts(actor: Actor, clientId: string, input: { month: string }) {
   const { year, month } = monthOf(input.month);
@@ -124,10 +135,19 @@ export async function reconcileAccounts(actor: Actor, clientId: string, input: {
   const out = [];
   for (const a of accounts) {
     const label = `${a.institution}${a.nickname ? ` ${a.nickname}` : ""}${a.last4 ? ` ••${a.last4}` : ""}`;
-    const { chosen: doc, skipped } = await chooseStatement(clientId, a.id, year, month);
+    const { chosen, skipped } = await chooseStatement(clientId, a.id, year, month);
+    let doc: { id: string; title: string } | null = chosen;
     let statement = "No readable statement for this account is on file for this month: this account stays pending; everything else continues.";
     let verified = false;
-    if (doc) {
+    // A statement Coetha read herself (a screenshot or scan) and entered with import_statement_transactions
+    // was accepted only because it added up to the cent: it counts as this month's verified statement.
+    const entered = !doc ? await enteredStatement(clientId, a.id, year, month) : null;
+    if (entered) {
+      doc = entered;
+      verified = true;
+      statement = `${entered.title}: read and entered by Coetha; it adds up to the cent from its beginning to its ending balance.`;
+    }
+    if (doc && !entered) {
       try {
         const read = await readStatementTransactions(actor, clientId, doc.id);
         statement = `${doc.title}: ${statementReadMessage(read)}`;
@@ -182,6 +202,7 @@ export async function runBookkeepingTool(actor: Actor, clientId: string, name: s
   try {
     if (name === DUPLICATES_TOOL.name) return await removeVerifiedDuplicates(actor, clientId, { month: String(i.month ?? ""), dryRun: !!i.dryRun });
     if (name === "import_prior_months") return await importPriorMonths(actor, clientId, (input ?? {}) as { documentId?: string; months?: PriorMonth[]; packageEndingCash?: number | null });
+    if (name === "move_document_to_client") return await moveDocumentToClient(actor, clientId, (input ?? {}) as { documentId?: string; reason?: string });
     if (name === "import_statement_transactions") return await importStatementTransactions(actor, clientId, (input ?? {}) as Parameters<typeof importStatementTransactions>[2]);
     if (name === "correct_accounts") return await correctAccounts(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: AccountFix[] }).items) : []);
     if (name === "reverse_entries") return await reverseEntries(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: { entryId?: string; reason?: string }[] }).items) : []);
@@ -517,4 +538,58 @@ export const IMPORT_STATEMENT_TOOL = {
   name: "import_statement_transactions",
   description: "Enter the transactions you read from a bank or credit card statement on file — including a screenshot, photo or scan you looked at with read_documents_on_file — into that account's bank rows, and file the document as that account's statement for the month. Give the document id, the account's chart code, the month (YYYY-MM), the beginning and ending balances as printed, and every transaction (date YYYY-MM-DD, description, amount: money in positive, money out negative; for a card, purchases negative and payments positive). It is accepted only if beginning + transactions = ending to the cent (otherwise read it again); lines already in the books aren't added twice. Then post the rows with prepare_entries and reconcile.",
   input_schema: { type: "object" as const, properties: { documentId: { type: "string" }, accountCode: { type: "string" }, month: { type: "string" }, beginningBalance: { type: "number" }, endingBalance: { type: "number" }, transactions: { type: "array", items: { type: "object", properties: { date: { type: "string" }, description: { type: "string" }, amount: { type: "number" } }, required: ["date", "amount"] } } }, required: ["documentId", "accountCode", "month", "beginningBalance", "endingBalance", "transactions"] },
+};
+
+// --- A statement filed under the wrong client ---------------------------------------------------
+
+/**
+ * Moves a statement filed under the wrong client to the client it belongs to — only when the document
+ * itself proves it: the other client's business name AND one of that client's registered account
+ * numbers (last 4) are printed on it, and this client's name is not. Its old account, month and
+ * reconciliation link are cleared here (nothing in either client's books changes), and what was read
+ * from it for this client is removed. Tabitha (the owner) only; recorded in both clients' audit logs.
+ */
+export async function moveDocumentToClient(actor: Actor, clientId: string, input: { documentId?: string; reason?: string }) {
+  const { isPrimaryOwner } = await import("@/lib/auth/permissions");
+  if (!(await isPrimaryOwner(actor.id))) throw new ForbiddenError("Only Tabitha can have Coetha move a document to another client.");
+  const reason = String(input.reason ?? "").trim();
+  if (reason.length < 10) return { error: "Give the reason (for example: the statement shows another business's name and account)." };
+  const doc = input.documentId ? await prisma.document.findFirst({ where: { id: input.documentId, clientId, deletedAt: null }, include: { file: true } }) : null;
+  if (!doc?.file) return { error: "That document isn't on file for this business." };
+  const bytes = await readDocumentBytes(doc.file);
+  const lines = bytes ? await pdfLines(bytes).catch(() => null) : null;
+  const text = (lines ?? []).slice(0, 120).join(" ").toLowerCase();
+  if (!text.trim()) return { error: "Its text can't be read here, so who it belongs to can't be proven automatically; Tabitha moves it from the client's Documents page." };
+  // Names compared without punctuation or company suffixes ("LLC", "Inc"), on both sides.
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\b(llc|inc|co|corp|the)\b/g, " ").replace(/\s+/g, " ").trim();
+  const flat = ` ${norm(text)} `;
+  const here = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { businessName: true, displayName: true } });
+  const named = (c: { businessName: string | null; displayName: string }) => [c.businessName, c.displayName].filter((n): n is string => !!n && norm(n).length >= 6).some((n) => flat.includes(` ${norm(n)} `));
+  if (named(here)) return { error: "This client's own name is printed on it, so it isn't moved." };
+  const { accountNumbersIn } = await import("./statement-choice");
+  const numbers = accountNumbersIn(lines ?? []);
+  const candidates = await prisma.client.findMany({ where: { id: { not: clientId }, archivedAt: null }, select: { id: true, businessName: true, displayName: true } });
+  const matches = [];
+  for (const c of candidates) {
+    if (!named(c)) continue;
+    const accts = await prisma.bookkeepingAccount.findMany({ where: { clientId: c.id, parentAccountId: null }, select: { id: true, last4: true } });
+    const acct = accts.find((x) => x.last4 && numbers.has(x.last4));
+    if (acct) matches.push({ client: c, accountId: acct.id });
+  }
+  if (matches.length !== 1) return { error: matches.length ? "More than one client matches; it isn't moved. Tabitha moves it." : "No other client's name and account number are both printed on it, so it isn't moved." };
+  const { client: to, accountId } = matches[0];
+  await prisma.$transaction(async (tx) => {
+    await tx.accountReconciliation.updateMany({ where: { clientId, statementDocumentId: doc.id }, data: { statementDocumentId: null, statementStatus: "MISSING" } });
+    const job = await tx.coethaDocJob.findUnique({ where: { documentId: doc.id } });
+    if (job) { await tx.coethaDocFinding.deleteMany({ where: { jobId: job.id } }); await tx.coethaDocJob.delete({ where: { id: job.id } }); }
+    await tx.document.update({ where: { id: doc.id }, data: { clientId: to.id, bookkeepingAccountId: accountId, manualBankAccountId: null, periodId: null } });
+  });
+  for (const c of [clientId, to.id]) await audit(prisma, { actorId: actor.id, action: "coetha.document_moved", entityType: "Document", entityId: doc.id, clientId: c, details: { from: clientId, to: to.id, reason: reason.slice(0, 300), proof: "the other client's name and account number printed on it" } });
+  return { ok: true, message: `Moved “${doc.title}” to ${to.businessName || to.displayName} (its name and account number are printed on it). This client's reconciliation link to it was cleared; nothing in either client's books changed.` };
+}
+
+export const MOVE_DOCUMENT_TOOL = {
+  name: "move_document_to_client",
+  description: "Move a statement or document filed under this client that belongs to another client (another business's name and account number are printed on it). It is moved only when the document itself proves it: the other client's name and one of that client's registered account numbers are on it, and this client's name isn't. Nothing in either client's books changes. Use it as soon as you find a misfiled document; don't ask Tabitha to move it.",
+  input_schema: { type: "object" as const, properties: { documentId: { type: "string" }, reason: { type: "string" } }, required: ["documentId", "reason"] },
 };
