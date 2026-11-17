@@ -115,6 +115,17 @@ export async function removeVerifiedDuplicates(actor: Actor, clientId: string, i
   return { month: input.month, removed, unverified, dryRun: !!input.dryRun, statementsUsed };
 }
 
+/** The statement Coetha entered for this account and month (verified to the cent when entered), if any. */
+async function enteredStatement(clientId: string, registryId: string, year: number, month: number) {
+  const rec = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: registryId, year, month } } });
+  if (!rec?.statementDocumentId) return null;
+  const ym = `${year}-${String(month).padStart(2, "0")}`;
+  const logs = await prisma.auditLog.findMany({ where: { clientId, action: "coetha.statement_entered", entityId: rec.statementDocumentId }, select: { details: true } });
+  if (!logs.some((l) => (l.details as { month?: string } | null)?.month === ym)) return null;
+  const d = await prisma.document.findFirst({ where: { id: rec.statementDocumentId, clientId, deletedAt: null, bookkeepingAccountId: registryId }, select: { id: true, title: true } });
+  return d;
+}
+
 /** Reads the month's statements on file into the books and prepares each account's reconciliation. Never forces a balance. */
 export async function reconcileAccounts(actor: Actor, clientId: string, input: { month: string }) {
   const { year, month } = monthOf(input.month);
@@ -124,10 +135,25 @@ export async function reconcileAccounts(actor: Actor, clientId: string, input: {
   const out = [];
   for (const a of accounts) {
     const label = `${a.institution}${a.nickname ? ` ${a.nickname}` : ""}${a.last4 ? ` ••${a.last4}` : ""}`;
-    const { chosen: doc, skipped } = await chooseStatement(clientId, a.id, year, month);
+    // A month already reconciled stays exactly as it is: nothing is read, imported or re-prepared.
+    const done = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: a.id, year, month } } });
+    if (done?.status === "APPROVED") {
+      out.push({ account: label, statement: "Already reconciled: left as is.", statementPassedOver: [], statementVerified: true, completed: `Already reconciled${done.approvedAt ? ` on ${done.approvedAt.toISOString().slice(0, 10)}` : ""}; not redone.`, status: done.status, beginning: done.beginningBalanceCents != null ? usd(done.beginningBalanceCents) : null, ending: done.endingBalanceCents != null ? usd(done.endingBalanceCents) : null, difference: done.differenceCents != null ? usd(done.differenceCents) : null, unmatched: done.unmatchedCount, exceptions: done.exceptions });
+      continue;
+    }
+    const { chosen, skipped } = await chooseStatement(clientId, a.id, year, month);
+    let doc: { id: string; title: string } | null = chosen;
     let statement = "No readable statement for this account is on file for this month: this account stays pending; everything else continues.";
     let verified = false;
-    if (doc) {
+    // A statement Coetha read herself (a screenshot or scan) and entered with import_statement_transactions
+    // was accepted only because it added up to the cent: it counts as this month's verified statement.
+    const entered = !doc ? await enteredStatement(clientId, a.id, year, month) : null;
+    if (entered) {
+      doc = entered;
+      verified = true;
+      statement = `${entered.title}: read and entered by Coetha; it adds up to the cent from its beginning to its ending balance.`;
+    }
+    if (doc && !entered) {
       try {
         const read = await readStatementTransactions(actor, clientId, doc.id);
         statement = `${doc.title}: ${statementReadMessage(read)}`;
@@ -173,7 +199,7 @@ export const DUPLICATES_TOOL = {
 
 export const RECONCILE_TOOL = {
   name: "reconcile_accounts",
-  description: "For one month: read every bank and card statement already on file into the books (rows already imported are skipped), fill in the statement balances and prepare each account's reconciliation. Returns each account's status, balances, difference and exceptions. Never forces a difference to zero and never approves; report any difference as an exception.",
+  description: "For one month: accounts already reconciled for that month are reported as done and left untouched (never redone). For the rest: read every bank and card statement already on file into the books (rows already imported are skipped), fill in the statement balances and prepare each account's reconciliation. Returns each account's status, balances, difference and exceptions. Never forces a difference to zero and never approves; report any difference as an exception.",
   input_schema: { type: "object" as const, properties: { month: { type: "string", description: "YYYY-MM" } }, required: ["month"] },
 };
 
@@ -182,6 +208,9 @@ export async function runBookkeepingTool(actor: Actor, clientId: string, name: s
   try {
     if (name === DUPLICATES_TOOL.name) return await removeVerifiedDuplicates(actor, clientId, { month: String(i.month ?? ""), dryRun: !!i.dryRun });
     if (name === "import_prior_months") return await importPriorMonths(actor, clientId, (input ?? {}) as { documentId?: string; months?: PriorMonth[]; packageEndingCash?: number | null });
+    if (name === "move_document_to_client") return await moveDocumentToClient(actor, clientId, (input ?? {}) as { documentId?: string; reason?: string });
+    if (name === "import_statement_transactions") return await importStatementTransactions(actor, clientId, (input ?? {}) as Parameters<typeof importStatementTransactions>[2]);
+    if (name === "correct_accounts") return await correctAccounts(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: AccountFix[] }).items) : []);
     if (name === "reverse_entries") return await reverseEntries(actor, clientId, Array.isArray((input as { items?: unknown })?.items) ? ((input as { items: { entryId?: string; reason?: string }[] }).items) : []);
     return await reconcileAccounts(actor, clientId, { month: String(i.month ?? "") });
   } catch (err) {
@@ -308,7 +337,28 @@ export async function importPriorMonths(actor: Actor, clientId: string, input: {
     if (!lines.length) { results.push({ month, ok: false, message: "No amounts for this month." }); continue; }
     const beforeOpening = !!openingYmd && endYmd < openingYmd;
     if (beforeOpening && !obe) { results.push({ month, ok: false, message: "This month is before the opening balances and the chart has no Opening Balance Equity account; add one first." }); continue; }
-    if (beforeOpening && lines.some((l) => !["INCOME", "EXPENSE", "EQUITY"].includes(chart.find((a) => a.id === l.accountId)?.type ?? ""))) { results.push({ month, ok: false, message: "Before the opening balances only income, expense and owner-equity lines can be entered; this month has an asset or liability line." }); continue; }
+    if (beforeOpening) {
+      // Cash accounts are already stated by the opening balances; a non-cash item already in the opening
+      // balances (e.g. equipment entered there) isn't entered twice. Everything else is entered.
+      const { FEED_SUBTYPES } = await import("./ledger");
+      const opening = await prisma.journalLine.findMany({ where: { entry: { clientId, sourceKey: "opening" } }, select: { accountId: true } });
+      const inOpening = new Set(opening.map((o) => o.accountId));
+      const skippedLines: string[] = [];
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const a = chart.find((x) => x.id === lines[i].accountId);
+        if (!a) continue;
+        const cashAcct = FEED_SUBTYPES.includes(a.subtype ?? "");
+        const already = (a.type === "ASSET" || a.type === "LIABILITY") && inOpening.has(a.id);
+        if (cashAcct || already) {
+          skippedLines.push(`${lines[i].description ?? a.name} (${cashAcct ? "a bank or card balance, already in the opening balances" : "already in the opening balances"})`);
+          const d = Math.round(Number(lines[i].debit ?? 0) * 100), c = Math.round(Number(lines[i].credit ?? 0) * 100);
+          net += d - c; // removing a debit raises what the offset must carry, and vice versa
+          lines.splice(i, 1);
+        }
+      }
+      if (skippedLines.length) results.push({ month, ok: true, message: `Not entered again: ${skippedLines.join("; ")}.` });
+      if (!lines.length) continue;
+    }
     if (net !== 0) {
       const offset = beforeOpening ? obe! : bank;
       lines.push({ accountId: offset.id, ...(net > 0 ? { debit: (net / 100).toFixed(2) } : { credit: (-net / 100).toFixed(2) }), description: beforeOpening ? "Before the opening balances: the cash is already in the opening balance (Opening Balance Equity)" : "Net cash for the month, per the package" });
@@ -354,4 +404,198 @@ export const PRIOR_MONTHS_TOOL = {
     },
     required: ["documentId", "months"],
   },
+};
+
+
+// --- Correcting account details (wrong bank names, numbers, accounts the business doesn't have) ---
+
+type AccountFix = { code?: string; name?: string; institution?: string; nickname?: string; last4?: string; active?: boolean; reason?: string; add?: { accountType?: string; institution?: string; last4?: string; nickname?: string } };
+
+/**
+ * Corrects how an account is described when it was set up wrong (e.g. registered as "Chase" when the
+ * business banks with Farm Bureau Bank): the chart account's name, and for a bank or card account its
+ * bank name, nickname and last 4 digits. An account the business doesn't have can be deactivated when
+ * its balance is zero. No entries or balances change; every correction is in the audit log.
+ * Asked for by Tabitha (the owner) only.
+ */
+export async function correctAccounts(actor: Actor, clientId: string, items: AccountFix[]) {
+  const { isPrimaryOwner } = await import("@/lib/auth/permissions");
+  if (!(await isPrimaryOwner(actor.id))) throw new ForbiddenError("Only Tabitha can have Coetha correct account details.");
+  const { updateAccount, assertLedgerWrite } = await import("./ledger");
+  await assertLedgerWrite(actor, clientId);
+  const results: { code: string; ok: boolean; message: string }[] = [];
+  for (const it of items.slice(0, 40)) {
+    const code = String(it.code ?? "").trim();
+    const reason = String(it.reason ?? "").trim();
+    // A real account the books don't have yet (e.g. the business's actual bank): registered with its own GL account.
+    if (it.add) {
+      if (reason.length < 10) { results.push({ code: "new", ok: false, message: "Give the reason and evidence for adding it." }); continue; }
+      try {
+        const { registerAccount } = await import("./bank-accounts");
+        const type = String(it.add.accountType ?? "").toUpperCase();
+        const a = await registerAccount(actor, clientId, { institution: String(it.add.institution ?? ""), accountType: type, last4: it.add.last4 ? String(it.add.last4) : undefined, nickname: it.add.nickname ? String(it.add.nickname) : undefined, gl: "NEW" });
+        const gl = a.ledgerAccountId ? await prisma.ledgerAccount.findUnique({ where: { id: a.ledgerAccountId } }) : null;
+        await audit(prisma, { actorId: actor.id, action: "coetha.account_added", entityType: "BookkeepingAccount", entityId: a.id, clientId, details: { reason: reason.slice(0, 300), institution: a.institution, last4: a.last4, type } });
+        results.push({ code: gl?.code ?? "new", ok: true, message: `Added: ${a.institution}${a.last4 ? ` ••${a.last4}` : ""} (${type.toLowerCase().replace("_", " ")})${gl ? `, chart account ${gl.code} ${gl.name}` : ""}.` });
+      } catch (err) {
+        results.push({ code: "new", ok: false, message: err instanceof Error ? err.message : "Couldn't be added." });
+      }
+      continue;
+    }
+    const acct = code ? await prisma.ledgerAccount.findFirst({ where: { clientId, code } }) : null;
+    if (!acct) { results.push({ code, ok: false, message: "No account with that code in this business's chart." }); continue; }
+    if (reason.length < 10) { results.push({ code, ok: false, message: "Give the reason and evidence (for example: the statements on file are from Farm Bureau Bank, account ending 4542)." }); continue; }
+    try {
+      const reg = await prisma.bookkeepingAccount.findFirst({ where: { clientId, ledgerAccountId: acct.id, parentAccountId: null } });
+      const last4 = it.last4 !== undefined ? (String(it.last4).trim() || null) : undefined;
+      if (last4 && !/^\d{4}$/.test(last4)) throw new ValidationError("Last 4 must be exactly four digits.");
+      const institution = it.institution !== undefined ? String(it.institution).trim().slice(0, 120) : undefined;
+      if (institution !== undefined && !institution) throw new ValidationError("The bank name can't be blank.");
+      const nickname = it.nickname !== undefined ? String(it.nickname).trim().slice(0, 80) || null : undefined;
+      // Deactivating: only an account with a zero balance (nothing is hidden that the statements need).
+      if (it.active === false) {
+        const agg = await prisma.journalLine.aggregate({ where: { accountId: acct.id }, _sum: { debitCents: true, creditCents: true } });
+        const bal = (agg._sum.debitCents ?? 0) - (agg._sum.creditCents ?? 0);
+        if (bal !== 0) throw new ValidationError(`It has a balance of ${usd(Math.abs(bal))}; move that to the right account first (prepare_entries), then deactivate it.`);
+        if (reg) {
+          const open = await prisma.bankTransaction.count({ where: { clientId, accountId: acct.id, status: "UNREVIEWED" } });
+          if (open) throw new ValidationError(`${open} bank row(s) on it still wait for review; post or move them first.`);
+        }
+      }
+      const before = { name: acct.name, institution: acct.institution, last4: acct.last4, active: acct.active, registry: reg ? { institution: reg.institution, nickname: reg.nickname, last4: reg.last4, active: reg.active } : null };
+      if (reg && (institution !== undefined || nickname !== undefined || last4 !== undefined || it.active !== undefined)) {
+        await prisma.bookkeepingAccount.update({ where: { id: reg.id }, data: { ...(institution !== undefined ? { institution } : {}), ...(nickname !== undefined ? { nickname } : {}), ...(last4 !== undefined ? { last4 } : {}), ...(it.active !== undefined ? { active: it.active } : {}), updatedById: actor.id } });
+      }
+      // The chart name: as given, or — when only the bank name changed — the old bank name replaced in it.
+      let name = it.name !== undefined ? String(it.name).trim().slice(0, 120) : undefined;
+      if (name === undefined && institution && reg?.institution && acct.name.toLowerCase().includes(reg.institution.toLowerCase())) {
+        name = acct.name.replace(new RegExp(reg.institution.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), institution);
+      }
+      await updateAccount(actor, clientId, acct.id, { ...(name ? { name } : {}), ...(institution !== undefined ? { institution } : {}), ...(last4 !== undefined ? { last4: last4 ?? "" } : {}), ...(it.active !== undefined ? { active: it.active } : {}) });
+      const after = await prisma.ledgerAccount.findUniqueOrThrow({ where: { id: acct.id } });
+      await audit(prisma, { actorId: actor.id, action: "coetha.account_corrected", entityType: "LedgerAccount", entityId: acct.id, clientId, details: { code, reason: reason.slice(0, 300), before, after: { name: after.name, institution: after.institution, last4: after.last4, active: after.active } } });
+      results.push({ code, ok: true, message: `Corrected: ${after.name}${after.institution ? ` (${after.institution}${after.last4 ? ` ••${after.last4}` : ""})` : ""}${after.active ? "" : " — deactivated"}. No entries changed.` });
+    } catch (err) {
+      results.push({ code, ok: false, message: err instanceof Error ? err.message : "Couldn't be corrected." });
+    }
+  }
+  return { results };
+}
+
+export const CORRECT_ACCOUNTS_TOOL = {
+  name: "correct_accounts",
+  description: "Correct how this business's accounts are described when they were set up wrong — for example a checking or card account registered as \"Chase\" when the statements show Farm Bureau Bank. By chart code: set the account's name, and for bank or card accounts the bank name (institution), nickname and last 4 digits; deactivate (active false) an account the business doesn't have, once its balance is zero (move any balance first with prepare_entries); or add the business's real bank or card account when the books don't have it (an item with 'add': accountType CHECKING, SAVINGS, CREDIT_CARD, LINE_OF_CREDIT or LOAN, institution, last4 — no code needed). Give each item a reason naming the evidence (the statements, the bank's name and account number on them). No entries or balances change. Use it whenever the books' account names or banks don't match the client's real accounts; don't ask Tabitha to fix them by hand.",
+  input_schema: { type: "object" as const, properties: { items: { type: "array", items: { type: "object", properties: { code: { type: "string" }, name: { type: "string" }, institution: { type: "string" }, nickname: { type: "string" }, last4: { type: "string" }, active: { type: "boolean" }, reason: { type: "string" }, add: { type: "object", properties: { accountType: { type: "string" }, institution: { type: "string" }, last4: { type: "string" }, nickname: { type: "string" } } } }, required: ["reason"] } } }, required: ["items"] },
+};
+
+// --- Entering a statement Coetha read herself (a screenshot, photo or scan) ---------------------
+
+type ReadTxn = { date?: string; description?: string; amount?: number };
+
+/**
+ * Enters the transactions Coetha read from a statement on file (any format — a screenshot, photo or
+ * scan as well as a PDF) into that account's bank rows, and files the document under the account and
+ * month. Accepted only when the statement adds up to the cent (beginning + every transaction = ending),
+ * so a misread is caught instead of entered. A line already in the books (same date and amount, as
+ * often as the statement shows it) isn't added again. Nothing is posted: the rows wait to be
+ * categorized and posted like any import.
+ */
+export async function importStatementTransactions(actor: Actor, clientId: string, input: { documentId?: string; accountCode?: string; month?: string; beginningBalance?: number; endingBalance?: number; transactions?: ReadTxn[] }) {
+  const { assertLedgerWrite, importBankCsv } = await import("./ledger");
+  await assertLedgerWrite(actor, clientId, "banking");
+  const { year, month } = monthOf(input.month);
+  const doc = input.documentId ? await prisma.document.findFirst({ where: { id: input.documentId, clientId, deletedAt: null } }) : null;
+  if (!doc) return { error: "That document isn't on file for this business." };
+  const acct = await prisma.ledgerAccount.findFirst({ where: { clientId, code: String(input.accountCode ?? "") } });
+  if (!acct) return { error: "No account with that code in this business's chart." };
+  const reg = await prisma.bookkeepingAccount.findFirst({ where: { clientId, ledgerAccountId: acct.id, parentAccountId: null } });
+  if (!reg) return { error: "That chart account isn't one of this business's registered bank or card accounts; add it with correct_accounts first." };
+  const begin = Math.round(Number(input.beginningBalance) * 100), end = Math.round(Number(input.endingBalance) * 100);
+  if (!Number.isFinite(begin) || !Number.isFinite(end)) return { error: "Give the statement's beginning and ending balances as printed." };
+  const rows = (input.transactions ?? []).map((t) => ({ date: String(t.date ?? ""), description: String(t.description ?? "").slice(0, 200) || "Transaction", cents: Math.round(Number(t.amount) * 100) }));
+  if (!rows.length || rows.some((r) => !/^\d{4}-\d{2}-\d{2}$/.test(r.date) || !Number.isFinite(r.cents) || r.cents === 0)) return { error: "Each transaction needs a date (YYYY-MM-DD) and a non-zero amount (money in positive, money out negative)." };
+  // Card statements: purchases raise the balance owed.
+  const liability = ["CREDIT_CARD", "LINE_OF_CREDIT", "LOAN"].includes(reg.accountType);
+  const net = rows.reduce((n, r) => n + r.cents, 0);
+  const expected = liability ? begin - net : begin + net;
+  if (expected !== end) return { error: `It doesn't add up: beginning ${usd(begin)} ${liability ? "minus" : "plus"} the transactions read (${usd(net)} net) is ${usd(expected)}, not the ending ${usd(end)} — a line is missing or misread. Read the statement again; nothing was entered.` };
+  // Only what the books don't already have (by date and amount, as often as the statement shows it).
+  const dates = rows.map((r) => r.date).sort();
+  const existing = await prisma.bankTransaction.findMany({ where: { clientId, accountId: acct.id, status: { not: "EXCLUDED" }, date: { gte: new Date(`${dates[0]}T00:00:00Z`), lte: new Date(`${dates[dates.length - 1]}T00:00:00Z`) } }, select: { date: true, amountCents: true } });
+  const have = new Map<string, number>();
+  for (const e of existing) { const k = `${ymdOf(e.date)}|${e.amountCents}`; have.set(k, (have.get(k) ?? 0) + 1); }
+  const missing = rows.filter((r) => { const k = `${r.date}|${r.cents}`; const n = have.get(k) ?? 0; if (n > 0) { have.set(k, n - 1); return false; } return true; });
+  const q = (v: string) => `"${v.replace(/"/g, '""')}"`;
+  const csv = ["Date,Description,Amount", ...missing.map((r) => `${r.date.slice(5, 7)}/${r.date.slice(8, 10)}/${r.date.slice(0, 4)},${q(r.description)},${(r.cents / 100).toFixed(2)}`)].join("\n");
+  const imp = missing.length ? await importBankCsv(actor, clientId, acct.id, { fileName: `${doc.title} (read by Coetha)`.slice(0, 200), text: csv }) : { added: 0, duplicates: 0 };
+  // The document is filed as this account's statement for the month; its balances fill the month's reconciliation.
+  await prisma.document.update({ where: { id: doc.id }, data: { docType: liability ? "CARD_STATEMENT" : "BANK_STATEMENT", bookkeepingAccountId: reg.id, manualBankAccountId: null, year, month } });
+  const rec = await prisma.accountReconciliation.findUnique({ where: { bookkeepingAccountId_year_month: { bookkeepingAccountId: reg.id, year, month } } });
+  if (rec?.status !== "APPROVED") {
+    const { enterStatementBalances: enter, prepareReconciliation: prep } = await import("./bank-accounts");
+    await enter(actor, clientId, reg.id, year, month, { beginning: (begin / 100).toFixed(2), ending: (end / 100).toFixed(2) }).catch(() => null);
+    await prep(clientId, reg.id, year, month, { preparedById: actor.id, statementDocumentId: doc.id });
+  }
+  await audit(prisma, { actorId: actor.id, action: "coetha.statement_entered", entityType: "Document", entityId: doc.id, clientId, details: { account: acct.code, month: input.month, read: rows.length, added: imp.added, alreadyInBooks: rows.length - missing.length, beginningCents: begin, endingCents: end } });
+  return { ok: true, read: rows.length, added: imp.added, alreadyInBooks: rows.length - missing.length + (imp.duplicates ?? 0), message: `Entered ${imp.added} of ${rows.length} transactions (the rest were already in the books); the statement adds up from ${usd(begin)} to ${usd(end)}. The document is filed as ${acct.code}'s statement for ${input.month}. Nothing posted yet — post the rows next.` };
+}
+
+export const IMPORT_STATEMENT_TOOL = {
+  name: "import_statement_transactions",
+  description: "Enter the transactions you read from a bank or credit card statement on file — including a screenshot, photo or scan you looked at with read_documents_on_file — into that account's bank rows, and file the document as that account's statement for the month. Give the document id, the account's chart code, the month (YYYY-MM), the beginning and ending balances as printed, and every transaction (date YYYY-MM-DD, description, amount: money in positive, money out negative; for a card, purchases negative and payments positive). It is accepted only if beginning + transactions = ending to the cent (otherwise read it again); lines already in the books aren't added twice. Then post the rows with prepare_entries and reconcile.",
+  input_schema: { type: "object" as const, properties: { documentId: { type: "string" }, accountCode: { type: "string" }, month: { type: "string" }, beginningBalance: { type: "number" }, endingBalance: { type: "number" }, transactions: { type: "array", items: { type: "object", properties: { date: { type: "string" }, description: { type: "string" }, amount: { type: "number" } }, required: ["date", "amount"] } } }, required: ["documentId", "accountCode", "month", "beginningBalance", "endingBalance", "transactions"] },
+};
+
+// --- A statement filed under the wrong client ---------------------------------------------------
+
+/**
+ * Moves a statement filed under the wrong client to the client it belongs to — only when the document
+ * itself proves it: the other client's business name AND one of that client's registered account
+ * numbers (last 4) are printed on it, and this client's name is not. Its old account, month and
+ * reconciliation link are cleared here (nothing in either client's books changes), and what was read
+ * from it for this client is removed. Tabitha (the owner) only; recorded in both clients' audit logs.
+ */
+export async function moveDocumentToClient(actor: Actor, clientId: string, input: { documentId?: string; reason?: string }) {
+  const { isPrimaryOwner } = await import("@/lib/auth/permissions");
+  if (!(await isPrimaryOwner(actor.id))) throw new ForbiddenError("Only Tabitha can have Coetha move a document to another client.");
+  const reason = String(input.reason ?? "").trim();
+  if (reason.length < 10) return { error: "Give the reason (for example: the statement shows another business's name and account)." };
+  const doc = input.documentId ? await prisma.document.findFirst({ where: { id: input.documentId, clientId, deletedAt: null }, include: { file: true } }) : null;
+  if (!doc?.file) return { error: "That document isn't on file for this business." };
+  const bytes = await readDocumentBytes(doc.file);
+  const lines = bytes ? await pdfLines(bytes).catch(() => null) : null;
+  const text = (lines ?? []).slice(0, 120).join(" ").toLowerCase();
+  if (!text.trim()) return { error: "Its text can't be read here, so who it belongs to can't be proven automatically; Tabitha moves it from the client's Documents page." };
+  // Names compared without punctuation or company suffixes ("LLC", "Inc"), on both sides.
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\b(llc|inc|co|corp|the)\b/g, " ").replace(/\s+/g, " ").trim();
+  const flat = ` ${norm(text)} `;
+  const here = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { businessName: true, displayName: true } });
+  const named = (c: { businessName: string | null; displayName: string }) => [c.businessName, c.displayName].filter((n): n is string => !!n && norm(n).length >= 6).some((n) => flat.includes(` ${norm(n)} `));
+  if (named(here)) return { error: "This client's own name is printed on it, so it isn't moved." };
+  const { accountNumbersIn } = await import("./statement-choice");
+  const numbers = accountNumbersIn(lines ?? []);
+  const candidates = await prisma.client.findMany({ where: { id: { not: clientId }, archivedAt: null }, select: { id: true, businessName: true, displayName: true } });
+  const matches = [];
+  for (const c of candidates) {
+    if (!named(c)) continue;
+    const accts = await prisma.bookkeepingAccount.findMany({ where: { clientId: c.id, parentAccountId: null }, select: { id: true, last4: true } });
+    const acct = accts.find((x) => x.last4 && numbers.has(x.last4));
+    if (acct) matches.push({ client: c, accountId: acct.id });
+  }
+  if (matches.length !== 1) return { error: matches.length ? "More than one client matches; it isn't moved. Tabitha moves it." : "No other client's name and account number are both printed on it, so it isn't moved." };
+  const { client: to, accountId } = matches[0];
+  await prisma.$transaction(async (tx) => {
+    await tx.accountReconciliation.updateMany({ where: { clientId, statementDocumentId: doc.id }, data: { statementDocumentId: null, statementStatus: "MISSING" } });
+    const job = await tx.coethaDocJob.findUnique({ where: { documentId: doc.id } });
+    if (job) { await tx.coethaDocFinding.deleteMany({ where: { jobId: job.id } }); await tx.coethaDocJob.delete({ where: { id: job.id } }); }
+    await tx.document.update({ where: { id: doc.id }, data: { clientId: to.id, bookkeepingAccountId: accountId, manualBankAccountId: null, periodId: null } });
+  });
+  for (const c of [clientId, to.id]) await audit(prisma, { actorId: actor.id, action: "coetha.document_moved", entityType: "Document", entityId: doc.id, clientId: c, details: { from: clientId, to: to.id, reason: reason.slice(0, 300), proof: "the other client's name and account number printed on it" } });
+  return { ok: true, message: `Moved “${doc.title}” to ${to.businessName || to.displayName} (its name and account number are printed on it). This client's reconciliation link to it was cleared; nothing in either client's books changed.` };
+}
+
+export const MOVE_DOCUMENT_TOOL = {
+  name: "move_document_to_client",
+  description: "Move a statement or document filed under this client that belongs to another client (another business's name and account number are printed on it). It is moved only when the document itself proves it: the other client's name and one of that client's registered account numbers are on it, and this client's name isn't. Nothing in either client's books changes. Use it as soon as you find a misfiled document; don't ask Tabitha to move it.",
+  input_schema: { type: "object" as const, properties: { documentId: { type: "string" }, reason: { type: "string" } }, required: ["documentId", "reason"] },
 };

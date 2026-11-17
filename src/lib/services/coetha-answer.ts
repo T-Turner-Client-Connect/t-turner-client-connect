@@ -37,7 +37,44 @@ const HISTORY = 16;
 const RETRYABLE = new Set(["RATE_LIMIT", "OVERLOADED", "TIMEOUT", "NETWORK", "API", "PERMISSION"]);
 
 type Asker = "owner" | "staff";
-type Pending = { files?: CoethaChatFile[]; documentsRead?: string };
+type Pending = { files?: CoethaChatFile[]; documentsRead?: string; documentIds?: string[] };
+
+/** Largest original file attached for Coetha to read herself (images: the API's 5 MB base64 limit). */
+const MAX_IMAGE_BYTES = 3_700_000;
+const MAX_PDF_BYTES = 20_000_000;
+const MAX_ORIGINALS = 6;
+const sniff = (b: Uint8Array) => {
+  const is = (sig: number[]) => sig.every((v, i) => b[i] === v);
+  if (is([0x25, 0x50, 0x44, 0x46])) return "application/pdf";
+  if (is([0x89, 0x50, 0x4e, 0x47])) return "image/png";
+  if (is([0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (is([0x47, 0x49, 0x46, 0x38])) return "image/gif";
+  if (is([0x52, 0x49, 0x46, 0x46]) && String.fromCharCode(...Array.from(b.slice(8, 12))) === "WEBP") return "image/webp";
+  return null;
+};
+
+/**
+ * The uploaded files themselves, for Coetha to look at (a screenshot of a bank or card statement,
+ * a receipt, an invoice), not only what the page-by-page scanner wrote down. Returns the files and
+ * a note for any that couldn't be attached, saying why.
+ */
+async function originalFiles(clientId: string, documentIds: string[]) {
+  const files: CoethaChatFile[] = [];
+  const notes: string[] = [];
+  if (!documentIds.length) return { files, notes };
+  const { readDocumentBytes } = await import("./documents");
+  const docs = await prisma.document.findMany({ where: { id: { in: documentIds }, clientId, deletedAt: null }, include: { file: true } });
+  for (const d of docs.slice(0, MAX_ORIGINALS)) {
+    const bytes = d.file ? await readDocumentBytes(d.file).catch(() => null) : null;
+    if (!bytes) { notes.push(`“${d.title}”: the stored file couldn't be opened.`); continue; }
+    const type = sniff(bytes);
+    if (!type) { notes.push(`“${d.title}”: not a PDF or a picture, so it can't be shown to you.`); continue; }
+    if (type === "application/pdf" ? bytes.length > MAX_PDF_BYTES : bytes.length > MAX_IMAGE_BYTES) { notes.push(`“${d.title}”: too large to attach (${(bytes.length / 1_000_000).toFixed(1)} MB); use the scanner's notes and say which pages you'd need.`); continue; }
+    files.push({ mediaType: type, base64: Buffer.from(bytes).toString("base64") });
+  }
+  if (docs.length > MAX_ORIGINALS) notes.push(`${docs.length - MAX_ORIGINALS} more file(s) weren't attached to this one answer; ask about them separately.`);
+  return { files, notes };
+}
 type RunState = {
   pending?: Pending;
   books?: unknown;
@@ -90,15 +127,16 @@ async function prepare(runId: string): Promise<RunState> {
   const records = await recordsSnapshot(asker, run.clientId);
   const names = (m: { attachmentName: string | null; attachments: unknown }) => (Array.isArray(m.attachments) ? (m.attachments as { name: string }[]).map((a) => a.name) : m.attachmentName ? [m.attachmentName] : []);
   const pending = ((run.state as RunState | null)?.pending ?? {}) as Pending;
+  const originals = await originalFiles(run.clientId, pending.documentIds ?? []);
   const turns: CoethaChatTurn[] = [
     ...earlier.map((m) => ({ role: m.role === "COETHA" ? ("assistant" as const) : ("user" as const), text: names(m).length ? `${m.text}\n[Attached earlier: ${names(m).join(", ")}]` : m.text })),
-    { role: "user", text: pending.documentsRead ? `${question.text}\n\nWhat you read from the attached documents (read page by page; each item is matched to the bank rows where possible):\n${pending.documentsRead}` : question.text },
+    { role: "user", text: pending.documentsRead ? `${question.text}\n\n${originals.files.length ? "The uploaded files themselves are attached to this message: look at them and read them yourself. " : ""}The document scanner's notes (built for checks; they can miss anything that isn't a check):\n${pending.documentsRead}${originals.notes.length ? `\n\nFiles not attached: ${originals.notes.join(" ")}` : ""}` : question.text },
   ];
   const attached = Array.isArray(question.attachments) ? (question.attachments as { documentId?: string }[]).map((a) => a.documentId).filter((x): x is string => !!x) : [];
   const state: RunState = {
     books, records,
     asker: (await isPrimaryOwner(asker.id)) ? "owner" : "staff",
-    messages: chatMessages(turns, pending.files ?? []),
+    messages: chatMessages(turns, [...(pending.files ?? []), ...originals.files]),
     maxRounds: CHAT_MAX_SEARCH_ROUNDS,
     searches: 0,
     question: question.text,
@@ -202,7 +240,13 @@ export async function applyResult(runId: string, callId: string, outcome: ChatCa
       for (const c of calls) {
         let out: unknown;
         try { out = await tools.run(c.name, c.input); } catch { out = { error: "That tool couldn't be completed." }; }
-        results.push({ type: "tool_result", tool_use_id: c.id, content: JSON.stringify(out) });
+        // Files a tool returns (a picture or scanned PDF on file) go to Coetha as the files themselves.
+        const files = out && typeof out === "object" && Array.isArray((out as { __attachments?: unknown }).__attachments) ? ((out as { __attachments: { mediaType: string; base64: string }[] }).__attachments) : [];
+        if (files.length) {
+          const { __attachments: _a, ...rest } = out as Record<string, unknown>;
+          void _a;
+          results.push({ type: "tool_result", tool_use_id: c.id, content: [{ type: "text", text: JSON.stringify(rest) }, ...files.map((f) => (f.mediaType === "application/pdf" ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: f.base64 } } : { type: "image" as const, source: { type: "base64" as const, media_type: f.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: f.base64 } }))] as Anthropic.Beta.BetaToolResultBlockParam["content"] });
+        } else results.push({ type: "tool_result", tool_use_id: c.id, content: JSON.stringify(out) });
       }
       messages.push({ role: "user", content: results });
       timings.push({ step: "tools", ms: Date.now() - started, round: run.round, tools: calls.map((c) => c.name) });
