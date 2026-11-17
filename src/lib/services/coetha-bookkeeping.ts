@@ -269,7 +269,15 @@ export async function importPriorMonths(actor: Actor, clientId: string, input: {
   if (!bank) return { error: "This business has no bank account in its chart to enter the months against." };
   const chart = await prisma.ledgerAccount.findMany({ where: { clientId } });
   const byCode = new Map(chart.map((a) => [a.code, a]));
+  // Months before the books' opening balances (a mid-year start): the opening balances already state the
+  // cash, from the bank. Those months' income, expenses and owner draws/contributions are recorded against
+  // Opening Balance Equity, so the P&L shows the whole year while cash stays tied to the bank — the
+  // standard way to bring in a conversion's prior months. Nothing is plugged to cash.
+  const book = await prisma.ledgerBook.findUnique({ where: { clientId } });
+  const openingYmd = book?.openingDate ? book.openingDate.toISOString().slice(0, 10) : null;
+  const obe = chart.find((a) => a.subtype === "OPENING_BALANCE") ?? null;
   const results: { month: string; ok: boolean; message: string }[] = [];
+  let beforeOpeningNet = 0;
   for (const pm of (input.months ?? []).slice(0, 12)) {
     const month = String(pm.month ?? "");
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) { results.push({ month, ok: false, message: "Month must be YYYY-MM." }); continue; }
@@ -298,12 +306,19 @@ export async function importPriorMonths(actor: Actor, clientId: string, input: {
     }
     if (problems.length) { results.push({ month, ok: false, message: `Not entered: ${problems.slice(0, 4).join("; ")}.` }); continue; }
     if (!lines.length) { results.push({ month, ok: false, message: "No amounts for this month." }); continue; }
-    if (net !== 0) lines.push({ accountId: bank.id, ...(net > 0 ? { debit: (net / 100).toFixed(2) } : { credit: (-net / 100).toFixed(2) }), description: "Net cash for the month, per the package" });
+    const beforeOpening = !!openingYmd && endYmd < openingYmd;
+    if (beforeOpening && !obe) { results.push({ month, ok: false, message: "This month is before the opening balances and the chart has no Opening Balance Equity account; add one first." }); continue; }
+    if (beforeOpening && lines.some((l) => !["INCOME", "EXPENSE", "EQUITY"].includes(chart.find((a) => a.id === l.accountId)?.type ?? ""))) { results.push({ month, ok: false, message: "Before the opening balances only income, expense and owner-equity lines can be entered; this month has an asset or liability line." }); continue; }
+    if (net !== 0) {
+      const offset = beforeOpening ? obe! : bank;
+      lines.push({ accountId: offset.id, ...(net > 0 ? { debit: (net / 100).toFixed(2) } : { credit: (-net / 100).toFixed(2) }), description: beforeOpening ? "Before the opening balances: the cash is already in the opening balance (Opening Balance Equity)" : "Net cash for the month, per the package" });
+    }
     try {
       await withMonthsOpened(owner, clientId, endYmd, `Coetha's standing authorization: ${month} entered from the financial package on file`, () =>
-        prisma.$transaction((tx) => postJournalEntryTx(tx, owner, clientId, { date: endYmd, memo: `${month} summary from the financial package on file (${doc.title})`.slice(0, 300), lines, sourceKey: `prior-package:${month}`, reason: `Entered from ${doc.title} (document ${doc.id}) under standing authorization` })));
-      await audit(prisma, { actorId: owner.id, action: "coetha.prior_month_imported", entityType: "Document", entityId: doc.id, clientId, details: { month, lines: lines.length, netCashCents: net, requestedById: actor.id } });
-      results.push({ month, ok: true, message: `Entered: ${lines.length} lines, net cash ${usd(net)}.` });
+        prisma.$transaction((tx) => postJournalEntryTx(tx, owner, clientId, { date: endYmd, memo: `${month} summary from the financial package on file (${doc.title})`.slice(0, 300), lines, sourceKey: `prior-package:${month}`, reason: `Entered from ${doc.title} (document ${doc.id}) under standing authorization${beforeOpening ? "; before the opening balances, against Opening Balance Equity" : ""}`, beforeOpening })));
+      await audit(prisma, { actorId: owner.id, action: "coetha.prior_month_imported", entityType: "Document", entityId: doc.id, clientId, details: { month, lines: lines.length, netCashCents: net, beforeOpening, requestedById: actor.id } });
+      if (beforeOpening) beforeOpeningNet += net;
+      results.push({ month, ok: true, message: beforeOpening ? `Entered: ${lines.length} lines (income/expenses ${usd(net)} net, against Opening Balance Equity — cash stays as the opening balance states).` : `Entered: ${lines.length} lines, net cash ${usd(net)}.` });
     } catch (err) {
       results.push({ month, ok: false, message: err instanceof Error ? err.message : "Couldn't be entered." });
     }
@@ -315,18 +330,21 @@ export async function importPriorMonths(actor: Actor, clientId: string, input: {
     if (last) {
       const [y, m] = last.split("-").map(Number);
       const asOf = new Date(Date.UTC(y, m, 0));
-      const agg = await prisma.journalLine.aggregate({ where: { accountId: bank.id, entry: { clientId, date: { lte: asOf } } }, _sum: { debitCents: true, creditCents: true } });
+      // Before the opening balances, the books' cash for that date is the opening balance itself.
+      const cashAsOf = openingYmd && asOf.toISOString().slice(0, 10) < openingYmd ? new Date(`${openingYmd}T00:00:00Z`) : asOf;
+      const agg = await prisma.journalLine.aggregate({ where: { accountId: bank.id, entry: { clientId, date: { lte: cashAsOf } } }, _sum: { debitCents: true, creditCents: true } });
       const books = (agg._sum.debitCents ?? 0) - (agg._sum.creditCents ?? 0);
       const pkg = Math.round(Number(input.packageEndingCash) * 100);
       cashCheck = books === pkg ? `Cash agrees with the package at ${usd(pkg)} as of ${last}.` : `Cash in the books ${usd(books)} vs the package's ${usd(pkg)} as of ${last}: a difference of ${usd(books - pkg)} — reported as an exception, not adjusted.`;
     }
   }
-  return { results, cashCheck };
+  const note = beforeOpeningNet || results.some((r) => r.ok && /Opening Balance Equity/.test(r.message)) ? "Months before the opening balances were recorded against Opening Balance Equity: the P&L now shows them, and cash is unchanged (it comes from the bank's opening balance)." : null;
+  return { results, cashCheck, note };
 }
 
 export const PRIOR_MONTHS_TOOL = {
   name: "import_prior_months",
-  description: "Enter months that exist only in a financial package already on file (the office's prepared Jan–Sep statements, for example) — one summary entry per month, by account, against the bank account, under Tabitha's standing authorization. Read the package first (read_files_on_file), map each P&L line to the chart (use prepare_entries with new_account items first if an account is missing), then send every month with its lines (amount = the figure printed for that month; owner draws kind \"draw\", owner contributions kind \"contribution\"). Every amount must be printed in the package; months already in the books are skipped automatically; the package's ending cash is compared and any difference reported, never plugged.",
+  description: "Enter months that exist only in a financial package already on file (the office's prepared Jan–Sep statements, for example) — one summary entry per month, by account, against the bank account, under Tabitha's standing authorization. Read the package first (read_files_on_file), map each P&L line to the chart (use prepare_entries with new_account items first if an account is missing), then send every month with its lines (amount = the figure printed for that month; owner draws kind \"draw\", owner contributions kind \"contribution\"). Every amount must be printed in the package; months already in the books are skipped automatically; months before the books' opening balances are recorded against Opening Balance Equity (the opening balance already holds the cash), so you never need the opening date moved; the package's ending cash is compared and any difference reported, never plugged.",
   input_schema: {
     type: "object" as const,
     properties: {

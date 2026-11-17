@@ -3,7 +3,7 @@ import { PDFDocument, StandardFonts } from "pdf-lib";
 import { makeUser, prisma, resetDb } from "./db";
 import { createClient } from "@/lib/services/clients";
 import { saveProfile } from "@/lib/services/bookkeeping-clients";
-import { categorizeBankTransaction, importBankCsv, setupLedger } from "@/lib/services/ledger";
+import { categorizeBankTransaction, importBankCsv, postOpeningBalances, setupLedger } from "@/lib/services/ledger";
 import { registerAccount } from "@/lib/services/bank-accounts";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { importPriorMonths } from "@/lib/services/coetha-bookkeeping";
@@ -91,6 +91,36 @@ describe("Months that exist only in a financial package already prepared", () =>
     const diff = await importPriorMonths(w.tabitha, w.biz.id, { documentId: docId, months: [{ month: "2026-02", lines: [] }], packageEndingCash: 1960.11 });
     expect(res(diff).cashCheck).toMatch(/difference of -\$560\.11 — reported as an exception, not adjusted/);
     expect(await bankBalance(w.gl)).toBe(140000);
+  });
+
+  it("books that open on October 1 (a mid-year start): January–September go in against Opening Balance Equity, the P&L shows them and cash stays at the bank's opening balance", async () => {
+    const w = await world();
+    await postOpeningBalances(w.tabitha, w.biz.id, { date: "2026-10-01", balances: [{ accountId: w.gl, amount: "1400.00" }] });
+    const up = await uploadPriorPackage(w.tabitha, { bytes: await pkg("Juniper Example Agency LLC"), originalName: "juniper.pdf" });
+    const docId = (up as { documentId: string }).documentId;
+    const months = [
+      { month: "2026-01", lines: [{ accountCode: w.inc, amount: 1000 }, { accountCode: w.exp, amount: 400 }, { accountCode: w.eq, amount: 300, kind: "draw" as const }] },
+      { month: "2026-02", lines: [{ accountCode: w.inc, amount: 2000 }, { accountCode: w.exp, amount: 400 }, { accountCode: w.eq, amount: 500, kind: "draw" as const }] },
+    ];
+    const r = await importPriorMonths(w.tabitha, w.biz.id, { documentId: docId, months, packageEndingCash: 1400 });
+    expect(res(r).results.every((x) => x.ok)).toBe(true);
+    // Cash is exactly the bank's opening balance: nothing was added to or plugged into it.
+    expect(await bankBalance(w.gl)).toBe(140000);
+    // The P&L for January–February shows the package's income and expenses.
+    const pl = await prisma.journalLine.groupBy({ by: ["accountId"], where: { entry: { clientId: w.biz.id, date: { gte: new Date("2026-01-01T00:00:00Z"), lte: new Date("2026-02-28T00:00:00Z") } } }, _sum: { debitCents: true, creditCents: true } });
+    const inc = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, code: w.inc } });
+    const exp = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, code: w.exp } });
+    const sum = (id: string) => pl.find((g) => g.accountId === id)?._sum;
+    expect((sum(inc.id)?.creditCents ?? 0) - (sum(inc.id)?.debitCents ?? 0)).toBe(300000);
+    expect((sum(exp.id)?.debitCents ?? 0) - (sum(exp.id)?.creditCents ?? 0)).toBe(80000);
+    // The offset is Opening Balance Equity; no bank line is dated before the opening balances.
+    const obe = await prisma.ledgerAccount.findFirstOrThrow({ where: { clientId: w.biz.id, subtype: "OPENING_BALANCE" } });
+    expect(sum(obe.id)).toBeTruthy();
+    expect(await prisma.journalLine.count({ where: { accountId: w.gl, entry: { date: { lt: new Date("2026-10-01T00:00:00Z") } } } })).toBe(0);
+    expect(res(r).cashCheck).toMatch(/agrees with the package at \$1,400\.00/);
+    // Before the opening balances, nothing else may be dated (an ordinary entry is still refused).
+    const { postJournalEntry } = await import("@/lib/services/ledger");
+    await expect(postJournalEntry(w.tabitha, w.biz.id, { date: "2026-03-31", memo: "Not allowed", lines: [{ accountId: w.gl, debit: "10.00" }, { accountId: inc.id, credit: "10.00" }] })).rejects.toThrow(/before the opening balances/);
   });
 
   it("a month that already has bank postings is never entered from the package", async () => {
