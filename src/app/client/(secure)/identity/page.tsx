@@ -43,7 +43,7 @@ export default async function IdentityPage({ searchParams }: { searchParams: Pro
     );
   }
   await requirePersonalTaxAccount(current.clientId);
-  const header = <PageBanner icon={IdCard} title="Identity Documents" subtitle="Driver's licenses, birth certificates and Social Security cards for you, your spouse and dependents." />;
+  const header = <PageBanner icon={IdCard} title="Identity Documents" subtitle="Driver's licenses and Social Security cards for you and your spouse; birth certificates and Social Security cards for your dependents." />;
   if (!current.canViewIdentity) return <>{header}<Notice>Identity documents aren&apos;t included in your access to this account. The account owner can ask our office to add it.</Notice></>;
   const overview = user ? await portalIdentityOverview(user, current.clientId) : await identityOverviewForViewer(current.clientId, null);
   const alerts = identityAlerts(overview);

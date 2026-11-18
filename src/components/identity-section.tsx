@@ -209,7 +209,8 @@ export function IdentitySection({ overview, mode, clientId, linkFor, readOnly, v
             {person.name} <span className="text-sm font-normal text-slate-500">· {ID_ROLES[person.role as IdRole]}</span>
           </h3>
           <ul className="divide-y divide-navy-100">
-            {slots.map((s) => <SlotRow key={s.type} slot={s} mode={mode} clientId={clientId} personId={person.id} linkFor={linkFor} readOnly={readOnly} viewerIsAdmin={viewerIsAdmin} people={people} />)}
+            {/* Birth certificates are asked only for dependents (one already on file for anyone still shows). */}
+            {slots.filter((s) => s.type !== "BIRTH_CERTIFICATE" || person.role === "DEPENDENT" || s.history.length > 0).map((s) => <SlotRow key={s.type} slot={s} mode={mode} clientId={clientId} personId={person.id} linkFor={linkFor} readOnly={readOnly} viewerIsAdmin={viewerIsAdmin} people={people} />)}
           </ul>
           {mode === "staff" && !readOnly && person.role !== "CLIENT" && (
             <details className="mt-2 text-sm">
