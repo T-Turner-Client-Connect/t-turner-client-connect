@@ -208,6 +208,7 @@ export async function runBookkeepingTool(actor: Actor, clientId: string, name: s
   try {
     if (name === DUPLICATES_TOOL.name) return await removeVerifiedDuplicates(actor, clientId, { month: String(i.month ?? ""), dryRun: !!i.dryRun });
     if (name === "import_prior_months") return await importPriorMonths(actor, clientId, (input ?? {}) as { documentId?: string; months?: PriorMonth[]; packageEndingCash?: number | null });
+    if (name === "state_compliance") return await (await import("./state-compliance")).runComplianceTool(actor, clientId, (input ?? {}) as { updates?: { filingId: string; status: string; note?: string }[] });
     if (name === "verify_accounts") return await (await import("./account-ownership")).runVerifyAccountsTool(actor, clientId, (input ?? {}) as { hold?: { accountId: string; reason: string }[] });
     if (name === "move_document_to_client") return await moveDocumentToClient(actor, clientId, (input ?? {}) as { documentId?: string; reason?: string; hold?: boolean });
     if (name === "import_statement_transactions") return await importStatementTransactions(actor, clientId, (input ?? {}) as Parameters<typeof importStatementTransactions>[2]);

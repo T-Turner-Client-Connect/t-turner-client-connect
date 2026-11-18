@@ -22,6 +22,8 @@ export async function POST(req: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   const summary = await runAutomations();
+  // State compliance: next periods created and office reminders (90/60/30/15/7 days, due date). Office only.
+  const compliance = await (await import("@/lib/services/state-compliance")).runComplianceReminders().catch(() => ({ error: "failed" }));
   // Read-only Square refresh, so billing figures stay current without anyone pressing Sync.
   const square = await syncStaleSquareBilling().catch((e) => ({ error: e instanceof Error ? e.message : "failed" }));
   // Backup for a missed Square webhook: re-reads invoices sent through Square and records any payment (reads only).
@@ -49,5 +51,5 @@ export async function POST(req: Request) {
   const payrollReminders = await runPayrollReminders().catch(() => ({ error: "failed" }));
   // Audit response deadlines 14 and 7 days out, and passed: one office task each (idempotent).
   const auditDeadlines = await auditDeadlineAlerts().catch(() => ({ error: "failed" }));
-  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders, auditDeadlines });
+  return Response.json({ ok: true, summary, square, squareInvoices, bank, coetha, workflow, schedules, accessReview, payrollCycles, payrollReminders, auditDeadlines, compliance });
 }
