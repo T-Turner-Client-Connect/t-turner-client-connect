@@ -326,6 +326,9 @@ model Client {
   identityDocs           IdentityDocument[]
   bookkeepingProfile     BookkeepingProfile?
   bookkeepingAccounts    BookkeepingAccount[]
+  complianceRegistrations ComplianceRegistration[]
+  complianceRequirements  ComplianceRequirement[]
+  complianceFilings       ComplianceFiling[]
   bookkeepingBilling     BookkeepingBilling?
   squareBillings         SquareBillingMember[]
   ledgerBook             LedgerBook?
@@ -6977,4 +6980,94 @@ model CoethaAnswerRun {
 
   @@index([status, notBefore])
   @@index([clientId, chatId])
+}
+
+// ===========================================================================
+// STATE COMPLIANCE (internal to the office): registrations, recurring state filings and one filing per period
+// ===========================================================================
+
+/// Where a business is registered: its state of formation or a state it is registered in as foreign.
+model ComplianceRegistration {
+  id           String                  @id @default(cuid())
+  clientId     String
+  client       Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  /// Two-letter state code (MD, AL...) or DC
+  state        String
+  /// FORMATION | FOREIGN
+  kind         String                  @default("FORMATION")
+  /// The state's own ID for the business (e.g. Maryland department ID)
+  entityId     String?
+  agency       String?
+  formedOn     DateTime?               @db.Date
+  note         String?
+  archivedAt   DateTime?
+  createdById  String
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+  requirements ComplianceRequirement[]
+
+  @@index([clientId])
+}
+
+/// A recurring state filing (annual report, license renewal, franchise tax...), with its own state's
+/// due date. Never assumed: each requirement carries the month and day its state sets.
+model ComplianceRequirement {
+  id             String                  @id @default(cuid())
+  clientId       String
+  client         Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  registrationId String?
+  registration   ComplianceRegistration? @relation(fields: [registrationId], references: [id], onDelete: SetNull)
+  state          String
+  /// ANNUAL_REPORT | BUSINESS_LICENSE | FRANCHISE_TAX | PERSONAL_PROPERTY | REGISTERED_AGENT | OTHER
+  category       String
+  name           String
+  agency         String?
+  filingUrl      String?
+  /// ANNUAL | BIENNIAL
+  frequency      String                  @default("ANNUAL")
+  dueMonth       Int
+  dueDay         Int
+  /// The first period tracked (earlier periods are never created)
+  startYear      Int
+  note           String?
+  archivedAt     DateTime?
+  createdById    String
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  filings        ComplianceFiling[]
+
+  @@index([clientId])
+}
+
+/// One period of a requirement. FILED needs a person's confirmation with evidence (a confirmation
+/// number or an uploaded confirmation); Coetha never marks a filing filed.
+model ComplianceFiling {
+  id                     String                @id @default(cuid())
+  requirementId          String
+  requirement            ComplianceRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  clientId               String
+  client                 Client                @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  period                 Int
+  dueDate                DateTime              @db.Date
+  /// A later state deadline for this period (e.g. a forfeiture date in a state notice)
+  finalDeadline          DateTime?             @db.Date
+  /// NOT_STARTED | IN_PROGRESS | WAITING_ON_CLIENT | READY_TO_FILE | FILED | NOT_REQUIRED (Overdue is shown when past due and open)
+  status                 String                @default("NOT_STARTED")
+  /// Stays on until the filing is completed (filed with evidence) or found not required
+  urgent                 Boolean               @default(false)
+  urgentReason           String?
+  filedOn                DateTime?             @db.Date
+  confirmationNumber     String?
+  confirmationDocumentId String?
+  completedById          String?
+  completedAt            DateTime?
+  note                   String?
+  /// Office reminders already given (days before the due date; 1000+n for the final deadline)
+  remindersSent          Int[]                 @default([])
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  @@unique([requirementId, period])
+  @@index([status, dueDate])
+  @@index([clientId])
 }

@@ -25,6 +25,7 @@ import { TaxDetails } from "@/components/client-tabs/tax-details";
 import { returnTypeLabel } from "@/lib/tax/return-types";
 import { AgreementsInvoicesTab } from "@/components/client-tabs/agreements-invoices";
 import { AppointmentsTab } from "@/components/client-tabs/appointments";
+import { StateComplianceTab } from "@/components/client-tabs/state-compliance";
 import { InvoicesTab } from "@/components/client-tabs/invoices";
 import { can } from "@/lib/auth/permissions";
 import { CommPrefsStaffCard } from "@/components/client-tabs/comm-prefs-staff";
@@ -46,6 +47,8 @@ const TABS = [
   { key: "taxes", label: "Taxes" },
   { key: "services", label: "Agreements & Invoices" },
   { key: "appointments", label: "Appointments" },
+  // State registrations, annual reports and renewals (businesses; internal to the office).
+  { key: "compliance", label: "State Compliance" },
   // Owner's Office invoices: only for staff holding Billing and invoicing → View.
   { key: "invoices", label: "Invoices" },
   { key: "portal", label: "Portal & signatures" },
@@ -160,6 +163,7 @@ export default async function ClientPage({ params, searchParams }: { params: Pro
       {tab === "taxes" && <TaxesTab clientId={id} user={user} taxYear={Number(sp.taxYear) || undefined} deliver={sp.deliver ? { year: Number(sp.year) || undefined, state: sp.jur === "state", amended: sp.amended === "1" } : undefined} />}
       {tab === "services" && <AgreementsInvoicesTab clientId={id} user={user} />}
       {tab === "appointments" && <AppointmentsTab clientId={id} />}
+      {tab === "compliance" && <StateComplianceTab clientId={id} isAdmin={user.role === "ADMIN"} />}
       {tab === "invoices" && seesInvoices && <InvoicesTab clientId={id} actor={user} />}
       {tab === "portal" && <PortalTab clientId={id} contacts={client.contacts} isAdmin={user.role === "ADMIN"} actor={user} />}
       {tab === "overview" && (

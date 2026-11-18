@@ -16,6 +16,7 @@ import { AccessReviewBanner } from "@/components/owner/access-review-banner";
 import { isReportApprover } from "@/lib/services/bookkeeping-clients";
 import { ownerQueue } from "@/lib/services/agreements";
 import { pendingAcceptances } from "@/lib/services/accepted-returns";
+import { outstandingFilings, STATUS_LABEL as COMPLIANCE_STATUS } from "@/lib/services/state-compliance";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export default async function OwnerOverview({ searchParams }: { searchParams: Promise<{ year?: string }> }) {
@@ -33,6 +34,8 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
   const reviewBanner = await accessReviewBanner(actor);
   // Returns staff delivered that wait for Tabitha's one-click acceptance confirmation.
   const toConfirm = (await isReportApprover(actor)) ? (await pendingAcceptances()).length : 0;
+  // State compliance (owner): urgent and overdue filings first, then anything due in the next 90 days.
+  const filings = access.isOwner ? await outstandingFilings({ withinDays: 90 }) : [];
   return (
     <>
       {toConfirm > 0 && (
@@ -54,6 +57,23 @@ export default async function OwnerOverview({ searchParams }: { searchParams: Pr
         }
       />
       {reviewBanner && <AccessReviewBanner banner={reviewBanner} />}
+      {filings.length > 0 && (
+        <Card className="mb-4" title={`State compliance — ${filings.length} outstanding`}>
+          <ul className="divide-y divide-navy-100 text-sm" data-testid="owner-compliance">
+            {filings.map((f) => {
+              const hot = f.urgent || f.effective === "OVERDUE";
+              return (
+                <li key={f.id} className="flex flex-wrap items-center gap-2 py-2">
+                  {hot && <Badge tone="red">{f.urgent ? "URGENT" : "OVERDUE"}</Badge>}
+                  <Link className="font-semibold underline" href={`/clients/${f.client.id}?tab=compliance`}>{f.client.businessName || f.client.displayName}</Link>
+                  <span>{f.requirement.state} {f.requirement.name} {f.period}</span>
+                  <span className="text-slate-600">· due {fmtDate(f.dueDate)}{f.finalDeadline ? ` · final deadline ${fmtDate(f.finalDeadline)}` : ""} · {COMPLIANCE_STATUS[f.status as keyof typeof COMPLIANCE_STATUS] ?? f.status}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
+      )}
       {queue && (queue.waiting.length > 0 || queue.recent.length > 0) && (
         <Card className="mb-4" title="Agreements for you" actions={<Link className="text-sm underline" href="/agreements">All agreements</Link>}>
           <ul className="divide-y divide-navy-100 text-sm" data-testid="owner-agreements">
