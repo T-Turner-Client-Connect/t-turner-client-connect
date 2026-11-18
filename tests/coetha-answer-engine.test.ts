@@ -4,7 +4,7 @@ import { createClient } from "@/lib/services/clients";
 import { importBankCsv, setupLedger } from "@/lib/services/ledger";
 import { setOwnerSwitch } from "@/lib/services/owner-switches";
 import { askCoetha } from "@/lib/services/coetha-chat";
-import { applyResult, MAX_LIVE, nextCall } from "@/lib/services/coetha-answer";
+import { applyResult, holdForTools, MAX_LIVE, nextCall } from "@/lib/services/coetha-answer";
 import type { ChatCallOutcome } from "@/lib/coetha-model";
 
 /**
@@ -152,6 +152,22 @@ describe("Several staff at once", () => {
     await applyResult(later.runId, later.callId, ok("Answered after the retry"));
     expect(await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: q.questionId } })).toMatchObject({ status: "ANSWERED" });
     expect(await prisma.coethaChatMessage.count({ where: { role: "COETHA", clientId: w.willow.id } })).toBe(1);
+  });
+
+  it("a step interrupted after the AI answered (the page timed out) is picked up again in minutes, not after the AI's 11-minute hold; the next question in the chat follows", async () => {
+    const w = await world();
+    await askCoetha(w.daria, w.willow.id, "First question", { inline: false });
+    const second = await askCoetha(w.daria, w.willow.id, "Second question", { inline: false });
+    const call = (await nextCall())!;
+    // The AI answered and the tool step started, then the page died: no result was ever saved.
+    await holdForTools(call.runId, call.callId);
+    expect(await nextCall({ now: new Date(Date.now() + 60_000) })).toBeNull();
+    const again = (await nextCall({ now: new Date(Date.now() + 3 * 60_000) }))!;
+    expect(again.runId).toBe(call.runId);
+    await applyResult(again.runId, again.callId, ok("Answered after the interruption"));
+    const next = (await nextCall())!;
+    await applyResult(next.runId, next.callId, ok("Second answered"));
+    expect(await prisma.coethaChatMessage.findUniqueOrThrow({ where: { id: second.questionId } })).toMatchObject({ status: "ANSWERED" });
   });
 
   it("access is checked again when the answer starts: someone who lost access gets nothing sent", async () => {
