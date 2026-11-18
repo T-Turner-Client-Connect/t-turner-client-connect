@@ -76,10 +76,12 @@ function Slots({ entry, clientId, linkFor, ctx }: { entry: Entry; clientId: stri
   const isDependent = entry.person.role === "DEPENDENT";
   const license = entry.slots.find((s) => s.type === "DRIVERS_LICENSE");
   const showLicense = !isDependent || (license?.history.length ?? 0) > 0;
+  // Birth certificates: asked only for dependents. The client and spouse aren't asked (one already on file still shows).
+  const showBirth = (s: Entry["slots"][number]) => s.type !== "BIRTH_CERTIFICATE" || isDependent || s.history.length > 0;
   return (
     <div className="border-t border-ivory-200 bg-ivory-50/40">
       <ul className="divide-y divide-navy-100 px-4 sm:px-6">
-        {entry.slots.filter((s) => showLicense || s.type !== "DRIVERS_LICENSE").map((s) => <SlotRow key={s.type} slot={s} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} previewAction={ctx.readOnly ? ctx.actions.upload : undefined} />)}
+        {entry.slots.filter((s) => (showLicense || s.type !== "DRIVERS_LICENSE") && showBirth(s)).map((s) => <SlotRow key={s.type} slot={s} mode="portal" clientId={clientId} personId={entry.person.id} linkFor={linkFor} previewAction={ctx.readOnly ? ctx.actions.upload : undefined} />)}
       </ul>
       {!showLicense && license && (
         <details className="px-4 pb-3 sm:px-6">
@@ -94,8 +96,10 @@ function Slots({ entry, clientId, linkFor, ctx }: { entry: Entry; clientId: stri
 
 const updateBtn = "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gradient-to-b from-navy-900 to-navy-950 px-5 py-2.5 text-sm font-semibold text-white shadow group-open:from-gold-500 group-open:to-gold-600 group-open:text-navy-950";
 
-/** Client or spouse: navy name block, three document statuses, Update Documents. */
+/** Client or spouse: navy name block, their document statuses (license and SS card; no birth certificate), Update Documents. */
 function PersonRow({ entry, clientId, linkFor, ctx }: { entry: Entry; clientId: string; linkFor: (id: string) => string; ctx: Ctx }) {
+  const birthOnFile = (slotOf(entry, "BIRTH_CERTIFICATE")?.history.length ?? 0) > 0;
+  const types = birthOnFile ? (["DRIVERS_LICENSE", "BIRTH_CERTIFICATE", "SOCIAL_SECURITY_CARD"] as const) : (["DRIVERS_LICENSE", "SOCIAL_SECURITY_CARD"] as const);
   return (
     <details className="group overflow-hidden rounded-2xl border border-ivory-200 bg-white shadow-[0_14px_32px_-24px_rgb(10_26_68/0.45)]" data-person={entry.person.role}>
       <summary className="grid cursor-pointer list-none gap-4 p-3 sm:p-4 md:grid-cols-[15rem_1fr_auto] md:items-center [&::-webkit-details-marker]:hidden">
@@ -106,8 +110,8 @@ function PersonRow({ entry, clientId, linkFor, ctx }: { entry: Entry; clientId: 
             <span className="block text-sm text-gold-300">{entry.person.role === "CLIENT" || entry.person.role === "OWNER" ? "You" : ID_ROLES[entry.person.role as IdRole]}</span>
           </span>
         </span>
-        <span className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {(["DRIVERS_LICENSE", "BIRTH_CERTIFICATE", "SOCIAL_SECURITY_CARD"] as const).map((t) => <StatusChip key={t} s={slotOf(entry, t)} label />)}
+        <span className={`grid grid-cols-1 gap-3 ${types.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+          {types.map((t) => <StatusChip key={t} s={slotOf(entry, t)} label />)}
         </span>
         <span className={updateBtn}>Update Documents <ChevronDown className="size-4 transition group-open:rotate-180" aria-hidden /></span>
       </summary>
