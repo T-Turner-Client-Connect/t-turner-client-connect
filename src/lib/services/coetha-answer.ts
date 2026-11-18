@@ -31,6 +31,11 @@ import { recordsSnapshot } from "./coetha-records-view";
 export const MAX_LIVE = 3;
 /** Longer than one AI call may take (the background function's own timeout is 10 minutes). */
 const LEASE_MS = 11 * 60_000;
+// Once the AI has answered, the rest of the step (her tools, saving) runs in one short page request.
+// If that request dies (a 504), the run is free again after this — not after the full AI lease.
+const TOOLS_LEASE_MS = 2.5 * 60_000;
+// Her tools for one step stop starting new work after this, so the step finishes inside the page's limit.
+const TOOLS_BUDGET_MS = 40_000;
 const MAX_ATTEMPTS = 5;
 const BACKOFF_S = [20, 60, 120, 240];
 const HISTORY = 16;
@@ -206,10 +211,18 @@ async function fail(runId: string, reason: string) {
   logTiming(run, "failed");
 }
 
+/** The AI call is over: the run is held only for the tool step (TOOLS_LEASE_MS), then free to be picked up again. */
+export async function holdForTools(runId: string, callId: string, now = new Date()) {
+  await prisma.coethaAnswerRun.updateMany({ where: { id: runId, callId }, data: { leaseUntil: new Date(now.getTime() + TOOLS_LEASE_MS) } });
+}
+
 /** Takes one AI call's outcome: runs the tools it asked for, or saves the answer. Late and duplicate results are ignored. */
 export async function applyResult(runId: string, callId: string, outcome: ChatCallOutcome): Promise<{ done: boolean; ignored?: boolean }> {
   const run = await prisma.coethaAnswerRun.findUnique({ where: { id: runId } });
   if (!run || run.callId !== callId || (run.status !== "RUNNING" && run.status !== "QUEUED")) return { done: true, ignored: true };
+  // The AI call is over: hold the run only as long as this step can take, so an interrupted step
+  // (the page timing out) is picked up again in minutes instead of waiting out the AI lease.
+  await holdForTools(runId, callId);
   const state = (run.state ?? {}) as RunState;
   const timings = [...((run.timings as Timing[]) ?? [])];
   if (!outcome.ok) {
@@ -239,7 +252,9 @@ export async function applyResult(runId: string, callId: string, outcome: ChatCa
       const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
       for (const c of calls) {
         let out: unknown;
-        try { out = await tools.run(c.name, c.input); } catch { out = { error: "That tool couldn't be completed." }; }
+        // Time's up for this step: the remaining tools are reported back unrun, and Coetha simply asks for them again next round.
+        if (Date.now() - started > TOOLS_BUDGET_MS) out = { error: "Not run yet: this step ran out of time. Call this tool again in your next step." };
+        else try { out = await tools.run(c.name, c.input); } catch { out = { error: "That tool couldn't be completed." }; }
         // Files a tool returns (a picture or scanned PDF on file) go to Coetha as the files themselves.
         const files = out && typeof out === "object" && Array.isArray((out as { __attachments?: unknown }).__attachments) ? ((out as { __attachments: { mediaType: string; base64: string }[] }).__attachments) : [];
         if (files.length) {

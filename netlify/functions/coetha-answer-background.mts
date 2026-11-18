@@ -27,7 +27,7 @@ export default async (req: Request) => {
   const api = async (body: unknown): Promise<Call | null> => {
     const res = await fetch(`${base}/api/cron/coetha-answer`, { method: "POST", headers, body: JSON.stringify(body) }).catch(() => null);
     if (!res?.ok) {
-      console.log(`coetha-answer: app HTTP ${res?.status ?? "no response"}`);
+      console.log(`coetha-answer: app HTTP ${res?.status ?? "no response"}${(body as { runId?: string }).runId ? ` (run ${(body as { runId?: string }).runId}; it is picked up again within minutes)` : ""}`);
       return null;
     }
     const j = (await res.json().catch(() => ({}))) as Partial<Call> & { idle?: boolean };
