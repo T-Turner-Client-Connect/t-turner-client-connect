@@ -281,7 +281,8 @@ export async function importPayrollRegister(actor: Actor, clientId: string, inpu
   let doc = await prisma.document.findFirst({ where: { clientId, deletedAt: null, file: { sha256: sha } }, select: { id: true } });
   if (!doc) {
     const period = await openWorkPeriod(actor, clientId, y, m);
-    doc = await staffUploadDocument(actor, { clientId, category: "BOOKKEEPING", title: `Payroll register — ${PAYROLL_SYSTEMS[provider as keyof typeof PAYROLL_SYSTEMS] ?? provider} — ${r.payDates[0].checkDate} to ${last}`, year: y, month: m, visibility: "STAFF_ONLY", periodId: period.id, docType: "PAYROLL_REPORT", bytes: input.bytes, originalName: input.fileName, allowSpreadsheet: true, notify: false });
+    // Payroll files live in the PAYROLL category: the office can release them to the client's Payroll page.
+    doc = await staffUploadDocument(actor, { clientId, category: "PAYROLL", title: `Payroll register — ${PAYROLL_SYSTEMS[provider as keyof typeof PAYROLL_SYSTEMS] ?? provider} — ${r.payDates[0].checkDate} to ${last}`, year: y, month: m, visibility: "STAFF_ONLY", periodId: period.id, docType: "PAYROLL_REPORT", bytes: input.bytes, originalName: input.fileName, allowSpreadsheet: true, notify: false });
   }
   const result = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"payroll:" + clientId}))`;
@@ -447,6 +448,47 @@ export async function postPayrollRun(actor: Actor, clientId: string, runId: stri
   const open = await prisma.payrollRun.count({ where: { clientId, status: { not: "DISCARDED" }, journalEntryId: null, checkDate: { gte: d(`${month}-01`)!, lt: new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 1)) } } });
   if (!open) await markChecklist(actor, clientId, month, "PAYROLL_ENTRIES");
   return entry;
+}
+
+// --- Sharing payroll reports with the client -----------------------------------------------
+
+/** This client's payroll files (registers, summaries, 941s, W-2s) and whether each is released to the client. */
+export async function payrollReports(clientId: string) {
+  const docs = await prisma.document.findMany({
+    where: { clientId, deletedAt: null, OR: [{ category: "PAYROLL" }, { docType: { in: ["PAYROLL_REPORT", "FORM_W2_ISSUED"] } }] },
+    orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
+    take: 60,
+    select: { id: true, title: true, year: true, month: true, visibility: true, publishedAt: true, scanStatus: true, uploadedByPortalId: true, createdAt: true, category: true },
+  });
+  const opened = await prisma.documentAccessLog.groupBy({ by: ["documentId"], where: { documentId: { in: docs.map((d) => d.id) }, portalUserId: { not: null } }, _max: { createdAt: true } });
+  const openedAt = new Map(opened.map((o) => [o.documentId, o._max.createdAt]));
+  return docs.map((d) => ({ ...d, shared: d.visibility === "PUBLISHED", fromClient: !!d.uploadedByPortalId, clientOpenedAt: openedAt.get(d.id) ?? null }));
+}
+
+/**
+ * Releases a payroll file to the client's Payroll page (the existing document release: scan checks,
+ * access log, audit). A payroll register saved under Bookkeeping by an earlier import is moved to the
+ * Payroll category first. Notifying the client is opt-in.
+ */
+export async function sharePayrollReport(actor: Actor, clientId: string, documentId: string, opts: { share: boolean; notify?: boolean }) {
+  await assertStaff(actor);
+  await assertPayrollWork(actor, clientId);
+  const doc = await prisma.document.findFirst({ where: { id: documentId, clientId, deletedAt: null } });
+  if (!doc || !(doc.category === "PAYROLL" || doc.docType === "PAYROLL_REPORT" || doc.docType === "FORM_W2_ISSUED")) throw new ValidationError("That payroll file isn't on file for this client.");
+  const { setVisibility } = await import("./documents");
+  if (!opts.share) {
+    await setVisibility(actor, doc.id, "STAFF_ONLY");
+    return;
+  }
+  if (doc.scanStatus === "INFECTED") throw new ValidationError("The virus scanner flagged this file; it can't be shared.");
+  if (doc.category !== "PAYROLL") {
+    await prisma.document.update({ where: { id: doc.id }, data: { category: "PAYROLL" } });
+    await audit(prisma, { actorId: actor.id, action: "payroll.report_recategorized", entityType: "Document", entityId: doc.id, clientId, details: { from: doc.category } });
+  }
+  // setVisibility notifies the client on a first release; without "notify", the release is silent.
+  if (!opts.notify) await prisma.document.update({ where: { id: doc.id }, data: { publishedAt: doc.publishedAt ?? new Date() } });
+  await setVisibility(actor, doc.id, "PUBLISHED");
+  await audit(prisma, { actorId: actor.id, action: "payroll.report_shared", entityType: "Document", entityId: doc.id, clientId, details: { notify: !!opts.notify } });
 }
 
 // --- Reads --------------------------------------------------------------------------------

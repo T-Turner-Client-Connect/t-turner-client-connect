@@ -8,6 +8,7 @@ import { decryptBytes, encryptBytes } from "@/lib/crypto";
 import { callPayrollReader, CoethaModelError, coethaKeyPresent, type PayrollRegisterOutputT } from "@/lib/coetha-model";
 import type { Mapping } from "./register";
 import type { PayrollField } from "./fields";
+import { AdpSummaryError, looksLikeAdpSummary, readAdpSummary, type SummaryPayDate } from "./adp-summary";
 
 /**
  * ADP RUN (and other providers) export the payroll register as a PDF. Coetha reads its figures
@@ -115,6 +116,15 @@ export function mergeReadings(parts: PayrollRegisterOutputT[]): PayrollRegisterO
   return { payDates: [...byDate.values()].map(({ _taxesFromTotals: _t, ...p }) => p).sort((a, b) => a.checkDate.localeCompare(b.checkDate)) };
 }
 
+/** One importer row per check date of an ADP summary (the summary has company totals, not employee lines). */
+export function gridFromSummary(dates: SummaryPayDate[]): string[][] {
+  const rows: string[][] = [COLUMNS.map(([, label]) => label)];
+  for (const p of dates) {
+    rows.push([p.checkDate, "", "", `All employees — ADP payroll summary${p.frequency ? ` (${p.frequency.toLowerCase()})` : ""}`, String(p.hours), d(p.grossCents), d(p.federalWhCents), d(p.socialSecurityCents), d(p.medicareCents), d(p.stateWhCents), d(p.otherEmployeeTaxCents), d(p.employerTaxCents), d(p.deductionsCents), d(p.netPayCents)]);
+  }
+  return rows;
+}
+
 const cacheKey = (clientId: string, sha: string) => `client_document/payroll_pdf/${clientId}/${sha}`;
 
 /** The importer rows for a payroll register PDF (read once per file, then reused). */
@@ -124,12 +134,25 @@ export async function readPayrollPdf(actor: Actor, clientId: string, bytes: Uint
   const cached = await storage.get(key).catch(() => null);
   if (cached) return JSON.parse(new TextDecoder().decode(decryptBytes(cached))) as string[][];
 
+  // An ADP payroll summary is read directly (exact, instant, no AI); anything else goes to Coetha.
+  const { pdfPageLines } = await import("@/lib/statement-pdf");
+  const pages = await pdfPageLines(bytes);
+  if (pages?.length && looksLikeAdpSummary(pages.flat().join("\n"))) {
+    let grid: string[][];
+    try {
+      grid = gridFromSummary(readAdpSummary(pages));
+    } catch (err) {
+      if (err instanceof AdpSummaryError) throw new PayrollPdfError(err.message);
+      throw err;
+    }
+    await storage.put(key, encryptBytes(new TextEncoder().encode(JSON.stringify(grid))));
+    await audit(prisma, { actorId: actor.id, action: "payroll.pdf_read", entityType: "Client", entityId: clientId, clientId, details: { sha256: sha, payDates: grid.length - 1, reader: "ADP_SUMMARY" } });
+    return grid;
+  }
   const { coethaOn } = await import("@/lib/services/owner-switches");
   const { coethaOptOutView } = await import("@/lib/services/coetha-opt-out");
   if (!(await coethaOn()) || !coethaKeyPresent()) throw new PayrollPdfError("Reading a PDF register needs Coetha turned on. Export the register as Excel (.xlsx) or CSV instead.");
   if (await coethaOptOutView(clientId)) throw new PayrollPdfError("This client prefers no Coetha, so a PDF register can't be read. Export it as Excel (.xlsx) or CSV instead.");
-  const { pdfPageLines } = await import("@/lib/statement-pdf");
-  const pages = await pdfPageLines(bytes);
   if (!pages?.some((p) => p.length)) throw new PayrollPdfError("No text could be read from this PDF (it may be a scan). Export the register from ADP as PDF or Excel again.");
   const chunks = pageChunks(pages.map((p) => payrollText(p)));
   if (chunks.length > MAX_CHUNKS) throw new PayrollPdfError(`This register is too long to read in one go (${pages.length} pages). Export fewer pay dates at a time, or export it as Excel (.xlsx).`);
